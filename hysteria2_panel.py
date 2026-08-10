@@ -13,8 +13,10 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -35,6 +37,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
+PANEL_VERSION = "0.3.0"
 
 
 class ConflictError(Exception):
@@ -1240,6 +1243,145 @@ class UsageManager:
                 self.collect_once()
             except Exception:
                 LOGGER.exception("background traffic sync failed")
+
+
+class ServiceController:
+    SERVICE = "hysteria2-panel-server.service"
+    ACTIONS = {"start", "stop", "restart"}
+
+    def __init__(self, runner=subprocess.run):
+        self.runner = runner
+
+    def status(self):
+        result = self.runner(
+            ["/bin/systemctl", "is-active", self.SERVICE],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        value = result.stdout.strip()
+        return value if value else "unknown"
+
+    def action(self, action):
+        if action not in self.ACTIONS:
+            raise ValueError("unsupported service action")
+        result = self.runner(
+            ["/usr/bin/sudo", "-n", "/bin/systemctl", action, self.SERVICE],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("service control failed")
+        return self.status()
+
+
+class UpdateChecker:
+    URL = "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest"
+
+    def __init__(self, current_version=PANEL_VERSION, opener=urllib.request.urlopen):
+        self.current_version = current_version
+        self.opener = opener
+
+    @staticmethod
+    def _version_tuple(value):
+        match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", value)
+        if not match:
+            raise ValueError("release version is invalid")
+        return tuple(int(part) for part in match.groups())
+
+    def check(self):
+        request = urllib.request.Request(
+            self.URL,
+            headers={"Accept": "application/vnd.github+json", "User-Agent": "Hysteria2-panel"},
+        )
+        with self.opener(request, timeout=3) as response:
+            raw_body = response.read(16385)
+        if len(raw_body) > 16384:
+            raise ValueError("release response is too large")
+        payload = json.loads(raw_body.decode("utf-8"))
+        latest = payload.get("tag_name") if isinstance(payload, dict) else None
+        if not isinstance(latest, str):
+            raise ValueError("release response is invalid")
+        latest_tuple = self._version_tuple(latest)
+        return {
+            "current": "v{}".format(self.current_version.lstrip("v")),
+            "latest": "v{}.{}.{}".format(*latest_tuple),
+            "update_available": latest_tuple > self._version_tuple(self.current_version),
+            "url": "https://github.com/Elegying/Hysteria2-panel/releases/latest",
+        }
+
+
+class SystemMetrics:
+    def __init__(
+        self,
+        proc_root=Path("/proc"),
+        disk_usage=shutil.disk_usage,
+        cpu_count=os.cpu_count,
+        loadavg=os.getloadavg,
+    ):
+        self.proc_root = Path(proc_root)
+        self.disk_usage = disk_usage
+        self.cpu_count = cpu_count
+        self.loadavg = loadavg
+        self.previous_cpu = None
+        self.lock = threading.Lock()
+
+    def _cpu_sample(self):
+        parts = (self.proc_root / "stat").read_text().splitlines()[0].split()[1:]
+        values = [int(value) for value in parts]
+        total = sum(values)
+        idle = values[3] + (values[4] if len(values) > 4 else 0)
+        return total, idle
+
+    @staticmethod
+    def _uptime_label(seconds):
+        days, remainder = divmod(max(0, int(seconds)), 86400)
+        hours = remainder // 3600
+        if days:
+            return "{}天 {}小时".format(days, hours)
+        minutes = (remainder % 3600) // 60
+        return "{}小时 {}分钟".format(hours, minutes)
+
+    def snapshot(self):
+        with self.lock:
+            current_cpu = self._cpu_sample()
+            if self.previous_cpu is None:
+                cpu_percent = min(
+                    100.0,
+                    max(0.0, self.loadavg()[0] * 100.0 / max(1, self.cpu_count() or 1)),
+                )
+            else:
+                total_delta = current_cpu[0] - self.previous_cpu[0]
+                idle_delta = current_cpu[1] - self.previous_cpu[1]
+                cpu_percent = (
+                    max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
+                    if total_delta > 0
+                    else 0.0
+                )
+            self.previous_cpu = current_cpu
+
+        memory = {}
+        for line in (self.proc_root / "meminfo").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key in {"MemTotal", "MemAvailable"}:
+                memory[key] = int(value.strip().split()[0]) * 1024
+        memory_total = memory.get("MemTotal", 0)
+        memory_used = max(0, memory_total - memory.get("MemAvailable", 0))
+        disk = self.disk_usage("/")
+        uptime_seconds = float((self.proc_root / "uptime").read_text().split()[0])
+        return {
+            "cpu_percent": round(cpu_percent, 1),
+            "memory_percent": round(100.0 * memory_used / memory_total, 1) if memory_total else 0.0,
+            "memory_used": memory_used,
+            "memory_total": memory_total,
+            "disk_percent": round(100.0 * disk.used / disk.total, 1) if disk.total else 0.0,
+            "disk_used": disk.used,
+            "disk_total": disk.total,
+            "uptime": self._uptime_label(uptime_seconds),
+        }
 
 
 def _parse_port(mapping, name, default):

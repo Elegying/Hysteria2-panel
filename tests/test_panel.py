@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import sqlite3
 import tempfile
@@ -19,6 +20,9 @@ from hysteria2_panel import (
     PanelApplication,
     PanelHandler,
     Settings,
+    ServiceController,
+    SystemMetrics,
+    UpdateChecker,
     UsageManager,
     build_connection_uri,
     handle_auth_payload,
@@ -383,6 +387,81 @@ class UsageManagerTests(unittest.TestCase):
 
         manager.reset_all()
         self.assertEqual((0, 0), tuple(self.db.get_proxy_user(bob["id"])[key] for key in ("tx_bytes", "rx_bytes")))
+
+
+class OperationsTests(unittest.TestCase):
+    def test_service_controller_uses_only_fixed_systemctl_commands(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return type("Result", (), {"returncode": 0, "stdout": "active\n", "stderr": ""})()
+
+        controller = ServiceController(runner=runner)
+        self.assertEqual("active", controller.status())
+        self.assertEqual("active", controller.action("restart"))
+        with self.assertRaises(ValueError):
+            controller.action("restart;id")
+        self.assertEqual(
+            [
+                ["/bin/systemctl", "is-active", "hysteria2-panel-server.service"],
+                ["/usr/bin/sudo", "-n", "/bin/systemctl", "restart", "hysteria2-panel-server.service"],
+                ["/bin/systemctl", "is-active", "hysteria2-panel-server.service"],
+            ],
+            [command for command, _ in calls],
+        )
+        self.assertTrue(all("shell" not in kwargs for _, kwargs in calls))
+
+    def test_update_checker_uses_the_fixed_repository_and_compares_versions(self):
+        requests = []
+
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        def opener(request, timeout):
+            requests.append((request.full_url, timeout, request.headers))
+            return Response(json.dumps({"tag_name": "v0.4.0"}).encode())
+
+        result = UpdateChecker("0.3.0", opener=opener).check()
+        self.assertEqual("v0.4.0", result["latest"])
+        self.assertTrue(result["update_available"])
+        self.assertEqual(
+            "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest",
+            requests[0][0],
+        )
+        self.assertEqual(3, requests[0][1])
+
+    def test_system_metrics_reports_cpu_memory_disk_and_uptime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proc_root = Path(temp_dir)
+            (proc_root / "stat").write_text("cpu  100 0 100 800 0 0 0 0\n")
+            (proc_root / "meminfo").write_text(
+                "MemTotal: 1000 kB\nMemAvailable: 600 kB\n"
+            )
+            (proc_root / "uptime").write_text("90061.0 0.0\n")
+            disk = type("Disk", (), {"total": 1000, "used": 250, "free": 750})()
+            metrics = SystemMetrics(
+                proc_root=proc_root,
+                disk_usage=lambda _: disk,
+                cpu_count=lambda: 1,
+                loadavg=lambda: (0.5, 0.0, 0.0),
+            )
+
+            first = metrics.snapshot()
+            (proc_root / "stat").write_text("cpu  150 0 150 900 0 0 0 0\n")
+            second = metrics.snapshot()
+
+        self.assertEqual(50.0, first["cpu_percent"])
+        self.assertEqual(50.0, second["cpu_percent"])
+        self.assertEqual(40.0, second["memory_percent"])
+        self.assertEqual(25.0, second["disk_percent"])
+        self.assertEqual("1天 1小时", second["uptime"])
 
 
 class FailingStatsClient(FakeStatsClient):
