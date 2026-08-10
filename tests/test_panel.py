@@ -953,6 +953,28 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(7, user["device_limit"])
         self.assertEqual(500 * 1024**3, user["traffic_limit_bytes"])
 
+    def test_inline_user_creation_returns_connection_json_for_the_dashboard_dialog(self):
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request(
+            "/users",
+            {
+                "name": "dialog-user",
+                "device_limit": "3",
+                "traffic_limit_gb": "250",
+                "csrf": csrf_token,
+                "inline": "1",
+            },
+            headers=headers,
+        ) as response:
+            payload = json.loads(response.read().decode())
+
+        self.assertEqual(201, response.status)
+        self.assertEqual("application/json; charset=utf-8", response.headers["Content-Type"])
+        self.assertEqual("dialog-user", payload["name"])
+        self.assertTrue(payload["uri"].startswith("hysteria2://"))
+        self.assertNotIn("token", payload)
+
     def test_dashboard_shows_service_and_global_summary_cards(self):
         self.db.create_proxy_user("alice")
         self.db.create_proxy_user("bob")
@@ -984,7 +1006,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('value="3"', body)
         self.assertIn('value="250"', body)
 
-    def test_dashboard_uses_migration_dialog_and_mobile_user_cards(self):
+    def test_dashboard_uses_dialogs_and_compact_mobile_user_rows(self):
         self.db.create_proxy_user("alice")
         headers, _ = self.authenticated_headers()
 
@@ -995,10 +1017,16 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('<dialog id="migration-dialog"', body)
         self.assertIn('aria-labelledby="migration-title"', body)
         self.assertIn('data-dialog-close', body)
+        self.assertIn('data-create-user-form', body)
+        self.assertIn('<dialog id="credentials-dialog"', body)
+        self.assertIn('data-share-form', body)
         self.assertIn('data-label="名称"', body)
         self.assertIn('data-label="操作"', body)
         self.assertIn('@media(max-width:640px)', body)
-        self.assertIn('td::before{content:attr(data-label)', body)
+        self.assertIn('.user-table tr{display:grid;', body)
+        self.assertIn('grid-template-columns:repeat(5,minmax(0,1fr))', body)
+        self.assertNotIn('td::before{content:attr(data-label)', body)
+        self.assertNotIn('限 3 个并发连接', body)
 
     def test_dashboard_compacts_operations_and_keeps_login_actions_separate(self):
         self.db.create_proxy_user("alice")
@@ -1013,7 +1041,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('class="card traffic-card"', dashboard)
         self.assertIn('class="detail compact-detail"', dashboard)
         self.assertIn('class="detail version-detail"', dashboard)
-        self.assertIn('.dashboard-trio{grid-template-columns:', dashboard)
+        self.assertIn('.dashboard-trio{align-items:stretch;grid-template-columns:', dashboard)
         self.assertIn('.version-detail{margin-top:12px', dashboard)
         self.assertIn('class="login-form"', login)
         self.assertIn('class="login-actions"', login)
@@ -1120,6 +1148,28 @@ class PanelHttpTests(unittest.TestCase):
 
         self.assertEqual(5, body.count('class="rank-row"'))
         self.assertNotIn('<span class="rank-name">user0</span>', body)
+        self.assertIn('class="rank-main"><span class="rank-name">', body)
+        self.assertIn('.dashboard-trio{align-items:stretch;', body)
+
+    def test_total_traffic_header_sorts_users_in_both_directions(self):
+        for name, total in (("alpha", 20), ("beta", 60), ("gamma", 40)):
+            self.db.create_proxy_user(name)
+            self.db.add_traffic({name: {"tx": total // 2, "rx": total // 2}})
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/?sort=traffic&order=desc", headers=headers) as response:
+            descending = response.read().decode()
+        with self.request("/?sort=traffic&order=asc", headers=headers) as response:
+            ascending = response.read().decode()
+
+        beta_row = '<tr><td data-label="名称"><strong>beta</strong>'
+        gamma_row = '<tr><td data-label="名称"><strong>gamma</strong>'
+        alpha_row = '<tr><td data-label="名称"><strong>alpha</strong>'
+        self.assertLess(descending.index(beta_row), descending.index(gamma_row))
+        self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
+        self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
+        self.assertLess(ascending.index(gamma_row), ascending.index(beta_row))
+        self.assertIn('href="/?sort=traffic&amp;order=asc"', descending)
 
     def test_share_and_traffic_reset_actions_are_csrf_protected(self):
         created = self.db.create_proxy_user("carol")
@@ -1128,12 +1178,12 @@ class PanelHttpTests(unittest.TestCase):
 
         with self.request(
             "/users/{}/share".format(created["id"]),
-            {"csrf": csrf_token, "generation": "0"},
+            {"csrf": csrf_token, "generation": "0", "inline": "1"},
             headers=headers,
         ) as response:
-            body = response.read().decode()
-        self.assertIn("hysteria2://", body)
-        self.assertIn('data-copy-target="uri"', body)
+            payload = json.loads(response.read().decode())
+        self.assertTrue(payload["uri"].startswith("hysteria2://"))
+        self.assertEqual("carol", payload["name"])
 
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.request(
@@ -1188,7 +1238,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.6.1", body)
+        self.assertIn("v0.7.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
