@@ -37,7 +37,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.3.0"
+PANEL_VERSION = "0.3.1"
 
 PAGE_STYLE = """
 :root{--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
