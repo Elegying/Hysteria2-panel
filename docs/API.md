@@ -57,9 +57,13 @@
 | `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
 | `POST` | `/updates/check` | 从固定 GitHub Release API 检查面板版本，不自动安装 |
+| `POST` | `/backup` | 表单 CSRF 校验后返回 `application/zip` 敏感备份，响应强制 `no-store` |
+| `POST` | `/restore` | 上传原始 `application/zip`；CSRF 通过 `X-HY2Panel-CSRF` 请求头提交，预检后排队执行一次性恢复服务 |
 | `POST` | `/logout` | 撤销管理会话 |
 
 面板没有对公网提供通用 JSON 管理 API，避免扩大认证和 CORS 攻击面。
 版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成的新凭据。
 
 全局统计只汇总当前数据库中的用户，避免已删除用户仍残留在 Hysteria 统计快照时污染总数。不活跃用户定义为上传和下载均为 0 的账户。面板定期使用 Hysteria `/traffic?clear=true` 原子取得增量并写入 SQLite，因此正常重启不会清空累计流量。
+
+`POST /restore` 要求 `Content-Length` 在 1 字节到 64 MiB 之间，不解析 multipart。服务端只接受格式版本 1 的固定五文件 ZIP，限制单项与总解压大小，拒绝额外文件、重复路径、目录和符号链接，并校验清单 SHA-256、SQLite 完整性/表结构、每个可恢复用户 token、证书/私钥、证书指纹、源域名及 UDP 端口。上传预检通过后只写入固定的待恢复路径，再用固定 sudoers 命令启动 root oneshot；root 进程会重复全部校验。

@@ -25,7 +25,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.4.0"', source)
+        self.assertIn('PANEL_VERSION="0.5.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -117,8 +117,8 @@ class InstallerContractTests(unittest.TestCase):
         )
         self.assertIn("visudo -cf", source)
         self.assertIn("sudo", source)
-        self.assertEqual(2, source.count("NoNewPrivileges=true"))
-        self.assertEqual(2, source.count("PrivateDevices=true"))
+        self.assertEqual(3, source.count("NoNewPrivileges=true"))
+        self.assertEqual(3, source.count("PrivateDevices=true"))
         for sandbox_option in (
             "ProtectKernelTunables=true",
             "ProtectKernelModules=true",
@@ -126,8 +126,30 @@ class InstallerContractTests(unittest.TestCase):
             "LockPersonality=true",
             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
         ):
-            expected_count = 1 if sandbox_option.endswith("AF_UNIX") else 2
+            expected_count = 2 if sandbox_option.endswith("AF_UNIX") else 3
             self.assertEqual(expected_count, source.count(sandbox_option), sandbox_option)
+
+    def test_installer_adds_a_root_only_one_shot_restore_service(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("hysteria2-panel-restore.service", source)
+        self.assertIn(
+            "/bin/systemctl --no-block start hysteria2-panel-restore.service",
+            source,
+        )
+        self.assertIn(
+            "ExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending",
+            source,
+        )
+        self.assertIn(
+            "Conflicts=hysteria2-panel.service hysteria2-panel-server.service",
+            source,
+        )
+        self.assertIn(
+            "ExecStopPost=/bin/systemctl --no-block start hysteria2-panel.service hysteria2-panel-server.service",
+            source,
+        )
+        self.assertNotIn("User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending", source)
 
 
 class TcpProbeTests(unittest.TestCase):
