@@ -984,6 +984,19 @@ class PanelHttpTests(unittest.TestCase):
             )
         self.assertEqual(303, success.exception.code)
 
+    def test_locked_source_is_audited_only_on_the_lock_transition(self):
+        actions = []
+        self.db.audit = lambda _actor, action, _target, _address: actions.append(action)
+        self.application.rate_limiter = LoginRateLimiter(max_attempts=1, window_seconds=60)
+
+        for password in ("wrong-password", "admin-password"):
+            with self.assertRaises(urllib.error.HTTPError) as response:
+                self.request("/login", {"username": "Elegy", "password": password})
+            self.assertEqual(429, response.exception.code)
+
+        self.assertEqual(1, actions.count("login_failed"))
+        self.assertEqual(1, actions.count("login_locked"))
+
     def test_root_requires_authentication(self):
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.request("/", follow_redirects=False)
@@ -1541,7 +1554,13 @@ class StatsClientTests(unittest.TestCase):
         response.read.assert_called_once_with(MAX_STATS_RESPONSE_BYTES + 1)
 
     def test_stats_api_must_remain_on_plaintext_loopback(self):
-        for url in ("http://example.com:19997", "https://127.0.0.1:19997"):
+        for url in (
+            "http://example.com:19997",
+            "https://127.0.0.1:19997",
+            "http://localhost:19997",
+            "http://127.0.0.1:19997/base",
+            "http://127.0.0.1:not-a-port",
+        ):
             with self.subTest(url=url):
                 with self.assertRaises(ValueError):
                     HysteriaStatsClient(url, "stats-secret")

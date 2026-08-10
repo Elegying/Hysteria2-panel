@@ -48,4 +48,4 @@ jobs:
       - name: Lint installer
         run: shellcheck install.sh
       - name: Reject whitespace errors
-        run: git diff --check
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD

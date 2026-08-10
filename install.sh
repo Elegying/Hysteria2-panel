@@ -5,7 +5,7 @@ PANEL_VERSION="0.10.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="5e5dfaa38bdd3f91076e22870f41ca2144bc4f0dc7b96445f90f5e88038681f8"
+PANEL_SHA256="53912ab664d258064fcecb5d0f3c11e42fedb1cf63657fad2454444530ecc51d"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -169,7 +169,7 @@ fi
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
 [[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"
 
-required_commands=(awk cp curl date find getent grep groupadd install ip mktemp openssl rm sha256sum sleep ss sudo sysctl systemctl useradd usermod visudo)
+required_commands=(awk cat chmod chown cp curl date find getent grep groupadd id install ip mktemp openssl rm sha256sum sleep ss sudo sysctl systemctl uname useradd usermod visudo)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")

@@ -36,7 +36,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="5e5dfaa38bdd3f91076e22870f41ca2144bc4f0dc7b96445f90f5e88038681f8"',
+            'PANEL_SHA256="53912ab664d258064fcecb5d0f3c11e42fedb1cf63657fad2454444530ecc51d"',
             source,
         )
         self.assertIn(
@@ -97,7 +97,20 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("systemd", source)
         self.assertIn("PYTHON_BIN", source)
         required_commands = source.split("required_commands=(", 1)[1].split(")", 1)[0]
-        for command in ("awk", "cp", "date", "find", "grep", "ip", "rm"):
+        for command in (
+            "awk",
+            "cat",
+            "chmod",
+            "chown",
+            "cp",
+            "date",
+            "find",
+            "grep",
+            "id",
+            "ip",
+            "rm",
+            "uname",
+        ):
             self.assertIn(command, required_commands.split())
 
     def test_installer_is_namespaced_and_separates_service_identities(self):

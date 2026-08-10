@@ -1929,7 +1929,6 @@ class PanelHandler(JsonHandler):
         address = self.client_address[0]
         retry_after = self.app.rate_limiter.retry_after(address)
         if retry_after:
-            self._audit_safely("anonymous", "login_locked", "admin")
             self._send_html(
                 429,
                 self._login_page("尝试次数过多，请 {} 秒后再试".format(retry_after)),
@@ -2117,11 +2116,19 @@ class HysteriaStatsClient:
     def __init__(self, base_url, secret, timeout=2):
         self.base_url = base_url.rstrip("/")
         parsed = urllib.parse.urlsplit(self.base_url)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("Hysteria stats API URL is invalid") from exc
         if (
             parsed.scheme != "http"
-            or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or parsed.hostname not in {"127.0.0.1", "::1"}
+            or port is None
             or parsed.username is not None
             or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
         ):
             raise ValueError("Hysteria stats API must use plaintext loopback HTTP")
         self.secret = secret
