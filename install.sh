@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.2.1"
+PANEL_VERSION="0.3.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 HYSTERIA_VERSION="2.12.1"
@@ -81,7 +81,7 @@ fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 
-required_commands=(curl install systemctl openssl sha256sum ss sysctl useradd groupadd usermod python3 mktemp sleep)
+required_commands=(curl install systemctl openssl sha256sum ss sysctl useradd groupadd usermod python3 mktemp sleep sudo visudo)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
@@ -89,7 +89,7 @@ done
 if (( ${#missing_commands[@]} > 0 )) && command -v apt-get >/dev/null 2>&1; then
   echo "安装系统依赖：${missing_commands[*]}"
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl iproute2 python3 coreutils passwd procps
+  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl iproute2 python3 coreutils passwd procps sudo
 fi
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "缺少命令：${command_name}"
@@ -212,6 +212,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
+  [[ ! -f /etc/sudoers.d/hysteria2-panel ]] || cp -a /etc/sudoers.d/hysteria2-panel "${BACKUP_DIR}/hysteria2-panel.sudoers"
   if [[ -f /var/lib/hysteria2-panel/panel.db ]]; then
     python3 - /var/lib/hysteria2-panel/panel.db "${BACKUP_DIR}/panel.db" <<'PY'
 import sqlite3
@@ -303,6 +304,13 @@ EOF
 chown root:hy2tls /etc/hysteria2-panel/hysteria.yaml
 chmod 0640 /etc/hysteria2-panel/hysteria.yaml
 
+cat > "${TMP_DIR}/hysteria2-panel.sudoers" <<'EOF'
+hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service
+EOF
+chmod 0440 "${TMP_DIR}/hysteria2-panel.sudoers"
+visudo -cf "${TMP_DIR}/hysteria2-panel.sudoers" >/dev/null || fail "服务控制权限配置无效"
+install -o root -g root -m 0440 "${TMP_DIR}/hysteria2-panel.sudoers" /etc/sudoers.d/hysteria2-panel
+
 cat > /etc/systemd/system/hysteria2-panel.service <<'EOF'
 [Unit]
 Description=Hysteria 2 multi-user panel
@@ -319,7 +327,6 @@ ExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py serve
 Restart=on-failure
 RestartSec=3s
 UMask=0077
-NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict

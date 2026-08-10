@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import sqlite3
 import tempfile
@@ -19,6 +20,10 @@ from hysteria2_panel import (
     PanelApplication,
     PanelHandler,
     Settings,
+    ServiceController,
+    SystemMetrics,
+    UpdateChecker,
+    UsageManager,
     build_connection_uri,
     handle_auth_payload,
     hash_password,
@@ -73,9 +78,74 @@ class DatabaseTests(unittest.TestCase):
         created = self.db.create_proxy_user("alice")
 
         self.assertEqual("alice", self.db.authenticate_token(created["token"]))
+        self.assertEqual(created["token"], self.db.recover_proxy_token(created["id"]))
         with sqlite3.connect(self.db_path) as connection:
             dump = "\n".join(connection.iterdump())
         self.assertNotIn(created["token"], dump)
+
+    def test_proxy_users_have_default_and_custom_limits(self):
+        default_user = self.db.create_proxy_user("alice")
+        custom_user = self.db.create_proxy_user(
+            "bob", device_limit=5, traffic_limit_bytes=500 * 1024**3
+        )
+
+        default_record = self.db.get_proxy_user(default_user["id"])
+        custom_record = self.db.get_proxy_user(custom_user["id"])
+        self.assertEqual(3, default_record["device_limit"])
+        self.assertEqual(250 * 1024**3, default_record["traffic_limit_bytes"])
+        self.assertEqual(5, custom_record["device_limit"])
+        self.assertEqual(500 * 1024**3, custom_record["traffic_limit_bytes"])
+        with self.assertRaises(ValueError):
+            self.db.create_proxy_user("bad-devices", device_limit=0)
+        with self.assertRaises(ValueError):
+            self.db.create_proxy_user("bad-traffic", traffic_limit_bytes=0)
+
+    def test_traffic_is_accumulated_and_can_be_reset(self):
+        alice = self.db.create_proxy_user("alice")
+        bob = self.db.create_proxy_user("bob")
+
+        self.db.add_traffic({"alice": {"tx": 100, "rx": 200}, "bob": {"tx": 9, "rx": 8}})
+        self.db.add_traffic({"alice": {"tx": 3, "rx": 4}})
+        alice_record = self.db.get_proxy_user(alice["id"])
+        self.assertEqual(103, alice_record["tx_bytes"])
+        self.assertEqual(204, alice_record["rx_bytes"])
+
+        self.db.reset_proxy_user_traffic(alice["id"], expected_generation=0)
+        alice_record = self.db.get_proxy_user(alice["id"])
+        self.assertEqual((0, 0), (alice_record["tx_bytes"], alice_record["rx_bytes"]))
+        self.assertEqual(1, alice_record["generation"])
+
+        self.db.reset_all_traffic()
+        bob_record = self.db.get_proxy_user(bob["id"])
+        self.assertEqual((0, 0), (bob_record["tx_bytes"], bob_record["rx_bytes"]))
+
+    def test_initialize_migrates_legacy_users_without_changing_their_token(self):
+        legacy_path = Path(self.temp_dir.name) / "legacy.db"
+        token = "legacy-token"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """CREATE TABLE proxy_users (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                token_fingerprint TEXT NOT NULL UNIQUE,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                generation INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+                )"""
+            )
+            connection.execute(
+                "INSERT INTO proxy_users VALUES (1, 'legacy', ?, 1, 0, 1, 1)",
+                (self.db._fingerprint(token),),
+            )
+
+        legacy_db = Database(legacy_path, b"a" * 32)
+        legacy_db.initialize()
+        record = legacy_db.get_proxy_user(1)
+        self.assertEqual(3, record["device_limit"])
+        self.assertEqual(250 * 1024**3, record["traffic_limit_bytes"])
+        self.assertEqual("legacy", legacy_db.authenticate_token(token))
+        self.assertIsNone(legacy_db.recover_proxy_token(1))
 
     def test_disable_rotate_and_delete_user(self):
         created = self.db.create_proxy_user("alice", token="first-token")
@@ -162,6 +232,28 @@ class AuthContractTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("INVALID_REQUEST", response["error"]["code"])
 
+    def test_auth_policy_rejects_users_over_connection_or_traffic_limits(self):
+        stats = PolicyStatsClient(
+            traffic={"alice": {"tx": 0, "rx": 0}}, online={"alice": 2}
+        )
+        manager = UsageManager(self.db, stats, pending_ttl=10, clock=lambda: 100.0)
+        body = json.dumps(
+            {"addr": "192.0.2.10:1234", "auth": "valid-token", "tx": 9}
+        ).encode()
+
+        self.assertEqual(
+            {"ok": True, "id": "alice"}, handle_auth_payload(self.db, body, manager)[1]
+        )
+        self.assertEqual(
+            {"ok": False, "id": ""}, handle_auth_payload(self.db, body, manager)[1]
+        )
+
+        self.db.add_traffic({"alice": {"tx": 250 * 1024**3, "rx": 0}})
+        stats.online_values = {}
+        self.assertEqual(
+            {"ok": False, "id": ""}, handle_auth_payload(self.db, body, manager)[1]
+        )
+
     def test_internal_http_auth_endpoint_matches_hysteria_contract(self):
         server = make_internal_server(("127.0.0.1", 0), self.db)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -220,8 +312,212 @@ class FakeStatsClient:
             "available": True,
         }
 
+    def collect_and_clear(self):
+        return self.snapshot()["traffic"]
+
+    def online(self):
+        return self.snapshot()["online"]
+
     def kick(self, name):
         self.kicked.append(name)
+
+
+class PolicyStatsClient(FakeStatsClient):
+    def __init__(self, traffic=None, online=None):
+        super().__init__()
+        self.traffic_values = traffic or {}
+        self.online_values = online or {}
+
+    def collect_and_clear(self):
+        values = self.traffic_values
+        self.traffic_values = {}
+        return values
+
+    def online(self):
+        return dict(self.online_values)
+
+
+class UsageManagerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "panel.db", b"u" * 32)
+        self.db.initialize()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_collects_durable_traffic_and_kicks_users_at_quota(self):
+        user = self.db.create_proxy_user("alice", traffic_limit_bytes=300)
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 100, "rx": 200}})
+        manager = UsageManager(self.db, stats)
+
+        manager.collect_once()
+
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((100, 200), (record["tx_bytes"], record["rx_bytes"]))
+        self.assertEqual(["alice"], stats.kicked)
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_reserves_pending_connections_to_enforce_the_limit(self):
+        self.db.create_proxy_user("alice", device_limit=3)
+        stats = PolicyStatsClient(online={"alice": 2})
+        manager = UsageManager(self.db, stats, pending_ttl=10, clock=lambda: 100.0)
+
+        self.assertTrue(manager.authorize("alice"))
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_rejects_authentication_when_online_limit_cannot_be_checked(self):
+        self.db.create_proxy_user("alice", device_limit=3)
+        stats = PolicyStatsClient()
+        stats.online = lambda: (_ for _ in ()).throw(OSError("stats unavailable"))
+        manager = UsageManager(self.db, stats)
+
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_rejects_authentication_when_traffic_limit_cannot_be_checked(self):
+        self.db.create_proxy_user("alice", traffic_limit_bytes=300)
+        stats = PolicyStatsClient(online={"alice": 0})
+        stats.collect_and_clear = lambda: (_ for _ in ()).throw(
+            OSError("traffic stats unavailable")
+        )
+        manager = UsageManager(self.db, stats)
+
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_snapshot_and_resets_include_pending_hysteria_traffic(self):
+        alice = self.db.create_proxy_user("alice")
+        bob = self.db.create_proxy_user("bob")
+        stats = PolicyStatsClient(
+            traffic={"alice": {"tx": 100, "rx": 200}, "bob": {"tx": 8, "rx": 9}},
+            online={"alice": 1},
+        )
+        manager = UsageManager(self.db, stats)
+
+        snapshot = manager.snapshot()
+        self.assertEqual({"tx": 100, "rx": 200}, snapshot["traffic"]["alice"])
+        self.assertEqual({"alice": 1}, snapshot["online"])
+        self.assertTrue(snapshot["available"])
+
+        stats.traffic_values = {"alice": {"tx": 5, "rx": 6}}
+        manager.reset_user(alice["id"], expected_generation=0)
+        self.assertEqual((0, 0), tuple(self.db.get_proxy_user(alice["id"])[key] for key in ("tx_bytes", "rx_bytes")))
+        self.assertEqual(["alice"], stats.kicked)
+
+        manager.reset_all()
+        self.assertEqual((0, 0), tuple(self.db.get_proxy_user(bob["id"])[key] for key in ("tx_bytes", "rx_bytes")))
+
+
+class OperationsTests(unittest.TestCase):
+    def test_service_controller_uses_only_fixed_systemctl_commands(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return type("Result", (), {"returncode": 0, "stdout": "active\n", "stderr": ""})()
+
+        controller = ServiceController(runner=runner)
+        self.assertEqual("active", controller.status())
+        self.assertEqual("active", controller.action("restart"))
+        with self.assertRaises(ValueError):
+            controller.action("restart;id")
+        self.assertEqual(
+            [
+                ["/bin/systemctl", "is-active", "hysteria2-panel-server.service"],
+                ["/usr/bin/sudo", "-n", "/bin/systemctl", "restart", "hysteria2-panel-server.service"],
+                ["/bin/systemctl", "is-active", "hysteria2-panel-server.service"],
+            ],
+            [command for command, _ in calls],
+        )
+        self.assertTrue(all("shell" not in kwargs for _, kwargs in calls))
+
+    def test_update_checker_uses_the_fixed_repository_and_compares_versions(self):
+        requests = []
+
+        class Response(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        def opener(request, timeout):
+            requests.append((request.full_url, timeout, request.headers))
+            return Response(json.dumps({"tag_name": "v0.4.0"}).encode())
+
+        result = UpdateChecker("0.3.0", opener=opener).check()
+        self.assertEqual("v0.4.0", result["latest"])
+        self.assertTrue(result["update_available"])
+        self.assertEqual(
+            "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest",
+            requests[0][0],
+        )
+        self.assertEqual(3, requests[0][1])
+
+    def test_system_metrics_reports_cpu_memory_disk_and_uptime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            proc_root = Path(temp_dir)
+            (proc_root / "stat").write_text("cpu  100 0 100 800 0 0 0 0\n")
+            (proc_root / "meminfo").write_text(
+                "MemTotal: 1000 kB\nMemAvailable: 600 kB\n"
+            )
+            (proc_root / "uptime").write_text("90061.0 0.0\n")
+            disk = type("Disk", (), {"total": 1000, "used": 250, "free": 750})()
+            metrics = SystemMetrics(
+                proc_root=proc_root,
+                disk_usage=lambda _: disk,
+                cpu_count=lambda: 1,
+                loadavg=lambda: (0.5, 0.0, 0.0),
+            )
+
+            first = metrics.snapshot()
+            (proc_root / "stat").write_text("cpu  150 0 150 900 0 0 0 0\n")
+            second = metrics.snapshot()
+
+        self.assertEqual(50.0, first["cpu_percent"])
+        self.assertEqual(50.0, second["cpu_percent"])
+        self.assertEqual(40.0, second["memory_percent"])
+        self.assertEqual(25.0, second["disk_percent"])
+        self.assertEqual("1天 1小时", second["uptime"])
+
+
+class FakeServiceController:
+    def __init__(self):
+        self.actions = []
+        self.state = "active"
+
+    def status(self):
+        return self.state
+
+    def action(self, action):
+        self.actions.append(action)
+        self.state = "active" if action in {"start", "restart"} else "inactive"
+        return self.state
+
+
+class FakeSystemMetrics:
+    def snapshot(self):
+        return {
+            "cpu_percent": 12.5,
+            "memory_percent": 40.0,
+            "memory_used": 400,
+            "memory_total": 1000,
+            "disk_percent": 25.0,
+            "disk_used": 250,
+            "disk_total": 1000,
+            "uptime": "1天 1小时",
+        }
+
+
+class FakeUpdateChecker:
+    def check(self):
+        return {
+            "current": "v0.3.0",
+            "latest": "v0.4.0",
+            "update_available": True,
+            "url": "https://github.com/Elegying/Hysteria2-panel/releases/latest",
+        }
 
 
 class FailingStatsClient(FakeStatsClient):
@@ -277,6 +573,7 @@ class PanelHttpTests(unittest.TestCase):
         self.db.initialize()
         self.admin_id = self.db.upsert_admin("Elegy", "admin-password")
         self.stats = FakeStatsClient()
+        self.service_controller = FakeServiceController()
         self.application = PanelApplication(
             database=self.db,
             public_host="154.9.234.210",
@@ -284,6 +581,9 @@ class PanelHttpTests(unittest.TestCase):
             pin_sha256="AA:BB:CC",
             stats_client=self.stats,
             node_name="私家车-2026",
+            service_controller=self.service_controller,
+            system_metrics=FakeSystemMetrics(),
+            update_checker=FakeUpdateChecker(),
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -318,6 +618,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
             self.assertIn('type="password"', body)
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
+            self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
 
     def test_root_requires_authentication(self):
         with self.assertRaises(urllib.error.HTTPError) as raised:
@@ -351,7 +652,29 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("hysteria2://", body)
         self.assertIn("154.9.234.210:19999", body)
         self.assertIn("%E7%A7%81%E5%AE%B6%E8%BD%A6-2026", body)
-        self.assertEqual("alice", self.db.list_proxy_users()["users"][0]["name"])
+        user = self.db.list_proxy_users()["users"][0]
+        self.assertEqual("alice", user["name"])
+        self.assertEqual(3, user["device_limit"])
+        self.assertEqual(250 * 1024**3, user["traffic_limit_bytes"])
+
+    def test_user_creation_accepts_device_and_traffic_limits(self):
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request(
+            "/users",
+            {
+                "name": "custom",
+                "device_limit": "7",
+                "traffic_limit_gb": "500",
+                "csrf": csrf_token,
+            },
+            headers=headers,
+        ) as response:
+            self.assertEqual(201, response.status)
+
+        user = self.db.list_proxy_users()["users"][0]
+        self.assertEqual(7, user["device_limit"])
+        self.assertEqual(500 * 1024**3, user["traffic_limit_bytes"])
 
     def test_dashboard_shows_service_and_global_summary_cards(self):
         self.db.create_proxy_user("alice")
@@ -361,8 +684,109 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        for label in ("服务状态", "当前用户", "不活跃用户", "在线设备", "总上传", "总下载"):
+        for label in (
+            "服务状态",
+            "当前用户",
+            "不活跃用户",
+            "在线设备",
+            "总上传",
+            "总下载",
+            "服务控制",
+            "系统资源",
+            "高流量用户",
+            "当前版本",
+            "检查更新",
+            "重置全部流量",
+            "总流量",
+            "分享",
+            "重置流量",
+        ):
             self.assertIn(label, body)
+        self.assertIn('value="3"', body)
+        self.assertIn('value="250"', body)
+
+    def test_dashboard_shows_only_top_five_traffic_users(self):
+        for index in range(6):
+            self.db.create_proxy_user("user{}".format(index))
+            self.db.add_traffic(
+                {"user{}".format(index): {"tx": index + 1, "rx": index + 1}}
+            )
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertEqual(5, body.count('class="rank-row"'))
+        self.assertNotIn('<span class="rank-name">user0</span>', body)
+
+    def test_share_and_traffic_reset_actions_are_csrf_protected(self):
+        created = self.db.create_proxy_user("carol")
+        self.db.add_traffic({"carol": {"tx": 10, "rx": 20}})
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request(
+            "/users/{}/share".format(created["id"]),
+            {"csrf": csrf_token, "generation": "0"},
+            headers=headers,
+        ) as response:
+            body = response.read().decode()
+        self.assertIn("hysteria2://", body)
+        self.assertIn('data-copy-target="uri"', body)
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/users/{}/reset".format(created["id"]),
+                {"csrf": "wrong", "generation": "0"},
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(403, raised.exception.code)
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/users/{}/reset".format(created["id"]),
+                {"csrf": csrf_token, "generation": "0"},
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(303, raised.exception.code)
+        user = self.db.get_proxy_user(created["id"])
+        self.assertEqual((0, 0), (user["tx_bytes"], user["rx_bytes"]))
+
+    def test_legacy_user_share_requires_an_explicit_rotation(self):
+        legacy = self.db.create_proxy_user("legacy", token="legacy-token")
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/users/{}/share".format(legacy["id"]),
+                {"csrf": csrf_token, "generation": "0"},
+                headers=headers,
+            )
+
+        self.assertEqual(409, raised.exception.code)
+        self.assertIn("轮换密钥", raised.exception.read().decode())
+
+    def test_global_reset_service_control_and_update_check(self):
+        user = self.db.create_proxy_user("carol")
+        self.db.add_traffic({"carol": {"tx": 10, "rx": 20}})
+        headers, csrf_token = self.authenticated_headers()
+
+        for path in ("/users/reset-traffic", "/service/stop", "/updates/check"):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                self.request(
+                    path,
+                    {"csrf": csrf_token},
+                    headers=headers,
+                    follow_redirects=False,
+                )
+            self.assertEqual(303, raised.exception.code)
+
+        self.assertEqual((0, 0), tuple(self.db.get_proxy_user(user["id"])[key] for key in ("tx_bytes", "rx_bytes")))
+        self.assertEqual(["stop"], self.service_controller.actions)
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+        self.assertIn("v0.4.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
@@ -444,6 +868,7 @@ class PanelHttpTests(unittest.TestCase):
 
 class StatsApiHandler(BaseHTTPRequestHandler):
     kicked = []
+    cleared = 0
 
     def log_message(self, *args):
         pass
@@ -468,6 +893,10 @@ class StatsApiHandler(BaseHTTPRequestHandler):
         if self.path == "/traffic":
             self._json({"alice": {"tx": 100, "rx": 200}})
             return
+        if self.path == "/traffic?clear=true":
+            type(self).cleared += 1
+            self._json({"alice": {"tx": 100, "rx": 200}})
+            return
         if self.path == "/online":
             self._json({"alice": 2})
             return
@@ -485,6 +914,7 @@ class StatsApiHandler(BaseHTTPRequestHandler):
 class StatsClientTests(unittest.TestCase):
     def setUp(self):
         StatsApiHandler.kicked = []
+        StatsApiHandler.cleared = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), StatsApiHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -508,6 +938,10 @@ class StatsClientTests(unittest.TestCase):
 
         self.client.kick("alice")
         self.assertEqual(["alice"], StatsApiHandler.kicked)
+        self.assertEqual(
+            {"alice": {"tx": 100, "rx": 200}}, self.client.collect_and_clear()
+        )
+        self.assertEqual(1, StatsApiHandler.cleared)
 
 
 class SettingsTests(unittest.TestCase):
