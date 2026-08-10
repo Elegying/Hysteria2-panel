@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1] - 2026-08-11
+
+### Changed
+
+- Display BBR status and the current version as two independent cards matching the service summary layout.
+- Move user search into the management header and remove its visible label while retaining an accessible name.
+
 ## [0.9.0] - 2026-08-11
 
 ### Added
