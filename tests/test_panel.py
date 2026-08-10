@@ -8,12 +8,12 @@ import tempfile
 import threading
 import unittest
 import zipfile
-import http.cookiejar
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from hysteria2_panel import (
     BackupManager,
@@ -22,6 +22,7 @@ from hysteria2_panel import (
     Database,
     LoginRateLimiter,
     HysteriaStatsClient,
+    MAX_STATS_RESPONSE_BYTES,
     PanelApplication,
     PanelHandler,
     RestoreController,
@@ -78,6 +79,17 @@ class PasswordTests(unittest.TestCase):
         self.assertTrue(verify_password("correct horse battery staple", first))
         self.assertFalse(verify_password("wrong", first))
 
+    def test_untrusted_hash_parameters_cannot_trigger_expensive_work(self):
+        oversized_scrypt = "scrypt$1073741824$8$1$" + "00" * 16 + "$" + "00" * 32
+        oversized_pbkdf2 = "pbkdf2_sha256$999999999$" + "00" * 16 + "$" + "00" * 32
+
+        with mock.patch("hysteria2_panel.hashlib.scrypt", create=True) as scrypt:
+            self.assertFalse(verify_password("candidate-password", oversized_scrypt))
+            scrypt.assert_not_called()
+        with mock.patch("hysteria2_panel.hashlib.pbkdf2_hmac") as pbkdf2:
+            self.assertFalse(verify_password("candidate-password", oversized_pbkdf2))
+            pbkdf2.assert_not_called()
+
 
 class DatabaseTests(unittest.TestCase):
     def setUp(self):
@@ -108,6 +120,32 @@ class DatabaseTests(unittest.TestCase):
         raw_token, _ = self.db.create_session(admin_id, ttl_seconds=-1)
 
         self.assertIsNone(self.db.get_session(raw_token))
+
+    def test_updating_admin_password_revokes_existing_sessions(self):
+        admin_id = self.db.upsert_admin("Elegy", "old-password")
+        raw_token, _ = self.db.create_session(admin_id)
+
+        self.db.upsert_admin("Elegy", "new-password")
+
+        self.assertIsNone(self.db.get_session(raw_token))
+        self.assertEqual(admin_id, self.db.verify_admin("Elegy", "new-password"))
+
+    def test_changing_admin_username_replaces_the_only_administrator(self):
+        admin_id = self.db.upsert_admin("old-admin", "old-password")
+        raw_token, _ = self.db.create_session(admin_id)
+
+        replacement_id = self.db.upsert_admin("new-admin", "new-password")
+
+        self.assertEqual(admin_id, replacement_id)
+        self.assertIsNone(self.db.verify_admin("old-admin", "old-password"))
+        self.assertEqual(admin_id, self.db.verify_admin("new-admin", "new-password"))
+        self.assertIsNone(self.db.get_session(raw_token))
+
+    def test_unknown_admin_still_runs_password_verification(self):
+        with mock.patch("hysteria2_panel.verify_password", return_value=False) as verifier:
+            self.assertIsNone(self.db.verify_admin("missing", "candidate-password"))
+
+        verifier.assert_called_once()
 
     def test_proxy_user_token_is_one_time_and_never_stored_plaintext(self):
         created = self.db.create_proxy_user("alice")
@@ -316,9 +354,10 @@ class RateLimiterTests(unittest.TestCase):
         limiter = LoginRateLimiter(max_attempts=2, window_seconds=60, clock=lambda: now[0])
 
         self.assertTrue(limiter.is_allowed("192.0.2.1"))
-        limiter.record_failure("192.0.2.1")
-        limiter.record_failure("192.0.2.1")
+        self.assertEqual(0, limiter.record_failure("192.0.2.1"))
+        self.assertEqual(60, limiter.record_failure("192.0.2.1"))
         self.assertFalse(limiter.is_allowed("192.0.2.1"))
+        self.assertEqual(60, limiter.retry_after("192.0.2.1"))
         self.assertTrue(limiter.is_allowed("192.0.2.2"))
 
         now[0] += 61
@@ -326,6 +365,12 @@ class RateLimiterTests(unittest.TestCase):
         limiter.record_failure("192.0.2.1")
         limiter.record_success("192.0.2.1")
         self.assertTrue(limiter.is_allowed("192.0.2.1"))
+
+    def test_default_policy_locks_after_five_failures_for_fifteen_minutes(self):
+        limiter = LoginRateLimiter()
+
+        self.assertEqual(5, limiter.max_attempts)
+        self.assertEqual(15 * 60, limiter.window_seconds)
 
     def test_address_tracking_is_bounded(self):
         limiter = LoginRateLimiter(max_attempts=2, max_addresses=3, clock=lambda: 1000.0)
@@ -898,12 +943,59 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/healthz") as response:
             self.assertEqual({"status": "ok"}, json.load(response))
             self.assertEqual("DENY", response.headers["X-Frame-Options"])
+            self.assertEqual("no-store", response.headers["Cache-Control"])
+            self.assertEqual("nosniff", response.headers["X-Content-Type-Options"])
+            self.assertEqual("no-referrer", response.headers["Referrer-Policy"])
 
         with self.request("/login") as response:
             body = response.read().decode()
             self.assertIn('type="password"', body)
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
             self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
+
+    def test_fifth_bad_login_immediately_locks_source_and_returns_retry_after(self):
+        now = [1000.0]
+        self.application.rate_limiter = LoginRateLimiter(
+            max_attempts=2, window_seconds=60, clock=lambda: now[0]
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as first:
+            self.request("/login", {"username": "Elegy", "password": "wrong"})
+        self.assertEqual(401, first.exception.code)
+
+        with self.assertRaises(urllib.error.HTTPError) as locked:
+            self.request("/login", {"username": "Elegy", "password": "wrong"})
+        self.assertEqual(429, locked.exception.code)
+        self.assertEqual("60", locked.exception.headers["Retry-After"])
+        self.assertIn("尝试次数过多", locked.exception.read().decode())
+
+        with self.assertRaises(urllib.error.HTTPError) as still_locked:
+            self.request(
+                "/login", {"username": "Elegy", "password": "admin-password"}
+            )
+        self.assertEqual(429, still_locked.exception.code)
+
+        now[0] += 61
+        with self.assertRaises(urllib.error.HTTPError) as success:
+            self.request(
+                "/login",
+                {"username": "Elegy", "password": "admin-password"},
+                follow_redirects=False,
+            )
+        self.assertEqual(303, success.exception.code)
+
+    def test_locked_source_is_audited_only_on_the_lock_transition(self):
+        actions = []
+        self.db.audit = lambda _actor, action, _target, _address: actions.append(action)
+        self.application.rate_limiter = LoginRateLimiter(max_attempts=1, window_seconds=60)
+
+        for password in ("wrong-password", "admin-password"):
+            with self.assertRaises(urllib.error.HTTPError) as response:
+                self.request("/login", {"username": "Elegy", "password": password})
+            self.assertEqual(429, response.exception.code)
+
+        self.assertEqual(1, actions.count("login_failed"))
+        self.assertEqual(1, actions.count("login_locked"))
 
     def test_root_requires_authentication(self):
         with self.assertRaises(urllib.error.HTTPError) as raised:
@@ -1292,7 +1384,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.9.1", body)
+        self.assertIn("v0.10.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
@@ -1449,6 +1541,30 @@ class StatsClientTests(unittest.TestCase):
         )
         self.assertEqual(1, StatsApiHandler.cleared)
 
+    def test_stats_response_body_is_bounded(self):
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = b"x" * (MAX_STATS_RESPONSE_BYTES + 1)
+        response.__enter__.return_value = response
+
+        with mock.patch("hysteria2_panel.urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                self.client._request("/traffic")
+
+        response.read.assert_called_once_with(MAX_STATS_RESPONSE_BYTES + 1)
+
+    def test_stats_api_must_remain_on_plaintext_loopback(self):
+        for url in (
+            "http://example.com:19997",
+            "https://127.0.0.1:19997",
+            "http://localhost:19997",
+            "http://127.0.0.1:19997/base",
+            "http://127.0.0.1:not-a-port",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    HysteriaStatsClient(url, "stats-secret")
+
 
 class SettingsTests(unittest.TestCase):
     def test_environment_contract_is_validated(self):
@@ -1472,7 +1588,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(b"\xab" * 32, settings.hmac_key)
         self.assertEqual("http://127.0.0.1:19997", settings.stats_url)
         self.assertEqual("Hysteria 2", settings.node_name)
-        self.assertEqual("https", settings.panel_scheme)
+        self.assertEqual("http", settings.panel_scheme)
 
         invalid = dict(os.environ)
         invalid["HY2PANEL_HMAC_KEY"] = "too-short"

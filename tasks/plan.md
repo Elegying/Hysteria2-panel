@@ -1,69 +1,65 @@
-# Implementation Plan: Operations dashboard and user limits
+# 实施计划：v0.10.0 安全、网络与部署审计
 
-## Overview
+## 目标
 
-Extend the existing single-file Python panel without adding a web framework. Preserve the current database and authentication model while adding durable traffic accounting, concurrent-connection limits, recoverable encrypted share credentials, system metrics, service controls, update checks, and the supplied dark operations-dashboard layout.
+在不改变既有 Hysteria 用户、分享链接、签名密钥和 TLS 节点身份的前提下，完成面板认证加固、面板默认 HTTP、Hysteria/UDP/BBR 优化、多发行版安装支持、中文文档和两轮项目审查。
 
-## Architecture Decisions
+## 不变量
 
-- Treat the requested device limit as a concurrent Hysteria connection limit because the official `/online` API exposes connections per auth ID, not physical device identity.
-- Persist upload/download deltas in SQLite by periodically collecting Hysteria `/traffic?clear=true`; quotas and resets use this durable ledger.
-- Derive recoverable proxy tokens from a random per-user seed and the existing server HMAC key. The database never stores the token itself; legacy users remain valid and become shareable after their next explicit rotation.
-- Restrict service controls to an exact `systemctl` allowlist installed through sudoers; no user input reaches a shell command.
-- Keep the panel dependency-light and server-rendered; use a CSP nonce only for clipboard and confirmation interactions.
+- 面板 HTTP/HTTPS 选择不影响 Hysteria 自身 TLS、10 年证书或 `pinSHA256`。
+- 升级不得轮换用户 token、HMAC key、统计密钥、证书或私钥。
+- 不自动修改云安全组、iptables、nftables 或 UFW。
+- 不新增 Python 或前端运行时依赖。
+- 自动化验证与用户后续真机实测分开记录。
 
-## Task List
+## 分阶段实施
 
-### Phase 1: Limits and durable traffic
+### 1. 认证与 HTTP 默认值
 
-- [x] Add backward-compatible SQLite columns and recoverable server-key-derived credential support.
-- [x] Add traffic collection, quota enforcement, reset operations, and connection-limit enforcement.
+- [x] 应用缺省协议改为 HTTP，HTTPS 保留为显式选项。
+- [x] 安装器缺省协议改为 HTTP。
+- [x] 同一来源 IP 在观察窗口内连续错误 5 次后立即锁定 15 分钟。
+- [x] 锁定响应返回 `429` 和 `Retry-After`，登录错误保持通用文案。
+- [x] 消除不存在管理员账号时的明显密码校验时序差异。
+- [x] 更新管理员密码时撤销旧会话；所有面板响应禁止缓存并补齐安全头。
 
-### Checkpoint: Policy core
+### 2. 视频与网页访问优化
 
-- [x] Database migration and auth-policy tests pass.
-- [x] Existing authentication remains compatible.
+- [x] Hysteria 固定使用内置 BBR standard，并忽略客户端错误带宽提示。
+- [x] UDP 收发缓冲上限按官方建议提高到 16 MiB，已有更高值不降低。
+- [x] Hysteria 服务设置官方建议的 `Nice=-5`。
+- [x] 内核支持时启用 `fq + tcp_bbr`，不支持时告警并继续安装。
 
-### Phase 2: Operations services
+### 3. 安装器与多系统
 
-- [x] Add system-resource sampling, top-five traffic ranking, version checks, and service status/control adapters.
-- [x] Extend the installer with the exact service-control permission and release dependency checks.
+- [x] 支持 Debian/Ubuntu 的 apt 与 RHEL/Rocky/Alma/CentOS Stream/Fedora 的 dnf/yum。
+- [x] 明确检查 systemd、Python 3.8+、架构、命令、端口和下载校验。
+- [x] 所有失败点给出可行动的中文错误；升级前自动备份并保持幂等。
+- [x] 校验 systemd、sudoers、ShellCheck、下载校验和服务就绪检查。
 
-### Checkpoint: Operations core
+### 4. 代码审查与文档
 
-- [x] All privileged actions require authenticated CSRF-protected POST requests.
-- [x] No arbitrary command or URL input is accepted by the operations adapters.
+- [x] 按正确性、安全、性能、可维护性、备份恢复和 CI 六个维度审查。
+- [x] 修复审查中确认的缺陷，并为每个行为修复增加回归测试。
+- [x] README、API、ADR、设计验收和变更日志统一为中文。
+- [ ] 更新 GitHub About 描述、版本与发布说明。
 
-### Phase 3: Dashboard and sharing UI
+### 5. 最终质量门与发布
 
-- [x] Rebuild the dashboard to match the supplied dark blue reference at desktop and mobile widths.
-- [x] Add user limits to creation, quota progress, share/reset actions, global reset, service controls, resources, version state, and high-traffic users.
-- [x] Add nonce-protected one-click clipboard copying and clear confirmation states.
+- [x] 本地测试、编译、Ruff、Bandit、Bash 语法和 ShellCheck 全部通过；Python 3.8/3.12 由 CI 复核。
+- [x] 第二轮从攻击者和故障恢复视角复审完整差异。
+- [x] 检查无密钥、密码、私钥、备份包或运行数据进入 Git。
+- [ ] 发布不可变 `v0.10.0`，部署前留回滚备份，验证服务、健康接口和监听。
 
-### Checkpoint: Complete
+## 回滚
 
-- [x] Full unit/integration suite, compile, shell syntax, ShellCheck, and browser console checks pass.
-- [x] Reference-to-implementation visual QA passes.
-- [x] CI, release, backup deployment, production login, service control, limits, sharing, and data preservation are verified.
+- 安装器覆盖前创建 `/var/backups/hysteria2-panel/<UTC 时间戳>/`。
+- 代码回滚使用上一不可变发布 `v0.9.1`；数据、HMAC、TLS 证书和私钥从同一备份目录成套恢复。
+- 若新网络参数不被内核支持，安装器不写入对应 `fq/tcp_bbr` 持久项，不让部署因此失败。
 
-## Production verification
+## 已确认取舍
 
-- Released `v0.3.2` after Python 3.8 and 3.12 CI passed.
-- Deployed from the immutable release tag with a timestamped backup.
-- Preserved the existing `1000` user and applied the default 3-connection / 250 GiB migration without rotating its token.
-- Verified real Hysteria TCP data through a SOCKS5 client, rejected a second connection at a one-connection test limit, persisted traffic, reset traffic, and removed the temporary user.
-- Verified panel logout/login, HTTP clipboard fallback, update checks, restart, stop and start controls, health, UDP/TCP listeners and system resource metrics.
-
-## Risks and Mitigations
-
-| Risk | Impact | Mitigation |
-|---|---|---|
-| Physical devices cannot be identified by Hysteria | Medium | Enforce concurrent authenticated connections and label the behavior accurately. |
-| Traffic could be lost during a hard crash | Medium | Collect/clear frequently and sync before resets, auth decisions, and managed restarts. |
-| Service controls elevate privileges | High | Exact service/action allowlist, CSRF, audit logging, fixed subprocess argv, no shell. |
-| Existing token cannot be recovered from its HMAC fingerprint | Medium | Preserve it unchanged; require one explicit rotation before the share button can reproduce a URI. |
-| HTTP panel exposes credentials in transit | High | Preserve the user's requested mode but keep the warning and recommend restricted access. |
-
-## Open Questions
-
-- None blocking. Default limits are 3 concurrent connections and 250 GiB total traffic.
+- HTTP 是按需求选择的默认值，不声称安全等价于 HTTPS；公网使用时必须限制面板端口来源。
+- 不填写准确链路带宽，因此不启用 Brutal；错误带宽值会导致不稳定，BBR standard 更适合多用户和变化网络。
+- 登录锁按来源 IP 而不是唯一管理员账号执行，避免外部攻击者用 5 次错误把管理员全局封禁。
+- 对抗性审查由当前执行者做隔离式第二遍审查，不调用其他 AI；用户负责最终真机验收。

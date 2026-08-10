@@ -9,13 +9,15 @@
 
 ## 一键部署
 
-支持使用 systemd 的 Linux amd64/arm64 主机，需要 root 权限。
+支持 Debian、Ubuntu、Rocky Linux、AlmaLinux、CentOS Stream 和 Fedora 等使用 `apt`、`dnf` 或 `yum` 且由 systemd 管理的 Linux amd64/arm64 主机，需要 root 权限和 Python 3.8 或更高版本。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.10.0/install.sh)
 ```
 
-安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
+安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
+
+重复运行安装器会先建立一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。这样普通升级不会令已经分享的节点失效，也不会无故退出当前管理会话。
 
 默认端口：
 
@@ -23,15 +25,15 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 |---|---|---:|
 | Hysteria 2 | 公网 UDP | `19999` |
 | TCP 连通性兼容探测 | 公网 TCP | 与 Hysteria 相同，默认 `19999` |
-| 管理面板 | 公网 HTTPS/HTTP TCP | `19998` |
+| 管理面板 | 公网 HTTP TCP（可选 HTTPS） | `19998` |
 | 流量统计 API | `127.0.0.1` | `19997` |
 | Hysteria 认证回调 | `127.0.0.1` | `19996` |
 
-服务器使用带 IP/域名 SAN 的自签名证书。浏览器首次打开面板时会显示证书警告；面板生成的 Hysteria URI 同时包含 `insecure=1` 和证书 SHA-256 固定指纹。
+服务器使用带 IP/域名 SAN 的 10 年自签名证书保护 Hysteria 连接。面板生成的 Hysteria URI 同时包含 `insecure=1` 和证书 SHA-256 固定指纹。面板使用 HTTP 并不影响 Hysteria 数据通道的 TLS 和证书固定。
 
-面板默认使用 HTTPS。安装时可以明确选择 HTTP；HTTP 模式不会设置 Secure Cookie 或 HSTS，但管理员密码与会话会在网络中明文传输，只应在可信网络或另有加密隧道保护时使用。
+面板默认使用 HTTP，以避免自签名 HTTPS 的浏览器访问障碍。HTTP 模式不会设置 Secure Cookie 或 HSTS，管理员密码、会话以及备份上传下载内容都会在网络中明文传输。建议把 TCP `19998` 的安全组/防火墙来源限制为固定管理 IP；在公共 Wi-Fi 等不可信链路上操作时，应先使用 SSH 隧道或 VPN。仍可在安装时显式选择 HTTPS。
 
-> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999` 和 TCP `19998`。为避免意外改变现有防火墙策略，脚本不会自动添加规则。
+> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999`；TCP `19998` 只应向管理员来源放行。为避免意外改变现有策略或把管理端口暴露给全网，脚本不会自动添加防火墙规则。
 
 TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据。它用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；探测服务会随 Hysteria 服务启停。
 
@@ -50,6 +52,8 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 - 使用响应式桌面/手机布局；手机端用户表格会自动转为便于触控的卡片。
 - 从顶部“数据迁移”弹窗一键下载完整备份，或在新服务器上传恢复用户、流量、签名密钥和 TLS 节点身份。
 
+管理员登录按来源 IP 防破解：15 分钟内第 5 次密码错误会立即返回 HTTP `429` 并锁定该来源 15 分钟，锁定期间正确密码也不能登录；成功登录会清除该 IP 的失败记录。锁定状态保存在进程内存中，重启面板会清空；它用于阻挡普通单源爆破，不替代安全组来源限制或独立的主机级入侵防护。设计同时考虑了 [OWASP 对通用错误、登录限速和拒绝服务风险的建议](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)。
+
 分享 URI 的节点名称由安装参数 `NODE_NAME` 统一设置，不再随面板中的用户名称变化。
 
 新建或轮换的用户密钥由随机种子和服务器 HMAC key 派生，因此面板可以重新生成分享 URI，但数据库仍不保存认证密钥明文。旧版本用户保持原连接有效；由于原密钥只有不可逆指纹，需明确轮换一次后才能使用分享按钮。禁用、删除或轮换用户时，面板会调用 Hysteria 流量 API 断开现有连接。
@@ -57,6 +61,12 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 “设备限制”依据 Hysteria 官方 `/online` API 返回的并发认证连接数执行。该接口不能识别真实硬件，同一设备的多个连接或不同设备的连接都按并发连接计数。
 
 > Hysteria TUN 只转发 TCP/UDP，不代理 ICMP。节点能正常访问网页但系统 `ping` 超时并不表示节点故障，服务端无法通过放行 UDP 端口改变这一协议边界。
+
+## YouTube、网页与网络优化
+
+一键部署会采用 Hysteria 官方的非 Brutal `bbr` 拥塞控制和 `standard` profile，并忽略客户端上报带宽，减少用户填错带宽造成的体验波动；同时根据 [Hysteria 性能指南](https://v2.hysteria.network/docs/advanced/Performance/) 把 Linux UDP 收发缓冲上限提高到至少 16 MiB、设置 Hysteria 服务 `Nice=-5` 和高文件描述符上限。若内核支持，还会为服务器访问 YouTube/CDN/网页源站时产生的 TCP 出站连接启用 `fq` + 内核 BBR；内核不支持时会安全跳过，不阻断部署。
+
+Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两层不同的优化：前者管理客户端到服务器的 UDP/QUIC 隧道，后者只影响服务器到以 TCP/HTTPS 提供内容的源站。项目不会自动估算线路带宽或启用 Brutal，也不会写入缺少官方依据的“万能 sysctl”。线路拥塞、跨境路由、丢包、客户端核心和源站限速仍会决定最终体验。
 
 ## 跨服务器备份与恢复
 
@@ -81,7 +91,7 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 ```bash
 systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-tcp-probe
 journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-tcp-probe --since today
-curl -k https://127.0.0.1:19998/healthz
+curl http://127.0.0.1:19998/healthz
 ```
 
 关键路径：
@@ -92,7 +102,7 @@ curl -k https://127.0.0.1:19998/healthz
 | `/etc/hysteria2-panel/` | Hysteria 配置、TLS 证书和运行环境 |
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署和恢复前的自动备份 |
-| `/etc/sysctl.d/99-hysteria2-panel.conf` | quic-go UDP 收发缓冲上限优化 |
+| `/etc/sysctl.d/99-hysteria2-panel.conf` | 16 MiB QUIC UDP 缓冲，以及内核支持时的 `fq`/TCP BBR |
 | `/etc/sudoers.d/hysteria2-panel` | 仅允许固定服务控制和启动一次性恢复服务 |
 
 ### 回滚
@@ -111,7 +121,12 @@ python3 -m unittest discover -s tests -v
 python3 -m py_compile hysteria2_panel.py tcp_probe.py
 bash -n install.sh
 shellcheck install.sh
+python3 -m pip install ruff==0.12.11 bandit==1.8.6
+ruff check hysteria2_panel.py tcp_probe.py tests
+bandit -q -r hysteria2_panel.py tcp_probe.py
 ```
+
+自动化只能验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界。发布后仍应在真实客户端完成：Hysteria 握手、网页访问、YouTube 连续播放、TCP `19999` 延迟探测、旧分享 URI、流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
 
 ## 架构与接口
 
@@ -119,6 +134,7 @@ shellcheck install.sh
 - [ADR-002：可选 HTTP 面板与 QUIC UDP 优化](docs/decisions/ADR-002-panel-http-and-udp-tuning.md)
 - [ADR-003：持久流量、连接限额与受限服务控制](docs/decisions/ADR-003-usage-policy-and-service-control.md)
 - [ADR-004：可迁移用户身份与原子恢复](docs/decisions/ADR-004-portable-backup-restore.md)
+- [ADR-005：HTTP 缺省、登录锁定与双层 BBR 优化](docs/decisions/ADR-005-http-login-network-hardening.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

@@ -25,7 +25,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.9.1"', source)
+        self.assertIn('PANEL_VERSION="0.10.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -35,6 +35,16 @@ class InstallerContractTests(unittest.TestCase):
             'HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"',
             source,
         )
+        self.assertIn(
+            'PANEL_SHA256="53912ab664d258064fcecb5d0f3c11e42fedb1cf63657fad2454444530ecc51d"',
+            source,
+        )
+        self.assertIn(
+            'TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"',
+            source,
+        )
+        self.assertIn('面板源码 SHA-256 校验失败', source)
+        self.assertIn('TCP 探测源码 SHA-256 校验失败', source)
         self.assertIn("sha256sum", source)
 
     def test_installer_prompts_without_embedding_an_admin_password(self):
@@ -47,6 +57,61 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("HYSTERIA_PORT", source)
         self.assertIn("PANEL_SCHEME", source)
         self.assertNotIn("--if-missing", source)
+
+    def test_upgrade_preserves_existing_administrator_unless_reset_is_requested(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('RESET_ADMIN="${RESET_ADMIN:-0}"', source)
+        self.assertIn('UPDATE_ADMIN=0', source)
+        self.assertIn('保留当前管理员账号和密码', source)
+        self.assertIn('if (( UPDATE_ADMIN == 1 )); then', source)
+
+    def test_upgrade_uses_existing_node_settings_as_prompt_defaults(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('EXISTING_INSTALL=1', source)
+        self.assertIn('EXISTING_NODE_NAME="${HY2PANEL_NODE_NAME:-Hysteria 2}"', source)
+        self.assertIn('EXISTING_PUBLIC_HOST="${HY2PANEL_PUBLIC_HOST:-${detected_host}}"', source)
+        self.assertIn('EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT:-${DEFAULT_HYSTERIA_PORT}}"', source)
+        self.assertIn('EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT:-${DEFAULT_PANEL_PORT}}"', source)
+        self.assertIn('EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME:-http}"', source)
+        self.assertIn('EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT:-${DEFAULT_AUTH_PORT}}"', source)
+        self.assertIn('EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT:-${DEFAULT_STATS_PORT}}"', source)
+
+    def test_installer_defaults_panel_to_http(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('EXISTING_PANEL_SCHEME="http"', source)
+        self.assertIn('PANEL_SCHEME="${PANEL_SCHEME:-${EXISTING_PANEL_SCHEME}}"', source)
+        self.assertIn('管理面板:   HTTP TCP 19998（可选 HTTPS）', source)
+
+    def test_installer_supports_debian_and_rhel_package_managers(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("install_system_dependencies", source)
+        self.assertIn("apt-get install", source)
+        self.assertIn("dnf install", source)
+        self.assertIn("yum install", source)
+        self.assertIn("/etc/os-release", source)
+        self.assertIn("Python 3.8", source)
+        self.assertIn("systemd", source)
+        self.assertIn("PYTHON_BIN", source)
+        required_commands = source.split("required_commands=(", 1)[1].split(")", 1)[0]
+        for command in (
+            "awk",
+            "cat",
+            "chmod",
+            "chown",
+            "cp",
+            "date",
+            "find",
+            "grep",
+            "id",
+            "ip",
+            "rm",
+            "uname",
+        ):
+            self.assertIn(command, required_commands.split())
 
     def test_installer_is_namespaced_and_separates_service_identities(self):
         source = INSTALLER.read_text()
@@ -77,7 +142,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("Wants=hysteria2-panel-tcp-probe.service", source)
         self.assertIn("DynamicUser=true", source)
         self.assertIn(
-            "ExecStart=/usr/bin/python3 /opt/hysteria2-panel/tcp_probe.py ${HYSTERIA_PORT}",
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/tcp_probe.py ${HYSTERIA_PORT}",
             source,
         )
         self.assertIn('ss -H -ltn "sport = :${HYSTERIA_PORT}"', source)
@@ -96,7 +161,9 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("/etc/sysctl.d/99-hysteria2-panel.conf", source)
         self.assertIn("net.core.rmem_max", source)
         self.assertIn("net.core.wmem_max", source)
-        self.assertIn("7500000", source)
+        self.assertIn("16777216", source)
+        self.assertIn("net.core.default_qdisc", source)
+        self.assertIn("net.ipv4.tcp_congestion_control", source)
         self.assertIn("LimitNOFILE=1048576", source)
 
     def test_installer_explicitly_enables_hysteria_quic_bbr(self):
@@ -105,6 +172,8 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("congestion:", source)
         self.assertIn("type: bbr", source)
         self.assertIn("bbrProfile: standard", source)
+        self.assertIn("ignoreClientBandwidth: true", source)
+        self.assertIn("Nice=-5", source)
 
     def test_installer_grants_only_exact_hysteria_service_controls(self):
         source = INSTALLER.read_text()
@@ -145,7 +214,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            "ExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending",
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py restore-pending",
             source,
         )
         self.assertIn(
@@ -156,7 +225,7 @@ class InstallerContractTests(unittest.TestCase):
             "ExecStopPost=/bin/systemctl --no-block start hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service",
             source,
         )
-        self.assertNotIn("User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending", source)
+        self.assertNotIn("User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py restore-pending", source)
 
 
 class TcpProbeTests(unittest.TestCase):

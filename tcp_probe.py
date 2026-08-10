@@ -11,7 +11,8 @@ def create_listener(port):
             )
         except OSError:
             pass
-    return socket.create_server(("0.0.0.0", port), backlog=128)
+    # The compatibility probe must be externally reachable.
+    return socket.create_server(("0.0.0.0", port), backlog=128)  # nosec B104
 
 
 def main():
