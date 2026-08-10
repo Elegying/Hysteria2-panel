@@ -139,7 +139,9 @@ EOF
     echo "警告：内核拒绝提高 UDP 发送缓冲，保留原值" >&2
   fi
 
-  command -v modprobe >/dev/null 2>&1 && modprobe tcp_bbr >/dev/null 2>&1 || true
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe tcp_bbr >/dev/null 2>&1 || true
+  fi
   available_cc="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || true)"
   original_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
   original_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
