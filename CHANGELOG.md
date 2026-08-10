@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1] - 2026-08-10
+
+### Fixed
+
+- Wait up to 30 seconds for the HTTPS panel and local authentication endpoint to become ready after a systemd restart.
+
 ## [0.1.0] - 2026-08-10
 
 ### Added

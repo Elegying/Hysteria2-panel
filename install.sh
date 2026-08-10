@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.1.0"
+PANEL_VERSION="0.1.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 HYSTERIA_VERSION="2.12.1"
@@ -33,6 +33,22 @@ fail() {
   exit 1
 }
 
+wait_for_health() {
+  local url="$1"
+  local tls_mode="$2"
+  local curl_options=(-fsS --connect-timeout 2 --max-time 3)
+  if [[ "${tls_mode}" == "insecure" ]]; then
+    curl_options+=(-k)
+  fi
+  for _attempt in {1..30}; do
+    if curl "${curl_options[@]}" "${url}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0
@@ -40,7 +56,7 @@ fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 
-required_commands=(curl install systemctl openssl sha256sum ss useradd groupadd usermod python3 mktemp)
+required_commands=(curl install systemctl openssl sha256sum ss useradd groupadd usermod python3 mktemp sleep)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
@@ -326,9 +342,9 @@ systemctl restart hysteria2-panel-server.service
 systemctl is-active --quiet hysteria2-panel.service || fail "面板服务启动失败"
 systemctl is-active --quiet hysteria2-panel-server.service || fail "Hysteria 服务启动失败"
 
-curl -kfsS --connect-timeout 5 "https://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null \
+wait_for_health "https://127.0.0.1:${PANEL_PORT}/healthz" insecure \
   || fail "HTTPS 面板健康检查失败"
-curl -fsS --connect-timeout 5 "http://127.0.0.1:${AUTH_PORT}/healthz" >/dev/null \
+wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
 ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "HTTPS 面板端口未监听"

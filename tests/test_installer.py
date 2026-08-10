@@ -56,6 +56,13 @@ class InstallerContractTests(unittest.TestCase):
         self.assertNotIn("ufw allow", source)
         self.assertIn(".managed-by-installer", source)
 
+    def test_installer_waits_for_service_readiness(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("wait_for_health", source)
+        self.assertIn("for _attempt in {1..30}", source)
+        self.assertIn('wait_for_health "https://127.0.0.1:${PANEL_PORT}/healthz" insecure', source)
+
 
 if __name__ == "__main__":
     unittest.main()
