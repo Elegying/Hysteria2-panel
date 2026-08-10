@@ -46,6 +46,7 @@ PANEL_VERSION = "0.10.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
+MAX_STATS_RESPONSE_BYTES = 8 * 1024**2
 
 PAGE_STYLE = """
 :root{--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
@@ -714,30 +715,48 @@ def hash_password(password):
 
 def verify_password(password, encoded):
     try:
+        if not isinstance(password, str) or len(password) > 1024:
+            return False
         parts = encoded.split("$")
         algorithm = parts[0]
         if algorithm == "scrypt" and len(parts) == 6 and hasattr(hashlib, "scrypt"):
             _, n, r, p, salt_hex, expected_hex = parts
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(expected_hex)
+            if (
+                (int(n), int(r), int(p)) != (SCRYPT_N, SCRYPT_R, SCRYPT_P)
+                or len(salt) != 16
+                or len(expected) != 32
+            ):
+                return False
             actual = hashlib.scrypt(
                 password.encode("utf-8"),
-                salt=bytes.fromhex(salt_hex),
-                n=int(n),
-                r=int(r),
-                p=int(p),
-                dklen=len(bytes.fromhex(expected_hex)),
+                salt=salt,
+                n=SCRYPT_N,
+                r=SCRYPT_R,
+                p=SCRYPT_P,
+                dklen=32,
             )
         elif algorithm == "pbkdf2_sha256" and len(parts) == 4:
             _, iterations, salt_hex, expected_hex = parts
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(expected_hex)
+            if (
+                int(iterations) != PBKDF2_ITERATIONS
+                or len(salt) != 16
+                or len(expected) != 32
+            ):
+                return False
             actual = hashlib.pbkdf2_hmac(
                 "sha256",
                 password.encode("utf-8"),
-                bytes.fromhex(salt_hex),
-                int(iterations),
-                dklen=len(bytes.fromhex(expected_hex)),
+                salt,
+                PBKDF2_ITERATIONS,
+                dklen=32,
             )
         else:
             return False
-        return hmac.compare_digest(actual, bytes.fromhex(expected_hex))
+        return hmac.compare_digest(actual, expected)
     except (AttributeError, TypeError, ValueError):
         return False
 
@@ -853,14 +872,17 @@ class Database:
         now = int(time.time())
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id FROM admins WHERE username = ?", (username,)
+                "SELECT id FROM admins ORDER BY id LIMIT 1"
             ).fetchone()
             if row:
+                # The panel has one administrator. Renaming it must not leave an old
+                # credential valid, and any credential change revokes every session.
+                connection.execute("DELETE FROM sessions")
+                connection.execute("DELETE FROM admins WHERE id <> ?", (row["id"],))
                 connection.execute(
-                    "UPDATE admins SET password_hash = ?, updated_at = ? WHERE id = ?",
-                    (password_hash, now, row["id"]),
+                    "UPDATE admins SET username = ?, password_hash = ?, updated_at = ? WHERE id = ?",
+                    (username, password_hash, now, row["id"]),
                 )
-                connection.execute("DELETE FROM sessions WHERE admin_id = ?", (row["id"],))
                 return row["id"]
             cursor = connection.execute(
                 "INSERT INTO admins(username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -2105,7 +2127,9 @@ class HysteriaStatsClient:
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
             if response.status != 200:
                 raise RuntimeError("Hysteria stats API returned {}".format(response.status))
-            raw_body = response.read()
+            raw_body = response.read(MAX_STATS_RESPONSE_BYTES + 1)
+        if len(raw_body) > MAX_STATS_RESPONSE_BYTES:
+            raise ValueError("Hysteria stats API response is too large")
         if not raw_body and data is not None:
             return {}
         payload = json.loads(raw_body.decode("utf-8"))

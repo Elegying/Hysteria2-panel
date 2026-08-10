@@ -31,8 +31,9 @@ Hysteria2-panel 一键部署
   RHEL/Rocky/Alma/CentOS Stream/Fedora（dnf 或 yum）
   Linux amd64/arm64、systemd、Python 3.8 或更高版本
 
-可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、ADMIN_USER、ADMIN_PASSWORD
+可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、ADMIN_USER、ADMIN_PASSWORD、RESET_ADMIN
 安装程序会交互式询问未提供的值，密码输入不会回显。
+升级默认保留现有管理员；需要重置时设置 RESET_ADMIN=1。
 EOF
 }
 
@@ -70,11 +71,11 @@ install_system_dependencies() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      ca-certificates curl openssl iproute2 python3 coreutils passwd procps sudo
+      ca-certificates curl openssl iproute2 python3 coreutils findutils gawk grep passwd procps sudo
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y ca-certificates curl openssl iproute python3 coreutils shadow-utils procps-ng sudo
+    dnf install -y ca-certificates curl openssl iproute python3 coreutils findutils gawk grep shadow-utils procps-ng sudo
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y ca-certificates curl openssl iproute python3 coreutils shadow-utils procps-ng sudo
+    yum install -y ca-certificates curl openssl iproute python3 coreutils findutils gawk grep shadow-utils procps-ng sudo
   else
     fail "当前系统没有受支持的包管理器（需要 apt、dnf 或 yum）"
   fi
@@ -166,7 +167,7 @@ fi
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
 [[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"
 
-required_commands=(curl install systemctl openssl sha256sum ss sysctl useradd groupadd usermod mktemp sleep sudo visudo getent)
+required_commands=(awk cp curl date find getent grep groupadd install ip mktemp openssl rm sha256sum sleep ss sudo sysctl systemctl useradd usermod visudo)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
@@ -193,56 +194,6 @@ case "$(uname -m)" in
   *) fail "仅支持 Linux amd64 和 arm64" ;;
 esac
 
-detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
-NODE_NAME="${NODE_NAME:-}"
-if [[ -z "${NODE_NAME}" ]]; then
-  read -r -p "分享链接节点名称 [Hysteria 2]: " NODE_NAME </dev/tty
-  NODE_NAME="${NODE_NAME:-Hysteria 2}"
-fi
-[[ ${#NODE_NAME} -le 64 ]] || fail "节点名称最多 64 个字符"
-[[ "${NODE_NAME}" != *$'\n'* && "${NODE_NAME}" != *$'\r'* ]] || fail "节点名称不能包含换行"
-[[ "${NODE_NAME}" != *'"'* && "${NODE_NAME}" != *'`'* && "${NODE_NAME}" != *'$'* && "${NODE_NAME}" != *\\* ]] \
-  || fail "节点名称不能包含引号、反引号、美元符号或反斜杠"
-
-PUBLIC_HOST="${PUBLIC_HOST:-}"
-if [[ -z "${PUBLIC_HOST}" ]]; then
-  read -r -p "服务器公网 IP 或域名 [${detected_host}]: " PUBLIC_HOST </dev/tty
-  PUBLIC_HOST="${PUBLIC_HOST:-${detected_host}}"
-fi
-[[ -n "${PUBLIC_HOST}" ]] || fail "无法确定公网 IP 或域名"
-[[ "${PUBLIC_HOST}" =~ ^[A-Za-z0-9.:-]+$ ]] || fail "公网 IP 或域名包含无效字符"
-
-HYSTERIA_PORT="${HYSTERIA_PORT:-}"
-if [[ -z "${HYSTERIA_PORT}" ]]; then
-  read -r -p "Hysteria UDP 端口 [${DEFAULT_HYSTERIA_PORT}]: " HYSTERIA_PORT </dev/tty
-  HYSTERIA_PORT="${HYSTERIA_PORT:-${DEFAULT_HYSTERIA_PORT}}"
-fi
-PANEL_PORT="${PANEL_PORT:-}"
-if [[ -z "${PANEL_PORT}" ]]; then
-  read -r -p "面板 TCP 端口 [${DEFAULT_PANEL_PORT}]: " PANEL_PORT </dev/tty
-  PANEL_PORT="${PANEL_PORT:-${DEFAULT_PANEL_PORT}}"
-fi
-PANEL_SCHEME="${PANEL_SCHEME:-}"
-if [[ -z "${PANEL_SCHEME}" ]]; then
-  read -r -p "面板访问协议 http/https [http]: " PANEL_SCHEME </dev/tty
-  PANEL_SCHEME="${PANEL_SCHEME:-http}"
-fi
-PANEL_SCHEME="${PANEL_SCHEME,,}"
-[[ "${PANEL_SCHEME}" == "http" || "${PANEL_SCHEME}" == "https" ]] || fail "面板协议只能是 http 或 https"
-if [[ "${PANEL_SCHEME}" == "http" ]]; then
-  echo "警告：HTTP 不加密面板账号、密码和会话。仅在你明确接受风险时使用。" >&2
-fi
-AUTH_PORT="${AUTH_PORT:-${DEFAULT_AUTH_PORT}}"
-STATS_PORT="${STATS_PORT:-${DEFAULT_STATS_PORT}}"
-
-for port in "${HYSTERIA_PORT}" "${PANEL_PORT}" "${AUTH_PORT}" "${STATS_PORT}"; do
-  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-    fail "端口无效：${port}"
-  fi
-done
-[[ "${HYSTERIA_PORT}" != "${PANEL_PORT}" && "${HYSTERIA_PORT}" != "${AUTH_PORT}" && "${HYSTERIA_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
-[[ "${PANEL_PORT}" != "${AUTH_PORT}" && "${PANEL_PORT}" != "${STATS_PORT}" && "${AUTH_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
-
 MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
 if [[ ! -e "${MANAGED_MARKER}" ]] && {
   [[ -e /opt/hysteria2-panel ]] || [[ -e /etc/hysteria2-panel ]] ||
@@ -254,6 +205,83 @@ if [[ ! -e "${MANAGED_MARKER}" ]] && {
   fail "发现非本安装器管理的同名路径或服务；为避免覆盖，安装已停止"
 fi
 
+EXISTING_INSTALL=0
+if [[ -e "${MANAGED_MARKER}" && -s /etc/hysteria2-panel/panel.env ]]; then
+  EXISTING_INSTALL=1
+  set -a
+  # 仅加载本安装器创建、由 root 管理的现有配置，用作升级默认值。
+  # shellcheck disable=SC1091
+  source /etc/hysteria2-panel/panel.env
+  set +a
+fi
+
+detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
+if (( EXISTING_INSTALL == 1 )); then
+  EXISTING_NODE_NAME="${HY2PANEL_NODE_NAME:-Hysteria 2}"
+  EXISTING_PUBLIC_HOST="${HY2PANEL_PUBLIC_HOST:-${detected_host}}"
+  EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT:-${DEFAULT_HYSTERIA_PORT}}"
+  EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT:-${DEFAULT_PANEL_PORT}}"
+  EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME:-http}"
+  EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT:-${DEFAULT_AUTH_PORT}}"
+  EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT:-${DEFAULT_STATS_PORT}}"
+else
+  EXISTING_NODE_NAME="Hysteria 2"
+  EXISTING_PUBLIC_HOST="${detected_host}"
+  EXISTING_HYSTERIA_PORT="${DEFAULT_HYSTERIA_PORT}"
+  EXISTING_PANEL_PORT="${DEFAULT_PANEL_PORT}"
+  EXISTING_PANEL_SCHEME="http"
+  EXISTING_AUTH_PORT="${DEFAULT_AUTH_PORT}"
+  EXISTING_STATS_PORT="${DEFAULT_STATS_PORT}"
+fi
+NODE_NAME="${NODE_NAME:-}"
+if [[ -z "${NODE_NAME}" ]]; then
+  read -r -p "分享链接节点名称 [${EXISTING_NODE_NAME}]: " NODE_NAME </dev/tty
+  NODE_NAME="${NODE_NAME:-${EXISTING_NODE_NAME}}"
+fi
+[[ ${#NODE_NAME} -le 64 ]] || fail "节点名称最多 64 个字符"
+[[ "${NODE_NAME}" != *$'\n'* && "${NODE_NAME}" != *$'\r'* ]] || fail "节点名称不能包含换行"
+[[ "${NODE_NAME}" != *'"'* && "${NODE_NAME}" != *'`'* && "${NODE_NAME}" != *'$'* && "${NODE_NAME}" != *\\* ]] \
+  || fail "节点名称不能包含引号、反引号、美元符号或反斜杠"
+
+PUBLIC_HOST="${PUBLIC_HOST:-}"
+if [[ -z "${PUBLIC_HOST}" ]]; then
+  read -r -p "服务器公网 IP 或域名 [${EXISTING_PUBLIC_HOST}]: " PUBLIC_HOST </dev/tty
+  PUBLIC_HOST="${PUBLIC_HOST:-${EXISTING_PUBLIC_HOST}}"
+fi
+[[ -n "${PUBLIC_HOST}" ]] || fail "无法确定公网 IP 或域名"
+[[ "${PUBLIC_HOST}" =~ ^[A-Za-z0-9.:-]+$ ]] || fail "公网 IP 或域名包含无效字符"
+
+HYSTERIA_PORT="${HYSTERIA_PORT:-}"
+if [[ -z "${HYSTERIA_PORT}" ]]; then
+  read -r -p "Hysteria UDP 端口 [${EXISTING_HYSTERIA_PORT}]: " HYSTERIA_PORT </dev/tty
+  HYSTERIA_PORT="${HYSTERIA_PORT:-${EXISTING_HYSTERIA_PORT}}"
+fi
+PANEL_PORT="${PANEL_PORT:-}"
+if [[ -z "${PANEL_PORT}" ]]; then
+  read -r -p "面板 TCP 端口 [${EXISTING_PANEL_PORT}]: " PANEL_PORT </dev/tty
+  PANEL_PORT="${PANEL_PORT:-${EXISTING_PANEL_PORT}}"
+fi
+PANEL_SCHEME="${PANEL_SCHEME:-}"
+if [[ -z "${PANEL_SCHEME}" ]]; then
+  read -r -p "面板访问协议 http/https [${EXISTING_PANEL_SCHEME}]: " PANEL_SCHEME </dev/tty
+  PANEL_SCHEME="${PANEL_SCHEME:-${EXISTING_PANEL_SCHEME}}"
+fi
+PANEL_SCHEME="${PANEL_SCHEME,,}"
+[[ "${PANEL_SCHEME}" == "http" || "${PANEL_SCHEME}" == "https" ]] || fail "面板协议只能是 http 或 https"
+if [[ "${PANEL_SCHEME}" == "http" ]]; then
+  echo "警告：HTTP 不加密面板账号、密码和会话。仅在你明确接受风险时使用。" >&2
+fi
+AUTH_PORT="${AUTH_PORT:-${EXISTING_AUTH_PORT}}"
+STATS_PORT="${STATS_PORT:-${EXISTING_STATS_PORT}}"
+
+for port in "${HYSTERIA_PORT}" "${PANEL_PORT}" "${AUTH_PORT}" "${STATS_PORT}"; do
+  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+    fail "端口无效：${port}"
+  fi
+done
+[[ "${HYSTERIA_PORT}" != "${PANEL_PORT}" && "${HYSTERIA_PORT}" != "${AUTH_PORT}" && "${HYSTERIA_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
+[[ "${PANEL_PORT}" != "${AUTH_PORT}" && "${PANEL_PORT}" != "${STATS_PORT}" && "${AUTH_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
+
 if ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-server.service; then
   fail "UDP ${HYSTERIA_PORT} 已被其他服务占用"
 fi
@@ -264,17 +292,26 @@ if ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . && ! systemctl is-active --qu
   fail "TCP ${PANEL_PORT} 已被其他服务占用"
 fi
 
-ADMIN_USER="${ADMIN_USER:-}"
-if [[ -z "${ADMIN_USER}" ]]; then
-  read -r -p "面板管理员账号 [admin]: " ADMIN_USER </dev/tty
-  ADMIN_USER="${ADMIN_USER:-admin}"
-fi
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
-if [[ -z "${ADMIN_PASSWORD}" ]]; then
-  read -r -s -p "面板管理员密码: " ADMIN_PASSWORD </dev/tty
-  echo
+RESET_ADMIN="${RESET_ADMIN:-0}"
+[[ "${RESET_ADMIN}" == "0" || "${RESET_ADMIN}" == "1" ]] || fail "RESET_ADMIN 只能是 0 或 1"
+UPDATE_ADMIN=1
+if (( EXISTING_INSTALL == 1 )) && [[ -s /var/lib/hysteria2-panel/panel.db && "${RESET_ADMIN}" == "0" && -z "${ADMIN_PASSWORD}" ]]; then
+  UPDATE_ADMIN=0
+  ADMIN_USER=""
+  echo "检测到现有安装：本次升级保留当前管理员账号和密码（设置 RESET_ADMIN=1 可重置）"
+else
+  ADMIN_USER="${ADMIN_USER:-}"
+  if [[ -z "${ADMIN_USER}" ]]; then
+    read -r -p "面板管理员账号 [admin]: " ADMIN_USER </dev/tty
+    ADMIN_USER="${ADMIN_USER:-admin}"
+  fi
+  if [[ -z "${ADMIN_PASSWORD}" ]]; then
+    read -r -s -p "面板管理员密码: " ADMIN_PASSWORD </dev/tty
+    echo
+  fi
+  [[ ${#ADMIN_PASSWORD} -ge 8 ]] || fail "面板密码至少需要 8 个字符"
 fi
-[[ ${#ADMIN_PASSWORD} -ge 8 ]] || fail "面板密码至少需要 8 个字符"
 
 TMP_DIR="$(mktemp -d -t hysteria2-panel.XXXXXXXX)"
 cleanup() {
@@ -536,12 +573,14 @@ TasksMax=32
 MemoryMax=384M
 EOF
 
-set -a
-# shellcheck disable=SC1090
-source "${ENV_FILE}"
-export HY2PANEL_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
-set +a
-"${PYTHON_BIN}" /opt/hysteria2-panel/hysteria2_panel.py init-admin --username "${ADMIN_USER}"
+if (( UPDATE_ADMIN == 1 )); then
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  export HY2PANEL_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+  set +a
+  "${PYTHON_BIN}" /opt/hysteria2-panel/hysteria2_panel.py init-admin --username "${ADMIN_USER}"
+fi
 unset HY2PANEL_ADMIN_PASSWORD ADMIN_PASSWORD
 chown -R hy2panel:hy2panel /var/lib/hysteria2-panel
 chmod 0750 /var/lib/hysteria2-panel

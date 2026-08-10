@@ -23,6 +23,7 @@ from hysteria2_panel import (
     Database,
     LoginRateLimiter,
     HysteriaStatsClient,
+    MAX_STATS_RESPONSE_BYTES,
     PanelApplication,
     PanelHandler,
     RestoreController,
@@ -79,6 +80,17 @@ class PasswordTests(unittest.TestCase):
         self.assertTrue(verify_password("correct horse battery staple", first))
         self.assertFalse(verify_password("wrong", first))
 
+    def test_untrusted_hash_parameters_cannot_trigger_expensive_work(self):
+        oversized_scrypt = "scrypt$1073741824$8$1$" + "00" * 16 + "$" + "00" * 32
+        oversized_pbkdf2 = "pbkdf2_sha256$999999999$" + "00" * 16 + "$" + "00" * 32
+
+        with mock.patch("hysteria2_panel.hashlib.scrypt", create=True) as scrypt:
+            self.assertFalse(verify_password("candidate-password", oversized_scrypt))
+            scrypt.assert_not_called()
+        with mock.patch("hysteria2_panel.hashlib.pbkdf2_hmac") as pbkdf2:
+            self.assertFalse(verify_password("candidate-password", oversized_pbkdf2))
+            pbkdf2.assert_not_called()
+
 
 class DatabaseTests(unittest.TestCase):
     def setUp(self):
@@ -118,6 +130,17 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertIsNone(self.db.get_session(raw_token))
         self.assertEqual(admin_id, self.db.verify_admin("Elegy", "new-password"))
+
+    def test_changing_admin_username_replaces_the_only_administrator(self):
+        admin_id = self.db.upsert_admin("old-admin", "old-password")
+        raw_token, _ = self.db.create_session(admin_id)
+
+        replacement_id = self.db.upsert_admin("new-admin", "new-password")
+
+        self.assertEqual(admin_id, replacement_id)
+        self.assertIsNone(self.db.verify_admin("old-admin", "old-password"))
+        self.assertEqual(admin_id, self.db.verify_admin("new-admin", "new-password"))
+        self.assertIsNone(self.db.get_session(raw_token))
 
     def test_unknown_admin_still_runs_password_verification(self):
         with mock.patch("hysteria2_panel.verify_password", return_value=False) as verifier:
@@ -1505,6 +1528,18 @@ class StatsClientTests(unittest.TestCase):
             {"alice": {"tx": 100, "rx": 200}}, self.client.collect_and_clear()
         )
         self.assertEqual(1, StatsApiHandler.cleared)
+
+    def test_stats_response_body_is_bounded(self):
+        response = mock.MagicMock()
+        response.status = 200
+        response.read.return_value = b"x" * (MAX_STATS_RESPONSE_BYTES + 1)
+        response.__enter__.return_value = response
+
+        with mock.patch("hysteria2_panel.urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                self.client._request("/traffic")
+
+        response.read.assert_called_once_with(MAX_STATS_RESPONSE_BYTES + 1)
 
 
 class SettingsTests(unittest.TestCase):

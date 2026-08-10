@@ -48,11 +48,31 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("PANEL_SCHEME", source)
         self.assertNotIn("--if-missing", source)
 
+    def test_upgrade_preserves_existing_administrator_unless_reset_is_requested(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('RESET_ADMIN="${RESET_ADMIN:-0}"', source)
+        self.assertIn('UPDATE_ADMIN=0', source)
+        self.assertIn('保留当前管理员账号和密码', source)
+        self.assertIn('if (( UPDATE_ADMIN == 1 )); then', source)
+
+    def test_upgrade_uses_existing_node_settings_as_prompt_defaults(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('EXISTING_INSTALL=1', source)
+        self.assertIn('EXISTING_NODE_NAME="${HY2PANEL_NODE_NAME:-Hysteria 2}"', source)
+        self.assertIn('EXISTING_PUBLIC_HOST="${HY2PANEL_PUBLIC_HOST:-${detected_host}}"', source)
+        self.assertIn('EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT:-${DEFAULT_HYSTERIA_PORT}}"', source)
+        self.assertIn('EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT:-${DEFAULT_PANEL_PORT}}"', source)
+        self.assertIn('EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME:-http}"', source)
+        self.assertIn('EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT:-${DEFAULT_AUTH_PORT}}"', source)
+        self.assertIn('EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT:-${DEFAULT_STATS_PORT}}"', source)
+
     def test_installer_defaults_panel_to_http(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('面板访问协议 http/https [http]', source)
-        self.assertIn('PANEL_SCHEME="${PANEL_SCHEME:-http}"', source)
+        self.assertIn('EXISTING_PANEL_SCHEME="http"', source)
+        self.assertIn('PANEL_SCHEME="${PANEL_SCHEME:-${EXISTING_PANEL_SCHEME}}"', source)
         self.assertIn('管理面板:   HTTP TCP 19998（可选 HTTPS）', source)
 
     def test_installer_supports_debian_and_rhel_package_managers(self):
@@ -66,6 +86,9 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("Python 3.8", source)
         self.assertIn("systemd", source)
         self.assertIn("PYTHON_BIN", source)
+        required_commands = source.split("required_commands=(", 1)[1].split(")", 1)[0]
+        for command in ("awk", "cp", "date", "find", "grep", "ip", "rm"):
+            self.assertIn(command, required_commands.split())
 
     def test_installer_is_namespaced_and_separates_service_identities(self):
         source = INSTALLER.read_text()
