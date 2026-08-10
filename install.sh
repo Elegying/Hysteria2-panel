@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.3.1"
+PANEL_VERSION="0.3.2"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 HYSTERIA_VERSION="2.12.1"
@@ -330,12 +330,9 @@ UMask=0077
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Options that imply a nosuid/NoNewPrivileges sandbox are intentionally omitted:
+# this unit must execute only the exact sudoers-approved systemctl commands below.
 ReadWritePaths=/var/lib/hysteria2-panel
 TasksMax=160
 MemoryMax=256M

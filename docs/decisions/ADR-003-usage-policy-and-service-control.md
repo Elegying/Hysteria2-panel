@@ -40,4 +40,4 @@
 - 正常重启后流量与配额继续有效；硬崩溃最多可能丢失最近一个采集周期的增量。
 - 达到流量上限会踢下现有连接并拒绝新认证；认证和在线统计短暂竞态通过待连接保留窗口收紧。
 - 旧用户保持原链接可用，但必须由管理员明确轮换一次才能使用重复分享。
-- 面板 systemd 单元不能设置 `NoNewPrivileges=true` 或 `PrivateDevices=true`，否则 sudo 的 setuid 提权会被禁止；Hysteria 服务仍保留这两项保护，面板继续保留只读系统、私有临时目录、地址族和内核保护。
+- 面板 systemd 单元不能设置会隐式启用 nosuid/`NoNewPrivileges` 的选项，包括 `NoNewPrivileges`、`PrivateDevices`、`ProtectKernelTunables`、`ProtectKernelModules`、`RestrictSUIDSGID`、`LockPersonality` 和 `RestrictAddressFamilies`，否则 sudo 的 setuid 提权会被禁止。Hysteria 服务保留全部保护；面板继续保留只读系统、私有临时目录、主目录与控制组保护、资源上限以及精确 sudoers 白名单。
