@@ -332,6 +332,13 @@ class Database:
             ).fetchall()
         return {"users": [dict(row) for row in rows], "total": total}
 
+    def list_proxy_user_names(self):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT name FROM proxy_users ORDER BY name COLLATE NOCASE"
+            ).fetchall()
+        return [row["name"] for row in rows]
+
     def audit(self, actor, action, target, remote_ip):
         with self._connect() as connection:
             connection.execute(
@@ -523,6 +530,8 @@ class PanelApplication:
         hysteria_port,
         pin_sha256,
         stats_client,
+        node_name="Hysteria 2",
+        secure_cookies=True,
         rate_limiter=None,
     ):
         self.database = database
@@ -530,6 +539,8 @@ class PanelApplication:
         self.hysteria_port = int(hysteria_port)
         self.pin_sha256 = pin_sha256
         self.stats_client = stats_client
+        self.node_name = node_name
+        self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
         self.user_action_lock = threading.Lock()
 
@@ -540,6 +551,36 @@ def _human_bytes(value):
         if value < 1024 or unit == "TiB":
             return "{:.1f} {}".format(value, unit) if unit != "B" else "{} B".format(value)
         value /= 1024.0
+
+
+def _stat_int(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def summarize_dashboard(user_names, snapshot):
+    traffic_by_user = snapshot.get("traffic", {})
+    online_by_user = snapshot.get("online", {})
+    summary = {
+        "service_available": bool(snapshot.get("available")),
+        "total_users": len(user_names),
+        "inactive_users": 0,
+        "online_devices": 0,
+        "total_tx": 0,
+        "total_rx": 0,
+    }
+    for name in user_names:
+        traffic = traffic_by_user.get(name, {})
+        tx = _stat_int(traffic.get("tx", 0))
+        rx = _stat_int(traffic.get("rx", 0))
+        summary["total_tx"] += tx
+        summary["total_rx"] += rx
+        summary["online_devices"] += _stat_int(online_by_user.get(name, 0))
+        if tx == 0 and rx == 0:
+            summary["inactive_users"] += 1
+    return summary
 
 
 class PanelHandler(JsonHandler):
@@ -554,7 +595,8 @@ class PanelHandler(JsonHandler):
             "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
         )
-        self.send_header("Strict-Transport-Security", "max-age=31536000")
+        if self.app.secure_cookies:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         super().end_headers()
 
@@ -624,12 +666,13 @@ class PanelHandler(JsonHandler):
 *{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
 main{{width:min(1080px,calc(100% - 32px));margin:40px auto}}header{{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px}}
 h1{{font-size:24px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:16px}}
+.metrics{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}}.metric{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px}}.metric strong{{display:block;font-size:22px;margin-top:4px}}.metric .ok{{color:var(--accent)}}.metric .bad{{color:var(--danger)}}
 .login{{width:min(420px,100%);margin:12vh auto}}label{{display:block;font-weight:600;margin:12px 0 6px}}input,textarea{{width:100%;padding:10px 12px;border:1px solid #b8c1c9;border-radius:6px;font:inherit}}
 button,.button{{display:inline-block;border:0;border-radius:6px;background:var(--accent);color:#fff;padding:9px 14px;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}}
 button.secondary,.button.secondary{{background:#52606d}}button.danger{{background:var(--danger)}}form.inline{{display:inline}}.actions{{display:flex;flex-wrap:wrap;gap:8px}}
 table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}}th{{color:var(--muted);font-size:13px}}
 .status{{font-weight:700}}.enabled{{color:var(--accent)}}.disabled{{color:var(--danger)}}.muted{{color:var(--muted)}}.error{{color:var(--danger)}}code{{word-break:break-all}}
-@media(max-width:720px){{main{{width:min(100% - 20px,1080px);margin:20px auto}}.table-wrap{{overflow-x:auto}}header{{align-items:flex-start;flex-direction:column}}}}
+@media(max-width:720px){{main{{width:min(100% - 20px,1080px);margin:20px auto}}.metrics{{grid-template-columns:repeat(2,minmax(0,1fr))}}.table-wrap{{overflow-x:auto}}header{{align-items:flex-start;flex-direction:column}}}}
 </style></head><body><main>{content}</main></body></html>""".format(
             title=html.escape(title), content=content
         )
@@ -651,6 +694,7 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
         except Exception:
             LOGGER.exception("stats snapshot failed")
             snapshot = {"traffic": {}, "online": {}, "available": False}
+        summary = summarize_dashboard(self.app.database.list_proxy_user_names(), snapshot)
         rows = []
         for user in result["users"]:
             name = user["name"]
@@ -681,15 +725,30 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
             rows.append('<tr><td colspan="5" class="muted">暂无用户，请先创建。</td></tr>')
         pages = max(1, (result["total"] + page_size - 1) // page_size)
         pager = '<p class="muted">第 {} / {} 页，共 {} 个用户</p>'.format(page_number, pages, result["total"])
-        stats_state = "正常" if snapshot.get("available") else "暂不可用"
+        stats_state = "正常" if summary["service_available"] else "异常"
+        stats_class = "ok" if summary["service_available"] else "bad"
         content = """<header><div><h1>Hysteria 2 Panel</h1><p class="muted">服务端口 UDP {port} · 流量统计 {stats}</p></div>
 <form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出</button></form></header>
+<section class="metrics" aria-label="服务概览">
+<div class="metric"><span class="muted">服务状态</span><strong class="{stats_class}">{stats}</strong></div>
+<div class="metric"><span class="muted">当前用户</span><strong>{total_users}</strong></div>
+<div class="metric"><span class="muted">不活跃用户</span><strong>{inactive_users}</strong></div>
+<div class="metric"><span class="muted">在线设备</span><strong>{online_devices}</strong></div>
+<div class="metric"><span class="muted">总上传</span><strong>{total_tx}</strong></div>
+<div class="metric"><span class="muted">总下载</span><strong>{total_rx}</strong></div>
+</section>
 <section class="card"><h2>创建用户</h2><form method="post" action="/users"><input type="hidden" name="csrf" value="{csrf}"><label for="name">用户名称</label>
 <input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机"><p><button type="submit">创建并生成连接</button></p></form></section>
 <section class="card"><h2>用户</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th>操作</th></tr></thead>
 <tbody>{rows}</tbody></table></div>{pager}</section>""".format(
             port=self.app.hysteria_port,
             stats=stats_state,
+            stats_class=stats_class,
+            total_users=summary["total_users"],
+            inactive_users=summary["inactive_users"],
+            online_devices=summary["online_devices"],
+            total_tx=_human_bytes(summary["total_tx"]),
+            total_rx=_human_bytes(summary["total_rx"]),
             csrf=html.escape(session["csrf_token"], quote=True),
             rows="".join(rows),
             pager=pager,
@@ -702,7 +761,7 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
             self.app.hysteria_port,
             credentials["token"],
             self.app.pin_sha256,
-            credentials["name"],
+            self.app.node_name,
         )
         content = """<header><h1>连接信息</h1><a class="button secondary" href="/">返回控制台</a></header>
 <section class="card"><p><strong>{name}</strong> 已创建。以下密钥和连接地址只显示一次，请立即保存。</p>
@@ -790,8 +849,9 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
         self.app.rate_limiter.record_success(address)
         raw_token, _ = self.app.database.create_session(admin_id)
         self._audit_safely(form.get("username", "admin")[:64], "login_succeeded", "admin")
-        cookie = "{}={}; Path=/; Max-Age=43200; Secure; HttpOnly; SameSite=Strict".format(
-            self.cookie_name, raw_token
+        secure = "; Secure" if self.app.secure_cookies else ""
+        cookie = "{}={}; Path=/; Max-Age=43200{}; HttpOnly; SameSite=Strict".format(
+            self.cookie_name, raw_token, secure
         )
         self._redirect("/", cookie)
 
@@ -927,10 +987,16 @@ class Settings:
         if len(hmac_key) < 32:
             raise ValueError("HY2PANEL_HMAC_KEY must decode to at least 32 bytes")
         public_host = mapping.get("HY2PANEL_PUBLIC_HOST", "").strip()
+        node_name = mapping.get("HY2PANEL_NODE_NAME", "Hysteria 2").strip()
+        panel_scheme = mapping.get("HY2PANEL_PANEL_SCHEME", "https").strip().lower()
         stats_secret = mapping.get("HY2PANEL_STATS_SECRET", "")
         cert_pin = mapping.get("HY2PANEL_CERT_PIN", "").strip()
         if not public_host:
             raise ValueError("HY2PANEL_PUBLIC_HOST is required")
+        if not node_name or len(node_name) > 64 or any(ord(character) < 32 for character in node_name):
+            raise ValueError("HY2PANEL_NODE_NAME must contain 1 to 64 printable characters")
+        if panel_scheme not in {"http", "https"}:
+            raise ValueError("HY2PANEL_PANEL_SCHEME must be http or https")
         if len(stats_secret) < 8:
             raise ValueError("HY2PANEL_STATS_SECRET must contain at least 8 characters")
         if not cert_pin:
@@ -946,9 +1012,11 @@ class Settings:
             database_path=Path(mapping.get("HY2PANEL_DB", "/var/lib/hysteria2-panel/panel.db")),
             hmac_key=hmac_key,
             public_host=public_host,
+            node_name=node_name,
             hysteria_port=hysteria_port,
             panel_host=mapping.get("HY2PANEL_PANEL_HOST", "0.0.0.0"),
             panel_port=panel_port,
+            panel_scheme=panel_scheme,
             auth_host=mapping.get("HY2PANEL_AUTH_HOST", "127.0.0.1"),
             auth_port=auth_port,
             stats_port=stats_port,
@@ -981,15 +1049,22 @@ def run_service(settings):
         hysteria_port=settings.hysteria_port,
         pin_sha256=settings.cert_pin,
         stats_client=stats_client,
+        node_name=settings.node_name,
+        secure_cookies=settings.panel_scheme == "https",
     )
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
-    tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    if hasattr(ssl, "TLSVersion"):
-        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
-    tls_context.load_cert_chain(str(settings.tls_cert), str(settings.tls_key))
-    panel_server.tls_context = tls_context
+    if settings.panel_scheme == "https":
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        if hasattr(ssl, "TLSVersion"):
+            tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        tls_context.load_cert_chain(str(settings.tls_cert), str(settings.tls_key))
+        panel_server.tls_context = tls_context
     auth_server = make_internal_server((settings.auth_host, settings.auth_port), database)
-    panel_thread = threading.Thread(target=panel_server.serve_forever, name="panel-https", daemon=True)
+    panel_thread = threading.Thread(
+        target=panel_server.serve_forever,
+        name="panel-{}".format(settings.panel_scheme),
+        daemon=True,
+    )
     panel_thread.start()
     LOGGER.info(
         json.dumps(
@@ -1015,7 +1090,7 @@ def main(argv=None):
     init_parser = subcommands.add_parser("init-admin", help="create or update the administrator")
     init_parser.add_argument("--username", required=True)
     init_parser.add_argument("--if-missing", action="store_true")
-    subcommands.add_parser("serve", help="run the authentication service and HTTPS panel")
+    subcommands.add_parser("serve", help="run the authentication service and panel")
     args = parser.parse_args(argv)
     try:
         settings = Settings.from_mapping(os.environ)

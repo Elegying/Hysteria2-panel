@@ -23,6 +23,7 @@ from hysteria2_panel import (
     hash_password,
     make_internal_server,
     make_panel_server,
+    summarize_dashboard,
     verify_password,
 )
 
@@ -121,6 +122,12 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(3, first_page["total"])
         self.assertEqual(["alice", "bob"], [user["name"] for user in first_page["users"]])
         self.assertEqual(["carol"], [user["name"] for user in second_page["users"]])
+
+    def test_lists_all_user_names_for_dashboard_summary(self):
+        for suffix in range(105):
+            self.db.create_proxy_user("user-{:03d}".format(suffix))
+
+        self.assertEqual(105, len(self.db.list_proxy_user_names()))
 
 
 class AuthContractTests(unittest.TestCase):
@@ -221,6 +228,42 @@ class FailingStatsClient(FakeStatsClient):
         raise OSError("stats unavailable")
 
 
+class DashboardSummaryTests(unittest.TestCase):
+    def test_summary_matches_ssr_panel_metrics(self):
+        summary = summarize_dashboard(
+            ["alice", "bob"],
+            {
+                "traffic": {
+                    "alice": {"tx": 1024, "rx": 2048},
+                    "deleted-user": {"tx": 9999, "rx": 9999},
+                },
+                "online": {"alice": 2, "deleted-user": 5},
+                "available": True,
+            },
+        )
+
+        self.assertEqual(
+            {
+                "service_available": True,
+                "total_users": 2,
+                "inactive_users": 1,
+                "online_devices": 2,
+                "total_tx": 1024,
+                "total_rx": 2048,
+            },
+            summary,
+        )
+
+    def test_unavailable_stats_are_reported_without_inventing_activity(self):
+        summary = summarize_dashboard(
+            ["alice"], {"traffic": {}, "online": {}, "available": False}
+        )
+
+        self.assertFalse(summary["service_available"])
+        self.assertEqual(1, summary["inactive_users"])
+        self.assertEqual(0, summary["online_devices"])
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -239,6 +282,7 @@ class PanelHttpTests(unittest.TestCase):
             hysteria_port=19999,
             pin_sha256="AA:BB:CC",
             stats_client=self.stats,
+            node_name="私家车-2026",
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -304,7 +348,32 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(201, response.status)
         self.assertIn("hysteria2://", body)
         self.assertIn("154.9.234.210:19999", body)
+        self.assertIn("%E7%A7%81%E5%AE%B6%E8%BD%A6-2026", body)
         self.assertEqual("alice", self.db.list_proxy_users()["users"][0]["name"])
+
+    def test_dashboard_shows_service_and_global_summary_cards(self):
+        self.db.create_proxy_user("alice")
+        self.db.create_proxy_user("bob")
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        for label in ("服务状态", "当前用户", "不活跃用户", "在线设备", "总上传", "总下载"):
+            self.assertIn(label, body)
+
+    def test_http_mode_omits_secure_cookie_and_hsts(self):
+        self.application.secure_cookies = False
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/login",
+                {"username": "Elegy", "password": "admin-password"},
+                follow_redirects=False,
+            )
+
+        self.assertNotIn("Secure", raised.exception.headers["Set-Cookie"])
+        self.assertNotIn("Strict-Transport-Security", raised.exception.headers)
+        self.assertIn("HttpOnly", raised.exception.headers["Set-Cookie"])
 
     def test_dashboard_escapes_names_and_disabling_kicks_user(self):
         created = self.db.create_proxy_user("<script>alert(1)</script>")
@@ -450,11 +519,40 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(19999, settings.hysteria_port)
         self.assertEqual(b"\xab" * 32, settings.hmac_key)
         self.assertEqual("http://127.0.0.1:19997", settings.stats_url)
+        self.assertEqual("Hysteria 2", settings.node_name)
+        self.assertEqual("https", settings.panel_scheme)
 
         invalid = dict(os.environ)
         invalid["HY2PANEL_HMAC_KEY"] = "too-short"
         with self.assertRaises(ValueError):
             Settings.from_mapping(invalid)
+
+    def test_custom_node_name_and_http_panel_scheme(self):
+        values = {
+            "HY2PANEL_HMAC_KEY": "ab" * 32,
+            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_STATS_SECRET": "stats-secret",
+            "HY2PANEL_CERT_PIN": "AA:BB:CC",
+            "HY2PANEL_NODE_NAME": "私家车-2026",
+            "HY2PANEL_PANEL_SCHEME": "http",
+        }
+
+        settings = Settings.from_mapping(values)
+
+        self.assertEqual("私家车-2026", settings.node_name)
+        self.assertEqual("http", settings.panel_scheme)
+
+    def test_invalid_node_name_or_panel_scheme_is_rejected(self):
+        base = {
+            "HY2PANEL_HMAC_KEY": "ab" * 32,
+            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_STATS_SECRET": "stats-secret",
+            "HY2PANEL_CERT_PIN": "AA:BB:CC",
+        }
+        with self.assertRaises(ValueError):
+            Settings.from_mapping({**base, "HY2PANEL_NODE_NAME": "bad\nname"})
+        with self.assertRaises(ValueError):
+            Settings.from_mapping({**base, "HY2PANEL_PANEL_SCHEME": "ftp"})
 
 
 class ConnectionUriTests(unittest.TestCase):

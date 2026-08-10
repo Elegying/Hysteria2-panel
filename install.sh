@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.1.2"
+PANEL_VERSION="0.2.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 HYSTERIA_VERSION="2.12.1"
@@ -11,6 +11,8 @@ DEFAULT_HYSTERIA_PORT=19999
 DEFAULT_PANEL_PORT=19998
 DEFAULT_STATS_PORT=19997
 DEFAULT_AUTH_PORT=19996
+MIN_QUIC_UDP_BUFFER=7500000
+SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel.conf
 
 usage() {
   cat <<'EOF'
@@ -21,9 +23,9 @@ Hysteria2-panel 一键部署
 
 默认端口：
   Hysteria 2: UDP 19999
-  管理面板:   HTTPS TCP 19998
+  管理面板:   HTTPS TCP 19998（可选 HTTP）
 
-可选环境变量：PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、ADMIN_USER、ADMIN_PASSWORD
+可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、ADMIN_USER、ADMIN_PASSWORD
 安装程序会交互式询问未提供的值，密码输入不会回显。
 EOF
 }
@@ -49,6 +51,29 @@ wait_for_health() {
   return 1
 }
 
+optimize_udp_buffers() {
+  local current_rmem current_wmem target_rmem target_wmem
+  current_rmem="$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)"
+  current_wmem="$(sysctl -n net.core.wmem_max 2>/dev/null || echo 0)"
+  [[ "${current_rmem}" =~ ^[0-9]+$ ]] || current_rmem=0
+  [[ "${current_wmem}" =~ ^[0-9]+$ ]] || current_wmem=0
+  target_rmem="${MIN_QUIC_UDP_BUFFER}"
+  target_wmem="${MIN_QUIC_UDP_BUFFER}"
+  (( current_rmem <= target_rmem )) || target_rmem="${current_rmem}"
+  (( current_wmem <= target_wmem )) || target_wmem="${current_wmem}"
+  if [[ -f "${SYSCTL_FILE}" ]] && ! grep -q '^# Managed by Hysteria2-panel$' "${SYSCTL_FILE}"; then
+    fail "${SYSCTL_FILE} 已存在且不属于本安装器，拒绝覆盖"
+  fi
+  cat > "${SYSCTL_FILE}" <<EOF
+# Managed by Hysteria2-panel
+# quic-go recommends at least 7.5 MB for high-bandwidth UDP transfers.
+net.core.rmem_max=${target_rmem}
+net.core.wmem_max=${target_wmem}
+EOF
+  chmod 0644 "${SYSCTL_FILE}"
+  sysctl -p "${SYSCTL_FILE}" >/dev/null
+}
+
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0
@@ -56,7 +81,7 @@ fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 
-required_commands=(curl install systemctl openssl sha256sum ss useradd groupadd usermod python3 mktemp sleep)
+required_commands=(curl install systemctl openssl sha256sum ss sysctl useradd groupadd usermod python3 mktemp sleep)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
@@ -64,7 +89,7 @@ done
 if (( ${#missing_commands[@]} > 0 )) && command -v apt-get >/dev/null 2>&1; then
   echo "安装系统依赖：${missing_commands[*]}"
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl iproute2 python3 coreutils passwd
+  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl iproute2 python3 coreutils passwd procps
 fi
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "缺少命令：${command_name}"
@@ -83,6 +108,16 @@ case "$(uname -m)" in
 esac
 
 detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
+NODE_NAME="${NODE_NAME:-}"
+if [[ -z "${NODE_NAME}" ]]; then
+  read -r -p "分享链接节点名称 [Hysteria 2]: " NODE_NAME </dev/tty
+  NODE_NAME="${NODE_NAME:-Hysteria 2}"
+fi
+[[ ${#NODE_NAME} -le 64 ]] || fail "节点名称最多 64 个字符"
+[[ "${NODE_NAME}" != *$'\n'* && "${NODE_NAME}" != *$'\r'* ]] || fail "节点名称不能包含换行"
+[[ "${NODE_NAME}" != *'"'* && "${NODE_NAME}" != *'`'* && "${NODE_NAME}" != *'$'* && "${NODE_NAME}" != *\\* ]] \
+  || fail "节点名称不能包含引号、反引号、美元符号或反斜杠"
+
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 if [[ -z "${PUBLIC_HOST}" ]]; then
   read -r -p "服务器公网 IP 或域名 [${detected_host}]: " PUBLIC_HOST </dev/tty
@@ -98,8 +133,18 @@ if [[ -z "${HYSTERIA_PORT}" ]]; then
 fi
 PANEL_PORT="${PANEL_PORT:-}"
 if [[ -z "${PANEL_PORT}" ]]; then
-  read -r -p "HTTPS 面板端口 [${DEFAULT_PANEL_PORT}]: " PANEL_PORT </dev/tty
+  read -r -p "面板 TCP 端口 [${DEFAULT_PANEL_PORT}]: " PANEL_PORT </dev/tty
   PANEL_PORT="${PANEL_PORT:-${DEFAULT_PANEL_PORT}}"
+fi
+PANEL_SCHEME="${PANEL_SCHEME:-}"
+if [[ -z "${PANEL_SCHEME}" ]]; then
+  read -r -p "面板访问协议 http/https [https]: " PANEL_SCHEME </dev/tty
+  PANEL_SCHEME="${PANEL_SCHEME:-https}"
+fi
+PANEL_SCHEME="${PANEL_SCHEME,,}"
+[[ "${PANEL_SCHEME}" == "http" || "${PANEL_SCHEME}" == "https" ]] || fail "面板协议只能是 http 或 https"
+if [[ "${PANEL_SCHEME}" == "http" ]]; then
+  echo "警告：HTTP 不加密面板账号、密码和会话。仅在你明确接受风险时使用。" >&2
 fi
 AUTH_PORT="${AUTH_PORT:-${DEFAULT_AUTH_PORT}}"
 STATS_PORT="${STATS_PORT:-${DEFAULT_STATS_PORT}}"
@@ -166,6 +211,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   for unit_file in hysteria2-panel.service hysteria2-panel-server.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
+  [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
   if [[ -f /var/lib/hysteria2-panel/panel.db ]]; then
     python3 - /var/lib/hysteria2-panel/panel.db "${BACKUP_DIR}/panel.db" <<'PY'
 import sqlite3
@@ -220,9 +266,11 @@ umask 0077
 cat > "${ENV_FILE}" <<EOF
 HY2PANEL_DB=/var/lib/hysteria2-panel/panel.db
 HY2PANEL_HMAC_KEY=${HMAC_KEY}
+HY2PANEL_NODE_NAME="${NODE_NAME}"
 HY2PANEL_PUBLIC_HOST=${PUBLIC_HOST}
 HY2PANEL_HYSTERIA_PORT=${HYSTERIA_PORT}
 HY2PANEL_PANEL_PORT=${PANEL_PORT}
+HY2PANEL_PANEL_SCHEME=${PANEL_SCHEME}
 HY2PANEL_AUTH_PORT=${AUTH_PORT}
 HY2PANEL_STATS_PORT=${STATS_PORT}
 HY2PANEL_STATS_SECRET=${STATS_SECRET}
@@ -318,6 +366,7 @@ LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 TasksMax=256
 MemoryMax=768M
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
@@ -328,12 +377,13 @@ set -a
 source "${ENV_FILE}"
 export HY2PANEL_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
 set +a
-python3 /opt/hysteria2-panel/hysteria2_panel.py init-admin --username "${ADMIN_USER}" --if-missing
+python3 /opt/hysteria2-panel/hysteria2_panel.py init-admin --username "${ADMIN_USER}"
 unset HY2PANEL_ADMIN_PASSWORD ADMIN_PASSWORD
 chown -R hy2panel:hy2panel /var/lib/hysteria2-panel
 chmod 0750 /var/lib/hysteria2-panel
 find /var/lib/hysteria2-panel -type f -exec chmod 0600 {} +
 
+optimize_udp_buffers
 systemctl daemon-reload
 systemctl enable hysteria2-panel.service
 systemctl enable hysteria2-panel-server.service
@@ -342,17 +392,23 @@ systemctl restart hysteria2-panel-server.service
 systemctl is-active --quiet hysteria2-panel.service || fail "面板服务启动失败"
 systemctl is-active --quiet hysteria2-panel-server.service || fail "Hysteria 服务启动失败"
 
-wait_for_health "https://127.0.0.1:${PANEL_PORT}/healthz" insecure \
-  || fail "HTTPS 面板健康检查失败"
+PANEL_HEALTH_TLS_MODE=strict
+[[ "${PANEL_SCHEME}" != "https" ]] || PANEL_HEALTH_TLS_MODE=insecure
+wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz" "${PANEL_HEALTH_TLS_MODE}" \
+  || fail "面板健康检查失败"
 wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
-ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "HTTPS 面板端口未监听"
+ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
 
 echo
 echo "部署完成"
-echo "面板地址：https://${PUBLIC_HOST}:${PANEL_PORT}/"
+echo "面板地址：${PANEL_SCHEME}://${PUBLIC_HOST}:${PANEL_PORT}/"
 echo "Hysteria 端口：UDP ${HYSTERIA_PORT}"
 echo "证书指纹：${CERT_PIN}"
 echo "如云平台或主机启用了防火墙，请放行 UDP ${HYSTERIA_PORT} 与 TCP ${PANEL_PORT}。"
-echo "首次打开自签名 HTTPS 地址时，浏览器会显示证书警告。"
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  echo "首次打开自签名 HTTPS 地址时，浏览器会显示证书警告。"
+else
+  echo "安全提示：面板当前使用明文 HTTP，请限制可信来源访问。"
+fi
