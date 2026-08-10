@@ -1051,11 +1051,12 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('class="operations dashboard-trio"', dashboard)
         self.assertIn('class="card traffic-card"', dashboard)
         self.assertIn('class="detail compact-detail"', dashboard)
-        self.assertIn('class="detail version-detail"', dashboard)
+        self.assertIn('class="service-details version-details"', dashboard)
+        self.assertIn('class="detail compact-detail bbr-detail"', dashboard)
+        self.assertIn('class="detail compact-detail version-panel"', dashboard)
         self.assertIn('.dashboard-trio{align-items:stretch;grid-template-columns:', dashboard)
-        self.assertIn('.version-detail{display:grid;', dashboard)
-        self.assertIn('class="bbr-detail"', dashboard)
-        self.assertIn('class="version-panel"', dashboard)
+        self.assertNotIn('class="detail version-detail"', dashboard)
+        self.assertNotIn('.version-panel{border-left:', dashboard)
         self.assertIn('class="login-form"', login)
         self.assertIn('class="login-actions"', login)
         self.assertIn('.login-form{display:grid;gap:12px}', login)
@@ -1087,6 +1088,12 @@ class PanelHttpTests(unittest.TestCase):
         self.assertNotIn("第 1 /", body)
         self.assertIn('type="search"', body)
         self.assertIn('data-user-search', body)
+        self.assertIn('class="section-head user-section-head"', body)
+        self.assertIn('class="user-heading"', body)
+        self.assertIn('aria-label="搜索用户"', body)
+        self.assertNotIn('for="user-search">搜索用户', body)
+        self.assertLess(body.index('class="user-heading"'), body.index('class="user-search"'))
+        self.assertLess(body.index('class="user-search"'), body.index('class="section-actions"'))
         self.assertIn('data-search-status', body)
         self.assertIn('data-dialog-open="create-user-dialog"', body)
         self.assertIn('<dialog id="create-user-dialog"', body)
@@ -1285,7 +1292,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.9.0", body)
+        self.assertIn("v0.9.1", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
