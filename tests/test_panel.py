@@ -19,6 +19,7 @@ from hysteria2_panel import (
     PanelApplication,
     PanelHandler,
     Settings,
+    UsageManager,
     build_connection_uri,
     handle_auth_payload,
     hash_password,
@@ -227,6 +228,28 @@ class AuthContractTests(unittest.TestCase):
         self.assertEqual(400, status)
         self.assertEqual("INVALID_REQUEST", response["error"]["code"])
 
+    def test_auth_policy_rejects_users_over_connection_or_traffic_limits(self):
+        stats = PolicyStatsClient(
+            traffic={"alice": {"tx": 0, "rx": 0}}, online={"alice": 2}
+        )
+        manager = UsageManager(self.db, stats, pending_ttl=10, clock=lambda: 100.0)
+        body = json.dumps(
+            {"addr": "192.0.2.10:1234", "auth": "valid-token", "tx": 9}
+        ).encode()
+
+        self.assertEqual(
+            {"ok": True, "id": "alice"}, handle_auth_payload(self.db, body, manager)[1]
+        )
+        self.assertEqual(
+            {"ok": False, "id": ""}, handle_auth_payload(self.db, body, manager)[1]
+        )
+
+        self.db.add_traffic({"alice": {"tx": 250 * 1024**3, "rx": 0}})
+        stats.online_values = {}
+        self.assertEqual(
+            {"ok": False, "id": ""}, handle_auth_payload(self.db, body, manager)[1]
+        )
+
     def test_internal_http_auth_endpoint_matches_hysteria_contract(self):
         server = make_internal_server(("127.0.0.1", 0), self.db)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -285,8 +308,81 @@ class FakeStatsClient:
             "available": True,
         }
 
+    def collect_and_clear(self):
+        return self.snapshot()["traffic"]
+
+    def online(self):
+        return self.snapshot()["online"]
+
     def kick(self, name):
         self.kicked.append(name)
+
+
+class PolicyStatsClient(FakeStatsClient):
+    def __init__(self, traffic=None, online=None):
+        super().__init__()
+        self.traffic_values = traffic or {}
+        self.online_values = online or {}
+
+    def collect_and_clear(self):
+        values = self.traffic_values
+        self.traffic_values = {}
+        return values
+
+    def online(self):
+        return dict(self.online_values)
+
+
+class UsageManagerTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "panel.db", b"u" * 32)
+        self.db.initialize()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_collects_durable_traffic_and_kicks_users_at_quota(self):
+        user = self.db.create_proxy_user("alice", traffic_limit_bytes=300)
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 100, "rx": 200}})
+        manager = UsageManager(self.db, stats)
+
+        manager.collect_once()
+
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((100, 200), (record["tx_bytes"], record["rx_bytes"]))
+        self.assertEqual(["alice"], stats.kicked)
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_reserves_pending_connections_to_enforce_the_limit(self):
+        self.db.create_proxy_user("alice", device_limit=3)
+        stats = PolicyStatsClient(online={"alice": 2})
+        manager = UsageManager(self.db, stats, pending_ttl=10, clock=lambda: 100.0)
+
+        self.assertTrue(manager.authorize("alice"))
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_snapshot_and_resets_include_pending_hysteria_traffic(self):
+        alice = self.db.create_proxy_user("alice")
+        bob = self.db.create_proxy_user("bob")
+        stats = PolicyStatsClient(
+            traffic={"alice": {"tx": 100, "rx": 200}, "bob": {"tx": 8, "rx": 9}},
+            online={"alice": 1},
+        )
+        manager = UsageManager(self.db, stats)
+
+        snapshot = manager.snapshot()
+        self.assertEqual({"tx": 100, "rx": 200}, snapshot["traffic"]["alice"])
+        self.assertEqual({"alice": 1}, snapshot["online"])
+        self.assertTrue(snapshot["available"])
+
+        stats.traffic_values = {"alice": {"tx": 5, "rx": 6}}
+        manager.reset_user(alice["id"], expected_generation=0)
+        self.assertEqual((0, 0), tuple(self.db.get_proxy_user(alice["id"])[key] for key in ("tx_bytes", "rx_bytes")))
+        self.assertEqual(["alice"], stats.kicked)
+
+        manager.reset_all()
+        self.assertEqual((0, 0), tuple(self.db.get_proxy_user(bob["id"])[key] for key in ("tx_bytes", "rx_bytes")))
 
 
 class FailingStatsClient(FakeStatsClient):
@@ -509,6 +605,7 @@ class PanelHttpTests(unittest.TestCase):
 
 class StatsApiHandler(BaseHTTPRequestHandler):
     kicked = []
+    cleared = 0
 
     def log_message(self, *args):
         pass
@@ -533,6 +630,10 @@ class StatsApiHandler(BaseHTTPRequestHandler):
         if self.path == "/traffic":
             self._json({"alice": {"tx": 100, "rx": 200}})
             return
+        if self.path == "/traffic?clear=true":
+            type(self).cleared += 1
+            self._json({"alice": {"tx": 100, "rx": 200}})
+            return
         if self.path == "/online":
             self._json({"alice": 2})
             return
@@ -550,6 +651,7 @@ class StatsApiHandler(BaseHTTPRequestHandler):
 class StatsClientTests(unittest.TestCase):
     def setUp(self):
         StatsApiHandler.kicked = []
+        StatsApiHandler.cleared = 0
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), StatsApiHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -573,6 +675,10 @@ class StatsClientTests(unittest.TestCase):
 
         self.client.kick("alice")
         self.assertEqual(["alice"], StatsApiHandler.kicked)
+        self.assertEqual(
+            {"alice": {"tx": 100, "rx": 200}}, self.client.collect_and_clear()
+        )
+        self.assertEqual(1, StatsApiHandler.cleared)
 
 
 class SettingsTests(unittest.TestCase):

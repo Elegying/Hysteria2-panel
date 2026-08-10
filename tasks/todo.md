@@ -1,8 +1,8 @@
 # Operations dashboard task list
 
 - [x] Migration + recoverable token storage tests
-- [ ] Durable traffic ledger + quota/reset tests
-- [ ] Concurrent connection limit tests
+- [x] Durable traffic ledger + quota/reset tests
+- [x] Concurrent connection limit tests
 - [ ] System metrics + top-five users tests
 - [ ] Fixed service control + update check tests
 - [ ] Installer permission/dependency tests

@@ -419,6 +419,15 @@ class Database:
             ).fetchall()
         return [row["name"] for row in rows]
 
+    def list_proxy_users_for_usage(self):
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                tx_bytes, rx_bytes, created_at, updated_at
+                FROM proxy_users ORDER BY name COLLATE NOCASE"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def add_traffic(self, traffic_by_user):
         if not isinstance(traffic_by_user, dict):
             raise ValueError("traffic must be a mapping")
@@ -469,7 +478,7 @@ class Database:
             )
 
 
-def handle_auth_payload(database, raw_body):
+def handle_auth_payload(database, raw_body, usage_manager=None):
     if len(raw_body) > 4096:
         return 413, {"error": {"code": "REQUEST_TOO_LARGE", "message": "Request too large"}}
     try:
@@ -481,6 +490,8 @@ def handle_auth_payload(database, raw_body):
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return 400, {"error": {"code": "INVALID_REQUEST", "message": "Invalid request"}}
     user_id = database.authenticate_token(payload["auth"])
+    if user_id and usage_manager is not None and not usage_manager.authorize(user_id):
+        user_id = None
     return 200, {"ok": bool(user_id), "id": user_id or ""}
 
 
@@ -628,7 +639,11 @@ class InternalAuthHandler(JsonHandler):
         if content_length < 0 or content_length > 4096:
             self.send_json(413, {"error": {"code": "REQUEST_TOO_LARGE", "message": "Request too large"}})
             return
-        status, payload = handle_auth_payload(self.server.database, self.rfile.read(content_length))
+        status, payload = handle_auth_payload(
+            self.server.database,
+            self.rfile.read(content_length),
+            self.server.usage_manager,
+        )
         self.send_json(status, payload)
 
     def do_GET(self):
@@ -638,9 +653,10 @@ class InternalAuthHandler(JsonHandler):
         self.send_json(404, {"error": {"code": "NOT_FOUND", "message": "Not found"}})
 
 
-def make_internal_server(address, database):
+def make_internal_server(address, database, usage_manager=None):
     server = BoundedThreadingHTTPServer(address, InternalAuthHandler)
     server.database = database
+    server.usage_manager = usage_manager
     return server
 
 
@@ -655,12 +671,14 @@ class PanelApplication:
         node_name="Hysteria 2",
         secure_cookies=True,
         rate_limiter=None,
+        usage_manager=None,
     ):
         self.database = database
         self.public_host = public_host
         self.hysteria_port = int(hysteria_port)
         self.pin_sha256 = pin_sha256
         self.stats_client = stats_client
+        self.usage_manager = usage_manager or UsageManager(database, stats_client)
         self.node_name = node_name
         self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
@@ -816,7 +834,7 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
         page_number = max(1, page_number)
         result = self.app.database.list_proxy_users(page_size, (page_number - 1) * page_size)
         try:
-            snapshot = self.app.stats_client.snapshot()
+            snapshot = self.app.usage_manager.snapshot()
         except Exception:
             LOGGER.exception("stats snapshot failed")
             snapshot = {"traffic": {}, "online": {}, "available": False}
@@ -1079,15 +1097,149 @@ class HysteriaStatsClient:
 
     def snapshot(self):
         traffic = self._request("/traffic")
-        online = self._request("/online")
-        if not all(isinstance(name, str) and isinstance(stats, dict) for name, stats in traffic.items()):
-            raise ValueError("Hysteria traffic response is invalid")
-        if not all(isinstance(name, str) and isinstance(count, int) for name, count in online.items()):
-            raise ValueError("Hysteria online response is invalid")
+        online = self.online()
+        self._validate_traffic(traffic)
         return {"traffic": traffic, "online": online, "available": True}
+
+    @staticmethod
+    def _validate_traffic(traffic):
+        if not isinstance(traffic, dict) or not all(
+            isinstance(name, str)
+            and isinstance(stats, dict)
+            and isinstance(stats.get("tx", 0), int)
+            and isinstance(stats.get("rx", 0), int)
+            and stats.get("tx", 0) >= 0
+            and stats.get("rx", 0) >= 0
+            for name, stats in traffic.items()
+        ):
+            raise ValueError("Hysteria traffic response is invalid")
+
+    def collect_and_clear(self):
+        traffic = self._request("/traffic?clear=true")
+        self._validate_traffic(traffic)
+        return traffic
+
+    def online(self):
+        online = self._request("/online")
+        if not isinstance(online, dict) or not all(
+            isinstance(name, str) and isinstance(count, int) and count >= 0
+            for name, count in online.items()
+        ):
+            raise ValueError("Hysteria online response is invalid")
+        return online
 
     def kick(self, name):
         self._request("/kick", [name])
+
+
+class UsageManager:
+    def __init__(self, database, stats_client, pending_ttl=5, clock=time.monotonic):
+        self.database = database
+        self.stats_client = stats_client
+        self.pending_ttl = max(1, int(pending_ttl))
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.pending = {}
+        self.last_online = {}
+        self.quota_kicked = set()
+
+    def _collect_locked(self):
+        traffic = self.stats_client.collect_and_clear()
+        self.database.add_traffic(traffic)
+        for user in self.database.list_proxy_users_for_usage():
+            used = user["tx_bytes"] + user["rx_bytes"]
+            name = user["name"]
+            if used >= user["traffic_limit_bytes"]:
+                if name not in self.quota_kicked:
+                    self.stats_client.kick(name)
+                    self.quota_kicked.add(name)
+            else:
+                self.quota_kicked.discard(name)
+        return traffic
+
+    def collect_once(self):
+        with self.lock:
+            return self._collect_locked()
+
+    def authorize(self, name):
+        with self.lock:
+            try:
+                self._collect_locked()
+            except Exception:
+                LOGGER.exception("traffic sync failed during authentication")
+            user = self.database.get_proxy_user_by_name(name)
+            if not user or not user["enabled"]:
+                return False
+            if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
+                return False
+            try:
+                online = self.stats_client.online()
+            except Exception:
+                LOGGER.exception("online snapshot failed during authentication")
+                return True
+            now = self.clock()
+            pending = [
+                timestamp
+                for timestamp in self.pending.get(name, [])
+                if now - timestamp < self.pending_ttl
+            ]
+            online_count = online.get(name, 0)
+            previous_online = self.last_online.get(name, online_count)
+            if online_count > previous_online:
+                pending = pending[min(len(pending), online_count - previous_online) :]
+            self.last_online[name] = online_count
+            if online_count + len(pending) >= user["device_limit"]:
+                self.pending[name] = pending
+                return False
+            pending.append(now)
+            self.pending[name] = pending
+            return True
+
+    def snapshot(self):
+        with self.lock:
+            available = True
+            try:
+                self._collect_locked()
+            except Exception:
+                LOGGER.exception("traffic sync failed during dashboard snapshot")
+                available = False
+            try:
+                online = self.stats_client.online()
+            except Exception:
+                LOGGER.exception("online snapshot failed during dashboard snapshot")
+                online = {}
+                available = False
+            users = self.database.list_proxy_users_for_usage()
+        return {
+            "traffic": {
+                user["name"]: {"tx": user["tx_bytes"], "rx": user["rx_bytes"]}
+                for user in users
+            },
+            "online": online,
+            "available": available,
+        }
+
+    def reset_user(self, user_id, expected_generation=None):
+        with self.lock:
+            self._collect_locked()
+            user = self.database.get_proxy_user(user_id)
+            self.database.reset_proxy_user_traffic(user_id, expected_generation)
+            self.stats_client.kick(user["name"])
+            self.quota_kicked.discard(user["name"])
+            self.pending.pop(user["name"], None)
+
+    def reset_all(self):
+        with self.lock:
+            self._collect_locked()
+            self.database.reset_all_traffic()
+            self.quota_kicked.clear()
+
+    def run_collector(self, stop_event, interval=10):
+        while not stop_event.wait(interval):
+            try:
+                self.collect_once()
+            except Exception:
+                LOGGER.exception("background traffic sync failed")
 
 
 def _parse_port(mapping, name, default):
@@ -1169,6 +1321,7 @@ def run_service(settings):
     if not database.has_admin():
         raise RuntimeError("no administrator exists; run init-admin first")
     stats_client = HysteriaStatsClient(settings.stats_url, settings.stats_secret)
+    usage_manager = UsageManager(database, stats_client)
     application = PanelApplication(
         database=database,
         public_host=settings.public_host,
@@ -1177,6 +1330,7 @@ def run_service(settings):
         stats_client=stats_client,
         node_name=settings.node_name,
         secure_cookies=settings.panel_scheme == "https",
+        usage_manager=usage_manager,
     )
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
     if settings.panel_scheme == "https":
@@ -1185,13 +1339,23 @@ def run_service(settings):
             tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
         tls_context.load_cert_chain(str(settings.tls_cert), str(settings.tls_key))
         panel_server.tls_context = tls_context
-    auth_server = make_internal_server((settings.auth_host, settings.auth_port), database)
+    auth_server = make_internal_server(
+        (settings.auth_host, settings.auth_port), database, usage_manager
+    )
+    collector_stop = threading.Event()
+    collector_thread = threading.Thread(
+        target=usage_manager.run_collector,
+        args=(collector_stop,),
+        name="traffic-collector",
+        daemon=True,
+    )
     panel_thread = threading.Thread(
         target=panel_server.serve_forever,
         name="panel-{}".format(settings.panel_scheme),
         daemon=True,
     )
     panel_thread.start()
+    collector_thread.start()
     LOGGER.info(
         json.dumps(
             {
@@ -1205,6 +1369,7 @@ def run_service(settings):
     try:
         auth_server.serve_forever()
     finally:
+        collector_stop.set()
         auth_server.server_close()
         panel_server.shutdown()
         panel_server.server_close()

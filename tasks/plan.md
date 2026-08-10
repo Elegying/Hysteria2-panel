@@ -17,12 +17,12 @@ Extend the existing single-file Python panel without adding a web framework. Pre
 ### Phase 1: Limits and durable traffic
 
 - [x] Add backward-compatible SQLite columns and recoverable server-key-derived credential support.
-- [ ] Add traffic collection, quota enforcement, reset operations, and connection-limit enforcement.
+- [x] Add traffic collection, quota enforcement, reset operations, and connection-limit enforcement.
 
 ### Checkpoint: Policy core
 
-- [ ] Database migration and auth-policy tests pass.
-- [ ] Existing authentication remains compatible.
+- [x] Database migration and auth-policy tests pass.
+- [x] Existing authentication remains compatible.
 
 ### Phase 2: Operations services
 
