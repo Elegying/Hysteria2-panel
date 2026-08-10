@@ -2,6 +2,7 @@
 """Dependency-free Hysteria 2 multi-user panel."""
 
 import argparse
+import base64
 import getpass
 import hashlib
 import hmac
@@ -30,6 +31,10 @@ SCRYPT_P = 1
 PBKDF2_ITERATIONS = 600000
 NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 LOGGER = logging.getLogger("hysteria2-panel")
+DEFAULT_DEVICE_LIMIT = 3
+DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
+MAX_DEVICE_LIMIT = 100
+MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
 
 
 class ConflictError(Exception):
@@ -129,8 +134,13 @@ class Database:
                     id INTEGER PRIMARY KEY,
                     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     token_fingerprint TEXT NOT NULL UNIQUE,
+                    token_seed BLOB,
                     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
                     generation INTEGER NOT NULL DEFAULT 0,
+                    device_limit INTEGER NOT NULL DEFAULT 3 CHECK (device_limit BETWEEN 1 AND 100),
+                    traffic_limit_bytes INTEGER NOT NULL DEFAULT 268435456000 CHECK (traffic_limit_bytes > 0),
+                    tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (tx_bytes >= 0),
+                    rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (rx_bytes >= 0),
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -158,9 +168,23 @@ class Database:
                 connection.execute(
                     "ALTER TABLE proxy_users ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
                 )
+            migrations = {
+                "token_seed": "ALTER TABLE proxy_users ADD COLUMN token_seed BLOB",
+                "device_limit": "ALTER TABLE proxy_users ADD COLUMN device_limit INTEGER NOT NULL DEFAULT 3",
+                "traffic_limit_bytes": "ALTER TABLE proxy_users ADD COLUMN traffic_limit_bytes INTEGER NOT NULL DEFAULT 268435456000",
+                "tx_bytes": "ALTER TABLE proxy_users ADD COLUMN tx_bytes INTEGER NOT NULL DEFAULT 0",
+                "rx_bytes": "ALTER TABLE proxy_users ADD COLUMN rx_bytes INTEGER NOT NULL DEFAULT 0",
+            }
+            for column, statement in migrations.items():
+                if column not in columns:
+                    connection.execute(statement)
 
     def _fingerprint(self, token):
         return hmac.new(self.hmac_key, token.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def _token_from_seed(self, seed):
+        digest = hmac.new(self.hmac_key, b"proxy-token\0" + seed, hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
     def upsert_admin(self, username, password):
         username = _validate_name(username)
@@ -233,15 +257,42 @@ class Database:
                     (hashlib.sha256(raw_token.encode()).hexdigest(),),
                 )
 
-    def create_proxy_user(self, name, token=None):
+    def create_proxy_user(
+        self,
+        name,
+        token=None,
+        device_limit=DEFAULT_DEVICE_LIMIT,
+        traffic_limit_bytes=DEFAULT_TRAFFIC_LIMIT_BYTES,
+    ):
         name = _validate_name(name)
-        token = _validate_token(token or secrets.token_urlsafe(24))
+        device_limit = int(device_limit)
+        traffic_limit_bytes = int(traffic_limit_bytes)
+        if not 1 <= device_limit <= MAX_DEVICE_LIMIT:
+            raise ValueError("device limit must be between 1 and 100")
+        if not 1 <= traffic_limit_bytes <= MAX_TRAFFIC_LIMIT_BYTES:
+            raise ValueError("traffic limit is out of range")
+        token_seed = None
+        if token is None:
+            token_seed = secrets.token_bytes(32)
+            token = self._token_from_seed(token_seed)
+        token = _validate_token(token)
         now = int(time.time())
         try:
             with self._connect() as connection:
                 cursor = connection.execute(
-                    "INSERT INTO proxy_users(name, token_fingerprint, enabled, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
-                    (name, self._fingerprint(token), now, now),
+                    """INSERT INTO proxy_users(
+                    name, token_fingerprint, token_seed, enabled, device_limit,
+                    traffic_limit_bytes, tx_bytes, rx_bytes, created_at, updated_at
+                    ) VALUES (?, ?, ?, 1, ?, ?, 0, 0, ?, ?)""",
+                    (
+                        name,
+                        self._fingerprint(token),
+                        token_seed,
+                        device_limit,
+                        traffic_limit_bytes,
+                        now,
+                        now,
+                    ),
                 )
                 return {"id": cursor.lastrowid, "name": name, "token": token}
         except sqlite3.IntegrityError as exc:
@@ -259,7 +310,9 @@ class Database:
 
     def _get_proxy_user(self, user_id, connection):
         row = connection.execute(
-            "SELECT id, name, enabled, generation, created_at, updated_at FROM proxy_users WHERE id = ?",
+            """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+            tx_bytes, rx_bytes, created_at, updated_at
+            FROM proxy_users WHERE id = ?""",
             (int(user_id),),
         ).fetchone()
         if not row:
@@ -269,6 +322,26 @@ class Database:
     def get_proxy_user(self, user_id):
         with self._connect() as connection:
             return dict(self._get_proxy_user(user_id, connection))
+
+    def get_proxy_user_by_name(self, name):
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                tx_bytes, rx_bytes, created_at, updated_at
+                FROM proxy_users WHERE name = ? COLLATE NOCASE""",
+                (name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def recover_proxy_token(self, user_id):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT token_seed FROM proxy_users WHERE id = ?", (int(user_id),)
+            ).fetchone()
+        if not row:
+            raise KeyError("proxy user not found")
+        seed = row["token_seed"]
+        return self._token_from_seed(bytes(seed)) if seed is not None else None
 
     def set_proxy_user_enabled(self, user_id, enabled, expected_generation=None):
         now = int(time.time())
@@ -286,7 +359,11 @@ class Database:
             return dict(row)
 
     def rotate_proxy_token(self, user_id, token=None, expected_generation=None):
-        token = _validate_token(token or secrets.token_urlsafe(24))
+        token_seed = None
+        if token is None:
+            token_seed = secrets.token_bytes(32)
+            token = self._token_from_seed(token_seed)
+        token = _validate_token(token)
         now = int(time.time())
         try:
             with self._connect() as connection:
@@ -295,8 +372,10 @@ class Database:
                 if generation != row["generation"]:
                     raise ConflictError("proxy user changed; refresh and try again")
                 cursor = connection.execute(
-                    "UPDATE proxy_users SET token_fingerprint = ?, generation = generation + 1, updated_at = ? WHERE id = ? AND generation = ?",
-                    (self._fingerprint(token), now, row["id"], generation),
+                    """UPDATE proxy_users
+                    SET token_fingerprint = ?, token_seed = ?, generation = generation + 1, updated_at = ?
+                    WHERE id = ? AND generation = ?""",
+                    (self._fingerprint(token), token_seed, now, row["id"], generation),
                 )
                 if cursor.rowcount != 1:
                     raise ConflictError("proxy user changed; refresh and try again")
@@ -325,7 +404,8 @@ class Database:
             total = connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
             rows = connection.execute(
                 """
-                SELECT id, name, enabled, generation, created_at, updated_at
+                SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?
                 """,
                 (limit, offset),
@@ -338,6 +418,48 @@ class Database:
                 "SELECT name FROM proxy_users ORDER BY name COLLATE NOCASE"
             ).fetchall()
         return [row["name"] for row in rows]
+
+    def add_traffic(self, traffic_by_user):
+        if not isinstance(traffic_by_user, dict):
+            raise ValueError("traffic must be a mapping")
+        now = int(time.time())
+        with self._connect() as connection:
+            for name, traffic in traffic_by_user.items():
+                if not isinstance(name, str) or not isinstance(traffic, dict):
+                    raise ValueError("traffic entry is invalid")
+                tx = traffic.get("tx", 0)
+                rx = traffic.get("rx", 0)
+                if not isinstance(tx, int) or not isinstance(rx, int) or tx < 0 or rx < 0:
+                    raise ValueError("traffic counters must be non-negative integers")
+                connection.execute(
+                    """UPDATE proxy_users SET tx_bytes = tx_bytes + ?, rx_bytes = rx_bytes + ?,
+                    updated_at = ? WHERE name = ? COLLATE NOCASE""",
+                    (tx, rx, now, name),
+                )
+
+    def reset_proxy_user_traffic(self, user_id, expected_generation=None):
+        now = int(time.time())
+        with self._connect() as connection:
+            row = self._get_proxy_user(user_id, connection)
+            generation = row["generation"] if expected_generation is None else int(expected_generation)
+            if generation != row["generation"]:
+                raise ConflictError("proxy user changed; refresh and try again")
+            cursor = connection.execute(
+                """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
+                generation = generation + 1, updated_at = ?
+                WHERE id = ? AND generation = ?""",
+                (now, row["id"], generation),
+            )
+            if cursor.rowcount != 1:
+                raise ConflictError("proxy user changed; refresh and try again")
+
+    def reset_all_traffic(self):
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
+                generation = generation + 1, updated_at = ?""",
+                (int(time.time()),),
+            )
 
     def audit(self, actor, action, target, remote_ip):
         with self._connect() as connection:

@@ -73,9 +73,74 @@ class DatabaseTests(unittest.TestCase):
         created = self.db.create_proxy_user("alice")
 
         self.assertEqual("alice", self.db.authenticate_token(created["token"]))
+        self.assertEqual(created["token"], self.db.recover_proxy_token(created["id"]))
         with sqlite3.connect(self.db_path) as connection:
             dump = "\n".join(connection.iterdump())
         self.assertNotIn(created["token"], dump)
+
+    def test_proxy_users_have_default_and_custom_limits(self):
+        default_user = self.db.create_proxy_user("alice")
+        custom_user = self.db.create_proxy_user(
+            "bob", device_limit=5, traffic_limit_bytes=500 * 1024**3
+        )
+
+        default_record = self.db.get_proxy_user(default_user["id"])
+        custom_record = self.db.get_proxy_user(custom_user["id"])
+        self.assertEqual(3, default_record["device_limit"])
+        self.assertEqual(250 * 1024**3, default_record["traffic_limit_bytes"])
+        self.assertEqual(5, custom_record["device_limit"])
+        self.assertEqual(500 * 1024**3, custom_record["traffic_limit_bytes"])
+        with self.assertRaises(ValueError):
+            self.db.create_proxy_user("bad-devices", device_limit=0)
+        with self.assertRaises(ValueError):
+            self.db.create_proxy_user("bad-traffic", traffic_limit_bytes=0)
+
+    def test_traffic_is_accumulated_and_can_be_reset(self):
+        alice = self.db.create_proxy_user("alice")
+        bob = self.db.create_proxy_user("bob")
+
+        self.db.add_traffic({"alice": {"tx": 100, "rx": 200}, "bob": {"tx": 9, "rx": 8}})
+        self.db.add_traffic({"alice": {"tx": 3, "rx": 4}})
+        alice_record = self.db.get_proxy_user(alice["id"])
+        self.assertEqual(103, alice_record["tx_bytes"])
+        self.assertEqual(204, alice_record["rx_bytes"])
+
+        self.db.reset_proxy_user_traffic(alice["id"], expected_generation=0)
+        alice_record = self.db.get_proxy_user(alice["id"])
+        self.assertEqual((0, 0), (alice_record["tx_bytes"], alice_record["rx_bytes"]))
+        self.assertEqual(1, alice_record["generation"])
+
+        self.db.reset_all_traffic()
+        bob_record = self.db.get_proxy_user(bob["id"])
+        self.assertEqual((0, 0), (bob_record["tx_bytes"], bob_record["rx_bytes"]))
+
+    def test_initialize_migrates_legacy_users_without_changing_their_token(self):
+        legacy_path = Path(self.temp_dir.name) / "legacy.db"
+        token = "legacy-token"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """CREATE TABLE proxy_users (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                token_fingerprint TEXT NOT NULL UNIQUE,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                generation INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+                )"""
+            )
+            connection.execute(
+                "INSERT INTO proxy_users VALUES (1, 'legacy', ?, 1, 0, 1, 1)",
+                (self.db._fingerprint(token),),
+            )
+
+        legacy_db = Database(legacy_path, b"a" * 32)
+        legacy_db.initialize()
+        record = legacy_db.get_proxy_user(1)
+        self.assertEqual(3, record["device_limit"])
+        self.assertEqual(250 * 1024**3, record["traffic_limit_bytes"])
+        self.assertEqual("legacy", legacy_db.authenticate_token(token))
+        self.assertIsNone(legacy_db.recover_proxy_token(1))
 
     def test_disable_rotate_and_delete_user(self):
         created = self.db.create_proxy_user("alice", token="first-token")
