@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0] - 2026-08-11
+
+### Added
+
+- Display the explicit Hysteria QUIC BBR profile together with the live Linux TCP congestion-control and queue-discipline state beside the current version.
+
+### Changed
+
+- List newly created users first by default while preserving total-traffic sorting.
+- Pin Hysteria's non-Brutal congestion controller to BBR with the standard profile in one-click deployments.
+
 ## [0.7.0] - 2026-08-10
 
 ### Added

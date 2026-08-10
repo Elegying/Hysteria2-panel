@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.7.0"
+PANEL_VERSION="0.8.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
@@ -302,6 +302,9 @@ auth:
   http:
     url: http://127.0.0.1:${AUTH_PORT}/auth
     insecure: false
+congestion:
+  type: bbr
+  bbrProfile: standard
 trafficStats:
   listen: 127.0.0.1:${STATS_PORT}
   secret: ${STATS_SECRET}

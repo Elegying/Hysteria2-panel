@@ -520,6 +520,10 @@ class OperationsTests(unittest.TestCase):
                 "MemTotal: 1000 kB\nMemAvailable: 600 kB\n"
             )
             (proc_root / "uptime").write_text("90061.0 0.0\n")
+            (proc_root / "sys/net/ipv4").mkdir(parents=True)
+            (proc_root / "sys/net/ipv4/tcp_congestion_control").write_text("bbr\n")
+            (proc_root / "sys/net/core").mkdir(parents=True)
+            (proc_root / "sys/net/core/default_qdisc").write_text("fq\n")
             disk = type("Disk", (), {"total": 1000, "used": 250, "free": 750})()
             metrics = SystemMetrics(
                 proc_root=proc_root,
@@ -537,6 +541,8 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(40.0, second["memory_percent"])
         self.assertEqual(25.0, second["disk_percent"])
         self.assertEqual("1天 1小时", second["uptime"])
+        self.assertEqual("bbr", second["tcp_congestion_control"])
+        self.assertEqual("fq", second["default_qdisc"])
 
 
 class FakeServiceController:
@@ -571,6 +577,8 @@ class FakeSystemMetrics:
             "disk_used": 250,
             "disk_total": 1000,
             "uptime": "1天 1小时",
+            "tcp_congestion_control": "bbr",
+            "default_qdisc": "fq",
         }
 
 
@@ -994,6 +1002,9 @@ class PanelHttpTests(unittest.TestCase):
             "系统资源",
             "高流量用户",
             "当前版本",
+            "BBR 状态",
+            "Hysteria BBR",
+            "内核 bbr / fq",
             "检查更新",
             "重置全部流量",
             "总流量",
@@ -1042,10 +1053,26 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('class="detail compact-detail"', dashboard)
         self.assertIn('class="detail version-detail"', dashboard)
         self.assertIn('.dashboard-trio{align-items:stretch;grid-template-columns:', dashboard)
-        self.assertIn('.version-detail{margin-top:12px', dashboard)
+        self.assertIn('.version-detail{display:grid;', dashboard)
+        self.assertIn('class="bbr-detail"', dashboard)
+        self.assertIn('class="version-panel"', dashboard)
         self.assertIn('class="login-form"', login)
         self.assertIn('class="login-actions"', login)
         self.assertIn('.login-form{display:grid;gap:12px}', login)
+
+    def test_dashboard_lists_newest_users_first_by_default(self):
+        for name in ("oldest", "middle", "newest"):
+            self.db.create_proxy_user(name)
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        newest = '<tr><td data-label="名称"><strong>newest</strong>'
+        middle = '<tr><td data-label="名称"><strong>middle</strong>'
+        oldest = '<tr><td data-label="名称"><strong>oldest</strong>'
+        self.assertLess(body.index(newest), body.index(middle))
+        self.assertLess(body.index(middle), body.index(oldest))
 
     def test_backup_download_and_restore_upload_are_authenticated_and_csrf_protected(self):
         self.db.create_proxy_user("migrating-user")
@@ -1238,7 +1265,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.7.0", body)
+        self.assertIn("v0.8.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False

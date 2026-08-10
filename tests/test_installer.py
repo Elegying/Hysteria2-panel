@@ -25,7 +25,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.7.0"', source)
+        self.assertIn('PANEL_VERSION="0.8.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -98,6 +98,13 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("net.core.wmem_max", source)
         self.assertIn("7500000", source)
         self.assertIn("LimitNOFILE=1048576", source)
+
+    def test_installer_explicitly_enables_hysteria_quic_bbr(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("congestion:", source)
+        self.assertIn("type: bbr", source)
+        self.assertIn("bbrProfile: standard", source)
 
     def test_installer_grants_only_exact_hysteria_service_controls(self):
         source = INSTALLER.read_text()
