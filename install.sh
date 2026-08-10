@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.5.0"
+PANEL_VERSION="0.5.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
@@ -419,14 +419,14 @@ EOF
 cat > /etc/systemd/system/hysteria2-panel-restore.service <<'EOF'
 [Unit]
 Description=Restore Hysteria 2 panel users and node identity
-Conflicts=hysteria2-panel.service hysteria2-panel-server.service
-Before=hysteria2-panel.service hysteria2-panel-server.service
+Conflicts=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service
+Before=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/hysteria2-panel/panel.env
 ExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending
-ExecStopPost=/bin/systemctl --no-block start hysteria2-panel.service hysteria2-panel-server.service
+ExecStopPost=/bin/systemctl --no-block start hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
