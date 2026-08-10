@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.4.0"
+PANEL_VERSION="0.5.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
@@ -163,7 +163,8 @@ if [[ ! -e "${MANAGED_MARKER}" ]] && {
   [[ -e /opt/hysteria2-panel ]] || [[ -e /etc/hysteria2-panel ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-server.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe.service ]]
+    [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-restore.service ]]
 }; then
   fail "发现非本安装器管理的同名路径或服务；为避免覆盖，安装已停止"
 fi
@@ -215,7 +216,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service hysteria2-panel-restore.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
@@ -244,6 +245,7 @@ fi
 usermod -a -G hy2tls hy2panel
 install -d -o root -g hy2tls -m 0750 /etc/hysteria2-panel
 install -d -o hy2panel -g hy2panel -m 0750 /var/lib/hysteria2-panel
+install -d -o root -g root -m 0700 /var/backups/hysteria2-panel
 install -d -o root -g root -m 0755 /opt/hysteria2-panel
 install -d -o root -g root -m 0755 /opt/hysteria2-panel/bin
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria" /opt/hysteria2-panel/bin/hysteria
@@ -313,7 +315,7 @@ chown root:hy2tls /etc/hysteria2-panel/hysteria.yaml
 chmod 0640 /etc/hysteria2-panel/hysteria.yaml
 
 cat > "${TMP_DIR}/hysteria2-panel.sudoers" <<'EOF'
-hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service
+hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service, /bin/systemctl --no-block start hysteria2-panel-restore.service
 EOF
 chmod 0440 "${TMP_DIR}/hysteria2-panel.sudoers"
 visudo -cf "${TMP_DIR}/hysteria2-panel.sudoers" >/dev/null || fail "服务控制权限配置无效"
@@ -412,6 +414,34 @@ RestrictAddressFamilies=AF_INET AF_INET6
 TasksMax=16
 MemoryMax=64M
 LimitNOFILE=4096
+EOF
+
+cat > /etc/systemd/system/hysteria2-panel-restore.service <<'EOF'
+[Unit]
+Description=Restore Hysteria 2 panel users and node identity
+Conflicts=hysteria2-panel.service hysteria2-panel-server.service
+Before=hysteria2-panel.service hysteria2-panel-server.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending
+ExecStopPost=/bin/systemctl --no-block start hysteria2-panel.service hysteria2-panel-server.service
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/etc/hysteria2-panel /var/lib/hysteria2-panel /var/backups/hysteria2-panel
+TasksMax=32
+MemoryMax=384M
 EOF
 
 set -a

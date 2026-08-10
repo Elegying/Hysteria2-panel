@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0] - 2026-08-10
+
+### Added
+
+- Add one-click ZIP download and upload restore for all proxy users, durable traffic, the HMAC signing identity, TLS certificate/private key, certificate pin and migration metadata.
+- Add strict archive, SQLite, user-token, certificate/key, fingerprint and endpoint validation plus an isolated root oneshot restore service with automatic pre-restore backup and rollback.
+
+### Changed
+
+- Preserve the destination panel administrator and deployment-only settings during restore while invalidating all prior panel sessions. Old client nodes remain usable only when the public host and UDP port are unchanged; certificate renewal or rotation requires re-sharing the new pin.
+
 ## [0.4.0] - 2026-08-10
 
 ### Added
