@@ -38,6 +38,24 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("read -r -s", source)
         self.assertNotRegex(source, r'ADMIN_PASSWORD="[^"$]{8,}"')
 
+    def test_installer_is_namespaced_and_separates_service_identities(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("/opt/hysteria2-panel/bin/hysteria", source)
+        self.assertIn("hysteria2-panel-server.service", source)
+        self.assertNotIn("/etc/systemd/system/hysteria2.service", source)
+        self.assertIn("User=hy2panel", source)
+        self.assertIn("User=hy2server", source)
+        self.assertIn("Group=hy2tls", source)
+
+    def test_installer_restarts_upgrades_and_does_not_mutate_firewall(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("systemctl restart hysteria2-panel.service", source)
+        self.assertIn("systemctl restart hysteria2-panel-server.service", source)
+        self.assertNotIn("ufw allow", source)
+        self.assertIn(".managed-by-installer", source)
+
 
 if __name__ == "__main__":
     unittest.main()

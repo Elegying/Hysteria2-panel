@@ -32,6 +32,10 @@ NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 LOGGER = logging.getLogger("hysteria2-panel")
 
 
+class ConflictError(Exception):
+    """Raised when an administrator submits a stale user mutation."""
+
+
 def hash_password(password):
     if not isinstance(password, str) or len(password) < 8 or len(password) > 1024:
         raise ValueError("password must contain 8 to 1024 characters")
@@ -126,6 +130,7 @@ class Database:
                     name TEXT NOT NULL UNIQUE COLLATE NOCASE,
                     token_fingerprint TEXT NOT NULL UNIQUE,
                     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    generation INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -146,6 +151,13 @@ class Database:
                 );
                 """
             )
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(proxy_users)")
+            }
+            if "generation" not in columns:
+                connection.execute(
+                    "ALTER TABLE proxy_users ADD COLUMN generation INTEGER NOT NULL DEFAULT 0"
+                )
 
     def _fingerprint(self, token):
         return hmac.new(self.hmac_key, token.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -247,7 +259,7 @@ class Database:
 
     def _get_proxy_user(self, user_id, connection):
         row = connection.execute(
-            "SELECT id, name, enabled, created_at, updated_at FROM proxy_users WHERE id = ?",
+            "SELECT id, name, enabled, generation, created_at, updated_at FROM proxy_users WHERE id = ?",
             (int(user_id),),
         ).fetchone()
         if not row:
@@ -258,34 +270,52 @@ class Database:
         with self._connect() as connection:
             return dict(self._get_proxy_user(user_id, connection))
 
-    def set_proxy_user_enabled(self, user_id, enabled):
+    def set_proxy_user_enabled(self, user_id, enabled, expected_generation=None):
         now = int(time.time())
         with self._connect() as connection:
             row = self._get_proxy_user(user_id, connection)
-            connection.execute(
-                "UPDATE proxy_users SET enabled = ?, updated_at = ? WHERE id = ?",
-                (1 if enabled else 0, now, row["id"]),
+            generation = row["generation"] if expected_generation is None else int(expected_generation)
+            if generation != row["generation"]:
+                raise ConflictError("proxy user changed; refresh and try again")
+            cursor = connection.execute(
+                "UPDATE proxy_users SET enabled = ?, generation = generation + 1, updated_at = ? WHERE id = ? AND generation = ?",
+                (1 if enabled else 0, now, row["id"], generation),
             )
+            if cursor.rowcount != 1:
+                raise ConflictError("proxy user changed; refresh and try again")
             return dict(row)
 
-    def rotate_proxy_token(self, user_id, token=None):
+    def rotate_proxy_token(self, user_id, token=None, expected_generation=None):
         token = _validate_token(token or secrets.token_urlsafe(24))
         now = int(time.time())
         try:
             with self._connect() as connection:
                 row = self._get_proxy_user(user_id, connection)
-                connection.execute(
-                    "UPDATE proxy_users SET token_fingerprint = ?, updated_at = ? WHERE id = ?",
-                    (self._fingerprint(token), now, row["id"]),
+                generation = row["generation"] if expected_generation is None else int(expected_generation)
+                if generation != row["generation"]:
+                    raise ConflictError("proxy user changed; refresh and try again")
+                cursor = connection.execute(
+                    "UPDATE proxy_users SET token_fingerprint = ?, generation = generation + 1, updated_at = ? WHERE id = ? AND generation = ?",
+                    (self._fingerprint(token), now, row["id"], generation),
                 )
+                if cursor.rowcount != 1:
+                    raise ConflictError("proxy user changed; refresh and try again")
                 return {"id": row["id"], "name": row["name"], "token": token}
         except sqlite3.IntegrityError as exc:
             raise ValueError("token already exists") from exc
 
-    def delete_proxy_user(self, user_id):
+    def delete_proxy_user(self, user_id, expected_generation=None):
         with self._connect() as connection:
             row = self._get_proxy_user(user_id, connection)
-            connection.execute("DELETE FROM proxy_users WHERE id = ?", (row["id"],))
+            generation = row["generation"] if expected_generation is None else int(expected_generation)
+            if generation != row["generation"]:
+                raise ConflictError("proxy user changed; refresh and try again")
+            cursor = connection.execute(
+                "DELETE FROM proxy_users WHERE id = ? AND generation = ?",
+                (row["id"], generation),
+            )
+            if cursor.rowcount != 1:
+                raise ConflictError("proxy user changed; refresh and try again")
             return dict(row)
 
     def list_proxy_users(self, limit=50, offset=0):
@@ -295,7 +325,7 @@ class Database:
             total = connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
             rows = connection.execute(
                 """
-                SELECT id, name, enabled, created_at, updated_at
+                SELECT id, name, enabled, generation, created_at, updated_at
                 FROM proxy_users ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?
                 """,
                 (limit, offset),
@@ -339,9 +369,10 @@ def build_connection_uri(host, port, auth, pin_sha256, label):
 
 
 class LoginRateLimiter:
-    def __init__(self, max_attempts=5, window_seconds=900, clock=time.time):
+    def __init__(self, max_attempts=5, window_seconds=900, max_addresses=4096, clock=time.time):
         self.max_attempts = int(max_attempts)
         self.window_seconds = int(window_seconds)
+        self.max_addresses = max(1, int(max_addresses))
         self.clock = clock
         self._attempts = {}
         self._lock = threading.Lock()
@@ -362,6 +393,12 @@ class LoginRateLimiter:
     def record_failure(self, address):
         with self._lock:
             recent = self._recent(address)
+            if not recent and len(self._attempts) >= self.max_addresses:
+                oldest = min(
+                    self._attempts,
+                    key=lambda item: self._attempts[item][-1] if self._attempts[item] else 0,
+                )
+                self._attempts.pop(oldest, None)
             recent.append(self.clock())
             self._attempts[address] = recent
 
@@ -411,6 +448,45 @@ class JsonHandler(BaseHTTPRequestHandler):
         )
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 64
+
+    def __init__(self, address, handler, max_workers=64, request_timeout=10):
+        self.max_workers = max(1, int(max_workers))
+        self.request_timeout = max(1, int(request_timeout))
+        self.tls_context = None
+        self._worker_slots = threading.BoundedSemaphore(self.max_workers)
+        super().__init__(address, handler)
+
+    def get_request(self):
+        request, client_address = super().get_request()
+        request.settimeout(self.request_timeout)
+        if self.tls_context is not None:
+            try:
+                request = self.tls_context.wrap_socket(request, server_side=True)
+            except Exception:
+                request.close()
+                raise
+        return request, client_address
+
+    def process_request(self, request, client_address):
+        if not self._worker_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
+
+
 class InternalAuthHandler(JsonHandler):
     def do_POST(self):
         if self.path != "/auth":
@@ -434,7 +510,7 @@ class InternalAuthHandler(JsonHandler):
 
 
 def make_internal_server(address, database):
-    server = ThreadingHTTPServer(address, InternalAuthHandler)
+    server = BoundedThreadingHTTPServer(address, InternalAuthHandler)
     server.database = database
     return server
 
@@ -455,6 +531,7 @@ class PanelApplication:
         self.pin_sha256 = pin_sha256
         self.stats_client = stats_client
         self.rate_limiter = rate_limiter or LoginRateLimiter()
+        self.user_action_lock = threading.Lock()
 
 
 def _human_bytes(value):
@@ -584,9 +661,9 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
             action_class = "danger" if enabled else "secondary"
             rows.append(
                 """<tr><td>{name}</td><td><span class="status {state_class}">{state}</span></td><td>{online}</td><td>{tx} / {rx}</td>
-<td><div class="actions"><form class="inline" method="post" action="/users/{id}/toggle"><input type="hidden" name="csrf" value="{csrf}"><button class="{action_class}" type="submit">{action}</button></form>
-<form class="inline" method="post" action="/users/{id}/rotate"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">轮换密钥</button></form>
-<form class="inline" method="post" action="/users/{id}/delete"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">删除</button></form></div></td></tr>""".format(
+<td><div class="actions"><form class="inline" method="post" action="/users/{id}/toggle"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="{action_class}" type="submit">{action}</button></form>
+<form class="inline" method="post" action="/users/{id}/rotate"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="secondary" type="submit">轮换密钥</button></form>
+<form class="inline" method="post" action="/users/{id}/delete"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="danger" type="submit">删除</button></form></div></td></tr>""".format(
                     name=html.escape(name),
                     state="启用" if enabled else "禁用",
                     state_class="enabled" if enabled else "disabled",
@@ -594,6 +671,7 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
                     tx=_human_bytes(traffic.get("tx", 0)),
                     rx=_human_bytes(traffic.get("rx", 0)),
                     id=user["id"],
+                    generation=user["generation"],
                     csrf=html.escape(session["csrf_token"], quote=True),
                     action=action_label,
                     action_class=action_class,
@@ -694,7 +772,7 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
             return
         match = re.fullmatch(r"/users/(\d+)/(toggle|rotate|delete)", path)
         if match:
-            self._handle_user_action(session, int(match.group(1)), match.group(2))
+            self._handle_user_action(session, int(match.group(1)), match.group(2), form)
             return
         self._error_page(404, "页面不存在")
 
@@ -706,12 +784,12 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
         admin_id = self.app.database.verify_admin(form.get("username", ""), form.get("password", ""))
         if not admin_id:
             self.app.rate_limiter.record_failure(address)
-            self.app.database.audit("anonymous", "login_failed", "admin", address)
+            self._audit_safely("anonymous", "login_failed", "admin")
             self._send_html(401, self._login_page("账号或密码错误"))
             return
         self.app.rate_limiter.record_success(address)
         raw_token, _ = self.app.database.create_session(admin_id)
-        self.app.database.audit(form.get("username", "admin")[:64], "login_succeeded", "admin", address)
+        self._audit_safely(form.get("username", "admin")[:64], "login_succeeded", "admin")
         cookie = "{}={}; Path=/; Max-Age=43200; Secure; HttpOnly; SameSite=Strict".format(
             self.cookie_name, raw_token
         )
@@ -719,52 +797,71 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
 
     def _handle_create_user(self, session, form):
         try:
-            credentials = self.app.database.create_proxy_user(form.get("name", ""))
+            with self.app.user_action_lock:
+                credentials = self.app.database.create_proxy_user(form.get("name", ""))
         except ValueError as exc:
             self._error_page(400, str(exc))
             return
-        self.app.database.audit(
-            session["username"], "proxy_user_created", credentials["name"], self.client_address[0]
-        )
+        self._audit_safely(session["username"], "proxy_user_created", credentials["name"])
         self._send_html(201, self._credentials_page(session, credentials))
 
-    def _handle_user_action(self, session, user_id, action):
+    def _audit_safely(self, actor, action, target):
         try:
-            if action == "toggle":
-                user = self.app.database.get_proxy_user(user_id)
-                enabled = not bool(user["enabled"])
-                self.app.database.set_proxy_user_enabled(user_id, enabled)
-                if not enabled:
-                    self.app.stats_client.kick(user["name"])
-                audit_action = "proxy_user_enabled" if enabled else "proxy_user_disabled"
-                self.app.database.audit(
-                    session["username"], audit_action, user["name"], self.client_address[0]
+            self.app.database.audit(actor, action, target, self.client_address[0])
+        except Exception:
+            LOGGER.exception("audit write failed")
+
+    def _kick_safely(self, name):
+        try:
+            self.app.stats_client.kick(name)
+        except Exception:
+            LOGGER.exception("disconnecting active user failed")
+
+    def _handle_user_action(self, session, user_id, action, form):
+        try:
+            generation = int(form.get("generation", ""))
+            with self.app.user_action_lock:
+                if action == "toggle":
+                    user = self.app.database.get_proxy_user(user_id)
+                    enabled = not bool(user["enabled"])
+                    self.app.database.set_proxy_user_enabled(
+                        user_id, enabled, expected_generation=generation
+                    )
+                    if not enabled:
+                        self._kick_safely(user["name"])
+                    audit_action = "proxy_user_enabled" if enabled else "proxy_user_disabled"
+                    self._audit_safely(session["username"], audit_action, user["name"])
+                    self._redirect("/")
+                    return
+                if action == "rotate":
+                    credentials = self.app.database.rotate_proxy_token(
+                        user_id, expected_generation=generation
+                    )
+                    self._kick_safely(credentials["name"])
+                    self._audit_safely(
+                        session["username"], "proxy_token_rotated", credentials["name"]
+                    )
+                    self._send_html(200, self._credentials_page(session, credentials))
+                    return
+                user = self.app.database.delete_proxy_user(
+                    user_id, expected_generation=generation
                 )
-                self._redirect("/")
-                return
-            if action == "rotate":
-                credentials = self.app.database.rotate_proxy_token(user_id)
-                self.app.stats_client.kick(credentials["name"])
-                self.app.database.audit(
-                    session["username"], "proxy_token_rotated", credentials["name"], self.client_address[0]
-                )
-                self._send_html(200, self._credentials_page(session, credentials))
-                return
-            user = self.app.database.delete_proxy_user(user_id)
-            self.app.stats_client.kick(user["name"])
-            self.app.database.audit(
-                session["username"], "proxy_user_deleted", user["name"], self.client_address[0]
-            )
+                self._kick_safely(user["name"])
+                self._audit_safely(session["username"], "proxy_user_deleted", user["name"])
             self._redirect("/")
+        except (TypeError, ValueError):
+            self._error_page(400, "请求版本无效，请刷新页面后重试")
+        except ConflictError:
+            self._error_page(409, "用户状态已变化，请刷新页面后重试")
         except KeyError:
             self._error_page(404, "用户不存在")
         except Exception:
             LOGGER.exception("user action failed")
-            self._error_page(502, "用户状态已更新，但断开在线连接失败，请检查服务日志")
+            self._error_page(500, "操作未完成，请检查服务日志")
 
 
 def make_panel_server(address, application):
-    server = ThreadingHTTPServer(address, PanelHandler)
+    server = BoundedThreadingHTTPServer(address, PanelHandler)
     server.application = application
     return server
 
@@ -887,7 +984,7 @@ def run_service(settings):
     if hasattr(ssl, "TLSVersion"):
         tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
     tls_context.load_cert_chain(str(settings.tls_cert), str(settings.tls_key))
-    panel_server.socket = tls_context.wrap_socket(panel_server.socket, server_side=True)
+    panel_server.tls_context = tls_context
     auth_server = make_internal_server((settings.auth_host, settings.auth_port), database)
     panel_thread = threading.Thread(target=panel_server.serve_forever, name="panel-https", daemon=True)
     panel_thread.start()

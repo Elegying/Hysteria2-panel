@@ -40,7 +40,17 @@ fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 
-for command_name in curl install systemctl openssl sha256sum ss useradd python3 mktemp; do
+required_commands=(curl install systemctl openssl sha256sum ss useradd groupadd usermod python3 mktemp)
+missing_commands=()
+for command_name in "${required_commands[@]}"; do
+  command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
+done
+if (( ${#missing_commands[@]} > 0 )) && command -v apt-get >/dev/null 2>&1; then
+  echo "安装系统依赖：${missing_commands[*]}"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl iproute2 python3 coreutils passwd
+fi
+for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "缺少命令：${command_name}"
 done
 
@@ -86,7 +96,16 @@ done
 [[ "${HYSTERIA_PORT}" != "${PANEL_PORT}" && "${HYSTERIA_PORT}" != "${AUTH_PORT}" && "${HYSTERIA_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
 [[ "${PANEL_PORT}" != "${AUTH_PORT}" && "${PANEL_PORT}" != "${STATS_PORT}" && "${AUTH_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
 
-if ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2.service; then
+MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
+if [[ ! -e "${MANAGED_MARKER}" ]] && {
+  [[ -e /opt/hysteria2-panel ]] || [[ -e /etc/hysteria2-panel ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-server.service ]]
+}; then
+  fail "发现非本安装器管理的同名路径或服务；为避免覆盖，安装已停止"
+fi
+
+if ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-server.service; then
   fail "UDP ${HYSTERIA_PORT} 已被其他服务占用"
 fi
 if ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2-panel.service; then
@@ -128,6 +147,9 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service; do
+    [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
+  done
   if [[ -f /var/lib/hysteria2-panel/panel.db ]]; then
     python3 - /var/lib/hysteria2-panel/panel.db "${BACKUP_DIR}/panel.db" <<'PY'
 import sqlite3
@@ -140,21 +162,30 @@ PY
   echo "升级前备份：${BACKUP_DIR}"
 fi
 
+if ! getent group hy2tls >/dev/null 2>&1; then
+  groupadd --system hy2tls
+fi
 if ! id -u hy2panel >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/hysteria2-panel --shell /usr/sbin/nologin hy2panel
 fi
-install -d -o root -g hy2panel -m 0750 /etc/hysteria2-panel
+if ! id -u hy2server >/dev/null 2>&1; then
+  useradd --system --gid hy2tls --home-dir /nonexistent --shell /usr/sbin/nologin hy2server
+fi
+usermod -a -G hy2tls hy2panel
+install -d -o root -g hy2tls -m 0750 /etc/hysteria2-panel
 install -d -o hy2panel -g hy2panel -m 0750 /var/lib/hysteria2-panel
 install -d -o root -g root -m 0755 /opt/hysteria2-panel
-install -o root -g root -m 0755 "${TMP_DIR}/hysteria" /usr/local/bin/hysteria
+install -d -o root -g root -m 0755 /opt/hysteria2-panel/bin
+install -o root -g root -m 0755 "${TMP_DIR}/hysteria" /opt/hysteria2-panel/bin/hysteria
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria2_panel.py" /opt/hysteria2-panel/hysteria2_panel.py
+install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"
 
 CERT_FILE=/etc/hysteria2-panel/server.crt
 KEY_FILE=/etc/hysteria2-panel/server.key
 if [[ ! -s "${CERT_FILE}" || ! -s "${KEY_FILE}" ]]; then
-  /usr/local/bin/hysteria cert --host "${PUBLIC_HOST}" --cert "${CERT_FILE}" --key "${KEY_FILE}" --valid-for 87600h
+  /opt/hysteria2-panel/bin/hysteria cert --host "${PUBLIC_HOST}" --cert "${CERT_FILE}" --key "${KEY_FILE}" --valid-for 87600h
 fi
-chown root:hy2panel "${CERT_FILE}" "${KEY_FILE}"
+chown root:hy2tls "${CERT_FILE}" "${KEY_FILE}"
 chmod 0640 "${CERT_FILE}" "${KEY_FILE}"
 CERT_PIN="$(openssl x509 -in "${CERT_FILE}" -outform DER | sha256sum | awk '{print $1}')"
 [[ ${#CERT_PIN} -eq 64 ]] || fail "无法计算证书指纹"
@@ -205,7 +236,7 @@ masquerade:
     content: "404 page not found"
     statusCode: 404
 EOF
-chown root:hy2panel /etc/hysteria2-panel/hysteria.yaml
+chown root:hy2tls /etc/hysteria2-panel/hysteria.yaml
 chmod 0640 /etc/hysteria2-panel/hysteria.yaml
 
 cat > /etc/systemd/system/hysteria2-panel.service <<'EOF'
@@ -213,7 +244,7 @@ cat > /etc/systemd/system/hysteria2-panel.service <<'EOF'
 Description=Hysteria 2 multi-user panel
 After=network-online.target
 Wants=network-online.target
-Before=hysteria2.service
+Before=hysteria2-panel-server.service
 
 [Service]
 Type=simple
@@ -236,12 +267,14 @@ RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadWritePaths=/var/lib/hysteria2-panel
+TasksMax=160
+MemoryMax=256M
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/hysteria2.service <<'EOF'
+cat > /etc/systemd/system/hysteria2-panel-server.service <<'EOF'
 [Unit]
 Description=Hysteria 2 server
 After=network-online.target hysteria2-panel.service
@@ -250,9 +283,9 @@ Requires=hysteria2-panel.service
 
 [Service]
 Type=simple
-User=hy2panel
-Group=hy2panel
-ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria2-panel/hysteria.yaml
+User=hy2server
+Group=hy2tls
+ExecStart=/opt/hysteria2-panel/bin/hysteria server -c /etc/hysteria2-panel/hysteria.yaml
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -267,6 +300,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+TasksMax=256
+MemoryMax=768M
 
 [Install]
 WantedBy=multi-user.target
@@ -284,10 +319,12 @@ chmod 0750 /var/lib/hysteria2-panel
 find /var/lib/hysteria2-panel -type f -exec chmod 0600 {} +
 
 systemctl daemon-reload
-systemctl enable --now hysteria2-panel.service
-systemctl enable --now hysteria2.service
+systemctl enable hysteria2-panel.service
+systemctl enable hysteria2-panel-server.service
+systemctl restart hysteria2-panel.service
+systemctl restart hysteria2-panel-server.service
 systemctl is-active --quiet hysteria2-panel.service || fail "面板服务启动失败"
-systemctl is-active --quiet hysteria2.service || fail "Hysteria 服务启动失败"
+systemctl is-active --quiet hysteria2-panel-server.service || fail "Hysteria 服务启动失败"
 
 curl -kfsS --connect-timeout 5 "https://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null \
   || fail "HTTPS 面板健康检查失败"
@@ -296,14 +333,10 @@ curl -fsS --connect-timeout 5 "http://127.0.0.1:${AUTH_PORT}/healthz" >/dev/null
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
 ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "HTTPS 面板端口未监听"
 
-if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
-  ufw allow "${HYSTERIA_PORT}/udp"
-  ufw allow "${PANEL_PORT}/tcp"
-fi
-
 echo
 echo "部署完成"
 echo "面板地址：https://${PUBLIC_HOST}:${PANEL_PORT}/"
 echo "Hysteria 端口：UDP ${HYSTERIA_PORT}"
 echo "证书指纹：${CERT_PIN}"
+echo "如云平台或主机启用了防火墙，请放行 UDP ${HYSTERIA_PORT} 与 TCP ${PANEL_PORT}。"
 echo "首次打开自签名 HTTPS 地址时，浏览器会显示证书警告。"

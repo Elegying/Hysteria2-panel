@@ -47,9 +47,10 @@
 | `POST` | `/login` | 创建 Secure、HttpOnly、SameSite=Strict 会话 |
 | `GET` | `/` | 分页用户列表、在线设备与流量 |
 | `POST` | `/users` | 创建用户并仅一次显示认证密钥和 URI |
-| `POST` | `/users/{id}/toggle` | 启用或禁用用户 |
-| `POST` | `/users/{id}/rotate` | 轮换认证密钥并断开旧连接 |
-| `POST` | `/users/{id}/delete` | 删除用户并断开连接 |
+| `POST` | `/users/{id}/toggle` | 携带当前 `generation`，启用或禁用用户 |
+| `POST` | `/users/{id}/rotate` | 携带当前 `generation`，轮换认证密钥并断开旧连接 |
+| `POST` | `/users/{id}/delete` | 携带当前 `generation`，删除用户并断开连接 |
 | `POST` | `/logout` | 撤销管理会话 |
 
 面板没有对公网提供通用 JSON 管理 API，避免扩大认证和 CORS 攻击面。
+版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成且只显示一次的新凭据。

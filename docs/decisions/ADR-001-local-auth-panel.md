@@ -24,6 +24,8 @@ Accepted
 
 管理员密码使用 scrypt；Python 构建缺少 scrypt 时使用 600,000 次 PBKDF2-HMAC-SHA256。代理用户的随机认证密钥只显示一次，数据库仅保存 HMAC-SHA256 指纹。TLS 证书由 Hysteria 官方 `cert` 命令生成，连接 URI 携带证书固定指纹。
 
+面板与 Hysteria 分别使用 `hy2panel` 和 `hy2server` 系统身份；只有 TLS 证书通过 `hy2tls` 组共享。项目使用独立的 `hysteria2-panel-server.service` 和 `/opt/hysteria2-panel/bin/hysteria`，不覆盖主机上已有的通用 Hysteria 安装。管理请求使用用户记录版本进行乐观并发校验，并对 HTTP 工作线程、连接读取时间和登录限速状态设置边界。
+
 ## 备选方案
 
 ### Hysteria `userpass` 静态映射

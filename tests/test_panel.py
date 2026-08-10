@@ -12,6 +12,7 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from hysteria2_panel import (
+    ConflictError,
     Database,
     LoginRateLimiter,
     HysteriaStatsClient,
@@ -87,6 +88,20 @@ class DatabaseTests(unittest.TestCase):
 
         self.db.delete_proxy_user(created["id"])
         self.assertIsNone(self.db.authenticate_token("second-token"))
+
+    def test_stale_user_generation_cannot_overwrite_a_new_token(self):
+        created = self.db.create_proxy_user("alice", token="first-token")
+
+        self.db.rotate_proxy_token(
+            created["id"], token="second-token", expected_generation=0
+        )
+        with self.assertRaises(ConflictError):
+            self.db.rotate_proxy_token(
+                created["id"], token="third-token", expected_generation=0
+            )
+
+        self.assertEqual("alice", self.db.authenticate_token("second-token"))
+        self.assertIsNone(self.db.authenticate_token("third-token"))
 
     def test_names_are_unique_and_control_characters_are_rejected(self):
         self.db.create_proxy_user("alice")
@@ -177,6 +192,14 @@ class RateLimiterTests(unittest.TestCase):
         limiter.record_success("192.0.2.1")
         self.assertTrue(limiter.is_allowed("192.0.2.1"))
 
+    def test_address_tracking_is_bounded(self):
+        limiter = LoginRateLimiter(max_attempts=2, max_addresses=3, clock=lambda: 1000.0)
+
+        for suffix in range(10):
+            limiter.record_failure("192.0.2.{}".format(suffix))
+
+        self.assertLessEqual(len(limiter._attempts), 3)
+
 
 class FakeStatsClient:
     def __init__(self):
@@ -191,6 +214,11 @@ class FakeStatsClient:
 
     def kick(self, name):
         self.kicked.append(name)
+
+
+class FailingStatsClient(FakeStatsClient):
+    def kick(self, name):
+        raise OSError("stats unavailable")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -290,13 +318,47 @@ class PanelHttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.request(
                 "/users/{}/toggle".format(created["id"]),
-                {"csrf": csrf_token},
+                {"csrf": csrf_token, "generation": "0"},
                 headers=headers,
                 follow_redirects=False,
             )
         self.assertEqual(303, raised.exception.code)
         self.assertEqual(["<script>alert(1)</script>"], self.stats.kicked)
         self.assertIsNone(self.db.authenticate_token(created["token"]))
+
+    def test_audit_failure_does_not_hide_new_credentials(self):
+        headers, csrf_token = self.authenticated_headers()
+        self.db.audit = lambda *args: (_ for _ in ()).throw(sqlite3.OperationalError("disk full"))
+
+        with self.request(
+            "/users", {"name": "alice", "csrf": csrf_token}, headers=headers
+        ) as response:
+            body = response.read().decode()
+
+        self.assertEqual(201, response.status)
+        self.assertIn("hysteria2://", body)
+        self.assertEqual("alice", self.db.list_proxy_users()["users"][0]["name"])
+
+    def test_kick_failure_does_not_hide_rotated_credentials(self):
+        created = self.db.create_proxy_user("alice", token="first-token")
+        self.application.stats_client = FailingStatsClient()
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request(
+            "/users/{}/rotate".format(created["id"]),
+            {"csrf": csrf_token, "generation": "0"},
+            headers=headers,
+        ) as response:
+            body = response.read().decode()
+
+        self.assertEqual(200, response.status)
+        self.assertIn("hysteria2://", body)
+        self.assertIsNone(self.db.authenticate_token("first-token"))
+
+    def test_panel_server_sets_timeout_and_worker_limit(self):
+        self.assertEqual(10, self.server.request_timeout)
+        self.assertEqual(64, self.server.max_workers)
+        self.assertIsNone(self.server.tls_context)
 
 
 class StatsApiHandler(BaseHTTPRequestHandler):

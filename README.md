@@ -28,7 +28,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 
 服务器使用带 IP/域名 SAN 的自签名证书。浏览器首次打开面板时会显示证书警告；面板生成的 Hysteria URI 同时包含 `insecure=1` 和证书 SHA-256 固定指纹。
 
-> 云服务器安全组也必须放行 UDP `19999` 和 TCP `19998`。脚本只会在 UFW 已启用时添加对应规则，无法代替云平台安全组配置。
+> 云服务器安全组或主机防火墙必须放行 UDP `19999` 和 TCP `19998`。为避免意外改变现有防火墙策略，脚本不会自动添加规则。
 
 ## 多用户管理
 
@@ -44,8 +44,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 ## 运维
 
 ```bash
-systemctl status hysteria2-panel hysteria2
-journalctl -u hysteria2-panel -u hysteria2 --since today
+systemctl status hysteria2-panel hysteria2-panel-server
+journalctl -u hysteria2-panel -u hysteria2-panel-server --since today
 curl -k https://127.0.0.1:19998/healthz
 ```
 
@@ -53,7 +53,7 @@ curl -k https://127.0.0.1:19998/healthz
 
 | 路径 | 内容 |
 |---|---|
-| `/opt/hysteria2-panel/` | 面板程序 |
+| `/opt/hysteria2-panel/` | 面板程序和项目专用 Hysteria 二进制 |
 | `/etc/hysteria2-panel/` | Hysteria 配置、TLS 证书和运行环境 |
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署前的时间戳备份 |
@@ -62,8 +62,8 @@ curl -k https://127.0.0.1:19998/healthz
 
 安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用与配置。若升级后异常：
 
-1. 停止 `hysteria2` 和 `hysteria2-panel`；
-2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc` 和 `panel.db`；
+1. 停止 `hysteria2-panel-server` 和 `hysteria2-panel`；
+2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和两个 unit 文件；
 3. 执行 `systemctl daemon-reload`；
 4. 重新启动两个服务并检查健康接口和 UDP/TCP 监听。
 
