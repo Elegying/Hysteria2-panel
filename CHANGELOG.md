@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.0] - 2026-08-11
+
+### Added
+
+- Search all users instantly by name from the dashboard.
+
+### Changed
+
+- Show the complete user list without pagination.
+- Move user creation into a responsive dialog opened beside the global traffic-reset action.
+
 ## [0.8.0] - 2026-08-11
 
 ### Added

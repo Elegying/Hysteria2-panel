@@ -1068,11 +1068,31 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        newest = '<tr><td data-label="名称"><strong>newest</strong>'
-        middle = '<tr><td data-label="名称"><strong>middle</strong>'
-        oldest = '<tr><td data-label="名称"><strong>oldest</strong>'
+        newest = '<tr data-user-name="newest"><td data-label="名称"><strong>newest</strong>'
+        middle = '<tr data-user-name="middle"><td data-label="名称"><strong>middle</strong>'
+        oldest = '<tr data-user-name="oldest"><td data-label="名称"><strong>oldest</strong>'
         self.assertLess(body.index(newest), body.index(middle))
         self.assertLess(body.index(middle), body.index(oldest))
+
+    def test_dashboard_lists_all_users_with_search_and_create_dialog(self):
+        for index in range(55):
+            self.db.create_proxy_user("user{:03d}".format(index))
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertEqual(55, body.count('data-user-name="'))
+        self.assertIn("<strong>user000</strong>", body)
+        self.assertNotIn("第 1 /", body)
+        self.assertIn('type="search"', body)
+        self.assertIn('data-user-search', body)
+        self.assertIn('data-search-status', body)
+        self.assertIn('data-dialog-open="create-user-dialog"', body)
+        self.assertIn('<dialog id="create-user-dialog"', body)
+        self.assertIn('aria-labelledby="create-user-title"', body)
+        self.assertIn('class="section-actions"', body)
+        self.assertIn('placeholder="例如：Alice 手机" autofocus', body)
 
     def test_backup_download_and_restore_upload_are_authenticated_and_csrf_protected(self):
         self.db.create_proxy_user("migrating-user")
@@ -1189,9 +1209,9 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/?sort=traffic&order=asc", headers=headers) as response:
             ascending = response.read().decode()
 
-        beta_row = '<tr><td data-label="名称"><strong>beta</strong>'
-        gamma_row = '<tr><td data-label="名称"><strong>gamma</strong>'
-        alpha_row = '<tr><td data-label="名称"><strong>alpha</strong>'
+        beta_row = '<tr data-user-name="beta"><td data-label="名称"><strong>beta</strong>'
+        gamma_row = '<tr data-user-name="gamma"><td data-label="名称"><strong>gamma</strong>'
+        alpha_row = '<tr data-user-name="alpha"><td data-label="名称"><strong>alpha</strong>'
         self.assertLess(descending.index(beta_row), descending.index(gamma_row))
         self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
         self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
@@ -1265,7 +1285,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.8.0", body)
+        self.assertIn("v0.9.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False

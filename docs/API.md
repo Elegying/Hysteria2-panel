@@ -47,7 +47,7 @@
 | `GET` | `/healthz` | 无敏感信息的服务健康检查 |
 | `GET` | `/login` | 登录页 |
 | `POST` | `/login` | 创建 HttpOnly、SameSite=Strict 会话；HTTPS 模式额外设置 Secure |
-| `GET` | `/` | 服务控制、系统资源、版本、全局统计、高流量前五、分页用户列表与限额进度 |
+| `GET` | `/` | 服务控制、系统资源、版本、全局统计、高流量前五、完整用户列表、即时搜索与限额进度 |
 | `POST` | `/users` | 创建带设备/总流量限制的用户并显示认证密钥和 URI |
 | `POST` | `/users/{id}/toggle` | 携带当前 `generation`，启用或禁用用户 |
 | `POST` | `/users/{id}/rotate` | 携带当前 `generation`，轮换认证密钥并断开旧连接 |
