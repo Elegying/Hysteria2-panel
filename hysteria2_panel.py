@@ -446,8 +446,8 @@ class JsonHandler(BaseHTTPRequestHandler):
                     "event": "http_request",
                     "requestId": self._request_id(),
                     "remoteAddress": self.client_address[0],
-                    "method": self.command,
-                    "path": self.path.split("?", 1)[0],
+                    "method": getattr(self, "command", ""),
+                    "path": getattr(self, "path", "").split("?", 1)[0],
                     "message": message_format % args,
                 },
                 separators=(",", ":"),
@@ -584,7 +584,11 @@ def summarize_dashboard(user_names, snapshot):
 
 
 class PanelHandler(JsonHandler):
-    cookie_name = "hy2panel_session"
+    @property
+    def cookie_name(self):
+        if self.app.secure_cookies:
+            return "hy2panel_session"
+        return "hy2panel_http_session"
 
     @property
     def app(self):

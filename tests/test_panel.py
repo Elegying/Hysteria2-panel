@@ -17,6 +17,7 @@ from hysteria2_panel import (
     LoginRateLimiter,
     HysteriaStatsClient,
     PanelApplication,
+    PanelHandler,
     Settings,
     build_connection_uri,
     handle_auth_payload,
@@ -333,6 +334,7 @@ class PanelHttpTests(unittest.TestCase):
             )
         self.assertEqual(303, raised.exception.code)
         cookie = raised.exception.headers["Set-Cookie"]
+        self.assertTrue(cookie.startswith("hy2panel_session="))
         self.assertIn("Secure", cookie)
         self.assertIn("HttpOnly", cookie)
         self.assertIn("SameSite=Strict", cookie)
@@ -372,8 +374,18 @@ class PanelHttpTests(unittest.TestCase):
             )
 
         self.assertNotIn("Secure", raised.exception.headers["Set-Cookie"])
+        self.assertTrue(
+            raised.exception.headers["Set-Cookie"].startswith("hy2panel_http_session=")
+        )
         self.assertNotIn("Strict-Transport-Security", raised.exception.headers)
         self.assertIn("HttpOnly", raised.exception.headers["Set-Cookie"])
+
+    def test_malformed_request_logging_does_not_require_a_parsed_path(self):
+        handler = PanelHandler.__new__(PanelHandler)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.command = ""
+
+        handler.log_message("bad request")
 
     def test_dashboard_escapes_names_and_disabling_kicks_user(self):
         created = self.db.create_proxy_user("<script>alert(1)</script>")
