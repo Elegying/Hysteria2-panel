@@ -1,15 +1,20 @@
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
+import urllib.error
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from hysteria2_panel import (
     Database,
+    LoginRateLimiter,
     build_connection_uri,
     handle_auth_payload,
     hash_password,
+    make_internal_server,
     verify_password,
 )
 
@@ -126,6 +131,44 @@ class AuthContractTests(unittest.TestCase):
         status, response = handle_auth_payload(self.db, b"not-json")
         self.assertEqual(400, status)
         self.assertEqual("INVALID_REQUEST", response["error"]["code"])
+
+    def test_internal_http_auth_endpoint_matches_hysteria_contract(self):
+        server = make_internal_server(("127.0.0.1", 0), self.db)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        request = urllib.request.Request(
+            "http://127.0.0.1:{}/auth".format(server.server_address[1]),
+            data=json.dumps({"addr": "192.0.2.10:1234", "auth": "valid-token", "tx": 9}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            payload = json.load(response)
+
+        self.assertEqual({"ok": True, "id": "alice"}, payload)
+        self.assertEqual("application/json; charset=utf-8", response.headers["Content-Type"])
+        self.assertEqual("nosniff", response.headers["X-Content-Type-Options"])
+
+
+class RateLimiterTests(unittest.TestCase):
+    def test_failed_logins_are_limited_per_address_and_success_resets(self):
+        now = [1000.0]
+        limiter = LoginRateLimiter(max_attempts=2, window_seconds=60, clock=lambda: now[0])
+
+        self.assertTrue(limiter.is_allowed("192.0.2.1"))
+        limiter.record_failure("192.0.2.1")
+        limiter.record_failure("192.0.2.1")
+        self.assertFalse(limiter.is_allowed("192.0.2.1"))
+        self.assertTrue(limiter.is_allowed("192.0.2.2"))
+
+        now[0] += 61
+        self.assertTrue(limiter.is_allowed("192.0.2.1"))
+        limiter.record_failure("192.0.2.1")
+        limiter.record_success("192.0.2.1")
+        self.assertTrue(limiter.is_allowed("192.0.2.1"))
 
 
 class ConnectionUriTests(unittest.TestCase):

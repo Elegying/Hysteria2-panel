@@ -4,11 +4,15 @@
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import sqlite3
+import threading
 import time
 import urllib.parse
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -17,6 +21,7 @@ SCRYPT_R = 8
 SCRYPT_P = 1
 PBKDF2_ITERATIONS = 600000
 NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
+LOGGER = logging.getLogger("hysteria2-panel")
 
 
 def hash_password(password):
@@ -317,3 +322,104 @@ def build_connection_uri(host, port, auth, pin_sha256, label):
         query,
         urllib.parse.quote(label, safe=""),
     )
+
+
+class LoginRateLimiter:
+    def __init__(self, max_attempts=5, window_seconds=900, clock=time.time):
+        self.max_attempts = int(max_attempts)
+        self.window_seconds = int(window_seconds)
+        self.clock = clock
+        self._attempts = {}
+        self._lock = threading.Lock()
+
+    def _recent(self, address):
+        cutoff = self.clock() - self.window_seconds
+        recent = [timestamp for timestamp in self._attempts.get(address, []) if timestamp > cutoff]
+        if recent:
+            self._attempts[address] = recent
+        else:
+            self._attempts.pop(address, None)
+        return recent
+
+    def is_allowed(self, address):
+        with self._lock:
+            return len(self._recent(address)) < self.max_attempts
+
+    def record_failure(self, address):
+        with self._lock:
+            recent = self._recent(address)
+            recent.append(self.clock())
+            self._attempts[address] = recent
+
+    def record_success(self, address):
+        with self._lock:
+            self._attempts.pop(address, None)
+
+
+class JsonHandler(BaseHTTPRequestHandler):
+    server_version = "Hysteria2Panel"
+    sys_version = ""
+
+    def _request_id(self):
+        if not hasattr(self, "request_id"):
+            self.request_id = uuid.uuid4().hex
+        return self.request_id
+
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Request-ID", self._request_id())
+        super().end_headers()
+
+    def send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, message_format, *args):
+        LOGGER.info(
+            json.dumps(
+                {
+                    "event": "http_request",
+                    "requestId": self._request_id(),
+                    "remoteAddress": self.client_address[0],
+                    "method": self.command,
+                    "path": self.path.split("?", 1)[0],
+                    "message": message_format % args,
+                },
+                separators=(",", ":"),
+            )
+        )
+
+
+class InternalAuthHandler(JsonHandler):
+    def do_POST(self):
+        if self.path != "/auth":
+            self.send_json(404, {"error": {"code": "NOT_FOUND", "message": "Not found"}})
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            content_length = -1
+        if content_length < 0 or content_length > 4096:
+            self.send_json(413, {"error": {"code": "REQUEST_TOO_LARGE", "message": "Request too large"}})
+            return
+        status, payload = handle_auth_payload(self.server.database, self.rfile.read(content_length))
+        self.send_json(status, payload)
+
+    def do_GET(self):
+        if self.path == "/healthz":
+            self.send_json(200, {"status": "ok"})
+            return
+        self.send_json(404, {"error": {"code": "NOT_FOUND", "message": "Not found"}})
+
+
+def make_internal_server(address, database):
+    server = ThreadingHTTPServer(address, InternalAuthHandler)
+    server.database = database
+    return server
