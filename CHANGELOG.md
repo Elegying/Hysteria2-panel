@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.1] - 2026-08-10
+
+### Fixed
+
+- Allow the panel's exact sudoers-approved Hysteria service controls to execute by removing the incompatible `PrivateDevices=true` sandbox from the panel unit. The Hysteria server unit keeps the sandbox.
+
 ## [0.3.0] - 2026-08-10
 
 ### Added

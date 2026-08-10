@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.3.0"
+PANEL_VERSION="0.3.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 HYSTERIA_VERSION="2.12.1"
@@ -328,7 +328,6 @@ Restart=on-failure
 RestartSec=3s
 UMask=0077
 PrivateTmp=true
-PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
