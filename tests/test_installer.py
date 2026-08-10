@@ -1,10 +1,14 @@
+import socket
 import subprocess
+import sys
+import time
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
+TCP_PROBE = ROOT / "tcp_probe.py"
 
 
 class InstallerContractTests(unittest.TestCase):
@@ -21,7 +25,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.3.2"', source)
+        self.assertIn('PANEL_VERSION="0.4.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -62,6 +66,23 @@ class InstallerContractTests(unittest.TestCase):
         self.assertNotIn("ufw allow", source)
         self.assertIn(".managed-by-installer", source)
 
+    def test_installer_adds_tcp_probe_on_the_hysteria_port(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("TCP_PROBE_SOURCE_URL", source)
+        self.assertIn("tcp_probe.py", source)
+        self.assertIn("hysteria2-panel-tcp-probe.service", source)
+        self.assertIn("BindsTo=hysteria2-panel-server.service", source)
+        self.assertIn("PartOf=hysteria2-panel-server.service", source)
+        self.assertIn("Wants=hysteria2-panel-tcp-probe.service", source)
+        self.assertIn("DynamicUser=true", source)
+        self.assertIn(
+            "ExecStart=/usr/bin/python3 /opt/hysteria2-panel/tcp_probe.py ${HYSTERIA_PORT}",
+            source,
+        )
+        self.assertIn('ss -H -ltn "sport = :${HYSTERIA_PORT}"', source)
+        self.assertIn('TCP/UDP ${HYSTERIA_PORT}', source)
+
     def test_installer_waits_for_service_readiness(self):
         source = INSTALLER.read_text()
 
@@ -96,8 +117,8 @@ class InstallerContractTests(unittest.TestCase):
         )
         self.assertIn("visudo -cf", source)
         self.assertIn("sudo", source)
-        self.assertEqual(1, source.count("NoNewPrivileges=true"))
-        self.assertEqual(1, source.count("PrivateDevices=true"))
+        self.assertEqual(2, source.count("NoNewPrivileges=true"))
+        self.assertEqual(2, source.count("PrivateDevices=true"))
         for sandbox_option in (
             "ProtectKernelTunables=true",
             "ProtectKernelModules=true",
@@ -105,7 +126,45 @@ class InstallerContractTests(unittest.TestCase):
             "LockPersonality=true",
             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
         ):
-            self.assertEqual(1, source.count(sandbox_option), sandbox_option)
+            expected_count = 1 if sandbox_option.endswith("AF_UNIX") else 2
+            self.assertEqual(expected_count, source.count(sandbox_option), sandbox_option)
+
+
+class TcpProbeTests(unittest.TestCase):
+    def test_probe_accepts_tcp_connections_without_sending_application_data(self):
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+
+        process = subprocess.Popen(
+            [sys.executable, str(TCP_PROBE), str(port)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    connection = socket.create_connection(("127.0.0.1", port), timeout=0.2)
+                    break
+                except OSError:
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        stdout, stderr = process.communicate(timeout=1)
+                        self.fail(f"TCP probe did not start: {stdout}{stderr}")
+                    time.sleep(0.05)
+
+            with connection:
+                connection.settimeout(1)
+                self.assertEqual(b"", connection.recv(1))
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            process.communicate()
 
 
 if __name__ == "__main__":

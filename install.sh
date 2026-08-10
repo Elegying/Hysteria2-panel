@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.3.2"
+PANEL_VERSION="0.4.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
+TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
@@ -22,7 +23,7 @@ Hysteria2-panel 一键部署
   sudo bash install.sh
 
 默认端口：
-  Hysteria 2: UDP 19999
+  Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
   管理面板:   HTTPS TCP 19998（可选 HTTP）
 
 可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、ADMIN_USER、ADMIN_PASSWORD
@@ -161,13 +162,17 @@ MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
 if [[ ! -e "${MANAGED_MARKER}" ]] && {
   [[ -e /opt/hysteria2-panel ]] || [[ -e /etc/hysteria2-panel ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-server.service ]]
+    [[ -e /etc/systemd/system/hysteria2-panel-server.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe.service ]]
 }; then
   fail "发现非本安装器管理的同名路径或服务；为避免覆盖，安装已停止"
 fi
 
 if ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-server.service; then
   fail "UDP ${HYSTERIA_PORT} 已被其他服务占用"
+fi
+if ss -H -ltn "sport = :${HYSTERIA_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-tcp-probe.service; then
+  fail "TCP ${HYSTERIA_PORT} 已被其他服务占用"
 fi
 if ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2-panel.service; then
   fail "TCP ${PANEL_PORT} 已被其他服务占用"
@@ -200,7 +205,9 @@ curl -fL --retry 3 --connect-timeout 10 \
 printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
   || fail "Hysteria SHA-256 校验失败"
 curl -fL --retry 3 --connect-timeout 10 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
+curl -fL --retry 3 --connect-timeout 10 "${TCP_PROBE_SOURCE_URL}" -o "${TMP_DIR}/tcp_probe.py"
 python3 -m py_compile "${TMP_DIR}/hysteria2_panel.py" || fail "面板源码语法检查失败"
+python3 -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="/var/backups/hysteria2-panel/${timestamp}"
@@ -208,7 +215,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
@@ -241,6 +248,7 @@ install -d -o root -g root -m 0755 /opt/hysteria2-panel
 install -d -o root -g root -m 0755 /opt/hysteria2-panel/bin
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria" /opt/hysteria2-panel/bin/hysteria
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria2_panel.py" /opt/hysteria2-panel/hysteria2_panel.py
+install -o root -g root -m 0755 "${TMP_DIR}/tcp_probe.py" /opt/hysteria2-panel/tcp_probe.py
 install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"
 
 CERT_FILE=/etc/hysteria2-panel/server.crt
@@ -347,6 +355,7 @@ Description=Hysteria 2 server
 After=network-online.target hysteria2-panel.service
 Wants=network-online.target
 Requires=hysteria2-panel.service
+Wants=hysteria2-panel-tcp-probe.service
 
 [Service]
 Type=simple
@@ -375,6 +384,36 @@ LimitNOFILE=1048576
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/hysteria2-panel-tcp-probe.service <<EOF
+[Unit]
+Description=Hysteria 2 TCP connectivity probe
+After=hysteria2-panel-server.service
+BindsTo=hysteria2-panel-server.service
+PartOf=hysteria2-panel-server.service
+
+[Service]
+Type=simple
+DynamicUser=true
+ExecStart=/usr/bin/python3 /opt/hysteria2-panel/tcp_probe.py ${HYSTERIA_PORT}
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+TasksMax=16
+MemoryMax=64M
+LimitNOFILE=4096
+EOF
+
 set -a
 # shellcheck disable=SC1090
 source "${ENV_FILE}"
@@ -394,6 +433,7 @@ systemctl restart hysteria2-panel.service
 systemctl restart hysteria2-panel-server.service
 systemctl is-active --quiet hysteria2-panel.service || fail "面板服务启动失败"
 systemctl is-active --quiet hysteria2-panel-server.service || fail "Hysteria 服务启动失败"
+systemctl is-active --quiet hysteria2-panel-tcp-probe.service || fail "TCP 连通性探测服务启动失败"
 
 PANEL_HEALTH_TLS_MODE=strict
 [[ "${PANEL_SCHEME}" != "https" ]] || PANEL_HEALTH_TLS_MODE=insecure
@@ -402,14 +442,15 @@ wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz" "${PANEL_HEA
 wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
+ss -H -ltn "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria TCP 探测端口未监听"
 ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
 
 echo
 echo "部署完成"
 echo "面板地址：${PANEL_SCHEME}://${PUBLIC_HOST}:${PANEL_PORT}/"
-echo "Hysteria 端口：UDP ${HYSTERIA_PORT}"
+echo "Hysteria 端口：TCP/UDP ${HYSTERIA_PORT}"
 echo "证书指纹：${CERT_PIN}"
-echo "如云平台或主机启用了防火墙，请放行 UDP ${HYSTERIA_PORT} 与 TCP ${PANEL_PORT}。"
+echo "如云平台或主机启用了防火墙，请放行 TCP/UDP ${HYSTERIA_PORT} 与 TCP ${PANEL_PORT}。"
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
   echo "首次打开自签名 HTTPS 地址时，浏览器会显示证书警告。"
 else
