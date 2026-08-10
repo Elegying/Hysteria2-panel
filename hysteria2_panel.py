@@ -4,6 +4,7 @@
 import argparse
 import base64
 import datetime
+import functools
 import getpass
 import hashlib
 import hmac
@@ -741,6 +742,12 @@ def verify_password(password, encoded):
         return False
 
 
+@functools.lru_cache(maxsize=1)
+def _dummy_admin_password_hash():
+    # Use the runtime's preferred KDF so unknown usernames do not take a cheaper path.
+    return hash_password(secrets.token_urlsafe(32))
+
+
 def _validate_name(name):
     if not isinstance(name, str):
         raise ValueError("name must be text")
@@ -762,6 +769,7 @@ class Database:
         if not isinstance(hmac_key, bytes) or len(hmac_key) < 32:
             raise ValueError("hmac key must contain at least 32 bytes")
         self.hmac_key = hmac_key
+        self._dummy_password_hash = _dummy_admin_password_hash()
 
     def _connect(self):
         connection = sqlite3.connect(str(self.path), timeout=5)
@@ -852,6 +860,7 @@ class Database:
                     "UPDATE admins SET password_hash = ?, updated_at = ? WHERE id = ?",
                     (password_hash, now, row["id"]),
                 )
+                connection.execute("DELETE FROM sessions WHERE admin_id = ?", (row["id"],))
                 return row["id"]
             cursor = connection.execute(
                 "INSERT INTO admins(username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -870,7 +879,8 @@ class Database:
             row = connection.execute(
                 "SELECT id, password_hash FROM admins WHERE username = ?", (username,)
             ).fetchone()
-        if row and verify_password(password, row["password_hash"]):
+        password_hash = row["password_hash"] if row else self._dummy_password_hash
+        if verify_password(password, password_hash) and row:
             return row["id"]
         return None
 
@@ -1183,6 +1193,18 @@ class LoginRateLimiter:
         with self._lock:
             return len(self._recent(address)) < self.max_attempts
 
+    def _retry_after(self, address):
+        recent = self._recent(address)
+        if len(recent) < self.max_attempts:
+            return 0
+        remaining = recent[0] + self.window_seconds - self.clock()
+        whole_seconds = int(remaining)
+        return max(1, whole_seconds + (0 if remaining == whole_seconds else 1))
+
+    def retry_after(self, address):
+        with self._lock:
+            return self._retry_after(address)
+
     def record_failure(self, address):
         with self._lock:
             recent = self._recent(address)
@@ -1194,6 +1216,7 @@ class LoginRateLimiter:
                 self._attempts.pop(oldest, None)
             recent.append(self.clock())
             self._attempts[address] = recent
+            return self._retry_after(address)
 
     def record_success(self, address):
         with self._lock:
@@ -1427,11 +1450,13 @@ class PanelHandler(JsonHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _send_html(self, status, body):
+    def _send_html(self, status, body, headers=None):
         encoded = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
 
@@ -1877,13 +1902,27 @@ class PanelHandler(JsonHandler):
 
     def _handle_login(self, form):
         address = self.client_address[0]
-        if not self.app.rate_limiter.is_allowed(address):
-            self._send_html(429, self._login_page("尝试次数过多，请稍后再试"))
+        retry_after = self.app.rate_limiter.retry_after(address)
+        if retry_after:
+            self._audit_safely("anonymous", "login_locked", "admin")
+            self._send_html(
+                429,
+                self._login_page("尝试次数过多，请 {} 秒后再试".format(retry_after)),
+                {"Retry-After": str(retry_after)},
+            )
             return
         admin_id = self.app.database.verify_admin(form.get("username", ""), form.get("password", ""))
         if not admin_id:
-            self.app.rate_limiter.record_failure(address)
+            retry_after = self.app.rate_limiter.record_failure(address)
             self._audit_safely("anonymous", "login_failed", "admin")
+            if retry_after:
+                self._audit_safely("anonymous", "login_locked", "admin")
+                self._send_html(
+                    429,
+                    self._login_page("尝试次数过多，请 {} 秒后再试".format(retry_after)),
+                    {"Retry-After": str(retry_after)},
+                )
+                return
             self._send_html(401, self._login_page("账号或密码错误"))
             return
         self.app.rate_limiter.record_success(address)
@@ -2420,7 +2459,7 @@ class Settings:
             raise ValueError("HY2PANEL_HMAC_KEY must decode to at least 32 bytes")
         public_host = mapping.get("HY2PANEL_PUBLIC_HOST", "").strip()
         node_name = mapping.get("HY2PANEL_NODE_NAME", "Hysteria 2").strip()
-        panel_scheme = mapping.get("HY2PANEL_PANEL_SCHEME", "https").strip().lower()
+        panel_scheme = mapping.get("HY2PANEL_PANEL_SCHEME", "http").strip().lower()
         stats_secret = mapping.get("HY2PANEL_STATS_SECRET", "")
         cert_pin = mapping.get("HY2PANEL_CERT_PIN", "").strip()
         if not public_host:
