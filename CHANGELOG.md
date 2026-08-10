@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0] - 2026-08-10
+
+### Added
+
+- Prompt for a shared node label and use it as every generated URI fragment.
+- Optional HTTP panel mode with scheme-aware cookies, HSTS and health checks.
+- Dashboard cards for service status, current users, inactive users, online devices, total upload and total download.
+- Persistent quic-go UDP send/receive buffer tuning and an increased Hysteria file-descriptor limit.
+
+### Changed
+
+- Re-running the installer now applies the supplied administrator password instead of silently ignoring it when an administrator already exists.
+
 ## [0.1.2] - 2026-08-10
 
 ### Fixed

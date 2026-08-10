@@ -21,7 +21,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.1.2"', source)
+        self.assertIn('PANEL_VERSION="0.2.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -38,6 +38,11 @@ class InstallerContractTests(unittest.TestCase):
 
         self.assertIn("read -r -s", source)
         self.assertNotRegex(source, r'ADMIN_PASSWORD="[^"$]{8,}"')
+        self.assertIn("NODE_NAME", source)
+        self.assertIn("PUBLIC_HOST", source)
+        self.assertIn("HYSTERIA_PORT", source)
+        self.assertIn("PANEL_SCHEME", source)
+        self.assertNotIn("--if-missing", source)
 
     def test_installer_is_namespaced_and_separates_service_identities(self):
         source = INSTALLER.read_text()
@@ -62,7 +67,16 @@ class InstallerContractTests(unittest.TestCase):
 
         self.assertIn("wait_for_health", source)
         self.assertIn("for _attempt in {1..30}", source)
-        self.assertIn('wait_for_health "https://127.0.0.1:${PANEL_PORT}/healthz" insecure', source)
+        self.assertIn('wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz"', source)
+
+    def test_installer_persists_quic_udp_buffer_optimization(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("/etc/sysctl.d/99-hysteria2-panel.conf", source)
+        self.assertIn("net.core.rmem_max", source)
+        self.assertIn("net.core.wmem_max", source)
+        self.assertIn("7500000", source)
+        self.assertIn("LimitNOFILE=1048576", source)
 
 
 if __name__ == "__main__":
