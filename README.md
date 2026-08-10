@@ -22,6 +22,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 | 用途 | 监听地址 | 默认端口 |
 |---|---|---:|
 | Hysteria 2 | 公网 UDP | `19999` |
+| TCP 连通性兼容探测 | 公网 TCP | 与 Hysteria 相同，默认 `19999` |
 | 管理面板 | 公网 HTTPS/HTTP TCP | `19998` |
 | 流量统计 API | `127.0.0.1` | `19997` |
 | Hysteria 认证回调 | `127.0.0.1` | `19996` |
@@ -30,7 +31,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 
 面板默认使用 HTTPS。安装时可以明确选择 HTTP；HTTP 模式不会设置 Secure Cookie 或 HSTS，但管理员密码与会话会在网络中明文传输，只应在可信网络或另有加密隧道保护时使用。
 
-> 云服务器安全组或主机防火墙必须放行 UDP `19999` 和 TCP `19998`。为避免意外改变现有防火墙策略，脚本不会自动添加规则。
+> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999` 和 TCP `19998`。为避免意外改变现有防火墙策略，脚本不会自动添加规则。
+
+TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据。它用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；探测服务会随 Hysteria 服务启停。
 
 ## 多用户管理
 
@@ -55,8 +58,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 ## 运维
 
 ```bash
-systemctl status hysteria2-panel hysteria2-panel-server
-journalctl -u hysteria2-panel -u hysteria2-panel-server --since today
+systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-tcp-probe
+journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-tcp-probe --since today
 curl -k https://127.0.0.1:19998/healthz
 ```
 
@@ -76,7 +79,7 @@ curl -k https://127.0.0.1:19998/healthz
 安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用与配置。若升级后异常：
 
 1. 停止 `hysteria2-panel-server` 和 `hysteria2-panel`；
-2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和两个 unit 文件；
+2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和 systemd unit 文件；回滚到 `v0.3.x` 时同时停用并删除 `hysteria2-panel-tcp-probe.service`；
 3. 执行 `systemctl daemon-reload`；
 4. 重新启动两个服务并检查健康接口和 UDP/TCP 监听。
 
@@ -84,7 +87,7 @@ curl -k https://127.0.0.1:19998/healthz
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile hysteria2_panel.py
+python3 -m py_compile hysteria2_panel.py tcp_probe.py
 bash -n install.sh
 shellcheck install.sh
 ```

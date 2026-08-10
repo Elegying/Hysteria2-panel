@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0] - 2026-08-10
+
+### Added
+
+- Add a hardened TCP connectivity probe on the same numeric port as Hysteria UDP, allowing TCP-only client tests to complete without exposing panel or authentication data. The probe follows the Hysteria service lifecycle and does not replace a protocol-level health check.
+
 ## [0.3.2] - 2026-08-10
 
 ### Fixed
