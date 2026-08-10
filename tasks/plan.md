@@ -44,7 +44,15 @@ Extend the existing single-file Python panel without adding a web framework. Pre
 
 - [x] Full unit/integration suite, compile, shell syntax, ShellCheck, and browser console checks pass.
 - [x] Reference-to-implementation visual QA passes.
-- [ ] CI, release, backup deployment, production login, service control, limits, sharing, and data preservation are verified.
+- [x] CI, release, backup deployment, production login, service control, limits, sharing, and data preservation are verified.
+
+## Production verification
+
+- Released `v0.3.2` after Python 3.8 and 3.12 CI passed.
+- Deployed from the immutable release tag with a timestamped backup.
+- Preserved the existing `1000` user and applied the default 3-connection / 250 GiB migration without rotating its token.
+- Verified real Hysteria TCP data through a SOCKS5 client, rejected a second connection at a one-connection test limit, persisted traffic, reset traffic, and removed the temporary user.
+- Verified panel logout/login, HTTP clipboard fallback, update checks, restart, stop and start controls, health, UDP/TCP listeners and system resource metrics.
 
 ## Risks and Mitigations
 
