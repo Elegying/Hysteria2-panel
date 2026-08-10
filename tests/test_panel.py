@@ -366,6 +366,24 @@ class UsageManagerTests(unittest.TestCase):
         self.assertTrue(manager.authorize("alice"))
         self.assertFalse(manager.authorize("alice"))
 
+    def test_rejects_authentication_when_online_limit_cannot_be_checked(self):
+        self.db.create_proxy_user("alice", device_limit=3)
+        stats = PolicyStatsClient()
+        stats.online = lambda: (_ for _ in ()).throw(OSError("stats unavailable"))
+        manager = UsageManager(self.db, stats)
+
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_rejects_authentication_when_traffic_limit_cannot_be_checked(self):
+        self.db.create_proxy_user("alice", traffic_limit_bytes=300)
+        stats = PolicyStatsClient(online={"alice": 0})
+        stats.collect_and_clear = lambda: (_ for _ in ()).throw(
+            OSError("traffic stats unavailable")
+        )
+        manager = UsageManager(self.db, stats)
+
+        self.assertFalse(manager.authorize("alice"))
+
     def test_snapshot_and_resets_include_pending_hysteria_traffic(self):
         alice = self.db.create_proxy_user("alice")
         bob = self.db.create_proxy_user("bob")

@@ -1381,6 +1381,7 @@ class UsageManager:
                 self._collect_locked()
             except Exception:
                 LOGGER.exception("traffic sync failed during authentication")
+                return False
             user = self.database.get_proxy_user_by_name(name)
             if not user or not user["enabled"]:
                 return False
@@ -1390,7 +1391,7 @@ class UsageManager:
                 online = self.stats_client.online()
             except Exception:
                 LOGGER.exception("online snapshot failed during authentication")
-                return True
+                return False
             now = self.clock()
             pending = [
                 timestamp
