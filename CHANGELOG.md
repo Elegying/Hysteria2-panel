@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.1] - 2026-08-10
+
+### Fixed
+
+- Separate the mobile login action from the password field so the button never overlaps the input.
+- Restore consistent spacing between service summary and version cards.
+
+### Changed
+
+- Place service controls, system resources and top traffic users in one compact desktop row.
+- Reduce the footprint of service statistics, port, version, update and resource cards while keeping two-column summaries on phones.
+
 ## [0.6.0] - 2026-08-10
 
 ### Added

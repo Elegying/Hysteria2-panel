@@ -1000,6 +1000,25 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('@media(max-width:640px)', body)
         self.assertIn('td::before{content:attr(data-label)', body)
 
+    def test_dashboard_compacts_operations_and_keeps_login_actions_separate(self):
+        self.db.create_proxy_user("alice")
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            dashboard = response.read().decode()
+        with self.request("/login") as response:
+            login = response.read().decode()
+
+        self.assertIn('class="operations dashboard-trio"', dashboard)
+        self.assertIn('class="card traffic-card"', dashboard)
+        self.assertIn('class="detail compact-detail"', dashboard)
+        self.assertIn('class="detail version-detail"', dashboard)
+        self.assertIn('.dashboard-trio{grid-template-columns:', dashboard)
+        self.assertIn('.version-detail{margin-top:12px', dashboard)
+        self.assertIn('class="login-form"', login)
+        self.assertIn('class="login-actions"', login)
+        self.assertIn('.login-form{display:grid;gap:12px}', login)
+
     def test_backup_download_and_restore_upload_are_authenticated_and_csrf_protected(self):
         self.db.create_proxy_user("migrating-user")
         headers, csrf_token = self.authenticated_headers()
@@ -1169,7 +1188,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.6.0", body)
+        self.assertIn("v0.6.1", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
