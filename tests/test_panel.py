@@ -1349,7 +1349,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.9.1", body)
+        self.assertIn("v0.10.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False

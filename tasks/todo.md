@@ -4,8 +4,8 @@
 - [x] 建立 76 项测试与静态检查基线
 - [x] HTTP 默认值与登录防破解测试
 - [x] 认证安全修复
-- [ ] UDP/Hysteria BBR/内核 BBR 优化
-- [ ] apt/dnf/yum 安装兼容与失败提示
+- [x] UDP/Hysteria BBR/内核 BBR 优化
+- [x] apt/dnf/yum 安装兼容与失败提示
 - [ ] 下载供应链和升级幂等检查
 - [ ] 第一轮完整代码审查与修复
 - [ ] GitHub 文档中文化和一致性校正

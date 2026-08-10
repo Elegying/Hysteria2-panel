@@ -25,7 +25,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.9.1"', source)
+        self.assertIn('PANEL_VERSION="0.10.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -47,6 +47,25 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("HYSTERIA_PORT", source)
         self.assertIn("PANEL_SCHEME", source)
         self.assertNotIn("--if-missing", source)
+
+    def test_installer_defaults_panel_to_http(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('面板访问协议 http/https [http]', source)
+        self.assertIn('PANEL_SCHEME="${PANEL_SCHEME:-http}"', source)
+        self.assertIn('管理面板:   HTTP TCP 19998（可选 HTTPS）', source)
+
+    def test_installer_supports_debian_and_rhel_package_managers(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("install_system_dependencies", source)
+        self.assertIn("apt-get install", source)
+        self.assertIn("dnf install", source)
+        self.assertIn("yum install", source)
+        self.assertIn("/etc/os-release", source)
+        self.assertIn("Python 3.8", source)
+        self.assertIn("systemd", source)
+        self.assertIn("PYTHON_BIN", source)
 
     def test_installer_is_namespaced_and_separates_service_identities(self):
         source = INSTALLER.read_text()
@@ -77,7 +96,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("Wants=hysteria2-panel-tcp-probe.service", source)
         self.assertIn("DynamicUser=true", source)
         self.assertIn(
-            "ExecStart=/usr/bin/python3 /opt/hysteria2-panel/tcp_probe.py ${HYSTERIA_PORT}",
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/tcp_probe.py ${HYSTERIA_PORT}",
             source,
         )
         self.assertIn('ss -H -ltn "sport = :${HYSTERIA_PORT}"', source)
@@ -96,7 +115,9 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("/etc/sysctl.d/99-hysteria2-panel.conf", source)
         self.assertIn("net.core.rmem_max", source)
         self.assertIn("net.core.wmem_max", source)
-        self.assertIn("7500000", source)
+        self.assertIn("16777216", source)
+        self.assertIn("net.core.default_qdisc", source)
+        self.assertIn("net.ipv4.tcp_congestion_control", source)
         self.assertIn("LimitNOFILE=1048576", source)
 
     def test_installer_explicitly_enables_hysteria_quic_bbr(self):
@@ -105,6 +126,8 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("congestion:", source)
         self.assertIn("type: bbr", source)
         self.assertIn("bbrProfile: standard", source)
+        self.assertIn("ignoreClientBandwidth: true", source)
+        self.assertIn("Nice=-5", source)
 
     def test_installer_grants_only_exact_hysteria_service_controls(self):
         source = INSTALLER.read_text()
@@ -145,7 +168,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            "ExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending",
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py restore-pending",
             source,
         )
         self.assertIn(
@@ -156,7 +179,7 @@ class InstallerContractTests(unittest.TestCase):
             "ExecStopPost=/bin/systemctl --no-block start hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service",
             source,
         )
-        self.assertNotIn("User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=/usr/bin/python3 /opt/hysteria2-panel/hysteria2_panel.py restore-pending", source)
+        self.assertNotIn("User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py restore-pending", source)
 
 
 class TcpProbeTests(unittest.TestCase):

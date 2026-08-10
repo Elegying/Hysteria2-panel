@@ -17,7 +17,7 @@
 ### 1. 认证与 HTTP 默认值
 
 - [x] 应用缺省协议改为 HTTP，HTTPS 保留为显式选项。
-- [ ] 安装器缺省协议改为 HTTP。
+- [x] 安装器缺省协议改为 HTTP。
 - [x] 同一来源 IP 在观察窗口内连续错误 5 次后立即锁定 15 分钟。
 - [x] 锁定响应返回 `429` 和 `Retry-After`，登录错误保持通用文案。
 - [x] 消除不存在管理员账号时的明显密码校验时序差异。
@@ -25,17 +25,17 @@
 
 ### 2. 视频与网页访问优化
 
-- [ ] Hysteria 固定使用内置 BBR standard，并忽略客户端错误带宽提示。
-- [ ] UDP 收发缓冲上限按官方建议提高到 16 MiB，已有更高值不降低。
-- [ ] Hysteria 服务设置官方建议的 `Nice=-5`。
-- [ ] 内核支持时启用 `fq + tcp_bbr`，不支持时告警并继续安装。
+- [x] Hysteria 固定使用内置 BBR standard，并忽略客户端错误带宽提示。
+- [x] UDP 收发缓冲上限按官方建议提高到 16 MiB，已有更高值不降低。
+- [x] Hysteria 服务设置官方建议的 `Nice=-5`。
+- [x] 内核支持时启用 `fq + tcp_bbr`，不支持时告警并继续安装。
 
 ### 3. 安装器与多系统
 
-- [ ] 支持 Debian/Ubuntu 的 apt 与 RHEL/Rocky/Alma/CentOS Stream/Fedora 的 dnf/yum。
-- [ ] 明确检查 systemd、Python 3.8+、架构、命令、端口和下载校验。
-- [ ] 所有失败点给出可行动的中文错误；升级前自动备份并保持幂等。
-- [ ] 校验 systemd、sudoers、ShellCheck、下载校验和服务就绪检查。
+- [x] 支持 Debian/Ubuntu 的 apt 与 RHEL/Rocky/Alma/CentOS Stream/Fedora 的 dnf/yum。
+- [x] 明确检查 systemd、Python 3.8+、架构、命令、端口和下载校验。
+- [x] 所有失败点给出可行动的中文错误；升级前自动备份并保持幂等。
+- [x] 校验 systemd、sudoers、ShellCheck、下载校验和服务就绪检查。
 
 ### 4. 代码审查与文档
 
