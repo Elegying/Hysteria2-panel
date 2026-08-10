@@ -56,12 +56,12 @@ h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.m
 .button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}button:hover,.button:hover{filter:brightness(1.08)}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.version-detail{display:grid;grid-template-columns:minmax(140px,.72fr) minmax(0,1.28fr);margin-top:12px;padding:0;overflow:hidden}.bbr-detail,.version-panel{padding:12px 14px}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel{border-left:1px solid #283b50}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
-.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}label{display:block;font-weight:650;margin-bottom:6px}input,textarea{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:1050px}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}
+.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-tools{justify-content:space-between;margin-bottom:14px}.user-search{width:min(360px,100%);margin:0}.search-status{margin:0;white-space:nowrap}label{display:block;font-weight:650;margin-bottom:6px}input,textarea{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:1050px}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
-.migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.credentials-dialog textarea{min-height:118px}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
+.migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
 @media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
 @media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}}
-@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.version-detail{grid-template-columns:minmax(110px,.8fr) minmax(0,1.2fr)}.bbr-detail,.version-panel{padding:10px}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
+@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.user-tools{align-items:stretch;flex-direction:column}.user-search{width:100%}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.version-detail{grid-template-columns:minmax(110px,.8fr) minmax(0,1.2fr)}.bbr-detail,.version-panel{padding:10px}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
 @media(max-width:340px){.metrics{grid-template-columns:1fr}.pill{flex-basis:100%}.version-panel{padding-inline:8px}.version-row{gap:4px}.version-row strong{font-size:16px}.compact-button{padding:7px 5px;font-size:11px;white-space:nowrap}.user-table .actions button{padding-inline:1px;font-size:10px}}
 """
 
@@ -165,6 +165,8 @@ document.addEventListener('submit', async function(event) {
     dialog.querySelector('#credentials-uri').value = payload.uri;
     dialog.dataset.refreshOnClose = '1';
     form.reset();
+    const createDialog = form.closest('dialog');
+    if (createDialog) createDialog.close();
     dialog.showModal();
   } catch (error) {
     notify(error.message || '添加用户失败，请重试', true);
@@ -200,6 +202,23 @@ const credentialsDialog = document.getElementById('credentials-dialog');
 if (credentialsDialog) credentialsDialog.addEventListener('close', function() {
   if (credentialsDialog.dataset.refreshOnClose === '1') window.location.href = '/';
 });
+const userSearch = document.querySelector('[data-user-search]');
+if (userSearch) {
+  const userRows = Array.from(document.querySelectorAll('[data-user-name]'));
+  const searchStatus = document.querySelector('[data-search-status]');
+  function filterUsers() {
+    const query = userSearch.value.trim().toLocaleLowerCase();
+    let visible = 0;
+    userRows.forEach(function(row) {
+      const matches = row.dataset.userName.toLocaleLowerCase().includes(query);
+      row.hidden = !matches;
+      if (matches) visible += 1;
+    });
+    if (searchStatus) searchStatus.textContent = query ? '显示 ' + visible + ' / ' + userRows.length + ' 个用户' : '共 ' + userRows.length + ' 个用户';
+  }
+  userSearch.addEventListener('input', filterUsers);
+  filterUsers();
+}
 """
 
 
@@ -1495,9 +1514,7 @@ class PanelHandler(JsonHandler):
 <p class="login-actions"><button type="submit">登录</button></p></form></section>""".format(error=error_html)
         return self._page("登录", content)
 
-    def _dashboard(self, session, page_number=1, sort_by="", sort_order=""):
-        page_size = 50
-        page_number = max(1, page_number)
+    def _dashboard(self, session, sort_by="", sort_order=""):
         try:
             snapshot = self.app.usage_manager.snapshot()
         except Exception:
@@ -1517,8 +1534,6 @@ class PanelHandler(JsonHandler):
                 key=lambda item: item["tx_bytes"] + item["rx_bytes"],
                 reverse=sort_order == "desc",
             )
-        offset = (page_number - 1) * page_size
-        result = {"users": listed_users[offset : offset + page_size], "total": len(listed_users)}
         summary = summarize_dashboard([user["name"] for user in all_users], snapshot)
         try:
             service_status = self.app.service_controller.status()
@@ -1543,7 +1558,7 @@ class PanelHandler(JsonHandler):
             }
         csrf = html.escape(session["csrf_token"], quote=True)
         rows = []
-        for user in result["users"]:
+        for user in listed_users:
             name = user["name"]
             traffic = snapshot.get("traffic", {}).get(name, {})
             online = snapshot.get("online", {}).get(name, 0)
@@ -1554,7 +1569,7 @@ class PanelHandler(JsonHandler):
             action_label = "禁用" if enabled else "启用"
             action_class = "danger" if enabled else "secondary"
             rows.append(
-                """<tr><td data-label="名称"><strong>{name}</strong></td>
+                """<tr data-user-name="{search_name}"><td data-label="名称"><strong>{name}</strong></td>
 <td data-label="状态"><span class="status {state_class}">{state}</span></td><td data-label="在线设备">{online} / {device_limit}</td><td data-label="上传 / 下载">{tx} / {rx}</td>
 <td class="traffic-cell" data-label="总流量"><progress max="100" value="{percent:.1f}" aria-label="{name} 总流量使用 {percent:.1f}%"></progress><div class="traffic-label"><span>{used} / {limit}</span><span>{percent:.1f}%</span></div></td>
 <td data-label="操作"><div class="actions">
@@ -1565,6 +1580,7 @@ class PanelHandler(JsonHandler):
 <form class="inline" method="post" action="/users/{id}/reset" data-confirm="确定重置该用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="ghost" type="submit">重置流量</button></form>
 </div></td></tr>""".format(
                     name=html.escape(name),
+                    search_name=html.escape(name, quote=True),
                     state="启用" if enabled else "禁用",
                     state_class="enabled" if enabled else "disabled",
                     online=int(online),
@@ -1583,8 +1599,6 @@ class PanelHandler(JsonHandler):
             )
         if not rows:
             rows.append('<tr><td colspan="6" class="muted empty-state">暂无用户，请先创建。</td></tr>')
-        pages = max(1, (result["total"] + page_size - 1) // page_size)
-        pager = '<p class="muted">第 {} / {} 页，共 {} 个用户</p>'.format(page_number, pages, result["total"])
         traffic_sort_next = "asc" if sort_order == "desc" else "desc"
         traffic_sort_mark = "↑" if sort_order == "asc" else "↓" if sort_order == "desc" else "⇅"
         traffic_sort_aria = (
@@ -1643,13 +1657,15 @@ class PanelHandler(JsonHandler):
 <article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article></div></div></dialog>
 <dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>节点信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点信息弹窗">×</button></div>
 <label for="credentials-uri">Hysteria 2 节点代码</label><textarea id="credentials-uri" rows="5" readonly></textarea><p><button type="button" data-copy-target="credentials-uri">复制节点代码</button></p><p class="notice">关闭弹窗后会刷新当前用户列表。</p></div></dialog>
-<p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
-<section class="card"><div class="section-head"><div><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
-<form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div>
+<dialog id="create-user-dialog" class="migration-dialog create-dialog" aria-labelledby="create-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="create-user-title">添加用户</h2><p class="muted">设置用户名称、设备数和总流量限制。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭添加用户弹窗">×</button></div>
 <form class="create-grid" method="post" action="/users" data-create-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机"></div>
 <div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
-<div><label for="traffic_limit_gb">总流量（GB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form>
-<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="/?sort=traffic&amp;order={traffic_sort_next}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div>{pager}</section>""".format(
+<div><label for="traffic_limit_gb">总流量（GB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
+<p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
+<section class="card"><div class="section-head"><div><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
+<div class="section-actions"><button type="button" data-dialog-open="create-user-dialog">添加用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div></div>
+<div class="user-tools"><label class="user-search" for="user-search">搜索用户<input id="user-search" type="search" placeholder="输入用户名搜索" autocomplete="off" data-user-search></label><p class="muted search-status" data-search-status role="status" aria-live="polite">共 {user_total} 个用户</p></div>
+<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="/?sort=traffic&amp;order={traffic_sort_next}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
             port=self.app.hysteria_port,
             public_host=html.escape(self.app.public_host),
             stats=stats_state,
@@ -1677,7 +1693,7 @@ class PanelHandler(JsonHandler):
             qdisc=html.escape(resources["default_qdisc"]),
             rank_rows=rank_rows,
             rows="".join(rows),
-            pager=pager,
+            user_total=len(listed_users),
             traffic_sort_aria=traffic_sort_aria,
             traffic_sort_next=traffic_sort_next,
             traffic_sort_mark=traffic_sort_mark,
@@ -1731,15 +1747,10 @@ class PanelHandler(JsonHandler):
             if not session:
                 return
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-            try:
-                page_number = int(query.get("page", ["1"])[0])
-            except ValueError:
-                page_number = 1
             self._send_html(
                 200,
                 self._dashboard(
                     session,
-                    page_number,
                     query.get("sort", [""])[0],
                     query.get("order", [""])[0],
                 ),
