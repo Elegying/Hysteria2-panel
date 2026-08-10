@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-08-10
+
+### Fixed
+
+- Restart the TCP 19999 compatibility probe after every backup restore, including restore validation failures, so TCP-only latency checks remain available with the Hysteria service.
+
 ## [0.5.0] - 2026-08-10
 
 ### Added
