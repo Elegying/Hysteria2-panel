@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-08-10
+
+### Fixed
+
+- Accept Hysteria's successful empty response body from `POST /kick` instead of misreporting a JSON decoding failure.
+
 ## [0.1.1] - 2026-08-10
 
 ### Fixed

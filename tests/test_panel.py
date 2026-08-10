@@ -375,6 +375,11 @@ class StatsApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _empty(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         if self.headers.get("Authorization") != "stats-secret":
             self.send_error(401)
@@ -393,7 +398,7 @@ class StatsApiHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(int(self.headers["Content-Length"]))
         type(self).kicked.extend(json.loads(body))
-        self._json({})
+        self._empty()
 
 
 class StatsClientTests(unittest.TestCase):

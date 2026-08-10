@@ -883,7 +883,10 @@ class HysteriaStatsClient:
         with urllib.request.urlopen(request, timeout=self.timeout) as response:
             if response.status != 200:
                 raise RuntimeError("Hysteria stats API returned {}".format(response.status))
-            payload = json.load(response)
+            raw_body = response.read()
+        if not raw_body and data is not None:
+            return {}
+        payload = json.loads(raw_body.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("Hysteria stats API returned invalid JSON")
         return payload
