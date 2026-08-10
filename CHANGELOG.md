@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0] - 2026-08-10
+
+### Added
+
+- Per-user concurrent connection and total traffic limits with defaults of 3 connections and 250 GiB.
+- Durable upload/download accounting, quota progress, per-user reset and reset-all controls.
+- Recoverable server-key-derived sharing credentials and one-click URI copying.
+- Dark operations dashboard with system resources, top-five traffic users, version checks and Hysteria service controls.
+
+### Changed
+
+- Hysteria authentication now rejects users at their connection or traffic limit while preserving the official HTTP auth response contract.
+- The installer grants the panel an exact sudoers allowlist for only start, stop and restart of its namespaced Hysteria service.
+
 ## [0.2.1] - 2026-08-10
 
 ### Fixed

@@ -8,7 +8,7 @@
 - [x] Installer permission/dependency tests
 - [x] Dark dashboard + responsive user table
 - [x] Clipboard share flow + safe legacy rotation prompt
-- [ ] Full local quality gate
-- [ ] Browser interaction and visual QA
+- [x] Full local quality gate
+- [x] Browser interaction and visual QA
 - [ ] GitHub CI/release
 - [ ] Backed-up production deployment and verification

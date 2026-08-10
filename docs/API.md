@@ -28,6 +28,8 @@
 {"ok": false, "id": ""}
 ```
 
+认证成功前会同步持久流量并检查该用户的总流量和并发连接上限。达到任一上限或本地统计接口暂时不可用时，仍使用上述 HTTP 200 拒绝响应，避免绕过限额或改变 Hysteria 的认证契约。
+
 无效 JSON、缺少 `auth` 或请求过大时返回结构化错误：
 
 ```json
@@ -45,14 +47,19 @@
 | `GET` | `/healthz` | 无敏感信息的服务健康检查 |
 | `GET` | `/login` | 登录页 |
 | `POST` | `/login` | 创建 HttpOnly、SameSite=Strict 会话；HTTPS 模式额外设置 Secure |
-| `GET` | `/` | 服务状态、全局统计、分页用户列表、在线设备与流量 |
-| `POST` | `/users` | 创建用户并仅一次显示认证密钥和 URI |
+| `GET` | `/` | 服务控制、系统资源、版本、全局统计、高流量前五、分页用户列表与限额进度 |
+| `POST` | `/users` | 创建带设备/总流量限制的用户并显示认证密钥和 URI |
 | `POST` | `/users/{id}/toggle` | 携带当前 `generation`，启用或禁用用户 |
 | `POST` | `/users/{id}/rotate` | 携带当前 `generation`，轮换认证密钥并断开旧连接 |
 | `POST` | `/users/{id}/delete` | 携带当前 `generation`，删除用户并断开连接 |
+| `POST` | `/users/{id}/share` | 携带当前 `generation`，显示可复制的当前连接 URI |
+| `POST` | `/users/{id}/reset` | 携带当前 `generation`，重置该用户流量并断开旧连接 |
+| `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
+| `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
+| `POST` | `/updates/check` | 从固定 GitHub Release API 检查面板版本，不自动安装 |
 | `POST` | `/logout` | 撤销管理会话 |
 
 面板没有对公网提供通用 JSON 管理 API，避免扩大认证和 CORS 攻击面。
-版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成且只显示一次的新凭据。
+版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成的新凭据。
 
-全局统计只汇总当前数据库中的用户，避免已删除用户仍残留在 Hysteria 统计快照时污染总数。不活跃用户定义为上传和下载均为 0 的账户；Hysteria 重启后其内存流量计数会重新开始。
+全局统计只汇总当前数据库中的用户，避免已删除用户仍残留在 Hysteria 统计快照时污染总数。不活跃用户定义为上传和下载均为 0 的账户。面板定期使用 Hysteria `/traffic?clear=true` 原子取得增量并写入 SQLite，因此正常重启不会清空累计流量。

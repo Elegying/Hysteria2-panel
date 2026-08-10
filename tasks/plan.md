@@ -42,8 +42,8 @@ Extend the existing single-file Python panel without adding a web framework. Pre
 
 ### Checkpoint: Complete
 
-- [ ] Full unit/integration suite, compile, shell syntax, ShellCheck, and browser console checks pass.
-- [ ] Reference-to-implementation visual QA passes.
+- [x] Full unit/integration suite, compile, shell syntax, ShellCheck, and browser console checks pass.
+- [x] Reference-to-implementation visual QA passes.
 - [ ] CI, release, backup deployment, production login, service control, limits, sharing, and data preservation are verified.
 
 ## Risks and Mitigations
@@ -53,7 +53,7 @@ Extend the existing single-file Python panel without adding a web framework. Pre
 | Physical devices cannot be identified by Hysteria | Medium | Enforce concurrent authenticated connections and label the behavior accurately. |
 | Traffic could be lost during a hard crash | Medium | Collect/clear frequently and sync before resets, auth decisions, and managed restarts. |
 | Service controls elevate privileges | High | Exact service/action allowlist, CSRF, audit logging, fixed subprocess argv, no shell. |
-| Existing token cannot be recovered from its HMAC fingerprint | Medium | Preserve it; provide a hidden import command that verifies the fingerprint before encryption. |
+| Existing token cannot be recovered from its HMAC fingerprint | Medium | Preserve it unchanged; require one explicit rotation before the share button can reproduce a URI. |
 | HTTP panel exposes credentials in transit | High | Preserve the user's requested mode but keep the warning and recommend restricted access. |
 
 ## Open Questions

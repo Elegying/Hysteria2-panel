@@ -36,15 +36,21 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 
 登录面板后可以：
 
-- 创建、启用、禁用和删除用户；
-- 轮换用户认证密钥；
-- 查看在线设备数与上传/下载流量；
+- 创建、启用、禁用和删除用户，并设置并发连接数与总流量限制（默认 `3` 个连接、`250 GiB`）；
+- 轮换用户认证密钥，一键复制可导入的连接 URI；
+- 查看在线设备数、上传/下载流量、总流量进度和高流量前五用户；
+- 重置单个用户或全部用户的累计流量；
 - 查看服务状态、当前用户数、不活跃用户数、在线设备总数以及总上传/下载流量；
-- 获得可直接导入客户端的 `hysteria2://` 地址。
+- 查看 CPU、内存、磁盘、运行时长、面板版本并检查更新；
+- 在面板内启动、停止或重启项目专用 Hysteria 服务。
 
 分享 URI 的节点名称由安装参数 `NODE_NAME` 统一设置，不再随面板中的用户名称变化。
 
-用户认证密钥只在创建或轮换时显示一次。数据库仅保存带服务器密钥的 HMAC 指纹，不保存认证密钥明文。禁用、删除或轮换用户时，面板会调用 Hysteria 流量 API 断开现有连接。
+新建或轮换的用户密钥由随机种子和服务器 HMAC key 派生，因此面板可以重新生成分享 URI，但数据库仍不保存认证密钥明文。旧版本用户保持原连接有效；由于原密钥只有不可逆指纹，需明确轮换一次后才能使用分享按钮。禁用、删除或轮换用户时，面板会调用 Hysteria 流量 API 断开现有连接。
+
+“设备限制”依据 Hysteria 官方 `/online` API 返回的并发认证连接数执行。该接口不能识别真实硬件，同一设备的多个连接或不同设备的连接都按并发连接计数。
+
+> Hysteria TUN 只转发 TCP/UDP，不代理 ICMP。节点能正常访问网页但系统 `ping` 超时并不表示节点故障，服务端无法通过放行 UDP 端口改变这一协议边界。
 
 ## 运维
 
@@ -63,6 +69,7 @@ curl -k https://127.0.0.1:19998/healthz
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署前的时间戳备份 |
 | `/etc/sysctl.d/99-hysteria2-panel.conf` | quic-go UDP 收发缓冲上限优化 |
+| `/etc/sudoers.d/hysteria2-panel` | 仅允许面板启停/重启项目专用 Hysteria 服务 |
 
 ### 回滚
 
@@ -86,6 +93,7 @@ shellcheck install.sh
 
 - [ADR-001：使用本机 HTTP 认证回调和标准库面板](docs/decisions/ADR-001-local-auth-panel.md)
 - [ADR-002：可选 HTTP 面板与 QUIC UDP 优化](docs/decisions/ADR-002-panel-http-and-udp-tuning.md)
+- [ADR-003：持久流量、连接限额与受限服务控制](docs/decisions/ADR-003-usage-policy-and-service-control.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证
