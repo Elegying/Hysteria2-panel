@@ -1092,6 +1092,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('<dialog id="create-user-dialog"', body)
         self.assertIn('aria-labelledby="create-user-title"', body)
         self.assertIn('class="section-actions"', body)
+        self.assertIn('placeholder="例如：Alice 手机" autofocus', body)
 
     def test_backup_download_and_restore_upload_are_authenticated_and_csrf_protected(self):
         self.db.create_proxy_user("migrating-user")
