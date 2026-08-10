@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.10.0"
+PANEL_VERSION="0.10.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="53912ab664d258064fcecb5d0f3c11e42fedb1cf63657fad2454444530ecc51d"
+PANEL_SHA256="38162a39e351b683357de49252b4a2f17071b17bba3a90970334e6744643ba49"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -624,4 +624,7 @@ if [[ "${PANEL_SCHEME}" == "https" ]]; then
   echo "首次打开自签名 HTTPS 地址时，浏览器会显示证书警告。"
 else
   echo "安全提示：面板当前使用明文 HTTP，请限制可信来源访问。"
+  if [[ -n "${detected_host}" && "${PUBLIC_HOST}" != "${detected_host}" ]]; then
+    echo "若域名的明文 HTTP 被网络重置，可尝试本机检测 IP：${PANEL_SCHEME}://${detected_host}:${PANEL_PORT}/"
+  fi
 fi

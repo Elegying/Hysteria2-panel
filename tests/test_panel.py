@@ -18,6 +18,7 @@ from unittest import mock
 from hysteria2_panel import (
     BackupManager,
     BackupValidationError,
+    BoundedThreadingHTTPServer,
     ConflictError,
     Database,
     LoginRateLimiter,
@@ -1384,7 +1385,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.10.0", body)
+        self.assertIn("v0.10.1", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
@@ -1462,6 +1463,36 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(10, self.server.request_timeout)
         self.assertEqual(64, self.server.max_workers)
         self.assertIsNone(self.server.tls_context)
+
+    def test_expected_client_disconnect_does_not_emit_server_traceback(self):
+        server = object.__new__(BoundedThreadingHTTPServer)
+        for error in (
+            BrokenPipeError("closed"),
+            ConnectionAbortedError("aborted"),
+            ConnectionResetError("reset"),
+        ):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                ThreadingHTTPServer, "handle_error"
+            ) as parent_handler:
+                try:
+                    raise error
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    server.handle_error(None, ("127.0.0.1", 12345))
+
+                parent_handler.assert_not_called()
+
+    def test_unexpected_server_error_uses_default_error_handler(self):
+        server = object.__new__(BoundedThreadingHTTPServer)
+        for error in (ValueError("unexpected"), TimeoutError("timed out")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(
+                ThreadingHTTPServer, "handle_error"
+            ) as parent_handler:
+                try:
+                    raise error
+                except (ValueError, TimeoutError):
+                    server.handle_error(None, ("127.0.0.1", 12345))
+
+                parent_handler.assert_called_once_with(None, ("127.0.0.1", 12345))
 
 
 class StatsApiHandler(BaseHTTPRequestHandler):
