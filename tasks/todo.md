@@ -5,7 +5,7 @@
 - [x] Concurrent connection limit tests
 - [x] System metrics core tests
 - [x] Fixed service control + update check core tests
-- [ ] Installer permission/dependency tests
+- [x] Installer permission/dependency tests
 - [ ] Dark dashboard + responsive user table
 - [ ] Clipboard share flow + legacy token import
 - [ ] Full local quality gate

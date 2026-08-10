@@ -27,12 +27,12 @@ Extend the existing single-file Python panel without adding a web framework. Pre
 ### Phase 2: Operations services
 
 - [ ] Add system-resource sampling, top-five traffic ranking, version checks, and service status/control adapters.
-- [ ] Extend the installer with the exact service-control permission and release dependency checks.
+- [x] Extend the installer with the exact service-control permission and release dependency checks.
 
 ### Checkpoint: Operations core
 
 - [ ] All privileged actions require authenticated CSRF-protected POST requests.
-- [ ] No arbitrary command or URL input is accepted.
+- [x] No arbitrary command or URL input is accepted by the operations adapters.
 
 ### Phase 3: Dashboard and sharing UI
 
