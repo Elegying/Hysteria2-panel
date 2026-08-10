@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Dependency-free Hysteria 2 multi-user panel."""
 
+import argparse
+import getpass
 import hashlib
 import hmac
 import html
 import http.cookies
 import json
 import logging
+import os
 import re
 import secrets
 import sqlite3
+import ssl
+import sys
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -761,3 +767,170 @@ def make_panel_server(address, application):
     server = ThreadingHTTPServer(address, PanelHandler)
     server.application = application
     return server
+
+
+class HysteriaStatsClient:
+    def __init__(self, base_url, secret, timeout=2):
+        self.base_url = base_url.rstrip("/")
+        self.secret = secret
+        self.timeout = timeout
+
+    def _request(self, path, data=None):
+        body = json.dumps(data).encode("utf-8") if data is not None else None
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=body,
+            headers={"Authorization": self.secret, "Content-Type": "application/json"},
+            method="POST" if data is not None else "GET",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            if response.status != 200:
+                raise RuntimeError("Hysteria stats API returned {}".format(response.status))
+            payload = json.load(response)
+        if not isinstance(payload, dict):
+            raise ValueError("Hysteria stats API returned invalid JSON")
+        return payload
+
+    def snapshot(self):
+        traffic = self._request("/traffic")
+        online = self._request("/online")
+        if not all(isinstance(name, str) and isinstance(stats, dict) for name, stats in traffic.items()):
+            raise ValueError("Hysteria traffic response is invalid")
+        if not all(isinstance(name, str) and isinstance(count, int) for name, count in online.items()):
+            raise ValueError("Hysteria online response is invalid")
+        return {"traffic": traffic, "online": online, "available": True}
+
+    def kick(self, name):
+        self._request("/kick", [name])
+
+
+def _parse_port(mapping, name, default):
+    try:
+        value = int(mapping.get(name, default))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("{} must be a port number".format(name)) from exc
+    if not 1 <= value <= 65535:
+        raise ValueError("{} must be between 1 and 65535".format(name))
+    return value
+
+
+class Settings:
+    def __init__(self, **values):
+        self.__dict__.update(values)
+
+    @classmethod
+    def from_mapping(cls, mapping):
+        try:
+            hmac_key = bytes.fromhex(mapping.get("HY2PANEL_HMAC_KEY", ""))
+        except ValueError as exc:
+            raise ValueError("HY2PANEL_HMAC_KEY must be hexadecimal") from exc
+        if len(hmac_key) < 32:
+            raise ValueError("HY2PANEL_HMAC_KEY must decode to at least 32 bytes")
+        public_host = mapping.get("HY2PANEL_PUBLIC_HOST", "").strip()
+        stats_secret = mapping.get("HY2PANEL_STATS_SECRET", "")
+        cert_pin = mapping.get("HY2PANEL_CERT_PIN", "").strip()
+        if not public_host:
+            raise ValueError("HY2PANEL_PUBLIC_HOST is required")
+        if len(stats_secret) < 8:
+            raise ValueError("HY2PANEL_STATS_SECRET must contain at least 8 characters")
+        if not cert_pin:
+            raise ValueError("HY2PANEL_CERT_PIN is required")
+        hysteria_port = _parse_port(mapping, "HY2PANEL_HYSTERIA_PORT", 19999)
+        panel_port = _parse_port(mapping, "HY2PANEL_PANEL_PORT", 19998)
+        auth_port = _parse_port(mapping, "HY2PANEL_AUTH_PORT", 19996)
+        stats_port = _parse_port(mapping, "HY2PANEL_STATS_PORT", 19997)
+        ports = {hysteria_port, panel_port, auth_port, stats_port}
+        if len(ports) != 4:
+            raise ValueError("Hysteria, panel, auth and stats ports must be different")
+        return cls(
+            database_path=Path(mapping.get("HY2PANEL_DB", "/var/lib/hysteria2-panel/panel.db")),
+            hmac_key=hmac_key,
+            public_host=public_host,
+            hysteria_port=hysteria_port,
+            panel_host=mapping.get("HY2PANEL_PANEL_HOST", "0.0.0.0"),
+            panel_port=panel_port,
+            auth_host=mapping.get("HY2PANEL_AUTH_HOST", "127.0.0.1"),
+            auth_port=auth_port,
+            stats_port=stats_port,
+            stats_url="http://127.0.0.1:{}".format(stats_port),
+            stats_secret=stats_secret,
+            tls_cert=Path(mapping.get("HY2PANEL_TLS_CERT", "/etc/hysteria2-panel/server.crt")),
+            tls_key=Path(mapping.get("HY2PANEL_TLS_KEY", "/etc/hysteria2-panel/server.key")),
+            cert_pin=cert_pin,
+        )
+
+
+def initialize_admin(settings, username, password, if_missing=False):
+    database = Database(settings.database_path, settings.hmac_key)
+    database.initialize()
+    if if_missing and database.has_admin():
+        return False
+    database.upsert_admin(username, password)
+    return True
+
+
+def run_service(settings):
+    database = Database(settings.database_path, settings.hmac_key)
+    database.initialize()
+    if not database.has_admin():
+        raise RuntimeError("no administrator exists; run init-admin first")
+    stats_client = HysteriaStatsClient(settings.stats_url, settings.stats_secret)
+    application = PanelApplication(
+        database=database,
+        public_host=settings.public_host,
+        hysteria_port=settings.hysteria_port,
+        pin_sha256=settings.cert_pin,
+        stats_client=stats_client,
+    )
+    panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
+    tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    if hasattr(ssl, "TLSVersion"):
+        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    tls_context.load_cert_chain(str(settings.tls_cert), str(settings.tls_key))
+    panel_server.socket = tls_context.wrap_socket(panel_server.socket, server_side=True)
+    auth_server = make_internal_server((settings.auth_host, settings.auth_port), database)
+    panel_thread = threading.Thread(target=panel_server.serve_forever, name="panel-https", daemon=True)
+    panel_thread.start()
+    LOGGER.info(
+        json.dumps(
+            {
+                "event": "service_started",
+                "panelAddress": "{}:{}".format(settings.panel_host, settings.panel_port),
+                "authAddress": "{}:{}".format(settings.auth_host, settings.auth_port),
+            },
+            separators=(",", ":"),
+        )
+    )
+    try:
+        auth_server.serve_forever()
+    finally:
+        auth_server.server_close()
+        panel_server.shutdown()
+        panel_server.server_close()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Hysteria 2 multi-user panel")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+    init_parser = subcommands.add_parser("init-admin", help="create or update the administrator")
+    init_parser.add_argument("--username", required=True)
+    init_parser.add_argument("--if-missing", action="store_true")
+    subcommands.add_parser("serve", help="run the authentication service and HTTPS panel")
+    args = parser.parse_args(argv)
+    try:
+        settings = Settings.from_mapping(os.environ)
+        if args.command == "init-admin":
+            password = os.environ.get("HY2PANEL_ADMIN_PASSWORD") or getpass.getpass("Admin password: ")
+            changed = initialize_admin(settings, args.username, password, args.if_missing)
+            print(json.dumps({"status": "ok", "adminCreated": changed}, separators=(",", ":")))
+            return 0
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        run_service(settings)
+        return 0
+    except (OSError, RuntimeError, ValueError) as exc:
+        print("hysteria2-panel: {}".format(exc), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

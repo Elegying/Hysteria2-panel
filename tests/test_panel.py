@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import tempfile
 import threading
@@ -8,11 +9,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from hysteria2_panel import (
     Database,
     LoginRateLimiter,
+    HysteriaStatsClient,
     PanelApplication,
+    Settings,
     build_connection_uri,
     handle_auth_payload,
     hash_password,
@@ -293,6 +297,97 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(303, raised.exception.code)
         self.assertEqual(["<script>alert(1)</script>"], self.stats.kicked)
         self.assertIsNone(self.db.authenticate_token(created["token"]))
+
+
+class StatsApiHandler(BaseHTTPRequestHandler):
+    kicked = []
+
+    def log_message(self, *args):
+        pass
+
+    def _json(self, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.headers.get("Authorization") != "stats-secret":
+            self.send_error(401)
+            return
+        if self.path == "/traffic":
+            self._json({"alice": {"tx": 100, "rx": 200}})
+            return
+        if self.path == "/online":
+            self._json({"alice": 2})
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        if self.headers.get("Authorization") != "stats-secret" or self.path != "/kick":
+            self.send_error(401)
+            return
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        type(self).kicked.extend(json.loads(body))
+        self._json({})
+
+
+class StatsClientTests(unittest.TestCase):
+    def setUp(self):
+        StatsApiHandler.kicked = []
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), StatsApiHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.client = HysteriaStatsClient(
+            "http://127.0.0.1:{}".format(self.server.server_address[1]), "stats-secret"
+        )
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+    def test_snapshot_and_kick_use_hysteria_stats_contract(self):
+        self.assertEqual(
+            {
+                "traffic": {"alice": {"tx": 100, "rx": 200}},
+                "online": {"alice": 2},
+                "available": True,
+            },
+            self.client.snapshot(),
+        )
+
+        self.client.kick("alice")
+        self.assertEqual(["alice"], StatsApiHandler.kicked)
+
+
+class SettingsTests(unittest.TestCase):
+    def test_environment_contract_is_validated(self):
+        settings = Settings.from_mapping(
+            {
+                "HY2PANEL_DB": "/tmp/panel.db",
+                "HY2PANEL_HMAC_KEY": "ab" * 32,
+                "HY2PANEL_PUBLIC_HOST": "154.9.234.210",
+                "HY2PANEL_HYSTERIA_PORT": "19999",
+                "HY2PANEL_PANEL_PORT": "19998",
+                "HY2PANEL_AUTH_PORT": "19996",
+                "HY2PANEL_STATS_PORT": "19997",
+                "HY2PANEL_STATS_SECRET": "stats-secret",
+                "HY2PANEL_TLS_CERT": "/tmp/server.crt",
+                "HY2PANEL_TLS_KEY": "/tmp/server.key",
+                "HY2PANEL_CERT_PIN": "AA:BB:CC",
+            }
+        )
+
+        self.assertEqual(19999, settings.hysteria_port)
+        self.assertEqual(b"\xab" * 32, settings.hmac_key)
+        self.assertEqual("http://127.0.0.1:19997", settings.stats_url)
+
+        invalid = dict(os.environ)
+        invalid["HY2PANEL_HMAC_KEY"] = "too-short"
+        with self.assertRaises(ValueError):
+            Settings.from_mapping(invalid)
 
 
 class ConnectionUriTests(unittest.TestCase):
