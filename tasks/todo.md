@@ -1,14 +1,16 @@
-# Operations dashboard task list
+# v0.10.0 执行清单
 
-- [x] Migration + recoverable token storage tests
-- [x] Durable traffic ledger + quota/reset tests
-- [x] Concurrent connection limit tests
-- [x] System metrics + top-five users tests
-- [x] Fixed service control + update check tests
-- [x] Installer permission/dependency tests
-- [x] Dark dashboard + responsive user table
-- [x] Clipboard share flow + safe legacy rotation prompt
-- [x] Full local quality gate
-- [x] Browser interaction and visual QA
-- [x] GitHub CI/release
-- [x] Backed-up production deployment and verification
+- [x] 读取项目记忆、线上仓库状态和官方资料
+- [x] 建立 76 项测试与静态检查基线
+- [ ] HTTP 默认值与登录防破解测试
+- [ ] 认证安全修复
+- [ ] UDP/Hysteria BBR/内核 BBR 优化
+- [ ] apt/dnf/yum 安装兼容与失败提示
+- [ ] 下载供应链和升级幂等检查
+- [ ] 第一轮完整代码审查与修复
+- [ ] GitHub 文档中文化和一致性校正
+- [ ] 本地完整质量门
+- [ ] 第二轮代码与对抗性审查
+- [ ] GitHub CI、PR、发布与线上描述
+- [ ] 生产备份部署和自动化烟雾验证
+- [ ] 项目整体报告
