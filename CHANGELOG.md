@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.2] - 2026-08-10
+
+### Fixed
+
+- Remove the remaining panel-unit sandbox directives that implicitly block setuid, allowing the exact sudoers-approved service controls to work. The panel keeps read-only system, private temporary directory, home/control-group protection and resource limits; the Hysteria server keeps the full sandbox.
+
 ## [0.3.1] - 2026-08-10
 
 ### Fixed
