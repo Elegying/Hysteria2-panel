@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0] - 2026-08-10
+
+### Added
+
+- Sort the user list by total traffic in ascending or descending order from the table header.
+- Show newly created node information in an in-page dialog with a copy button.
+
+### Changed
+
+- Copy a user's Hysteria 2 URI directly from the Share action without leaving the dashboard.
+- Keep each mobile user in one compact row with all five actions visible and no horizontal scrolling.
+- Put top-user traffic beside the username and stretch the three desktop operations cards to equal height.
+- Remove the repeated concurrent-device-limit note below each username.
+
 ## [0.6.1] - 2026-08-10
 
 ### Fixed
