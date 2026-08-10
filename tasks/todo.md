@@ -3,11 +3,11 @@
 - [x] Migration + recoverable token storage tests
 - [x] Durable traffic ledger + quota/reset tests
 - [x] Concurrent connection limit tests
-- [x] System metrics core tests
-- [x] Fixed service control + update check core tests
+- [x] System metrics + top-five users tests
+- [x] Fixed service control + update check tests
 - [x] Installer permission/dependency tests
-- [ ] Dark dashboard + responsive user table
-- [ ] Clipboard share flow + legacy token import
+- [x] Dark dashboard + responsive user table
+- [x] Clipboard share flow + safe legacy rotation prompt
 - [ ] Full local quality gate
 - [ ] Browser interaction and visual QA
 - [ ] GitHub CI/release

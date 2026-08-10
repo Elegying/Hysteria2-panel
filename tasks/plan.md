@@ -26,19 +26,19 @@ Extend the existing single-file Python panel without adding a web framework. Pre
 
 ### Phase 2: Operations services
 
-- [ ] Add system-resource sampling, top-five traffic ranking, version checks, and service status/control adapters.
+- [x] Add system-resource sampling, top-five traffic ranking, version checks, and service status/control adapters.
 - [x] Extend the installer with the exact service-control permission and release dependency checks.
 
 ### Checkpoint: Operations core
 
-- [ ] All privileged actions require authenticated CSRF-protected POST requests.
+- [x] All privileged actions require authenticated CSRF-protected POST requests.
 - [x] No arbitrary command or URL input is accepted by the operations adapters.
 
 ### Phase 3: Dashboard and sharing UI
 
-- [ ] Rebuild the dashboard to match the supplied dark blue reference at desktop and mobile widths.
-- [ ] Add user limits to creation, quota progress, share/reset actions, global reset, service controls, resources, version state, and high-traffic users.
-- [ ] Add nonce-protected one-click clipboard copying and clear confirmation states.
+- [x] Rebuild the dashboard to match the supplied dark blue reference at desktop and mobile widths.
+- [x] Add user limits to creation, quota progress, share/reset actions, global reset, service controls, resources, version state, and high-traffic users.
+- [x] Add nonce-protected one-click clipboard copying and clear confirmation states.
 
 ### Checkpoint: Complete
 

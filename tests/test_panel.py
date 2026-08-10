@@ -464,6 +464,44 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual("1天 1小时", second["uptime"])
 
 
+class FakeServiceController:
+    def __init__(self):
+        self.actions = []
+        self.state = "active"
+
+    def status(self):
+        return self.state
+
+    def action(self, action):
+        self.actions.append(action)
+        self.state = "active" if action in {"start", "restart"} else "inactive"
+        return self.state
+
+
+class FakeSystemMetrics:
+    def snapshot(self):
+        return {
+            "cpu_percent": 12.5,
+            "memory_percent": 40.0,
+            "memory_used": 400,
+            "memory_total": 1000,
+            "disk_percent": 25.0,
+            "disk_used": 250,
+            "disk_total": 1000,
+            "uptime": "1天 1小时",
+        }
+
+
+class FakeUpdateChecker:
+    def check(self):
+        return {
+            "current": "v0.3.0",
+            "latest": "v0.4.0",
+            "update_available": True,
+            "url": "https://github.com/Elegying/Hysteria2-panel/releases/latest",
+        }
+
+
 class FailingStatsClient(FakeStatsClient):
     def kick(self, name):
         raise OSError("stats unavailable")
@@ -517,6 +555,7 @@ class PanelHttpTests(unittest.TestCase):
         self.db.initialize()
         self.admin_id = self.db.upsert_admin("Elegy", "admin-password")
         self.stats = FakeStatsClient()
+        self.service_controller = FakeServiceController()
         self.application = PanelApplication(
             database=self.db,
             public_host="154.9.234.210",
@@ -524,6 +563,9 @@ class PanelHttpTests(unittest.TestCase):
             pin_sha256="AA:BB:CC",
             stats_client=self.stats,
             node_name="私家车-2026",
+            service_controller=self.service_controller,
+            system_metrics=FakeSystemMetrics(),
+            update_checker=FakeUpdateChecker(),
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -558,6 +600,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
             self.assertIn('type="password"', body)
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
+            self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
 
     def test_root_requires_authentication(self):
         with self.assertRaises(urllib.error.HTTPError) as raised:
@@ -591,7 +634,29 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("hysteria2://", body)
         self.assertIn("154.9.234.210:19999", body)
         self.assertIn("%E7%A7%81%E5%AE%B6%E8%BD%A6-2026", body)
-        self.assertEqual("alice", self.db.list_proxy_users()["users"][0]["name"])
+        user = self.db.list_proxy_users()["users"][0]
+        self.assertEqual("alice", user["name"])
+        self.assertEqual(3, user["device_limit"])
+        self.assertEqual(250 * 1024**3, user["traffic_limit_bytes"])
+
+    def test_user_creation_accepts_device_and_traffic_limits(self):
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request(
+            "/users",
+            {
+                "name": "custom",
+                "device_limit": "7",
+                "traffic_limit_gb": "500",
+                "csrf": csrf_token,
+            },
+            headers=headers,
+        ) as response:
+            self.assertEqual(201, response.status)
+
+        user = self.db.list_proxy_users()["users"][0]
+        self.assertEqual(7, user["device_limit"])
+        self.assertEqual(500 * 1024**3, user["traffic_limit_bytes"])
 
     def test_dashboard_shows_service_and_global_summary_cards(self):
         self.db.create_proxy_user("alice")
@@ -601,8 +666,109 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        for label in ("服务状态", "当前用户", "不活跃用户", "在线设备", "总上传", "总下载"):
+        for label in (
+            "服务状态",
+            "当前用户",
+            "不活跃用户",
+            "在线设备",
+            "总上传",
+            "总下载",
+            "服务控制",
+            "系统资源",
+            "高流量用户",
+            "当前版本",
+            "检查更新",
+            "重置全部流量",
+            "总流量",
+            "分享",
+            "重置流量",
+        ):
             self.assertIn(label, body)
+        self.assertIn('value="3"', body)
+        self.assertIn('value="250"', body)
+
+    def test_dashboard_shows_only_top_five_traffic_users(self):
+        for index in range(6):
+            self.db.create_proxy_user("user{}".format(index))
+            self.db.add_traffic(
+                {"user{}".format(index): {"tx": index + 1, "rx": index + 1}}
+            )
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertEqual(5, body.count('class="rank-row"'))
+        self.assertNotIn('<span class="rank-name">user0</span>', body)
+
+    def test_share_and_traffic_reset_actions_are_csrf_protected(self):
+        created = self.db.create_proxy_user("carol")
+        self.db.add_traffic({"carol": {"tx": 10, "rx": 20}})
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request(
+            "/users/{}/share".format(created["id"]),
+            {"csrf": csrf_token, "generation": "0"},
+            headers=headers,
+        ) as response:
+            body = response.read().decode()
+        self.assertIn("hysteria2://", body)
+        self.assertIn('data-copy-target="uri"', body)
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/users/{}/reset".format(created["id"]),
+                {"csrf": "wrong", "generation": "0"},
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(403, raised.exception.code)
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/users/{}/reset".format(created["id"]),
+                {"csrf": csrf_token, "generation": "0"},
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(303, raised.exception.code)
+        user = self.db.get_proxy_user(created["id"])
+        self.assertEqual((0, 0), (user["tx_bytes"], user["rx_bytes"]))
+
+    def test_legacy_user_share_requires_an_explicit_rotation(self):
+        legacy = self.db.create_proxy_user("legacy", token="legacy-token")
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.request(
+                "/users/{}/share".format(legacy["id"]),
+                {"csrf": csrf_token, "generation": "0"},
+                headers=headers,
+            )
+
+        self.assertEqual(409, raised.exception.code)
+        self.assertIn("轮换密钥", raised.exception.read().decode())
+
+    def test_global_reset_service_control_and_update_check(self):
+        user = self.db.create_proxy_user("carol")
+        self.db.add_traffic({"carol": {"tx": 10, "rx": 20}})
+        headers, csrf_token = self.authenticated_headers()
+
+        for path in ("/users/reset-traffic", "/service/stop", "/updates/check"):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                self.request(
+                    path,
+                    {"csrf": csrf_token},
+                    headers=headers,
+                    follow_redirects=False,
+                )
+            self.assertEqual(303, raised.exception.code)
+
+        self.assertEqual((0, 0), tuple(self.db.get_proxy_user(user["id"])[key] for key in ("tx_bytes", "rx_bytes")))
+        self.assertEqual(["stop"], self.service_controller.actions)
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+        self.assertIn("v0.4.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False

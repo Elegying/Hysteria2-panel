@@ -39,6 +39,43 @@ MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
 PANEL_VERSION = "0.3.0"
 
+PAGE_STYLE = """
+:root{--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+main{width:min(1500px,calc(100% - 40px));margin:28px auto 48px}.topbar{display:flex;align-items:center;gap:14px;background:#102846;border:1px solid #284867;border-radius:22px;padding:24px 28px;margin-bottom:20px}.brand{min-width:max-content}.eyebrow{display:inline-block;border:1px solid #405b7c;border-radius:999px;padding:7px 13px;color:#c8d7ef;font-size:12px;letter-spacing:.12em}.topbar h1{font-size:32px;margin:0 6px}.topbar-spacer{flex:1}.pill{border:1px solid #3a526b;border-radius:999px;padding:9px 14px;color:var(--muted);white-space:nowrap}.pill strong{color:var(--text);margin-left:6px}
+h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.muted{color:var(--muted)}.ok{color:var(--success)}.bad{color:var(--danger)}.warning{color:var(--warning)}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:20px}.metric,.card{background:var(--surface);border:1px solid var(--line);border-radius:18px}.metric{padding:22px;border-top:3px solid var(--teal)}.metric strong{display:block;font-size:28px;margin:12px 0 4px}.metric span{color:var(--muted)}
+.operations{display:grid;grid-template-columns:1.1fr 1fr;gap:18px;margin-bottom:20px}.card{padding:24px;margin-bottom:18px}.section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:18px}.service-badge{border-radius:999px;padding:8px 13px;background:#123833;color:var(--success);font-weight:700;white-space:nowrap}.service-badge.off{background:#3a2028;color:#ff9aa4}
+.button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}button:hover,.button:hover{filter:brightness(1.08)}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}
+.resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource strong,.detail strong{display:block;font-size:22px;margin-top:8px}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:18px}.version-row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
+.rank-list{display:grid;gap:10px}.rank-row{display:grid;grid-template-columns:38px minmax(0,1fr) auto;align-items:center;gap:12px;padding:12px 14px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700}.rank-traffic{color:var(--muted)}
+.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}label{display:block;font-weight:650;margin-bottom:6px}input,textarea{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:1050px}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.inline-note{font-size:12px;color:var(--muted)}
+.login{width:min(430px,100%);margin:12vh auto}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
+@media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}}
+@media(max-width:640px){main{width:min(100% - 20px,1500px);margin:12px auto 28px}.topbar{padding:18px;border-radius:16px;align-items:flex-start}.topbar h1{font-size:24px;width:100%;order:-1}.brand{display:none}.pill{font-size:12px}.metrics{grid-template-columns:1fr 1fr;gap:9px}.metric{padding:15px}.metric strong{font-size:20px}.card{padding:17px;border-radius:14px}.resource-grid,.service-details,.create-grid{grid-template-columns:1fr}.section-head{flex-direction:column}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}}
+"""
+
+PAGE_SCRIPT = """
+document.addEventListener('click', async function(event) {
+  const button = event.target.closest('[data-copy-target]');
+  if (!button) return;
+  const target = document.getElementById(button.dataset.copyTarget);
+  if (!target) return;
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(target.value); copied = true; } catch (_) {}
+  }
+  if (!copied) {
+    target.focus(); target.select(); copied = document.execCommand('copy');
+  }
+  button.textContent = copied ? '已复制' : '复制失败，请手动选择';
+});
+document.addEventListener('submit', function(event) {
+  const message = event.target.dataset.confirm;
+  if (message && !window.confirm(message)) event.preventDefault();
+});
+"""
+
 
 class ConflictError(Exception):
     """Raised when an administrator submits a stale user mutation."""
@@ -675,6 +712,9 @@ class PanelApplication:
         secure_cookies=True,
         rate_limiter=None,
         usage_manager=None,
+        service_controller=None,
+        system_metrics=None,
+        update_checker=None,
     ):
         self.database = database
         self.public_host = public_host
@@ -682,6 +722,10 @@ class PanelApplication:
         self.pin_sha256 = pin_sha256
         self.stats_client = stats_client
         self.usage_manager = usage_manager or UsageManager(database, stats_client)
+        self.service_controller = service_controller or ServiceController()
+        self.system_metrics = system_metrics or SystemMetrics()
+        self.update_checker = update_checker or UpdateChecker()
+        self.update_result = None
         self.node_name = node_name
         self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
@@ -737,10 +781,18 @@ class PanelHandler(JsonHandler):
     def app(self):
         return self.server.application
 
+    def _csp_nonce(self):
+        if not hasattr(self, "_page_nonce"):
+            self._page_nonce = secrets.token_urlsafe(18)
+        return self._page_nonce
+
     def end_headers(self):
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{}'; "
+            "form-action 'self'; base-uri 'none'; frame-ancestors 'none'".format(
+                self._csp_nonce()
+            ),
         )
         if self.app.secure_cookies:
             self.send_header("Strict-Transport-Security", "max-age=31536000")
@@ -808,20 +860,13 @@ class PanelHandler(JsonHandler):
     def _page(self, title, content):
         return """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} · Hysteria 2 Panel</title><style>
-:root{{--bg:#f4f6f8;--surface:#fff;--text:#18212b;--muted:#66717d;--line:#dfe4e8;--accent:#087f5b;--danger:#c92a2a}}
-*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
-main{{width:min(1080px,calc(100% - 32px));margin:40px auto}}header{{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px}}
-h1{{font-size:24px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:16px}}
-.metrics{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}}.metric{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px}}.metric strong{{display:block;font-size:22px;margin-top:4px}}.metric .ok{{color:var(--accent)}}.metric .bad{{color:var(--danger)}}
-.login{{width:min(420px,100%);margin:12vh auto}}label{{display:block;font-weight:600;margin:12px 0 6px}}input,textarea{{width:100%;padding:10px 12px;border:1px solid #b8c1c9;border-radius:6px;font:inherit}}
-button,.button{{display:inline-block;border:0;border-radius:6px;background:var(--accent);color:#fff;padding:9px 14px;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}}
-button.secondary,.button.secondary{{background:#52606d}}button.danger{{background:var(--danger)}}form.inline{{display:inline}}.actions{{display:flex;flex-wrap:wrap;gap:8px}}
-table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}}th{{color:var(--muted);font-size:13px}}
-.status{{font-weight:700}}.enabled{{color:var(--accent)}}.disabled{{color:var(--danger)}}.muted{{color:var(--muted)}}.error{{color:var(--danger)}}code{{word-break:break-all}}
-@media(max-width:720px){{main{{width:min(100% - 20px,1080px);margin:20px auto}}.metrics{{grid-template-columns:repeat(2,minmax(0,1fr))}}.table-wrap{{overflow-x:auto}}header{{align-items:flex-start;flex-direction:column}}}}
-</style></head><body><main>{content}</main></body></html>""".format(
-            title=html.escape(title), content=content
+<title>{title} · Hysteria 2 Panel</title><style>{style}</style></head><body><main>{content}</main>
+<script nonce="{nonce}">{script}</script></body></html>""".format(
+            title=html.escape(title),
+            style=PAGE_STYLE,
+            content=content,
+            nonce=self._csp_nonce(),
+            script=PAGE_SCRIPT,
         )
 
     def _login_page(self, error=""):
@@ -835,68 +880,153 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
     def _dashboard(self, session, page_number=1):
         page_size = 50
         page_number = max(1, page_number)
-        result = self.app.database.list_proxy_users(page_size, (page_number - 1) * page_size)
         try:
             snapshot = self.app.usage_manager.snapshot()
         except Exception:
             LOGGER.exception("stats snapshot failed")
             snapshot = {"traffic": {}, "online": {}, "available": False}
-        summary = summarize_dashboard(self.app.database.list_proxy_user_names(), snapshot)
+        all_users = self.app.database.list_proxy_users_for_usage()
+        result = self.app.database.list_proxy_users(page_size, (page_number - 1) * page_size)
+        summary = summarize_dashboard([user["name"] for user in all_users], snapshot)
+        try:
+            service_status = self.app.service_controller.status()
+        except Exception:
+            LOGGER.exception("service status failed")
+            service_status = "unknown"
+        try:
+            resources = self.app.system_metrics.snapshot()
+        except Exception:
+            LOGGER.exception("system metrics failed")
+            resources = {
+                "cpu_percent": 0.0,
+                "memory_percent": 0.0,
+                "memory_used": 0,
+                "memory_total": 0,
+                "disk_percent": 0.0,
+                "disk_used": 0,
+                "disk_total": 0,
+                "uptime": "不可用",
+            }
+        csrf = html.escape(session["csrf_token"], quote=True)
         rows = []
         for user in result["users"]:
             name = user["name"]
             traffic = snapshot.get("traffic", {}).get(name, {})
             online = snapshot.get("online", {}).get(name, 0)
+            used = _stat_int(traffic.get("tx", 0)) + _stat_int(traffic.get("rx", 0))
+            limit = user["traffic_limit_bytes"]
+            percent = min(100.0, 100.0 * used / limit) if limit else 0.0
             enabled = bool(user["enabled"])
             action_label = "禁用" if enabled else "启用"
             action_class = "danger" if enabled else "secondary"
             rows.append(
-                """<tr><td>{name}</td><td><span class="status {state_class}">{state}</span></td><td>{online}</td><td>{tx} / {rx}</td>
-<td><div class="actions"><form class="inline" method="post" action="/users/{id}/toggle"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="{action_class}" type="submit">{action}</button></form>
-<form class="inline" method="post" action="/users/{id}/rotate"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="secondary" type="submit">轮换密钥</button></form>
-<form class="inline" method="post" action="/users/{id}/delete"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="danger" type="submit">删除</button></form></div></td></tr>""".format(
+                """<tr><td><strong>{name}</strong><div class="inline-note">限 {device_limit} 个并发连接</div></td>
+<td><span class="status {state_class}">{state}</span></td><td>{online} / {device_limit}</td><td>{tx} / {rx}</td>
+<td class="traffic-cell"><progress max="100" value="{percent:.1f}" aria-label="{name} 总流量使用 {percent:.1f}%"></progress><div class="traffic-label"><span>{used} / {limit}</span><span>{percent:.1f}%</span></div></td>
+<td><div class="actions">
+<form class="inline" method="post" action="/users/{id}/toggle"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="{action_class}" type="submit">{action}</button></form>
+<form class="inline" method="post" action="/users/{id}/rotate" data-confirm="轮换后旧连接地址会立即失效，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="warning" type="submit">轮换密钥</button></form>
+<form class="inline" method="post" action="/users/{id}/delete" data-confirm="确定删除用户 {name} 吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="danger" type="submit">删除</button></form>
+<form class="inline" method="post" action="/users/{id}/share"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="secondary" type="submit">分享</button></form>
+<form class="inline" method="post" action="/users/{id}/reset" data-confirm="确定重置该用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="ghost" type="submit">重置流量</button></form>
+</div></td></tr>""".format(
                     name=html.escape(name),
                     state="启用" if enabled else "禁用",
                     state_class="enabled" if enabled else "disabled",
                     online=int(online),
+                    device_limit=user["device_limit"],
                     tx=_human_bytes(traffic.get("tx", 0)),
                     rx=_human_bytes(traffic.get("rx", 0)),
+                    used=_human_bytes(used),
+                    limit=_human_bytes(limit),
+                    percent=percent,
                     id=user["id"],
                     generation=user["generation"],
-                    csrf=html.escape(session["csrf_token"], quote=True),
+                    csrf=csrf,
                     action=action_label,
                     action_class=action_class,
                 )
             )
         if not rows:
-            rows.append('<tr><td colspan="5" class="muted">暂无用户，请先创建。</td></tr>')
+            rows.append('<tr><td colspan="6" class="muted">暂无用户，请先创建。</td></tr>')
         pages = max(1, (result["total"] + page_size - 1) // page_size)
         pager = '<p class="muted">第 {} / {} 页，共 {} 个用户</p>'.format(page_number, pages, result["total"])
         stats_state = "正常" if summary["service_available"] else "异常"
-        stats_class = "ok" if summary["service_available"] else "bad"
-        content = """<header><div><h1>Hysteria 2 Panel</h1><p class="muted">服务端口 UDP {port} · 流量统计 {stats}</p></div>
-<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出</button></form></header>
+        service_running = service_status == "active"
+        service_label = "Hysteria 运行中" if service_running else "Hysteria 已停止"
+        service_class = "" if service_running else " off"
+        top_users = sorted(
+            all_users,
+            key=lambda item: item["tx_bytes"] + item["rx_bytes"],
+            reverse=True,
+        )[:5]
+        rank_rows = "".join(
+            '<div class="rank-row"><span class="rank-number">#{rank}</span><span class="rank-name">{name}</span><span class="rank-traffic">{traffic}</span></div>'.format(
+                rank=index,
+                name=html.escape(user["name"]),
+                traffic=_human_bytes(user["tx_bytes"] + user["rx_bytes"]),
+            )
+            for index, user in enumerate(top_users, 1)
+        ) or '<p class="muted">暂无用户流量。</p>'
+        update = self.app.update_result
+        if update:
+            update_text = (
+                '发现新版本 <a href="{url}">{latest}</a>'
+                if update["update_available"]
+                else "当前已是最新版本"
+            ).format(url=html.escape(update["url"], quote=True), latest=html.escape(update["latest"]))
+        else:
+            update_text = "尚未检查远程版本"
+        content = """<header class="topbar"><span class="eyebrow brand">HYSTERIA CONTROL CENTER</span><h1>Hysteria 2 用户管理面板</h1><span class="topbar-spacer"></span>
+<span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">最近刷新 <strong>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
+<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
 <section class="metrics" aria-label="服务概览">
-<div class="metric"><span class="muted">服务状态</span><strong class="{stats_class}">{stats}</strong></div>
-<div class="metric"><span class="muted">当前用户</span><strong>{total_users}</strong></div>
-<div class="metric"><span class="muted">不活跃用户</span><strong>{inactive_users}</strong></div>
-<div class="metric"><span class="muted">在线设备</span><strong>{online_devices}</strong></div>
-<div class="metric"><span class="muted">总上传</span><strong>{total_tx}</strong></div>
-<div class="metric"><span class="muted">总下载</span><strong>{total_rx}</strong></div>
+<div class="metric"><span>不活跃用户</span><strong>{inactive_users}</strong><small class="muted">上传与下载均为 0</small></div>
+<div class="metric"><span>在线设备</span><strong>{online_devices}</strong><small class="muted">按并发连接近似统计</small></div>
+<div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">全部用户累计上传</small></div>
+<div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">全部用户累计下载</small></div>
 </section>
-<section class="card"><h2>创建用户</h2><form method="post" action="/users"><input type="hidden" name="csrf" value="{csrf}"><label for="name">用户名称</label>
-<input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机"><p><button type="submit">创建并生成连接</button></p></form></section>
-<section class="card"><h2>用户</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th>操作</th></tr></thead>
-<tbody>{rows}</tbody></table></div>{pager}</section>""".format(
+<section class="operations">
+<article class="card"><div class="section-head"><div><h2>服务控制</h2><p class="muted">启停、重启和版本检查集中在这里。</p></div><span class="service-badge{service_class}">{service_label}</span></div>
+<div class="button-row"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动 Hysteria</button></form>
+<form method="post" action="/service/restart" data-confirm="确定重启 Hysteria 服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启 Hysteria</button></form>
+<form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止 Hysteria</button></form><a class="button secondary" href="/">刷新状态</a></div>
+<div class="service-details"><div class="detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail"><span class="muted">服务端口</span><strong>UDP {port}</strong></div></div>
+<div class="detail"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">检查更新</button></form></div><p class="muted">{update_text}</p></div></article>
+<article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div></div><div class="resource-grid">
+<div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu:.1f}%</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory:.1f}%</strong><small class="muted">{memory_used} / {memory_total}</small></div>
+<div class="resource"><span class="muted">磁盘占用</span><strong>{disk:.1f}%</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div></div></article>
+</section>
+<section class="card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></section>
+<section class="card"><div class="section-head"><div><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
+<form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div>
+<form class="create-grid" method="post" action="/users"><input type="hidden" name="csrf" value="{csrf}"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机"></div>
+<div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
+<div><label for="traffic_limit_gb">总流量（GB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form>
+<div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th>总流量</th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div>{pager}</section>""".format(
             port=self.app.hysteria_port,
             stats=stats_state,
-            stats_class=stats_class,
+            stats_class="ok" if summary["service_available"] else "bad",
+            service_label=service_label,
+            service_class=service_class,
+            refreshed=time.strftime("%H:%M:%S"),
             total_users=summary["total_users"],
             inactive_users=summary["inactive_users"],
             online_devices=summary["online_devices"],
             total_tx=_human_bytes(summary["total_tx"]),
             total_rx=_human_bytes(summary["total_rx"]),
-            csrf=html.escape(session["csrf_token"], quote=True),
+            csrf=csrf,
+            version=PANEL_VERSION,
+            update_text=update_text,
+            cpu=resources["cpu_percent"],
+            memory=resources["memory_percent"],
+            memory_used=_human_bytes(resources["memory_used"]),
+            memory_total=_human_bytes(resources["memory_total"]),
+            disk=resources["disk_percent"],
+            disk_used=_human_bytes(resources["disk_used"]),
+            disk_total=_human_bytes(resources["disk_total"]),
+            uptime=html.escape(resources["uptime"]),
+            rank_rows=rank_rows,
             rows="".join(rows),
             pager=pager,
         )
@@ -910,11 +1040,11 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
             self.app.pin_sha256,
             self.app.node_name,
         )
-        content = """<header><h1>连接信息</h1><a class="button secondary" href="/">返回控制台</a></header>
-<section class="card"><p><strong>{name}</strong> 已创建。以下密钥和连接地址只显示一次，请立即保存。</p>
-<label for="token">认证密钥</label><textarea id="token" rows="2" readonly>{token}</textarea>
-<label for="uri">Hysteria 2 连接地址</label><textarea id="uri" rows="4" readonly>{uri}</textarea>
-<p class="muted">客户端会使用自签名证书，并同时固定证书 SHA-256 指纹。</p></section>""".format(
+        content = """<header class="topbar"><h1>连接分享</h1><span class="topbar-spacer"></span><a class="button secondary" href="/">返回控制台</a></header>
+<section class="card"><h2>{name}</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p>
+<div class="copy-grid"><div><label for="token">认证密钥</label><textarea id="token" rows="2" readonly>{token}</textarea></div><button class="secondary" type="button" data-copy-target="token">复制密钥</button></div>
+<div class="copy-grid"><div><label for="uri">Hysteria 2 连接地址</label><textarea id="uri" rows="4" readonly>{uri}</textarea></div><button type="button" data-copy-target="uri">一键复制分享</button></div>
+<p class="notice" role="status">客户端会使用自签名证书，并同时固定证书 SHA-256 指纹。</p></section>""".format(
             name=html.escape(credentials["name"]),
             token=html.escape(credentials["token"]),
             uri=html.escape(uri),
@@ -968,15 +1098,28 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
             return
         if path == "/logout":
             self.app.database.revoke_session(self._session_token())
+            secure = "; Secure" if self.app.secure_cookies else ""
             self._redirect(
                 "/login",
-                "{}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict".format(self.cookie_name),
+                "{}=; Path=/; Max-Age=0{}; HttpOnly; SameSite=Strict".format(
+                    self.cookie_name, secure
+                ),
             )
             return
         if path == "/users":
             self._handle_create_user(session, form)
             return
-        match = re.fullmatch(r"/users/(\d+)/(toggle|rotate|delete)", path)
+        if path == "/users/reset-traffic":
+            self._handle_reset_all_traffic(session)
+            return
+        service_match = re.fullmatch(r"/service/(start|stop|restart)", path)
+        if service_match:
+            self._handle_service_action(session, service_match.group(1))
+            return
+        if path == "/updates/check":
+            self._handle_update_check(session)
+            return
+        match = re.fullmatch(r"/users/(\d+)/(toggle|rotate|delete|share|reset)", path)
         if match:
             self._handle_user_action(session, int(match.group(1)), match.group(2), form)
             return
@@ -1004,9 +1147,15 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
 
     def _handle_create_user(self, session, form):
         try:
+            device_limit = int(form.get("device_limit", DEFAULT_DEVICE_LIMIT))
+            traffic_limit_gb = int(form.get("traffic_limit_gb", 250))
             with self.app.user_action_lock:
-                credentials = self.app.database.create_proxy_user(form.get("name", ""))
-        except ValueError as exc:
+                credentials = self.app.database.create_proxy_user(
+                    form.get("name", ""),
+                    device_limit=device_limit,
+                    traffic_limit_bytes=traffic_limit_gb * 1024**3,
+                )
+        except (TypeError, ValueError) as exc:
             self._error_page(400, str(exc))
             return
         self._audit_safely(session["username"], "proxy_user_created", credentials["name"])
@@ -1050,6 +1199,33 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
                     )
                     self._send_html(200, self._credentials_page(session, credentials))
                     return
+                if action == "share":
+                    user = self.app.database.get_proxy_user(user_id)
+                    token = self.app.database.recover_proxy_token(user_id)
+                    if token is None:
+                        self._error_page(
+                            409,
+                            "该用户来自旧版本，原密钥不可逆保存；请先点击轮换密钥，再使用分享功能",
+                        )
+                        return
+                    self._audit_safely(session["username"], "proxy_link_shared", user["name"])
+                    self._send_html(
+                        200,
+                        self._credentials_page(
+                            session, {"id": user["id"], "name": user["name"], "token": token}
+                        ),
+                    )
+                    return
+                if action == "reset":
+                    user = self.app.database.get_proxy_user(user_id)
+                    self.app.usage_manager.reset_user(
+                        user_id, expected_generation=generation
+                    )
+                    self._audit_safely(
+                        session["username"], "proxy_traffic_reset", user["name"]
+                    )
+                    self._redirect("/")
+                    return
                 user = self.app.database.delete_proxy_user(
                     user_id, expected_generation=generation
                 )
@@ -1065,6 +1241,41 @@ table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-botto
         except Exception:
             LOGGER.exception("user action failed")
             self._error_page(500, "操作未完成，请检查服务日志")
+
+    def _handle_reset_all_traffic(self, session):
+        try:
+            with self.app.user_action_lock:
+                self.app.usage_manager.reset_all()
+            self._audit_safely(session["username"], "all_proxy_traffic_reset", "all")
+            self._redirect("/")
+        except Exception:
+            LOGGER.exception("resetting all traffic failed")
+            self._error_page(500, "流量重置失败，请检查服务日志")
+
+    def _handle_service_action(self, session, action):
+        try:
+            if action in {"stop", "restart"}:
+                try:
+                    self.app.usage_manager.collect_once()
+                except Exception:
+                    LOGGER.exception("traffic sync before service action failed")
+            state = self.app.service_controller.action(action)
+            self._audit_safely(
+                session["username"], "hysteria_service_{}".format(action), state
+            )
+            self._redirect("/")
+        except (RuntimeError, ValueError):
+            LOGGER.exception("service action failed")
+            self._error_page(500, "服务控制失败，请检查服务日志")
+
+    def _handle_update_check(self, session):
+        try:
+            self.app.update_result = self.app.update_checker.check()
+            self._audit_safely(session["username"], "panel_update_checked", PANEL_VERSION)
+            self._redirect("/")
+        except Exception:
+            LOGGER.exception("update check failed")
+            self._error_page(502, "暂时无法检查更新，请稍后重试")
 
 
 def make_panel_server(address, application):
