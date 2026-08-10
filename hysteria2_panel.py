@@ -3,6 +3,8 @@
 
 import hashlib
 import hmac
+import html
+import http.cookies
 import json
 import logging
 import re
@@ -246,6 +248,10 @@ class Database:
             raise KeyError("proxy user not found")
         return row
 
+    def get_proxy_user(self, user_id):
+        with self._connect() as connection:
+            return dict(self._get_proxy_user(user_id, connection))
+
     def set_proxy_user_enabled(self, user_id, enabled):
         now = int(time.time())
         with self._connect() as connection:
@@ -254,6 +260,7 @@ class Database:
                 "UPDATE proxy_users SET enabled = ?, updated_at = ? WHERE id = ?",
                 (1 if enabled else 0, now, row["id"]),
             )
+            return dict(row)
 
     def rotate_proxy_token(self, user_id, token=None):
         token = _validate_token(token or secrets.token_urlsafe(24))
@@ -273,6 +280,7 @@ class Database:
         with self._connect() as connection:
             row = self._get_proxy_user(user_id, connection)
             connection.execute("DELETE FROM proxy_users WHERE id = ?", (row["id"],))
+            return dict(row)
 
     def list_proxy_users(self, limit=50, offset=0):
         limit = max(1, min(int(limit), 100))
@@ -422,4 +430,334 @@ class InternalAuthHandler(JsonHandler):
 def make_internal_server(address, database):
     server = ThreadingHTTPServer(address, InternalAuthHandler)
     server.database = database
+    return server
+
+
+class PanelApplication:
+    def __init__(
+        self,
+        database,
+        public_host,
+        hysteria_port,
+        pin_sha256,
+        stats_client,
+        rate_limiter=None,
+    ):
+        self.database = database
+        self.public_host = public_host
+        self.hysteria_port = int(hysteria_port)
+        self.pin_sha256 = pin_sha256
+        self.stats_client = stats_client
+        self.rate_limiter = rate_limiter or LoginRateLimiter()
+
+
+def _human_bytes(value):
+    value = max(0, int(value or 0))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return "{:.1f} {}".format(value, unit) if unit != "B" else "{} B".format(value)
+        value /= 1024.0
+
+
+class PanelHandler(JsonHandler):
+    cookie_name = "hy2panel_session"
+
+    @property
+    def app(self):
+        return self.server.application
+
+    def end_headers(self):
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        self.send_header("Strict-Transport-Security", "max-age=31536000")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        super().end_headers()
+
+    def _path(self):
+        return urllib.parse.urlsplit(self.path).path
+
+    def _redirect(self, location, cookie=None):
+        self.send_response(303)
+        self.send_header("Location", location)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_html(self, status, body):
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _read_form(self):
+        content_type = self.headers.get("Content-Type", "application/x-www-form-urlencoded")
+        if content_type.split(";", 1)[0].strip() != "application/x-www-form-urlencoded":
+            raise ValueError("unsupported content type")
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("invalid content length") from exc
+        if content_length < 0 or content_length > 16384:
+            raise ValueError("invalid content length")
+        parsed = urllib.parse.parse_qs(
+            self.rfile.read(content_length).decode("utf-8"),
+            keep_blank_values=True,
+            max_num_fields=10,
+        )
+        return {key: values[-1] for key, values in parsed.items()}
+
+    def _session_token(self):
+        cookie = http.cookies.SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except http.cookies.CookieError:
+            return ""
+        morsel = cookie.get(self.cookie_name)
+        return morsel.value if morsel else ""
+
+    def _session(self):
+        return self.app.database.get_session(self._session_token())
+
+    def _require_session(self):
+        session = self._session()
+        if not session:
+            self._redirect("/login")
+        return session
+
+    def _require_csrf(self, session, form):
+        submitted = form.get("csrf", "")
+        return bool(submitted) and hmac.compare_digest(session["csrf_token"], submitted)
+
+    def _page(self, title, content):
+        return """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} · Hysteria 2 Panel</title><style>
+:root{{--bg:#f4f6f8;--surface:#fff;--text:#18212b;--muted:#66717d;--line:#dfe4e8;--accent:#087f5b;--danger:#c92a2a}}
+*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}
+main{{width:min(1080px,calc(100% - 32px));margin:40px auto}}header{{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:24px}}
+h1{{font-size:24px;margin:0}}h2{{font-size:18px;margin:0 0 16px}}.card{{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:20px;margin-bottom:16px}}
+.login{{width:min(420px,100%);margin:12vh auto}}label{{display:block;font-weight:600;margin:12px 0 6px}}input,textarea{{width:100%;padding:10px 12px;border:1px solid #b8c1c9;border-radius:6px;font:inherit}}
+button,.button{{display:inline-block;border:0;border-radius:6px;background:var(--accent);color:#fff;padding:9px 14px;font:inherit;font-weight:600;text-decoration:none;cursor:pointer}}
+button.secondary,.button.secondary{{background:#52606d}}button.danger{{background:var(--danger)}}form.inline{{display:inline}}.actions{{display:flex;flex-wrap:wrap;gap:8px}}
+table{{width:100%;border-collapse:collapse}}th,td{{padding:11px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}}th{{color:var(--muted);font-size:13px}}
+.status{{font-weight:700}}.enabled{{color:var(--accent)}}.disabled{{color:var(--danger)}}.muted{{color:var(--muted)}}.error{{color:var(--danger)}}code{{word-break:break-all}}
+@media(max-width:720px){{main{{width:min(100% - 20px,1080px);margin:20px auto}}.table-wrap{{overflow-x:auto}}header{{align-items:flex-start;flex-direction:column}}}}
+</style></head><body><main>{content}</main></body></html>""".format(
+            title=html.escape(title), content=content
+        )
+
+    def _login_page(self, error=""):
+        error_html = '<p class="error" role="alert">{}</p>'.format(html.escape(error)) if error else ""
+        content = """<section class="card login"><h1>Hysteria 2 Panel</h1><p class="muted">管理员登录</p>{error}
+<form method="post" action="/login"><label for="username">账号</label><input id="username" name="username" autocomplete="username" required maxlength="64">
+<label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+<p><button type="submit">登录</button></p></form></section>""".format(error=error_html)
+        return self._page("登录", content)
+
+    def _dashboard(self, session, page_number=1):
+        page_size = 50
+        page_number = max(1, page_number)
+        result = self.app.database.list_proxy_users(page_size, (page_number - 1) * page_size)
+        try:
+            snapshot = self.app.stats_client.snapshot()
+        except Exception:
+            LOGGER.exception("stats snapshot failed")
+            snapshot = {"traffic": {}, "online": {}, "available": False}
+        rows = []
+        for user in result["users"]:
+            name = user["name"]
+            traffic = snapshot.get("traffic", {}).get(name, {})
+            online = snapshot.get("online", {}).get(name, 0)
+            enabled = bool(user["enabled"])
+            action_label = "禁用" if enabled else "启用"
+            action_class = "danger" if enabled else "secondary"
+            rows.append(
+                """<tr><td>{name}</td><td><span class="status {state_class}">{state}</span></td><td>{online}</td><td>{tx} / {rx}</td>
+<td><div class="actions"><form class="inline" method="post" action="/users/{id}/toggle"><input type="hidden" name="csrf" value="{csrf}"><button class="{action_class}" type="submit">{action}</button></form>
+<form class="inline" method="post" action="/users/{id}/rotate"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">轮换密钥</button></form>
+<form class="inline" method="post" action="/users/{id}/delete"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">删除</button></form></div></td></tr>""".format(
+                    name=html.escape(name),
+                    state="启用" if enabled else "禁用",
+                    state_class="enabled" if enabled else "disabled",
+                    online=int(online),
+                    tx=_human_bytes(traffic.get("tx", 0)),
+                    rx=_human_bytes(traffic.get("rx", 0)),
+                    id=user["id"],
+                    csrf=html.escape(session["csrf_token"], quote=True),
+                    action=action_label,
+                    action_class=action_class,
+                )
+            )
+        if not rows:
+            rows.append('<tr><td colspan="5" class="muted">暂无用户，请先创建。</td></tr>')
+        pages = max(1, (result["total"] + page_size - 1) // page_size)
+        pager = '<p class="muted">第 {} / {} 页，共 {} 个用户</p>'.format(page_number, pages, result["total"])
+        stats_state = "正常" if snapshot.get("available") else "暂不可用"
+        content = """<header><div><h1>Hysteria 2 Panel</h1><p class="muted">服务端口 UDP {port} · 流量统计 {stats}</p></div>
+<form method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出</button></form></header>
+<section class="card"><h2>创建用户</h2><form method="post" action="/users"><input type="hidden" name="csrf" value="{csrf}"><label for="name">用户名称</label>
+<input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机"><p><button type="submit">创建并生成连接</button></p></form></section>
+<section class="card"><h2>用户</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th>操作</th></tr></thead>
+<tbody>{rows}</tbody></table></div>{pager}</section>""".format(
+            port=self.app.hysteria_port,
+            stats=stats_state,
+            csrf=html.escape(session["csrf_token"], quote=True),
+            rows="".join(rows),
+            pager=pager,
+        )
+        return self._page("控制台", content)
+
+    def _credentials_page(self, session, credentials):
+        uri = build_connection_uri(
+            self.app.public_host,
+            self.app.hysteria_port,
+            credentials["token"],
+            self.app.pin_sha256,
+            credentials["name"],
+        )
+        content = """<header><h1>连接信息</h1><a class="button secondary" href="/">返回控制台</a></header>
+<section class="card"><p><strong>{name}</strong> 已创建。以下密钥和连接地址只显示一次，请立即保存。</p>
+<label for="token">认证密钥</label><textarea id="token" rows="2" readonly>{token}</textarea>
+<label for="uri">Hysteria 2 连接地址</label><textarea id="uri" rows="4" readonly>{uri}</textarea>
+<p class="muted">客户端会使用自签名证书，并同时固定证书 SHA-256 指纹。</p></section>""".format(
+            name=html.escape(credentials["name"]),
+            token=html.escape(credentials["token"]),
+            uri=html.escape(uri),
+        )
+        return self._page("连接信息", content)
+
+    def _error_page(self, status, message):
+        content = '<section class="card"><h1>操作失败</h1><p class="error">{}</p><p><a class="button secondary" href="/">返回</a></p></section>'.format(
+            html.escape(message)
+        )
+        self._send_html(status, self._page("操作失败", content))
+
+    def do_GET(self):
+        path = self._path()
+        if path == "/healthz":
+            self.send_json(200, {"status": "ok"})
+            return
+        if path == "/login":
+            if self._session():
+                self._redirect("/")
+            else:
+                self._send_html(200, self._login_page())
+            return
+        if path == "/":
+            session = self._require_session()
+            if not session:
+                return
+            try:
+                page_number = int(urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("page", ["1"])[0])
+            except ValueError:
+                page_number = 1
+            self._send_html(200, self._dashboard(session, page_number))
+            return
+        self._error_page(404, "页面不存在")
+
+    def do_POST(self):
+        path = self._path()
+        try:
+            form = self._read_form()
+        except (UnicodeDecodeError, ValueError):
+            self._error_page(400, "请求格式无效")
+            return
+        if path == "/login":
+            self._handle_login(form)
+            return
+        session = self._require_session()
+        if not session:
+            return
+        if not self._require_csrf(session, form):
+            self._error_page(403, "安全校验失败，请刷新页面后重试")
+            return
+        if path == "/logout":
+            self.app.database.revoke_session(self._session_token())
+            self._redirect(
+                "/login",
+                "{}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict".format(self.cookie_name),
+            )
+            return
+        if path == "/users":
+            self._handle_create_user(session, form)
+            return
+        match = re.fullmatch(r"/users/(\d+)/(toggle|rotate|delete)", path)
+        if match:
+            self._handle_user_action(session, int(match.group(1)), match.group(2))
+            return
+        self._error_page(404, "页面不存在")
+
+    def _handle_login(self, form):
+        address = self.client_address[0]
+        if not self.app.rate_limiter.is_allowed(address):
+            self._send_html(429, self._login_page("尝试次数过多，请稍后再试"))
+            return
+        admin_id = self.app.database.verify_admin(form.get("username", ""), form.get("password", ""))
+        if not admin_id:
+            self.app.rate_limiter.record_failure(address)
+            self.app.database.audit("anonymous", "login_failed", "admin", address)
+            self._send_html(401, self._login_page("账号或密码错误"))
+            return
+        self.app.rate_limiter.record_success(address)
+        raw_token, _ = self.app.database.create_session(admin_id)
+        self.app.database.audit(form.get("username", "admin")[:64], "login_succeeded", "admin", address)
+        cookie = "{}={}; Path=/; Max-Age=43200; Secure; HttpOnly; SameSite=Strict".format(
+            self.cookie_name, raw_token
+        )
+        self._redirect("/", cookie)
+
+    def _handle_create_user(self, session, form):
+        try:
+            credentials = self.app.database.create_proxy_user(form.get("name", ""))
+        except ValueError as exc:
+            self._error_page(400, str(exc))
+            return
+        self.app.database.audit(
+            session["username"], "proxy_user_created", credentials["name"], self.client_address[0]
+        )
+        self._send_html(201, self._credentials_page(session, credentials))
+
+    def _handle_user_action(self, session, user_id, action):
+        try:
+            if action == "toggle":
+                user = self.app.database.get_proxy_user(user_id)
+                enabled = not bool(user["enabled"])
+                self.app.database.set_proxy_user_enabled(user_id, enabled)
+                if not enabled:
+                    self.app.stats_client.kick(user["name"])
+                audit_action = "proxy_user_enabled" if enabled else "proxy_user_disabled"
+                self.app.database.audit(
+                    session["username"], audit_action, user["name"], self.client_address[0]
+                )
+                self._redirect("/")
+                return
+            if action == "rotate":
+                credentials = self.app.database.rotate_proxy_token(user_id)
+                self.app.stats_client.kick(credentials["name"])
+                self.app.database.audit(
+                    session["username"], "proxy_token_rotated", credentials["name"], self.client_address[0]
+                )
+                self._send_html(200, self._credentials_page(session, credentials))
+                return
+            user = self.app.database.delete_proxy_user(user_id)
+            self.app.stats_client.kick(user["name"])
+            self.app.database.audit(
+                session["username"], "proxy_user_deleted", user["name"], self.client_address[0]
+            )
+            self._redirect("/")
+        except KeyError:
+            self._error_page(404, "用户不存在")
+        except Exception:
+            LOGGER.exception("user action failed")
+            self._error_page(502, "用户状态已更新，但断开在线连接失败，请检查服务日志")
+
+
+def make_panel_server(address, application):
+    server = ThreadingHTTPServer(address, PanelHandler)
+    server.application = application
     return server
