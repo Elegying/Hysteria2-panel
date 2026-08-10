@@ -19,7 +19,8 @@ import shutil
 import sqlite3
 import ssl
 import stat
-import subprocess
+# Every subprocess invocation uses a fixed executable and an argv list.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import threading
@@ -645,7 +646,8 @@ class BackupManager:
             with sqlite3.connect(str(incoming_database)) as source:
                 source.row_factory = sqlite3.Row
                 rows = source.execute(
-                    "SELECT {} FROM proxy_users ORDER BY id".format(
+                    # Identifiers come only from the fixed PROXY_COLUMNS tuple.
+                    "SELECT {} FROM proxy_users ORDER BY id".format(  # nosec B608
                         ",".join(self.PROXY_COLUMNS)
                     )
                 ).fetchall()
@@ -655,7 +657,8 @@ class BackupManager:
                 destination.execute("DELETE FROM sessions")
                 destination.execute("DELETE FROM proxy_users")
                 destination.executemany(
-                    "INSERT INTO proxy_users ({}) VALUES ({})".format(
+                    # Identifiers come only from the fixed PROXY_COLUMNS tuple.
+                    "INSERT INTO proxy_users ({}) VALUES ({})".format(  # nosec B608
                         ",".join(self.PROXY_COLUMNS),
                         ",".join("?" for _ in self.PROXY_COLUMNS),
                     ),
@@ -2113,6 +2116,14 @@ def make_panel_server(address, application):
 class HysteriaStatsClient:
     def __init__(self, base_url, secret, timeout=2):
         self.base_url = base_url.rstrip("/")
+        parsed = urllib.parse.urlsplit(self.base_url)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"127.0.0.1", "::1", "localhost"}
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError("Hysteria stats API must use plaintext loopback HTTP")
         self.secret = secret
         self.timeout = timeout
 
@@ -2124,7 +2135,8 @@ class HysteriaStatsClient:
             headers={"Authorization": self.secret, "Content-Type": "application/json"},
             method="POST" if data is not None else "GET",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+        # The constructor restricts the URL to loopback HTTP.
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:  # nosec B310
             if response.status != 200:
                 raise RuntimeError("Hysteria stats API returned {}".format(response.status))
             raw_body = response.read(MAX_STATS_RESPONSE_BYTES + 1)
@@ -2509,7 +2521,8 @@ class Settings:
             public_host=public_host,
             node_name=node_name,
             hysteria_port=hysteria_port,
-            panel_host=mapping.get("HY2PANEL_PANEL_HOST", "0.0.0.0"),
+            # Remote panel access is an explicit deployment feature.
+            panel_host=mapping.get("HY2PANEL_PANEL_HOST", "0.0.0.0"),  # nosec B104
             panel_port=panel_port,
             panel_scheme=panel_scheme,
             auth_host=mapping.get("HY2PANEL_AUTH_HOST", "127.0.0.1"),

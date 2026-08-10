@@ -8,7 +8,6 @@ import tempfile
 import threading
 import unittest
 import zipfile
-import http.cookiejar
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1540,6 +1539,12 @@ class StatsClientTests(unittest.TestCase):
                 self.client._request("/traffic")
 
         response.read.assert_called_once_with(MAX_STATS_RESPONSE_BYTES + 1)
+
+    def test_stats_api_must_remain_on_plaintext_loopback(self):
+        for url in ("http://example.com:19997", "https://127.0.0.1:19997"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    HysteriaStatsClient(url, "stats-secret")
 
 
 class SettingsTests(unittest.TestCase):

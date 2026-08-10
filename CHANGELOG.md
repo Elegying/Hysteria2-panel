@@ -1,158 +1,179 @@
-# Changelog
+# 变更日志
+
+## [0.10.0] - 2026-08-11
+
+### 安全
+
+- 管理员登录按来源 IP 防破解：15 分钟内第 5 次错误立即锁定 15 分钟并返回 `429` 与 `Retry-After`；未知账号执行等价密码校验，记录数量有固定上限。
+- 管理员账号或密码变更会确保只保留一个管理员并撤销全部旧会话；升级默认不再重置管理员。
+- 拒绝带异常高成本参数的密码哈希，限制本地 Hysteria 统计响应为 8 MiB，并强制统计接口只能使用环回 HTTP。
+- 下载的面板程序和 TCP 探测程序新增固定 SHA-256 校验。
+
+### 优化
+
+- 全新安装默认使用 HTTP 面板；Hysteria 数据通道的 TLS 与证书固定保持不变。
+- Hysteria 明确使用 `bbr` 的 `standard` profile 并忽略客户端带宽上报；UDP 缓冲提高到至少 16 MiB，服务设置 `Nice=-5`。
+- 内核支持时安全启用 `fq`/TCP BBR；不支持时恢复原值并继续部署，不写入无依据的额外 sysctl。
+
+### 修复与兼容
+
+- 安装器支持 `apt`、`dnf`、`yum`、Linux amd64/arm64、systemd 和 Python 3.8+，并补全运行命令预检。
+- 升级自动沿用节点名、域名、外部/内部端口、面板协议、管理员、HMAC/统计密钥和 TLS 身份，避免旧分享节点意外失效。
+- CI 增加 Python 3.8/3.12、Ruff、Bandit、ShellCheck、语法和补丁格式检查；GitHub 文档统一为中文并明确 HTTP、BBR、备份和真机验收边界。
 
 ## [0.9.1] - 2026-08-11
 
-### Changed
+### 变更
 
-- Display BBR status and the current version as two independent cards matching the service summary layout.
-- Move user search into the management header and remove its visible label while retaining an accessible name.
+- BBR 状态与当前版本改为两个独立卡片，与服务摘要布局一致。
+- 用户搜索框移入管理区标题栏，去掉可见文字标签但保留无障碍名称。
 
 ## [0.9.0] - 2026-08-11
 
-### Added
+### 新增
 
-- Search all users instantly by name from the dashboard.
+- 支持在仪表盘按用户名即时搜索全部用户。
 
-### Changed
+### 变更
 
-- Show the complete user list without pagination.
-- Move user creation into a responsive dialog opened beside the global traffic-reset action.
+- 完整显示用户列表，不再分页。
+- 添加用户改为响应式弹窗，入口放在重置全部流量旁边。
 
 ## [0.8.0] - 2026-08-11
 
-### Added
+### 新增
 
-- Display the explicit Hysteria QUIC BBR profile together with the live Linux TCP congestion-control and queue-discipline state beside the current version.
+- 在当前版本旁显示 Hysteria QUIC BBR profile，以及实时 Linux TCP 拥塞控制和队列规则。
 
-### Changed
+### 变更
 
-- List newly created users first by default while preserving total-traffic sorting.
-- Pin Hysteria's non-Brutal congestion controller to BBR with the standard profile in one-click deployments.
+- 用户默认按创建时间倒序排列，同时保留总流量排序。
+- 一键部署明确固定 Hysteria 非 Brutal BBR 的 `standard` profile。
 
 ## [0.7.0] - 2026-08-10
 
-### Added
+### 新增
 
-- Sort the user list by total traffic in ascending or descending order from the table header.
-- Show newly created node information in an in-page dialog with a copy button.
+- 用户列表支持按总流量升序或降序排列。
+- 新建用户后在当前页面弹出节点信息和复制按钮。
 
-### Changed
+### 变更
 
-- Copy a user's Hysteria 2 URI directly from the Share action without leaving the dashboard.
-- Keep each mobile user in one compact row with all five actions visible and no horizontal scrolling.
-- Put top-user traffic beside the username and stretch the three desktop operations cards to equal height.
-- Remove the repeated concurrent-device-limit note below each username.
+- 分享按钮直接复制 Hysteria 2 URI，不再跳转页面。
+- 手机端每行显示一个紧凑用户，五个操作均可见且无需横向滚动。
+- 高流量用户的流量放在用户名后，桌面三个运维卡片保持等高。
+- 删除用户名下方重复的并发连接限制说明。
 
 ## [0.6.1] - 2026-08-10
 
-### Fixed
+### 修复
 
-- Separate the mobile login action from the password field so the button never overlaps the input.
-- Restore consistent spacing between service summary and version cards.
+- 手机登录按钮与密码框完全分离，不再重叠。
+- 修复服务摘要与版本卡片之间的异常间距。
 
-### Changed
+### 变更
 
-- Place service controls, system resources and top traffic users in one compact desktop row.
-- Reduce the footprint of service statistics, port, version, update and resource cards while keeping two-column summaries on phones.
+- 服务控制、系统资源和高流量用户在桌面端排为一行。
+- 缩小流量统计、端口、版本、更新和资源卡片占用，手机摘要仍保持双栏。
 
 ## [0.6.0] - 2026-08-10
 
-### Added
+### 新增
 
-- Add a native, keyboard-accessible data migration dialog opened from the dashboard header.
+- 增加原生、支持键盘操作的数据迁移弹窗。
 
-### Changed
+### 变更
 
-- Tighten desktop dashboard spacing and reorganize mobile navigation, overview metrics and service controls.
-- Convert the wide user table into labeled touch-friendly user cards on phone-sized screens while preserving the desktop table.
+- 收紧桌面间距，重组手机端导航、指标和服务控制。
+- 宽用户表在手机端转换为带标签的触控卡片，桌面表格保持不变。
 
 ## [0.5.1] - 2026-08-10
 
-### Fixed
+### 修复
 
-- Restart the TCP 19999 compatibility probe after every backup restore, including restore validation failures, so TCP-only latency checks remain available with the Hysteria service.
+- 每次备份恢复后都会重新启动 TCP `19999` 兼容探测，包括恢复校验失败的情况。
 
 ## [0.5.0] - 2026-08-10
 
-### Added
+### 新增
 
-- Add one-click ZIP download and upload restore for all proxy users, durable traffic, the HMAC signing identity, TLS certificate/private key, certificate pin and migration metadata.
-- Add strict archive, SQLite, user-token, certificate/key, fingerprint and endpoint validation plus an isolated root oneshot restore service with automatic pre-restore backup and rollback.
+- 一键下载/上传 ZIP，迁移代理用户、持久流量、HMAC 身份、TLS 证书/私钥、证书指纹和清单信息。
+- 增加 ZIP、SQLite、token、证书/私钥、指纹和端点严格校验，以及带自动备份和回滚的隔离 root 一次性恢复服务。
 
-### Changed
+### 变更
 
-- Preserve the destination panel administrator and deployment-only settings during restore while invalidating all prior panel sessions. Old client nodes remain usable only when the public host and UDP port are unchanged; certificate renewal or rotation requires re-sharing the new pin.
+- 恢复时保留目标面板管理员和部署专用参数并使旧会话失效；公网地址或端口变化、证书续签/轮换时仍需重新分享。
 
 ## [0.4.0] - 2026-08-10
 
-### Added
+### 新增
 
-- Add a hardened TCP connectivity probe on the same numeric port as Hysteria UDP, allowing TCP-only client tests to complete without exposing panel or authentication data. The probe follows the Hysteria service lifecycle and does not replace a protocol-level health check.
+- 在 Hysteria UDP 相同数字端口提供加固的 TCP 连通性探测，兼容 TCP-only 客户端测试，不暴露面板或认证数据，也不替代协议级健康检查。
 
 ## [0.3.2] - 2026-08-10
 
-### Fixed
+### 修复
 
-- Remove the remaining panel-unit sandbox directives that implicitly block setuid, allowing the exact sudoers-approved service controls to work. The panel keeps read-only system, private temporary directory, home/control-group protection and resource limits; the Hysteria server keeps the full sandbox.
+- 删除面板 unit 中仍会隐式阻止 setuid 的沙箱指令，使精确 sudoers 服务控制可用；Hysteria 服务继续保留完整沙箱。
 
 ## [0.3.1] - 2026-08-10
 
-### Fixed
+### 修复
 
-- Allow the panel's exact sudoers-approved Hysteria service controls to execute by removing the incompatible `PrivateDevices=true` sandbox from the panel unit. The Hysteria server unit keeps the sandbox.
+- 从面板 unit 删除与 sudo 不兼容的 `PrivateDevices=true`；Hysteria 服务继续保留该限制。
 
 ## [0.3.0] - 2026-08-10
 
-### Added
+### 新增
 
-- Per-user concurrent connection and total traffic limits with defaults of 3 connections and 250 GiB.
-- Durable upload/download accounting, quota progress, per-user reset and reset-all controls.
-- Recoverable server-key-derived sharing credentials and one-click URI copying.
-- Dark operations dashboard with system resources, top-five traffic users, version checks and Hysteria service controls.
+- 每用户并发连接和总流量限制，默认 3 个连接、250 GiB。
+- 持久上传/下载统计、配额进度、单用户和全部流量重置。
+- 服务端密钥派生的可恢复分享凭据与一键复制 URI。
+- 深色运维仪表盘：系统资源、高流量前五、版本检查和 Hysteria 服务控制。
 
-### Changed
+### 变更
 
-- Hysteria authentication now rejects users at their connection or traffic limit while preserving the official HTTP auth response contract.
-- The installer grants the panel an exact sudoers allowlist for only start, stop and restart of its namespaced Hysteria service.
+- Hysteria 认证会拒绝达到连接数或流量上限的用户，同时保持官方 HTTP auth 响应契约。
+- 安装器仅授权面板启动、停止和重启项目专用 Hysteria 服务。
 
 ## [0.2.1] - 2026-08-10
 
-### Fixed
+### 修复
 
-- Prevent HTTP login loops when a browser still has the legacy HTTPS-only session cookie.
-- Avoid request-logging exceptions when HTTPS traffic is mistakenly sent to the HTTP panel port.
+- 修复浏览器残留旧 HTTPS-only Cookie 时的 HTTP 登录循环。
+- HTTPS 流量误发到 HTTP 端口时，请求日志不再抛出异常。
 
 ## [0.2.0] - 2026-08-10
 
-### Added
+### 新增
 
-- Prompt for a shared node label and use it as every generated URI fragment.
-- Optional HTTP panel mode with scheme-aware cookies, HSTS and health checks.
-- Dashboard cards for service status, current users, inactive users, online devices, total upload and total download.
-- Persistent quic-go UDP send/receive buffer tuning and an increased Hysteria file-descriptor limit.
+- 部署时询问统一节点名称并写入所有 URI fragment。
+- 增加可选 HTTP 面板，以及随协议变化的 Cookie、HSTS 和健康检查。
+- 增加服务状态、用户数、不活跃用户、在线设备、总上传和总下载卡片。
+- 持久化 quic-go UDP 收发缓冲优化并提高 Hysteria 文件描述符上限。
 
-### Changed
+### 变更
 
-- Re-running the installer now applies the supplied administrator password instead of silently ignoring it when an administrator already exists.
+- 重复运行安装器时，会应用用户提供的新管理员密码，而不再静默忽略。
 
 ## [0.1.2] - 2026-08-10
 
-### Fixed
+### 修复
 
-- Accept Hysteria's successful empty response body from `POST /kick` instead of misreporting a JSON decoding failure.
+- 接受 Hysteria `POST /kick` 的成功空响应，不再误报 JSON 解码失败。
 
 ## [0.1.1] - 2026-08-10
 
-### Fixed
+### 修复
 
-- Wait up to 30 seconds for the HTTPS panel and local authentication endpoint to become ready after a systemd restart.
+- systemd 重启后最多等待 30 秒，确认面板和本地认证端点就绪。
 
 ## [0.1.0] - 2026-08-10
 
-### Added
+### 新增
 
-- Checksum-pinned one-click installation of Hysteria 2 `v2.12.1` for Linux amd64 and arm64.
-- Dynamic multi-user authentication through Hysteria's local HTTP callback.
-- HTTPS administration panel with CSRF protection, rate-limited login and hardened cookies.
-- One-time user credentials, certificate-pinned connection URIs, traffic statistics and connection kicking.
-- Isolated system identities, bounded request concurrency, hardened systemd services, upgrade backups and health checks.
+- 对 Linux amd64/arm64 提供 Hysteria 2 `v2.12.1` 固定版本和校验和的一键安装。
+- 使用 Hysteria 本机 HTTP 回调实现动态多用户认证。
+- 提供带 CSRF、登录限速和加固 Cookie 的管理面板。
+- 提供一次性用户凭据、固定证书指纹的连接 URI、流量统计和连接踢除。
+- 提供隔离系统身份、有界并发、加固 systemd、升级备份和健康检查。

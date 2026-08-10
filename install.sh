@@ -5,6 +5,8 @@ PANEL_VERSION="0.10.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
+PANEL_SHA256="5e5dfaa38bdd3f91076e22870f41ca2144bc4f0dc7b96445f90f5e88038681f8"
+TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
@@ -329,6 +331,10 @@ printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check
   || fail "Hysteria SHA-256 校验失败"
 curl -fL --retry 3 --connect-timeout 10 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
 curl -fL --retry 3 --connect-timeout 10 "${TCP_PROBE_SOURCE_URL}" -o "${TMP_DIR}/tcp_probe.py"
+printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
+  || fail "面板源码 SHA-256 校验失败"
+printf '%s  %s\n' "${TCP_PROBE_SHA256}" "${TMP_DIR}/tcp_probe.py" | sha256sum --check --status \
+  || fail "TCP 探测源码 SHA-256 校验失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hysteria2_panel.py" || fail "面板源码语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"
 

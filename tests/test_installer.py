@@ -35,6 +35,16 @@ class InstallerContractTests(unittest.TestCase):
             'HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"',
             source,
         )
+        self.assertIn(
+            'PANEL_SHA256="5e5dfaa38bdd3f91076e22870f41ca2144bc4f0dc7b96445f90f5e88038681f8"',
+            source,
+        )
+        self.assertIn(
+            'TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"',
+            source,
+        )
+        self.assertIn('面板源码 SHA-256 校验失败', source)
+        self.assertIn('TCP 探测源码 SHA-256 校验失败', source)
         self.assertIn("sha256sum", source)
 
     def test_installer_prompts_without_embedding_an_admin_password(self):

@@ -2,7 +2,7 @@
 
 ## 状态
 
-Accepted
+已接受；公网面板缺省协议部分已由 [ADR-005](ADR-005-http-login-network-hardening.md) 更新。
 
 ## 日期
 
@@ -20,7 +20,7 @@ Accepted
 
 ## 决策
 
-使用 Hysteria 官方 `auth.type: http`，认证回调仅监听 `127.0.0.1:19996`。面板使用 Python 标准库、SQLite 和 systemd，公网只提供自签名 TLS 保护的管理界面。Hysteria 官方 Traffic Stats API 仅监听 `127.0.0.1:19997` 并设置随机 secret。
+使用 Hysteria 官方 `auth.type: http`，认证回调仅监听 `127.0.0.1:19996`。面板使用 Python 标准库、SQLite 和 systemd。最初决策让公网管理界面缺省使用自签名 TLS；从 v0.10.0 起，缺省协议调整为 HTTP，风险与边界见 ADR-005。Hysteria 官方 Traffic Stats API 仅监听 `127.0.0.1:19997` 并设置随机 secret。
 
 管理员密码使用 scrypt；Python 构建缺少 scrypt 时使用 600,000 次 PBKDF2-HMAC-SHA256。代理用户的随机认证密钥只显示一次，数据库仅保存 HMAC-SHA256 指纹。TLS 证书由 Hysteria 官方 `cert` 命令生成，连接 URI 携带证书固定指纹。
 
