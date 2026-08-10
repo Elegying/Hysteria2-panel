@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1] - 2026-08-10
+
+### Fixed
+
+- Prevent HTTP login loops when a browser still has the legacy HTTPS-only session cookie.
+- Avoid request-logging exceptions when HTTPS traffic is mistakenly sent to the HTTP panel port.
+
 ## [0.2.0] - 2026-08-10
 
 ### Added
