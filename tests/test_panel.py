@@ -984,6 +984,22 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('value="3"', body)
         self.assertIn('value="250"', body)
 
+    def test_dashboard_uses_migration_dialog_and_mobile_user_cards(self):
+        self.db.create_proxy_user("alice")
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertIn('data-dialog-open="migration-dialog"', body)
+        self.assertIn('<dialog id="migration-dialog"', body)
+        self.assertIn('aria-labelledby="migration-title"', body)
+        self.assertIn('data-dialog-close', body)
+        self.assertIn('data-label="名称"', body)
+        self.assertIn('data-label="操作"', body)
+        self.assertIn('@media(max-width:640px)', body)
+        self.assertIn('td::before{content:attr(data-label)', body)
+
     def test_backup_download_and_restore_upload_are_authenticated_and_csrf_protected(self):
         self.db.create_proxy_user("migrating-user")
         headers, csrf_token = self.authenticated_headers()
@@ -1153,7 +1169,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.5.1", body)
+        self.assertIn("v0.6.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False

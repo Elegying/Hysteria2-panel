@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0] - 2026-08-10
+
+### Added
+
+- Add a native, keyboard-accessible data migration dialog opened from the dashboard header.
+
+### Changed
+
+- Tighten desktop dashboard spacing and reorganize mobile navigation, overview metrics and service controls.
+- Convert the wide user table into labeled touch-friendly user cards on phone-sized screens while preserving the desktop table.
+
 ## [0.5.1] - 2026-08-10
 
 ### Fixed
