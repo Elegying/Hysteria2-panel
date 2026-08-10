@@ -10,5 +10,5 @@
 - [x] Clipboard share flow + safe legacy rotation prompt
 - [x] Full local quality gate
 - [x] Browser interaction and visual QA
-- [ ] GitHub CI/release
-- [ ] Backed-up production deployment and verification
+- [x] GitHub CI/release
+- [x] Backed-up production deployment and verification
