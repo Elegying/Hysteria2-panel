@@ -1,3 +1,4 @@
+import hashlib
 import socket
 import subprocess
 import sys
@@ -25,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.10.0"', source)
+        self.assertIn('PANEL_VERSION="0.10.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -36,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="53912ab664d258064fcecb5d0f3c11e42fedb1cf63657fad2454444530ecc51d"',
+            'PANEL_SHA256="38162a39e351b683357de49252b4a2f17071b17bba3a90970334e6744643ba49"',
             source,
         )
         self.assertIn(
@@ -46,6 +47,13 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('面板源码 SHA-256 校验失败', source)
         self.assertIn('TCP 探测源码 SHA-256 校验失败', source)
         self.assertIn("sha256sum", source)
+        panel_sha = source.split('PANEL_SHA256="', 1)[1].split('"', 1)[0]
+        probe_sha = source.split('TCP_PROBE_SHA256="', 1)[1].split('"', 1)[0]
+        self.assertEqual(
+            hashlib.sha256((ROOT / "hysteria2_panel.py").read_bytes()).hexdigest(),
+            panel_sha,
+        )
+        self.assertEqual(hashlib.sha256(TCP_PROBE.read_bytes()).hexdigest(), probe_sha)
 
     def test_installer_prompts_without_embedding_an_admin_password(self):
         source = INSTALLER.read_text()
@@ -84,6 +92,8 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('EXISTING_PANEL_SCHEME="http"', source)
         self.assertIn('PANEL_SCHEME="${PANEL_SCHEME:-${EXISTING_PANEL_SCHEME}}"', source)
         self.assertIn('管理面板:   HTTP TCP 19998（可选 HTTPS）', source)
+        self.assertIn('域名的明文 HTTP 被网络重置', source)
+        self.assertIn('${PANEL_SCHEME}://${detected_host}:${PANEL_PORT}/', source)
 
     def test_installer_supports_debian_and_rhel_package_managers(self):
         source = INSTALLER.read_text()

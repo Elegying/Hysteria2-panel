@@ -12,7 +12,7 @@
 支持 Debian、Ubuntu、Rocky Linux、AlmaLinux、CentOS Stream 和 Fedora 等使用 `apt`、`dnf` 或 `yum` 且由 systemd 管理的 Linux amd64/arm64 主机，需要 root 权限和 Python 3.8 或更高版本。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.10.0/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.10.1/install.sh)
 ```
 
 安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
@@ -32,6 +32,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.
 服务器使用带 IP/域名 SAN 的 10 年自签名证书保护 Hysteria 连接。面板生成的 Hysteria URI 同时包含 `insecure=1` 和证书 SHA-256 固定指纹。面板使用 HTTP 并不影响 Hysteria 数据通道的 TLS 和证书固定。
 
 面板默认使用 HTTP，以避免自签名 HTTPS 的浏览器访问障碍。HTTP 模式不会设置 Secure Cookie 或 HSTS，管理员密码、会话以及备份上传下载内容都会在网络中明文传输。建议把 TCP `19998` 的安全组/防火墙来源限制为固定管理 IP；在公共 Wi-Fi 等不可信链路上操作时，应先使用 SSH 隧道或 VPN。仍可在安装时显式选择 HTTPS。
+
+部分网络设备会检查明文 HTTP 的 `Host` 并主动重置特定域名连接。安装器在节点域名与本机检测 IP 不同时会同时打印备用面板地址；确认该 IP 可从公网路由后，可用 `http://服务器IP:面板端口/` 登录，不需要修改 Hysteria 节点域名、证书或已分享 URI。面板会安静处理这类预期断连，避免服务日志被无意义的异常栈淹没。
 
 > 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999`；TCP `19998` 只应向管理员来源放行。为避免意外改变现有策略或把管理端口暴露给全网，脚本不会自动添加防火墙规则。
 
