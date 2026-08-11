@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.10.1"', source)
+        self.assertIn('PANEL_VERSION="0.11.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="38162a39e351b683357de49252b4a2f17071b17bba3a90970334e6744643ba49"',
+            'PANEL_SHA256="00551790bd0b3e312d14d62a02ac44bd59a2c16dc5ceea2746df8d218ce26861"',
             source,
         )
         self.assertIn(
@@ -184,6 +184,40 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("bbrProfile: standard", source)
         self.assertIn("ignoreClientBandwidth: true", source)
         self.assertIn("Nice=-5", source)
+
+    def test_installer_defaults_to_a_persisted_web_egress_policy(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-web}"', source)
+        self.assertIn('EXISTING_EGRESS_POLICY="web"', source)
+        self.assertIn('EGRESS_POLICY="${EGRESS_POLICY:-${EXISTING_EGRESS_POLICY}}"', source)
+        self.assertIn('HY2PANEL_EGRESS_POLICY=${EGRESS_POLICY}', source)
+        self.assertIn('EGRESS_POLICY 只能是 web 或 full', source)
+
+    def test_web_egress_policy_blocks_private_networks_and_non_web_ports(self):
+        source = INSTALLER.read_text()
+
+        for rule in (
+            "reject(127.0.0.0/8)",
+            "reject(10.0.0.0/8)",
+            "reject(100.64.0.0/10)",
+            "reject(169.254.0.0/16)",
+            "reject(172.16.0.0/12)",
+            "reject(192.168.0.0/16)",
+            "reject(::1/128)",
+            "reject(fc00::/7)",
+            "reject(fe80::/10)",
+            "direct(all, tcp/53)",
+            "direct(all, udp/53)",
+            "direct(all, tcp/80)",
+            "direct(all, tcp/443)",
+            "direct(all, udp/443)",
+            "direct(all, udp/123)",
+            "reject(all)",
+        ):
+            self.assertIn(rule, source)
+        self.assertLess(source.index("reject(127.0.0.0/8)"), source.index("direct(all, tcp/80)"))
+        self.assertIn('if [[ "${EGRESS_POLICY}" == "web" ]]; then', source)
 
     def test_installer_grants_only_exact_hysteria_service_controls(self):
         source = INSTALLER.read_text()

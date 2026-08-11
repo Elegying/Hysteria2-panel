@@ -447,6 +447,17 @@ class UsageManagerTests(unittest.TestCase):
         self.assertTrue(manager.authorize("alice"))
         self.assertFalse(manager.authorize("alice"))
 
+    def test_fourth_client_is_rejected_without_kicking_existing_clients(self):
+        self.db.create_proxy_user("alice", device_limit=3)
+        stats = PolicyStatsClient(online={})
+        manager = UsageManager(self.db, stats, pending_ttl=10, clock=lambda: 100.0)
+
+        self.assertEqual(
+            [True, True, True, False],
+            [manager.authorize("alice") for _ in range(4)],
+        )
+        self.assertEqual([], stats.kicked)
+
     def test_rejects_authentication_when_online_limit_cannot_be_checked(self):
         self.db.create_proxy_user("alice", device_limit=3)
         stats = PolicyStatsClient()
@@ -1089,6 +1100,7 @@ class PanelHttpTests(unittest.TestCase):
             "当前用户",
             "不活跃用户",
             "在线设备",
+            "按 Hysteria 客户端实例统计",
             "总上传",
             "总下载",
             "服务控制",
@@ -1385,7 +1397,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.10.1", body)
+        self.assertIn("v0.11.0", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False

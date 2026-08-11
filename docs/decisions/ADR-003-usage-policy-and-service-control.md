@@ -6,13 +6,13 @@
 
 ## 背景
 
-面板需要执行用户总流量配额、默认三设备限制、历史流量重置、连接 URI 重复分享和 Hysteria 服务启停。Hysteria 官方统计保存在进程内存中，`/online` 只返回每个认证 ID 的并发连接数；旧版数据库只保留不可逆的认证密钥 HMAC 指纹。面板进程以非 root 用户运行，不能直接管理 systemd 服务。
+面板需要执行用户总流量配额、默认三设备限制、历史流量重置、连接 URI 重复分享和 Hysteria 服务启停。Hysteria 官方统计保存在进程内存中，`/online` 返回每个认证 ID 的 Hysteria 客户端实例数；旧版数据库只保留不可逆的认证密钥 HMAC 指纹。面板进程以非 root 用户运行，不能直接管理 systemd 服务。
 
 ## 决策
 
 - 定期调用官方 `/traffic?clear=true` 原子取得用户流量增量，并分别累计到 SQLite 的 `tx_bytes` 与 `rx_bytes`。
 - 在 HTTP 认证回调中同步最新流量，检查总流量与并发连接上限；达到上限时返回官方约定的 `{"ok": false, "id": ""}`。
-- 把 `/online` 数量定义为“并发连接/近似设备数”，不声称能识别物理硬件或 NAT 后设备。
+- 把 `/online` 数量定义为“客户端实例/近似设备数”，不声称能识别物理硬件或 NAT 后设备。
 - 新建或轮换密钥时保存随机种子，实际 token 由服务器 HMAC key 派生；数据库不保存 token 明文。旧用户不自动轮换，避免升级使现有客户端失效。
 - 面板服务只通过 `/etc/sudoers.d/hysteria2-panel` 获得三个精确命令：启动、停止、重启 `hysteria2-panel-server.service`。应用使用固定 argv 且不调用 shell。
 - 检查更新只读取固定的 GitHub Release API，设置 3 秒超时和 16 KiB 响应上限，不执行远程安装。

@@ -12,12 +12,12 @@
 支持 Debian、Ubuntu、Rocky Linux、AlmaLinux、CentOS Stream 和 Fedora 等使用 `apt`、`dnf` 或 `yum` 且由 systemd 管理的 Linux amd64/arm64 主机，需要 root 权限和 Python 3.8 或更高版本。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.10.1/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.11.0/install.sh)
 ```
 
-安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
+安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `web`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
-重复运行安装器会先建立一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。这样普通升级不会令已经分享的节点失效，也不会无故退出当前管理会话。
+重复运行安装器会先建立一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。这样普通升级不会令已经分享的节点失效，也不会无故退出当前管理会话。
 
 默认端口：
 
@@ -43,7 +43,7 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 
 登录面板后可以：
 
-- 创建、启用、禁用和删除用户，并设置并发连接数与总流量限制（默认 `3` 个连接、`250 GiB`）；
+- 创建、启用、禁用和删除用户，并设置客户端实例数与总流量限制（默认 `3` 个实例、`250 GiB`）；
 - 在同一页查看全部用户，并通过用户名即时搜索；添加用户使用弹窗，不占用列表空间；
 - 轮换用户认证密钥，一键复制可导入的连接 URI；
 - 查看在线设备数、上传/下载流量、总流量进度和高流量前五用户；
@@ -60,7 +60,9 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 
 新建或轮换的用户密钥由随机种子和服务器 HMAC key 派生，因此面板可以重新生成分享 URI，但数据库仍不保存认证密钥明文。旧版本用户保持原连接有效；由于原密钥只有不可逆指纹，需明确轮换一次后才能使用分享按钮。禁用、删除或轮换用户时，面板会调用 Hysteria 流量 API 断开现有连接。
 
-“设备限制”依据 Hysteria 官方 `/online` API 返回的并发认证连接数执行。该接口不能识别真实硬件，同一设备的多个连接或不同设备的连接都按并发连接计数。
+“设备限制”依据 Hysteria 官方 `/online` API 返回的 Hysteria 客户端实例数执行，不是活动代理流数量。默认限制为 3 时，已有 3 个实例会继续使用；第 4 个实例的认证返回失败，不会踢掉最早在线的实例，直到已有实例离线后才能连接。面板还用 5 秒短期预留防止多个认证同时越过上限；在线统计或流量统计不可用时，新认证会失败关闭。
+
+该接口不能识别物理硬件：同一个网关或热点客户端后面的多台终端可能只算 1 个实例，客户端重连或同时运行多个核心也可能产生多个实例。因此“3 台设备”应理解为“最多 3 个同时在线的 Hysteria 客户端实例”，不能作为硬件授权系统。
 
 > Hysteria TUN 只转发 TCP/UDP，不代理 ICMP。节点能正常访问网页但系统 `ping` 超时并不表示节点故障，服务端无法通过放行 UDP 端口改变这一协议边界。
 
@@ -69,6 +71,12 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 一键部署会采用 Hysteria 官方的非 Brutal `bbr` 拥塞控制和 `standard` profile，并忽略客户端上报带宽，减少用户填错带宽造成的体验波动；同时根据 [Hysteria 性能指南](https://v2.hysteria.network/docs/advanced/Performance/) 把 Linux UDP 收发缓冲上限提高到至少 16 MiB、设置 Hysteria 服务 `Nice=-5` 和高文件描述符上限。若内核支持，还会为服务器访问 YouTube/CDN/网页源站时产生的 TCP 出站连接启用 `fq` + 内核 BBR；内核不支持时会安全跳过，不阻断部署。
 
 Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两层不同的优化：前者管理客户端到服务器的 UDP/QUIC 隧道，后者只影响服务器到以 TCP/HTTPS 提供内容的源站。项目不会自动估算线路带宽或启用 Brutal，也不会写入缺少官方依据的“万能 sysctl”。线路拥塞、跨境路由、丢包、客户端核心和源站限速仍会决定最终体验。
+
+### BT/PT 与出站防滥用
+
+默认 `EGRESS_POLICY=web` 使用 Hysteria 官方 ACL：先拒绝环回、私网、链路本地、CGNAT 和 IPv6 ULA，再只允许 TCP `80/443`、UDP `443`、TCP/UDP `53` 和 UDP `123`，最后拒绝其他目标与端口。它会阻断常规 BT/PT peer、DHT、uTP、SMTP、SSH 扫描和多数非网页流量，同时保留网页、HTTPS、HTTP/3/QUIC、DNS 与时间同步所需端口。ACL 规则按官方的从上到下首条匹配语义执行：[Hysteria ACL 文档](https://v2.hysteria.network/docs/advanced/ACL/)。
+
+这是端口和目标地址策略，不是 DPI。BitTorrent 可以加密，也可以伪装到允许的 `80/443` 或经外部中继传输，所以任何仅靠 Hysteria ACL 的方案都不能诚实保证 100% 识别所有 BT/PT。`web` 模式还会阻止游戏、邮件、SSH、非标准端口 API 和部分语音应用；确实需要完整代理能力时，可由管理员明确设置 `EGRESS_POLICY=full` 后重新运行安装器。切换策略不会改变用户链接、认证密钥、证书或证书指纹。
 
 ## 跨服务器备份与恢复
 
@@ -82,7 +90,7 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 4. 登录新面板上传 ZIP。恢复服务会再次独立校验、自动备份新服务器当前状态、恢复代理用户/流量/签名密钥/证书并重启；
 5. 用已有客户端旧配置完成真实连接测试，再停用旧服务器。
 
-恢复不会覆盖新服务器当前的面板管理员账号、统计 API secret、面板端口或协议。全部旧面板会话都会失效。代理用户会由备份整体替换，因此新服务器恢复前临时创建的代理用户会被移除。
+恢复不会覆盖新服务器当前的面板管理员账号、统计 API secret、面板端口、协议或出站策略。全部旧面板会话都会失效。代理用户会由备份整体替换，因此新服务器恢复前临时创建的代理用户会被移除。
 
 为保证旧连接 URI 不变，恢复会拒绝源域名或 UDP 端口与当前部署不一致的 ZIP。使用域名时只需更新 DNS；如果旧 URI 直接写的是旧服务器 IP，或迁移时必须改端口，客户端地址已发生变化，无法做到无感恢复，必须重新分享配置。
 
@@ -137,6 +145,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 - [ADR-003：持久流量、连接限额与受限服务控制](docs/decisions/ADR-003-usage-policy-and-service-control.md)
 - [ADR-004：可迁移用户身份与原子恢复](docs/decisions/ADR-004-portable-backup-restore.md)
 - [ADR-005：HTTP 缺省、登录锁定与双层 BBR 优化](docs/decisions/ADR-005-http-login-network-hardening.md)
+- [ADR-006：网页/视频出站策略与 BT/PT 防滥用边界](docs/decisions/ADR-006-web-egress-abuse-control.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证
