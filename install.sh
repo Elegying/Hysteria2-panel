@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.12.1"
+PANEL_VERSION="0.12.2"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="4b9c1a74b478f1c22cd2271acc7067a17c33aff1deca9cabb6cca14f5040eb54"
+PANEL_SHA256="d96bcd8fa03cc6b636ed5b255ed90cbf85e10448735a247eef4728483a62b949"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -33,7 +33,7 @@ Hysteria2-panel 一键部署
   RHEL/Rocky/Alma/CentOS Stream/Fedora（dnf 或 yum）
   Linux amd64/arm64、systemd、Python 3.8 或更高版本
 
-可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、EGRESS_POLICY、PANEL_ACCESS_IPS、ADMIN_USER、ADMIN_PASSWORD、RESET_ADMIN
+可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、EGRESS_POLICY、ADMIN_USER、ADMIN_PASSWORD、RESET_ADMIN
 安装程序会交互式询问未提供的值，密码输入不会回显。
 升级默认保留现有管理员；需要重置时设置 RESET_ADMIN=1。
 出站策略默认 web（网页/视频端口白名单）；需要完整代理能力时显式设置 EGRESS_POLICY=full。
@@ -235,7 +235,6 @@ if (( EXISTING_INSTALL == 1 )); then
   EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT:-${DEFAULT_PANEL_PORT}}"
   EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME:-http}"
   EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-web}"
-  EXISTING_PANEL_ACCESS_IPS="${HY2PANEL_PANEL_ACCESS_IPS:-${detected_host}}"
   EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT:-${DEFAULT_AUTH_PORT}}"
   EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT:-${DEFAULT_STATS_PORT}}"
 else
@@ -245,7 +244,6 @@ else
   EXISTING_PANEL_PORT="${DEFAULT_PANEL_PORT}"
   EXISTING_PANEL_SCHEME="http"
   EXISTING_EGRESS_POLICY="web"
-  EXISTING_PANEL_ACCESS_IPS="${detected_host}"
   EXISTING_AUTH_PORT="${DEFAULT_AUTH_PORT}"
   EXISTING_STATS_PORT="${DEFAULT_STATS_PORT}"
 fi
@@ -256,7 +254,6 @@ if [[ "${AUTO_UPDATE}" == "1" ]]; then
   PANEL_PORT="${EXISTING_PANEL_PORT}"
   PANEL_SCHEME="${EXISTING_PANEL_SCHEME}"
   EGRESS_POLICY="${EXISTING_EGRESS_POLICY}"
-  PANEL_ACCESS_IPS="${EXISTING_PANEL_ACCESS_IPS}"
   AUTH_PORT="${EXISTING_AUTH_PORT}"
   STATS_PORT="${EXISTING_STATS_PORT}"
   RESET_ADMIN="0"
@@ -304,28 +301,6 @@ EGRESS_POLICY="${EGRESS_POLICY:-${EXISTING_EGRESS_POLICY}}"
 EGRESS_POLICY="${EGRESS_POLICY,,}"
 [[ "${EGRESS_POLICY}" == "web" || "${EGRESS_POLICY}" == "full" ]] \
   || fail "EGRESS_POLICY 只能是 web 或 full"
-PANEL_ACCESS_IPS="${PANEL_ACCESS_IPS:-${EXISTING_PANEL_ACCESS_IPS}}"
-if ! PANEL_ACCESS_IPS="$("${PYTHON_BIN}" - "${PANEL_ACCESS_IPS}" <<'PY'
-import ipaddress
-import sys
-
-values = [item.strip() for item in sys.argv[1].split(",") if item.strip()]
-if len(values) > 16:
-    raise SystemExit("最多允许 16 个面板访问 IP")
-normalized = []
-for value in values:
-    try:
-        address = str(ipaddress.ip_address(value))
-    except ValueError:
-        raise SystemExit("无效的面板访问 IP：{}".format(value))
-    if address not in normalized:
-        normalized.append(address)
-print(",".join(normalized))
-PY
-)"; then
-  fail "PANEL_ACCESS_IPS 必须是逗号分隔的 IP 地址"
-fi
-IFS=',' read -r -a PANEL_ACCESS_IP_LIST <<< "${PANEL_ACCESS_IPS}"
 AUTH_PORT="${AUTH_PORT:-${EXISTING_AUTH_PORT}}"
 STATS_PORT="${STATS_PORT:-${EXISTING_STATS_PORT}}"
 
@@ -466,7 +441,6 @@ HY2PANEL_HYSTERIA_PORT=${HYSTERIA_PORT}
 HY2PANEL_PANEL_PORT=${PANEL_PORT}
 HY2PANEL_PANEL_SCHEME=${PANEL_SCHEME}
 HY2PANEL_EGRESS_POLICY=${EGRESS_POLICY}
-HY2PANEL_PANEL_ACCESS_IPS=${PANEL_ACCESS_IPS}
 HY2PANEL_AUTH_PORT=${AUTH_PORT}
 HY2PANEL_STATS_PORT=${STATS_PORT}
 HY2PANEL_STATS_SECRET=${STATS_SECRET}
@@ -496,16 +470,12 @@ trafficStats:
   secret: ${STATS_SECRET}
 EOF
 if [[ "${EGRESS_POLICY}" == "web" ]]; then
-  # Hysteria ACL uses the first matching rule, so exact panel exceptions must precede rejects.
+  # Hysteria ACL uses the first matching rule. Keep private ranges rejected, then allow the
+  # public panel port so future servers do not require every existing node to be reconfigured.
   # Source: https://v2.hysteria.network/docs/advanced/ACL/
-  cat >> /etc/hysteria2-panel/hysteria.yaml <<'EOF'
+  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
 acl:
   inline:
-EOF
-  for panel_access_ip in "${PANEL_ACCESS_IP_LIST[@]}"; do
-    [[ -z "${panel_access_ip}" ]] || echo "    - \"direct(${panel_access_ip}, tcp/${PANEL_PORT})\"" >> /etc/hysteria2-panel/hysteria.yaml
-  done
-  cat >> /etc/hysteria2-panel/hysteria.yaml <<'EOF'
     - "reject(127.0.0.0/8)"
     - "reject(10.0.0.0/8)"
     - "reject(100.64.0.0/10)"
@@ -515,6 +485,7 @@ EOF
     - "reject(::1/128)"
     - "reject(fc00::/7)"
     - "reject(fe80::/10)"
+    - "direct(all, tcp/${PANEL_PORT})"
     - "direct(all, tcp/53)"
     - "direct(all, udp/53)"
     - "direct(all, tcp/80)"
@@ -728,7 +699,7 @@ echo "面板地址：${PANEL_SCHEME}://${PUBLIC_HOST}:${PANEL_PORT}/"
 echo "Hysteria 端口：TCP/UDP ${HYSTERIA_PORT}"
 if [[ "${EGRESS_POLICY}" == "web" ]]; then
   echo "出站策略：web（网页/视频白名单，阻断常规 BT/PT 与非网页端口）"
-  [[ -z "${PANEL_ACCESS_IPS}" ]] || echo "节点内面板访问：${PANEL_ACCESS_IPS} 的 TCP ${PANEL_PORT}"
+  echo "节点内面板访问：允许公网 TCP ${PANEL_PORT}（私网目标仍拒绝）"
   echo "边界提示：端口 ACL 不是 DPI，无法保证识别伪装在 80/443 上的加密 P2P。"
 else
   echo "出站策略：full（完整代理能力，未启用 BT/PT 端口防护）"

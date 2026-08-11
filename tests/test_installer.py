@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.12.1"', source)
+        self.assertIn('PANEL_VERSION="0.12.2"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="4b9c1a74b478f1c22cd2271acc7067a17c33aff1deca9cabb6cca14f5040eb54"',
+            'PANEL_SHA256="d96bcd8fa03cc6b636ed5b255ed90cbf85e10448735a247eef4728483a62b949"',
             source,
         )
         self.assertIn(
@@ -85,7 +85,6 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('PANEL_PORT="${EXISTING_PANEL_PORT}"', source)
         self.assertIn('PANEL_SCHEME="${EXISTING_PANEL_SCHEME}"', source)
         self.assertIn('EGRESS_POLICY="${EXISTING_EGRESS_POLICY}"', source)
-        self.assertIn('PANEL_ACCESS_IPS="${EXISTING_PANEL_ACCESS_IPS}"', source)
         self.assertIn('RESET_ADMIN="0"', source)
 
     def test_upgrade_uses_existing_node_settings_as_prompt_defaults(self):
@@ -97,10 +96,6 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT:-${DEFAULT_HYSTERIA_PORT}}"', source)
         self.assertIn('EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT:-${DEFAULT_PANEL_PORT}}"', source)
         self.assertIn('EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME:-http}"', source)
-        self.assertIn(
-            'EXISTING_PANEL_ACCESS_IPS="${HY2PANEL_PANEL_ACCESS_IPS:-${detected_host}}"',
-            source,
-        )
         self.assertIn('EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT:-${DEFAULT_AUTH_PORT}}"', source)
         self.assertIn('EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT:-${DEFAULT_STATS_PORT}}"', source)
 
@@ -237,27 +232,19 @@ class InstallerContractTests(unittest.TestCase):
         self.assertLess(source.index("reject(127.0.0.0/8)"), source.index("direct(all, tcp/80)"))
         self.assertIn('if [[ "${EGRESS_POLICY}" == "web" ]]; then', source)
 
-    def test_web_egress_policy_only_allows_configured_panel_ips_on_panel_port(self):
+    def test_web_egress_policy_allows_the_public_panel_port_on_future_servers(self):
         source = INSTALLER.read_text()
 
-        self.assertIn(
-            'EXISTING_PANEL_ACCESS_IPS="${HY2PANEL_PANEL_ACCESS_IPS:-${detected_host}}"',
-            source,
-        )
-        self.assertIn(
-            'PANEL_ACCESS_IPS="${PANEL_ACCESS_IPS:-${EXISTING_PANEL_ACCESS_IPS}}"',
-            source,
-        )
-        self.assertIn('HY2PANEL_PANEL_ACCESS_IPS=${PANEL_ACCESS_IPS}', source)
-        self.assertIn("ipaddress.ip_address", source)
-        self.assertIn(
-            'direct(${panel_access_ip}, tcp/${PANEL_PORT})',
-            source,
-        )
-        self.assertNotIn('direct(all, tcp/${PANEL_PORT})', source)
+        self.assertIn('direct(all, tcp/${PANEL_PORT})', source)
+        self.assertNotIn("PANEL_ACCESS_IPS", source)
+        self.assertNotIn("HY2PANEL_PANEL_ACCESS_IPS", source)
         self.assertLess(
-            source.index('direct(${panel_access_ip}, tcp/${PANEL_PORT})'),
+            source.index('direct(all, tcp/${PANEL_PORT})'),
+            source.index('reject(all)'),
+        )
+        self.assertLess(
             source.index("reject(127.0.0.0/8)"),
+            source.index('direct(all, tcp/${PANEL_PORT})'),
         )
 
     def test_installer_grants_only_exact_hysteria_service_controls(self):
