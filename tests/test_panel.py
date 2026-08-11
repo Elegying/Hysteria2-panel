@@ -31,6 +31,8 @@ from hysteria2_panel import (
     ServiceController,
     SystemMetrics,
     UpdateChecker,
+    UpdateController,
+    UpdateInstaller,
     UsageManager,
     build_connection_uri,
     handle_auth_payload,
@@ -573,6 +575,28 @@ class OperationsTests(unittest.TestCase):
         )
         self.assertNotIn("shell", calls[0][1])
 
+    def test_update_controller_can_only_start_the_fixed_update_unit(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return type("Result", (), {"returncode": 0, "stdout": ""})()
+
+        UpdateController(runner=runner).queue()
+
+        self.assertEqual(
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/bin/systemctl",
+                "--no-block",
+                "start",
+                "hysteria2-panel-update.service",
+            ],
+            calls[0][0],
+        )
+        self.assertNotIn("shell", calls[0][1])
+
     def test_update_checker_uses_the_fixed_repository_and_compares_versions(self):
         requests = []
 
@@ -597,6 +621,138 @@ class OperationsTests(unittest.TestCase):
             requests[0][0],
         )
         self.assertEqual(3, requests[0][1])
+
+    def test_update_installer_downloads_only_the_fixed_release_and_runs_noninteractively(self):
+        requests = []
+        calls = []
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        def opener(request, timeout):
+            requests.append((request.full_url, timeout))
+            if request.full_url.endswith("/releases/latest"):
+                return Response(json.dumps({"tag_name": "v0.12.0"}).encode())
+            return Response(b'#!/usr/bin/env bash\nPANEL_VERSION="0.12.0"\n')
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return type("Result", (), {"returncode": 0})()
+
+        result = UpdateInstaller(
+            current_version="0.11.2", opener=opener, runner=runner
+        ).apply()
+
+        self.assertEqual(
+            [
+                "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest",
+                "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.12.0/install.sh",
+            ],
+            [url for url, _ in requests],
+        )
+        self.assertEqual(["/bin/bash", "-n"], calls[0][0][:2])
+        self.assertEqual(["/bin/bash"], calls[1][0][:1])
+        self.assertNotIn("shell", calls[0][1])
+        self.assertNotIn("shell", calls[1][1])
+        self.assertEqual("1", calls[1][1]["env"]["HY2PANEL_AUTO_UPDATE"])
+        self.assertEqual("v0.12.0", calls[1][1]["env"]["PANEL_REF"])
+        self.assertNotIn("ADMIN_PASSWORD", calls[1][1]["env"])
+        self.assertEqual(
+            {"current": "v0.11.2", "latest": "v0.12.0", "updated": True},
+            result,
+        )
+
+    def test_update_installer_rejects_mismatched_installer_version(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        responses = iter(
+            [
+                Response(json.dumps({"tag_name": "v0.12.0"}).encode()),
+                Response(b'#!/usr/bin/env bash\nPANEL_VERSION="9.9.9"\n'),
+            ]
+        )
+        with self.assertRaises(ValueError):
+            UpdateInstaller(
+                current_version="0.11.2",
+                opener=lambda *_args, **_kwargs: next(responses),
+                runner=mock.Mock(),
+            ).apply()
+
+    def test_update_installer_rejects_non_semver_tags_before_downloading_code(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        runner = mock.Mock()
+        with self.assertRaises(ValueError):
+            UpdateInstaller(
+                current_version="0.11.2",
+                opener=lambda *_args, **_kwargs: Response(
+                    json.dumps({"tag_name": "v0.12.0/../../main"}).encode()
+                ),
+                runner=runner,
+            ).apply()
+        runner.assert_not_called()
+
+    def test_update_installer_rejects_prerelease_metadata_before_downloading_code(self):
+        requests = []
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        def opener(request, timeout):
+            self.assertEqual(3, timeout)
+            requests.append(request.full_url)
+            return Response(
+                json.dumps(
+                    {"tag_name": "v0.12.0", "draft": False, "prerelease": True}
+                ).encode()
+            )
+
+        with self.assertRaises(ValueError):
+            UpdateInstaller(
+                current_version="0.11.2", opener=opener, runner=mock.Mock()
+            ).apply()
+        self.assertEqual(1, len(requests))
+
+    def test_update_installer_does_not_execute_when_already_current(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        runner = mock.Mock()
+        result = UpdateInstaller(
+            current_version="0.12.0",
+            opener=lambda *_args, **_kwargs: Response(
+                json.dumps({"tag_name": "v0.12.0"}).encode()
+            ),
+            runner=runner,
+        ).apply()
+
+        self.assertEqual(
+            {"current": "v0.12.0", "latest": "v0.12.0", "updated": False},
+            result,
+        )
+        runner.assert_not_called()
 
     def test_system_metrics_reports_cpu_memory_disk_and_uptime(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -646,6 +802,14 @@ class FakeServiceController:
 
 
 class FakeRestoreController:
+    def __init__(self):
+        self.queued = 0
+
+    def queue(self):
+        self.queued += 1
+
+
+class FakeUpdateController:
     def __init__(self):
         self.queued = 0
 
@@ -929,6 +1093,7 @@ class PanelHttpTests(unittest.TestCase):
         self.stats = FakeStatsClient()
         self.service_controller = FakeServiceController()
         self.restore_controller = FakeRestoreController()
+        self.update_controller = FakeUpdateController()
         certificate, private_key = create_test_certificate(self.temp_dir.name)
         self.backup_manager = BackupManager(
             database=self.db,
@@ -952,6 +1117,7 @@ class PanelHttpTests(unittest.TestCase):
             update_checker=FakeUpdateChecker(),
             backup_manager=self.backup_manager,
             restore_controller=self.restore_controller,
+            update_controller=self.update_controller,
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -1441,7 +1607,35 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.11.2", body)
+        self.assertIn("v0.12.0", body)
+
+    def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request("/updates/apply", {}, headers=headers)
+        self.assertEqual(403, missing_csrf.exception.code)
+        self.assertEqual(0, self.update_controller.queued)
+
+        with self.request(
+            "/updates/check",
+            {"csrf": csrf_token},
+            headers=headers,
+        ):
+            pass
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+        self.assertIn('action="/updates/apply"', body)
+        self.assertIn("立即更新", body)
+
+        with self.request(
+            "/updates/apply",
+            {"csrf": csrf_token},
+            headers=headers,
+        ) as response:
+            self.assertEqual(202, response.status)
+            self.assertIn("在线更新任务已启动", response.read().decode())
+        self.assertEqual(1, self.update_controller.queued)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False

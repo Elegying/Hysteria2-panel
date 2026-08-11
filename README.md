@@ -12,12 +12,14 @@
 支持 Debian、Ubuntu、Rocky Linux、AlmaLinux、CentOS Stream 和 Fedora 等使用 `apt`、`dnf` 或 `yum` 且由 systemd 管理的 Linux amd64/arm64 主机，需要 root 权限和 Python 3.8 或更高版本。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.11.2/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.12.0/install.sh)
 ```
 
 安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `web`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
 重复运行安装器会先建立一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。这样普通升级不会令已经分享的节点失效，也不会无故退出当前管理会话。
+
+面板发现新正式版本后会显示“立即更新”。该操作只允许已登录管理员携带 CSRF token 启动固定的 `hysteria2-panel-update.service`，浏览器不能传入版本、下载地址或命令。root 更新任务会重新查询固定 GitHub Release API，只接受严格的 `vX.Y.Z` 正式版本，从对应版本路径下载安装器，核对安装器内版本、解释器头和 shell 语法，再以专用非交互模式升级。在线升级强制沿用当前节点与面板参数并保留管理员、数据库、HMAC、统计密钥、TLS 证书和私钥；全新服务器不能使用该内部模式。
 
 默认端口：
 
@@ -49,7 +51,7 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 - 查看在线设备数、上传/下载流量、总流量进度和高流量前五用户；
 - 重置单个用户或全部用户的累计流量；
 - 查看服务状态、当前用户数、不活跃用户数、在线设备总数以及总上传/下载流量；
-- 查看 CPU、内存、磁盘、运行时长、面板版本并检查更新；
+- 查看 CPU、内存、磁盘、运行时长、面板版本，并检查和在线安装正式更新；
 - 在面板内启动、停止或重启项目专用 Hysteria 服务。
 - 使用响应式桌面/手机布局；手机端用户表格会自动转为便于触控的卡片。
 - 从顶部“数据迁移”弹窗一键下载完整备份，或在新服务器上传恢复用户、流量、签名密钥和 TLS 节点身份。
@@ -101,8 +103,8 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 ## 运维
 
 ```bash
-systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-tcp-probe
-journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-tcp-probe --since today
+systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-tcp-probe hysteria2-panel-update
+journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-tcp-probe -u hysteria2-panel-update --since today
 curl http://127.0.0.1:19998/healthz
 ```
 
@@ -115,7 +117,7 @@ curl http://127.0.0.1:19998/healthz
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署和恢复前的自动备份 |
 | `/etc/sysctl.d/99-hysteria2-panel.conf` | 16 MiB QUIC UDP 缓冲，以及内核支持时的 `fq`/TCP BBR |
-| `/etc/sudoers.d/hysteria2-panel` | 仅允许固定服务控制和启动一次性恢复服务 |
+| `/etc/sudoers.d/hysteria2-panel` | 仅允许固定服务控制，以及启动一次性恢复/更新服务 |
 
 ### 回滚
 
@@ -148,6 +150,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 - [ADR-004：可迁移用户身份与原子恢复](docs/decisions/ADR-004-portable-backup-restore.md)
 - [ADR-005：HTTP 缺省、登录锁定与双层 BBR 优化](docs/decisions/ADR-005-http-login-network-hardening.md)
 - [ADR-006：网页/视频出站策略与 BT/PT 防滥用边界](docs/decisions/ADR-006-web-egress-abuse-control.md)
+- [ADR-007：固定来源的非交互在线更新](docs/decisions/ADR-007-fixed-source-online-update.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

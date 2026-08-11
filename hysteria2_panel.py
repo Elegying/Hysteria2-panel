@@ -43,7 +43,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.11.2"
+PANEL_VERSION = "0.12.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -1390,6 +1390,7 @@ class PanelApplication:
         service_controller=None,
         system_metrics=None,
         update_checker=None,
+        update_controller=None,
         backup_manager=None,
         restore_controller=None,
     ):
@@ -1402,6 +1403,7 @@ class PanelApplication:
         self.service_controller = service_controller or ServiceController()
         self.system_metrics = system_metrics or SystemMetrics()
         self.update_checker = update_checker or UpdateChecker()
+        self.update_controller = update_controller or UpdateController()
         self.backup_manager = backup_manager
         self.restore_controller = restore_controller or RestoreController()
         self.update_result = None
@@ -1701,6 +1703,11 @@ class PanelHandler(JsonHandler):
             ).format(url=html.escape(update["url"], quote=True), latest=html.escape(update["latest"]))
         else:
             update_text = "尚未检查远程版本"
+        update_action = ""
+        if update and update["update_available"]:
+            update_action = """<form method="post" action="/updates/apply" data-confirm="在线更新会短暂重启面板与 Hysteria 服务，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button success" type="submit">立即更新</button></form>""".format(
+                csrf=csrf
+            )
         content = """<header class="topbar"><span class="eyebrow brand">HYSTERIA CONTROL CENTER</span><h1>Hysteria 2 用户管理面板</h1><span class="topbar-spacer"></span>
 <span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">最近刷新 <strong>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
 <button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
@@ -1716,7 +1723,7 @@ class PanelHandler(JsonHandler):
 <form method="post" action="/service/restart" data-confirm="确定重启 Hysteria 服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启 Hysteria</button></form>
 <form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止 Hysteria</button></form><a class="button secondary" href="/">刷新状态</a></div>
 <div class="service-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail"><span class="muted">服务端口</span><strong>UDP {port}</strong></div></div>
-<div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form></div><p class="muted">{update_text}</p></div></div></article>
+<div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p></div></div></article>
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div></div><div class="resource-grid">
 <div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu:.1f}%</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory:.1f}%</strong><small class="muted">{memory_used} / {memory_total}</small></div>
 <div class="resource"><span class="muted">磁盘占用</span><strong>{disk:.1f}%</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div></div></article>
@@ -1753,6 +1760,7 @@ class PanelHandler(JsonHandler):
             csrf=csrf,
             version=PANEL_VERSION,
             update_text=update_text,
+            update_action=update_action,
             cpu=resources["cpu_percent"],
             memory=resources["memory_percent"],
             memory_used=_human_bytes(resources["memory_used"]),
@@ -1877,6 +1885,9 @@ class PanelHandler(JsonHandler):
             return
         if path == "/updates/check":
             self._handle_update_check(session)
+            return
+        if path == "/updates/apply":
+            self._handle_update_apply(session)
             return
         match = re.fullmatch(r"/users/(\d+)/(toggle|rotate|delete|share|reset)", path)
         if match:
@@ -2128,6 +2139,27 @@ class PanelHandler(JsonHandler):
         except Exception:
             LOGGER.exception("update check failed")
             self._error_page(502, "暂时无法检查更新，请稍后重试")
+
+    def _handle_update_apply(self, session):
+        if not self.app.update_result or not self.app.update_result.get("update_available"):
+            self._error_page(409, "请先检查更新并确认存在新版本")
+            return
+        try:
+            self.app.update_controller.queue()
+            self._audit_safely(
+                session["username"],
+                "panel_update_queued",
+                self.app.update_result["latest"],
+            )
+        except Exception:
+            LOGGER.exception("update queue failed")
+            self._error_page(500, "在线更新任务启动失败，请检查服务日志")
+            return
+        content = """<section class="card login"><h1>在线更新任务已启动</h1>
+<p>系统会重新核验最新正式版本，建立升级前备份并保留用户、节点参数、签名密钥、证书和管理员账号。</p>
+<p class="notice">面板与 Hysteria 服务会短暂重启。请等待约 30 秒后刷新；失败原因与升级前备份位置会保留在更新服务日志中。</p>
+<p><a class="button secondary" href="/">稍后刷新</a></p></section>"""
+        self._send_html(202, self._page("正在更新", content))
 
 
 def make_panel_server(address, application):
@@ -2402,6 +2434,31 @@ class RestoreController:
             raise RuntimeError("restore service could not be started")
 
 
+class UpdateController:
+    SERVICE = "hysteria2-panel-update.service"
+
+    def __init__(self, runner=subprocess.run):
+        self.runner = runner
+
+    def queue(self):
+        result = self.runner(
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/bin/systemctl",
+                "--no-block",
+                "start",
+                self.SERVICE,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("update service could not be started")
+
+
 class UpdateChecker:
     URL = "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest"
 
@@ -2426,7 +2483,14 @@ class UpdateChecker:
         if len(raw_body) > 16384:
             raise ValueError("release response is too large")
         payload = json.loads(raw_body.decode("utf-8"))
-        latest = payload.get("tag_name") if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            raise ValueError("release response is invalid")
+        if (
+            payload.get("draft", False) is not False
+            or payload.get("prerelease", False) is not False
+        ):
+            raise ValueError("release is not a formal release")
+        latest = payload.get("tag_name")
         if not isinstance(latest, str):
             raise ValueError("release response is invalid")
         latest_tuple = self._version_tuple(latest)
@@ -2435,6 +2499,91 @@ class UpdateChecker:
             "latest": "v{}.{}.{}".format(*latest_tuple),
             "update_available": latest_tuple > self._version_tuple(self.current_version),
             "url": "https://github.com/Elegying/Hysteria2-panel/releases/latest",
+        }
+
+
+class UpdateInstaller:
+    INSTALLER_URL = (
+        "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/{tag}/install.sh"
+    )
+    MAX_INSTALLER_BYTES = 512 * 1024
+    SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+    def __init__(
+        self,
+        current_version=PANEL_VERSION,
+        opener=urllib.request.urlopen,
+        runner=subprocess.run,
+    ):
+        self.current_version = current_version
+        self.opener = opener
+        self.runner = runner
+
+    def _download_installer(self, tag):
+        request = urllib.request.Request(
+            self.INSTALLER_URL.format(tag=tag),
+            headers={"User-Agent": "Hysteria2-panel"},
+        )
+        with self.opener(request, timeout=10) as response:
+            body = response.read(self.MAX_INSTALLER_BYTES + 1)
+        if len(body) > self.MAX_INSTALLER_BYTES:
+            raise ValueError("release installer is too large")
+        try:
+            source = body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("release installer is not UTF-8") from exc
+        if not source.startswith(("#!/usr/bin/env bash\n", "#!/bin/bash\n")):
+            raise ValueError("release installer header is invalid")
+        latest = re.search(r'^PANEL_VERSION="(\d+\.\d+\.\d+)"$', source, re.MULTILINE)
+        if not latest:
+            raise ValueError("release installer version is invalid")
+        return body, latest.group(1)
+
+    def apply(self):
+        release = UpdateChecker(self.current_version, opener=self.opener).check()
+        if not release["update_available"]:
+            return {
+                "current": release["current"],
+                "latest": release["latest"],
+                "updated": False,
+            }
+        tag = release["latest"]
+        installer, embedded_version = self._download_installer(tag)
+        if "v{}".format(embedded_version) != tag:
+            raise ValueError("release installer version does not match release tag")
+        with tempfile.TemporaryDirectory(prefix="hysteria2-panel-update.") as directory:
+            installer_path = Path(directory) / "install.sh"
+            installer_path.write_bytes(installer)
+            installer_path.chmod(0o700)
+            syntax = self.runner(
+                ["/bin/bash", "-n", str(installer_path)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if syntax.returncode != 0:
+                raise ValueError("release installer syntax is invalid")
+            environment = {
+                "PATH": self.SAFE_PATH,
+                "LANG": "C.UTF-8",
+                "HY2PANEL_AUTO_UPDATE": "1",
+                "PANEL_REF": tag,
+            }
+            # The interpreter is fixed; the script passed the release and syntax checks above.
+            result = self.runner(
+                ["/bin/bash", str(installer_path)],
+                env=environment,
+                text=True,
+                timeout=900,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError("online update installer failed")
+        return {
+            "current": release["current"],
+            "latest": release["latest"],
+            "updated": True,
         }
 
 
@@ -2702,6 +2851,7 @@ def main(argv=None):
     init_parser.add_argument("--if-missing", action="store_true")
     subcommands.add_parser("serve", help="run the authentication service and panel")
     subcommands.add_parser("restore-pending", help="apply the staged backup as root")
+    subcommands.add_parser("apply-update", help="install the latest formal release as root")
     args = parser.parse_args(argv)
     try:
         settings = Settings.from_mapping(os.environ)
@@ -2714,6 +2864,12 @@ def main(argv=None):
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("restore-pending must run as root")
             restore_pending(settings)
+            return 0
+        if args.command == "apply-update":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("apply-update must run as root")
+            result = UpdateInstaller().apply()
+            print(json.dumps(result, separators=(",", ":")))
             return 0
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         run_service(settings)

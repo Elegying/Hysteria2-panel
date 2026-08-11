@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.11.2"
+PANEL_VERSION="0.12.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="d16f43846e3f44d258e280bd60058874a39d890f127f348528b586e19cb70bcc"
+PANEL_SHA256="3cbfad745d950662a7f096d60ed5c395797ff2f7adf974126207e7c43f8bb284"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -171,6 +171,9 @@ fi
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
 [[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"
+AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"
+[[ "${AUTO_UPDATE}" == "0" || "${AUTO_UPDATE}" == "1" ]] \
+  || fail "HY2PANEL_AUTO_UPDATE 只能是 0 或 1"
 
 required_commands=(awk cat chmod chown cp curl date find getent grep groupadd id install ip mktemp openssl rm sha256sum sleep ss sudo sysctl systemctl uname useradd usermod visudo)
 missing_commands=()
@@ -205,7 +208,8 @@ if [[ ! -e "${MANAGED_MARKER}" ]] && {
     [[ -e /etc/systemd/system/hysteria2-panel.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-server.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-restore.service ]]
+    [[ -e /etc/systemd/system/hysteria2-panel-restore.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-update.service ]]
 }; then
   fail "发现非本安装器管理的同名路径或服务；为避免覆盖，安装已停止"
 fi
@@ -218,6 +222,9 @@ if [[ -e "${MANAGED_MARKER}" && -s /etc/hysteria2-panel/panel.env ]]; then
   # shellcheck disable=SC1091
   source /etc/hysteria2-panel/panel.env
   set +a
+fi
+if [[ "${AUTO_UPDATE}" == "1" && "${EXISTING_INSTALL}" != "1" ]]; then
+  fail "在线更新只允许用于现有的受管安装"
 fi
 
 detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
@@ -239,6 +246,18 @@ else
   EXISTING_EGRESS_POLICY="web"
   EXISTING_AUTH_PORT="${DEFAULT_AUTH_PORT}"
   EXISTING_STATS_PORT="${DEFAULT_STATS_PORT}"
+fi
+if [[ "${AUTO_UPDATE}" == "1" ]]; then
+  NODE_NAME="${EXISTING_NODE_NAME}"
+  PUBLIC_HOST="${EXISTING_PUBLIC_HOST}"
+  HYSTERIA_PORT="${EXISTING_HYSTERIA_PORT}"
+  PANEL_PORT="${EXISTING_PANEL_PORT}"
+  PANEL_SCHEME="${EXISTING_PANEL_SCHEME}"
+  EGRESS_POLICY="${EXISTING_EGRESS_POLICY}"
+  AUTH_PORT="${EXISTING_AUTH_PORT}"
+  STATS_PORT="${EXISTING_STATS_PORT}"
+  RESET_ADMIN="0"
+  ADMIN_PASSWORD=""
 fi
 NODE_NAME="${NODE_NAME:-}"
 if [[ -z "${NODE_NAME}" ]]; then
@@ -353,7 +372,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service hysteria2-panel-restore.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service hysteria2-panel-restore.service hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
@@ -483,7 +502,7 @@ chown root:hy2tls /etc/hysteria2-panel/hysteria.yaml
 chmod 0640 /etc/hysteria2-panel/hysteria.yaml
 
 cat > "${TMP_DIR}/hysteria2-panel.sudoers" <<'EOF'
-hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service, /bin/systemctl --no-block start hysteria2-panel-restore.service
+hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service, /bin/systemctl --no-block start hysteria2-panel-restore.service, /bin/systemctl --no-block start hysteria2-panel-update.service
 EOF
 chmod 0440 "${TMP_DIR}/hysteria2-panel.sudoers"
 visudo -cf "${TMP_DIR}/hysteria2-panel.sudoers" >/dev/null || fail "服务控制权限配置无效"
@@ -611,6 +630,30 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadWritePaths=/etc/hysteria2-panel /var/lib/hysteria2-panel /var/backups/hysteria2-panel
 TasksMax=32
 MemoryMax=384M
+EOF
+
+cat > /etc/systemd/system/hysteria2-panel-update.service <<EOF
+[Unit]
+Description=Install the latest formal Hysteria 2 panel release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-update
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+TasksMax=128
+MemoryMax=768M
 EOF
 
 if (( UPDATE_ADMIN == 1 )); then

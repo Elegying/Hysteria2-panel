@@ -56,7 +56,8 @@
 | `POST` | `/users/{id}/reset` | 携带当前 `generation`，重置该用户流量并断开旧连接 |
 | `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
-| `POST` | `/updates/check` | 从固定 GitHub Release API 检查面板版本，不自动安装 |
+| `POST` | `/updates/check` | 从固定 GitHub Release API 检查面板版本；有新正式版本时显示在线更新入口 |
+| `POST` | `/updates/apply` | 不接收版本或地址参数；排队启动固定的一次性 root 更新服务，成功返回 HTTP 202 |
 | `POST` | `/backup` | 表单 CSRF 校验后返回 `application/zip` 敏感备份，响应强制 `no-store` |
 | `POST` | `/restore` | 上传原始 `application/zip`；CSRF 通过 `X-HY2Panel-CSRF` 请求头提交，预检后排队执行一次性恢复服务 |
 | `POST` | `/logout` | 撤销管理会话 |
@@ -69,5 +70,7 @@
 全局统计只汇总当前数据库中的用户，避免已删除用户仍残留在 Hysteria 统计快照时污染总数。不活跃用户定义为上传和下载均为 0 的账户。面板定期使用 Hysteria `/traffic?clear=true` 原子取得增量并写入 SQLite，因此正常重启不会清空累计流量。
 
 `POST /restore` 要求 `Content-Length` 在 1 字节到 64 MiB 之间，不解析 multipart。服务端只接受格式版本 1 的固定五文件 ZIP，限制单项与总解压大小，拒绝额外文件、重复路径、目录和符号链接，并校验清单 SHA-256、SQLite 完整性/表结构、每个可恢复用户 token、证书/私钥、证书指纹、源域名及 UDP 端口。上传预检通过后只写入固定的待恢复路径，再用固定 sudoers 命令启动 root oneshot；root 进程会重复全部校验。
+
+`POST /updates/apply` 只有在当前会话刚检查到新版本时可用，但 root 任务不会信任这份页面状态，而会重新访问固定仓库的 GitHub `releases/latest`。响应 tag 必须是比当前版本新的 `vX.Y.Z`，安装器只能从该 tag 对应的固定 `raw.githubusercontent.com/Elegying/Hysteria2-panel/` 路径下载。执行前还会限制响应大小、验证 UTF-8、bash 解释器头、内嵌版本与 tag 一致并通过 `bash -n`。更新进程使用固定环境变量进入安装器的现有受管安装模式，网页请求无法指定命令、仓库、版本、节点参数或管理员凭据。
 
 Hysteria 流量统计客户端只接受带明确端口、无路径的 `http://127.0.0.1` 或 `http://[::1]`，单次响应最多 8 MiB，避免配置错误把面板变成外部请求入口或让异常统计响应无限占用内存。

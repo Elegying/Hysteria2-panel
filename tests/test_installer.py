@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.11.2"', source)
+        self.assertIn('PANEL_VERSION="0.12.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="d16f43846e3f44d258e280bd60058874a39d890f127f348528b586e19cb70bcc"',
+            'PANEL_SHA256="3cbfad745d950662a7f096d60ed5c395797ff2f7adf974126207e7c43f8bb284"',
             source,
         )
         self.assertIn(
@@ -73,6 +73,19 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('UPDATE_ADMIN=0', source)
         self.assertIn('保留当前管理员账号和密码', source)
         self.assertIn('if (( UPDATE_ADMIN == 1 )); then', source)
+
+    def test_online_update_mode_requires_an_existing_managed_install_and_keeps_settings(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"', source)
+        self.assertIn('在线更新只允许用于现有的受管安装', source)
+        self.assertIn('NODE_NAME="${EXISTING_NODE_NAME}"', source)
+        self.assertIn('PUBLIC_HOST="${EXISTING_PUBLIC_HOST}"', source)
+        self.assertIn('HYSTERIA_PORT="${EXISTING_HYSTERIA_PORT}"', source)
+        self.assertIn('PANEL_PORT="${EXISTING_PANEL_PORT}"', source)
+        self.assertIn('PANEL_SCHEME="${EXISTING_PANEL_SCHEME}"', source)
+        self.assertIn('EGRESS_POLICY="${EXISTING_EGRESS_POLICY}"', source)
+        self.assertIn('RESET_ADMIN="0"', source)
 
     def test_upgrade_uses_existing_node_settings_as_prompt_defaults(self):
         source = INSTALLER.read_text()
@@ -237,8 +250,8 @@ class InstallerContractTests(unittest.TestCase):
         )
         self.assertIn("visudo -cf", source)
         self.assertIn("sudo", source)
-        self.assertEqual(3, source.count("NoNewPrivileges=true"))
-        self.assertEqual(3, source.count("PrivateDevices=true"))
+        self.assertEqual(4, source.count("NoNewPrivileges=true"))
+        self.assertEqual(4, source.count("PrivateDevices=true"))
         for sandbox_option in (
             "ProtectKernelTunables=true",
             "ProtectKernelModules=true",
@@ -246,7 +259,12 @@ class InstallerContractTests(unittest.TestCase):
             "LockPersonality=true",
             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
         ):
-            expected_count = 2 if sandbox_option.endswith("AF_UNIX") else 3
+            if sandbox_option in {"RestrictSUIDSGID=true", "LockPersonality=true"}:
+                expected_count = 4
+            elif sandbox_option.endswith("AF_UNIX"):
+                expected_count = 3
+            else:
+                expected_count = 3
             self.assertEqual(expected_count, source.count(sandbox_option), sandbox_option)
 
     def test_installer_adds_a_root_only_one_shot_restore_service(self):
@@ -270,6 +288,24 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertNotIn("User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py restore-pending", source)
+
+    def test_installer_adds_a_fixed_root_only_online_update_service(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("hysteria2-panel-update.service", source)
+        self.assertIn(
+            "/bin/systemctl --no-block start hysteria2-panel-update.service",
+            source,
+        )
+        self.assertIn(
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-update",
+            source,
+        )
+        self.assertIn("TimeoutStartSec=15min", source)
+        self.assertNotIn(
+            "User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-update",
+            source,
+        )
 
 
 class TcpProbeTests(unittest.TestCase):
