@@ -402,6 +402,9 @@ class FakeStatsClient:
     def kick(self, name):
         self.kicked.append(name)
 
+    def kick_many(self, names):
+        self.kicked.extend(names)
+
 
 class PolicyStatsClient(FakeStatsClient):
     def __init__(self, traffic=None, online=None):
@@ -429,15 +432,41 @@ class UsageManagerTests(unittest.TestCase):
 
     def test_collects_durable_traffic_and_kicks_users_at_quota(self):
         user = self.db.create_proxy_user("alice", traffic_limit_bytes=300)
-        stats = PolicyStatsClient(traffic={"alice": {"tx": 100, "rx": 200}})
+        stats = PolicyStatsClient(
+            traffic={"alice": {"tx": 100, "rx": 200}}, online={"alice": 3}
+        )
         manager = UsageManager(self.db, stats)
 
+        manager.collect_once()
         manager.collect_once()
 
         record = self.db.get_proxy_user(user["id"])
         self.assertEqual((100, 200), (record["tx_bytes"], record["rx_bytes"]))
-        self.assertEqual(["alice"], stats.kicked)
+        self.assertEqual(["alice", "alice"], stats.kicked)
         self.assertFalse(manager.authorize("alice"))
+
+    def test_collects_and_kicks_disabled_or_deleted_online_users(self):
+        user = self.db.create_proxy_user("disabled")
+        self.db.set_proxy_user_enabled(user["id"], False)
+        stats = PolicyStatsClient(online={"disabled": 2, "deleted": 1})
+        manager = UsageManager(self.db, stats)
+
+        manager.collect_once()
+
+        self.assertEqual(["deleted", "disabled"], sorted(stats.kicked))
+
+    def test_collect_preserves_traffic_when_online_snapshot_fails(self):
+        user = self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+        stats.online = lambda: (_ for _ in ()).throw(OSError("stats unavailable"))
+        manager = UsageManager(self.db, stats)
+
+        traffic = manager.collect_once()
+
+        self.assertEqual({"alice": {"tx": 10, "rx": 20}}, traffic)
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+        self.assertEqual([], stats.kicked)
 
     def test_reserves_pending_connections_to_enforce_the_limit(self):
         self.db.create_proxy_user("alice", device_limit=3)
@@ -1397,7 +1426,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.11.0", body)
+        self.assertIn("v0.11.1", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
@@ -1579,6 +1608,8 @@ class StatsClientTests(unittest.TestCase):
 
         self.client.kick("alice")
         self.assertEqual(["alice"], StatsApiHandler.kicked)
+        self.client.kick_many(["bob", "carol"])
+        self.assertEqual(["alice", "bob", "carol"], StatsApiHandler.kicked)
         self.assertEqual(
             {"alice": {"tx": 100, "rx": 200}}, self.client.collect_and_clear()
         )

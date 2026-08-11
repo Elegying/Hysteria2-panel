@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.11.0"', source)
+        self.assertIn('PANEL_VERSION="0.11.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="00551790bd0b3e312d14d62a02ac44bd59a2c16dc5ceea2746df8d218ce26861"',
+            'PANEL_SHA256="9efbd8089399ff81f8e011525bde84cb26c6cd4488d1ab035db7b20243f9abae"',
             source,
         )
         self.assertIn(
