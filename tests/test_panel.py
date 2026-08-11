@@ -1248,19 +1248,16 @@ class BackupManagerTests(unittest.TestCase):
             hysteria_port=19999,
             work_dir=destination_root / "work",
         )
-        replace_bytes = destination._replace_bytes
-        corrupted = {"value": False}
+        validate_applied_restore = destination._validate_applied_restore
 
-        def corrupt_new_database(path, value):
-            replace_bytes(path, value)
-            if Path(path) == destination_db.path and not corrupted["value"]:
-                corrupted["value"] = True
-                with sqlite3.connect(str(destination_db.path)) as connection:
-                    connection.execute(
-                        "UPDATE proxy_users SET traffic_limit_bytes = traffic_limit_bytes + 1"
-                    )
+        def corrupt_then_validate(*args, **kwargs):
+            with sqlite3.connect(str(destination_db.path)) as connection:
+                connection.execute(
+                    "UPDATE proxy_users SET traffic_limit_bytes = traffic_limit_bytes + 1"
+                )
+            return validate_applied_restore(*args, **kwargs)
 
-        destination._replace_bytes = corrupt_new_database
+        destination._validate_applied_restore = corrupt_then_validate
 
         with self.assertRaises(BackupValidationError):
             destination.apply_archive(
