@@ -12,12 +12,12 @@
 支持 Debian、Ubuntu、Rocky Linux、AlmaLinux、CentOS Stream 和 Fedora 等使用 `apt`、`dnf` 或 `yum` 且由 systemd 管理的 Linux amd64/arm64 主机，需要 root 权限和 Python 3.8 或更高版本。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.12.2/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.13.0/install.sh)
 ```
 
 安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `web`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
-重复运行安装器会先建立一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。这样普通升级不会令已经分享的节点失效，也不会无故退出当前管理会话。
+重复运行安装器会先建立唯一的一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、用户数据库、systemd 单元、sudoers 和网络参数，并尝试重新拉起旧服务；只有全部服务和端口通过检查后才解除回滚保护。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
 
 面板发现新正式版本后会显示“立即更新”。该操作只允许已登录管理员携带 CSRF token 启动固定的 `hysteria2-panel-update.service`，浏览器不能传入版本、下载地址或命令。root 更新任务会重新查询固定 GitHub Release API，只接受严格的 `vX.Y.Z` 正式版本，从对应版本路径下载安装器，核对安装器内版本、解释器头和 shell 语法，再以专用非交互模式升级。在线升级强制沿用当前节点与面板参数并保留管理员、数据库、HMAC、统计密钥、TLS 证书和私钥；全新服务器不能使用该内部模式。
 
@@ -90,9 +90,10 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 
 1. 在旧服务器下载备份，不要删除旧服务器；
 2. 在新服务器用与旧节点完全相同的 `PUBLIC_HOST` 和 `HYSTERIA_PORT` 完成一键部署；
-3. 把域名 DNS 指向新服务器并放行对应 TCP/UDP 端口；
-4. 登录新面板上传 ZIP。恢复服务会再次独立校验、自动备份新服务器当前状态、恢复代理用户/流量/签名密钥/证书并重启；
-5. 用已有客户端旧配置完成真实连接测试，再停用旧服务器。
+3. 先放行新服务器对应 TCP/UDP 端口，通过新服务器 IP 打开面板并上传 ZIP；不要提前把 DNS 指向尚未恢复用户身份的新服务器；
+4. 恢复服务会再次独立校验、自动备份新服务器当前状态、恢复代理用户/流量/签名密钥/证书，落盘后再次校验并重启。若失败，当前状态自动回滚，失败 ZIP 会隔离保存且不会堵塞下一次上传；
+5. 确认新面板用户数、证书指纹和服务状态正确后再切换 DNS，用已有客户端旧配置完成 Hysteria 握手和网页/视频测试；
+6. 至少保留旧服务器一个 DNS TTL 回退窗口，确认稳定后再停用。
 
 恢复不会覆盖新服务器当前的面板管理员账号、统计 API secret、面板端口、协议或出站策略。全部旧面板会话都会失效。代理用户会由备份整体替换，因此新服务器恢复前临时创建的代理用户会被移除。
 
@@ -121,7 +122,7 @@ curl http://127.0.0.1:19998/healthz
 
 ### 回滚
 
-安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用与配置。若升级后异常：
+安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用与配置。v0.13.0 起，升级失败会自动执行以下回滚并尝试重新启动旧服务；以下步骤仅用于自动回滚也未能恢复时的人工兜底：
 
 1. 停止 `hysteria2-panel-server` 和 `hysteria2-panel`；
 2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和 systemd unit 文件；回滚到 `v0.3.x` 时同时停用并删除 `hysteria2-panel-tcp-probe.service`；
@@ -151,6 +152,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 - [ADR-005：HTTP 缺省、登录锁定与双层 BBR 优化](docs/decisions/ADR-005-http-login-network-hardening.md)
 - [ADR-006：网页/视频出站策略与 BT/PT 防滥用边界](docs/decisions/ADR-006-web-egress-abuse-control.md)
 - [ADR-007：固定来源的非交互在线更新](docs/decisions/ADR-007-fixed-source-online-update.md)
+- [ADR-008：工作线程监督与升级失败自动回滚](docs/decisions/ADR-008-runtime-supervision-upgrade-rollback.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

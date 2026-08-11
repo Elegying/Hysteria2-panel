@@ -6,6 +6,7 @@ import base64
 import datetime
 import functools
 import getpass
+import gzip
 import hashlib
 import hmac
 import html
@@ -13,6 +14,7 @@ import http.cookies
 import json
 import logging
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -43,7 +45,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.12.2"
+PANEL_VERSION = "0.13.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -55,22 +57,23 @@ FAVICON_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 </svg>"""
 
 PAGE_STYLE = """
-:root{--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif}
+:root{color-scheme:dark;--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;text-rendering:optimizeLegibility}
 main{width:min(1420px,calc(100% - 40px));margin:20px auto 42px}.topbar{display:flex;align-items:center;gap:12px;background:#102846;border:1px solid #284867;border-radius:20px;padding:18px 22px;margin-bottom:16px}.brand{min-width:max-content}.eyebrow{display:inline-block;border:1px solid #405b7c;border-radius:999px;padding:7px 13px;color:#c8d7ef;font-size:12px;letter-spacing:.12em}.topbar h1{font-size:28px;margin:0 4px}.topbar-spacer{flex:1}.pill{border:1px solid #3a526b;border-radius:999px;padding:8px 12px;color:var(--muted);white-space:nowrap}.pill strong{color:var(--text);margin-left:6px}
 h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.muted{color:var(--muted)}.ok{color:var(--success)}.bad{color:var(--danger)}.warning{color:var(--warning)}
-.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}.metric,.card{background:var(--surface);border:1px solid var(--line);border-radius:18px}.metric{padding:18px;border-top:3px solid var(--teal)}.metric strong{display:block;font-size:26px;margin:9px 0 3px}.metric span{color:var(--muted)}
+.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}.metric,.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:0 8px 28px rgba(0,0,0,.12)}.metric{padding:18px;border-top:3px solid var(--teal)}.metric strong{display:block;font-size:26px;margin:9px 0 3px;font-variant-numeric:tabular-nums}.metric span{color:var(--muted)}
 .operations{display:grid;gap:16px;margin-bottom:16px;align-items:start}.dashboard-trio{align-items:stretch;grid-template-columns:minmax(0,1.45fr) minmax(270px,.85fr) minmax(240px,.72fr)}.dashboard-trio>.card{height:100%;margin-bottom:0}.card{padding:20px;margin-bottom:16px}.section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--line);padding-bottom:15px;margin-bottom:16px}.dashboard-trio .section-head{padding-bottom:12px;margin-bottom:12px}.service-badge{border-radius:999px;padding:8px 13px;background:#123833;color:var(--success);font-weight:700;white-space:nowrap}.service-badge.off{background:#3a2028;color:#ff9aa4}
-.button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer}button:hover,.button:hover{filter:brightness(1.08)}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}
+.button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer;transition:filter .15s ease,transform .15s ease}button:hover,.button:hover{filter:brightness(1.08);transform:translateY(-1px)}button:active,.button:active{transform:none}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
-.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(240px,360px) auto;grid-template-areas:"heading search actions";align-items:center}.user-heading{grid-area:heading}.user-section-head .user-search{grid-area:search}.user-section-head .section-actions{grid-area:actions}.user-tools{justify-content:flex-end;margin-bottom:14px}.user-search{width:100%;margin:0}.search-status{margin:0;white-space:nowrap}label{display:block;font-weight:650;margin-bottom:6px}input,textarea{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:1050px}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}
+.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(240px,360px) auto;grid-template-areas:"heading search actions";align-items:center}.user-heading{grid-area:heading}.user-section-head .user-search{grid-area:search}.user-section-head .section-actions{grid-area:actions}.user-tools{justify-content:flex-end;margin-bottom:14px}.user-search{width:100%;margin:0}.search-status{margin:0;white-space:nowrap}label{display:block;font-weight:650;margin-bottom:6px}input,textarea{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
 .migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
 @media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
 @media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.user-section-head{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"heading actions" "search search"}}
 @media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.user-section-head{grid-template-columns:1fr;grid-template-areas:"heading" "actions" "search"}.user-tools{align-items:stretch;flex-direction:column}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
 @media(max-width:340px){.metrics{grid-template-columns:1fr}.pill{flex-basis:100%}.version-panel{padding-inline:8px}.version-row{align-items:flex-start;flex-direction:column;gap:4px}.bbr-detail strong,.version-row strong{font-size:16px}.compact-button{padding:7px 5px;font-size:11px;white-space:nowrap}.user-table .actions button{padding-inline:1px;font-size:10px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop{backdrop-filter:none}}
 """
 
 PAGE_SCRIPT = """
@@ -214,6 +217,7 @@ const userSearch = document.querySelector('[data-user-search]');
 if (userSearch) {
   const userRows = Array.from(document.querySelectorAll('[data-user-name]'));
   const searchStatus = document.querySelector('[data-search-status]');
+  let filterFrame = 0;
   function filterUsers() {
     const query = userSearch.value.trim().toLocaleLowerCase();
     let visible = 0;
@@ -224,7 +228,10 @@ if (userSearch) {
     });
     if (searchStatus) searchStatus.textContent = query ? '显示 ' + visible + ' / ' + userRows.length + ' 个用户' : '共 ' + userRows.length + ' 个用户';
   }
-  userSearch.addEventListener('input', filterUsers);
+  userSearch.addEventListener('input', function() {
+    if (filterFrame) window.cancelAnimationFrame(filterFrame);
+    filterFrame = window.requestAnimationFrame(filterUsers);
+  });
   filterUsers();
 }
 """
@@ -624,6 +631,74 @@ class BackupManager:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
+    @staticmethod
+    def _required_env_value(env_bytes, key):
+        try:
+            lines = env_bytes.decode("utf-8").splitlines()
+        except UnicodeDecodeError as exc:
+            raise BackupValidationError("恢复后的环境配置编码无效") from exc
+        values = []
+        for line in lines:
+            match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+            if match and match.group(1) == key:
+                values.append(match.group(2))
+        if len(values) != 1:
+            raise BackupValidationError("恢复后的环境配置缺少或重复关键项")
+        return values[0]
+
+    def _proxy_rows(self, database_path):
+        try:
+            with sqlite3.connect(str(database_path)) as connection:
+                return connection.execute(
+                    # Identifiers come only from the fixed PROXY_COLUMNS tuple.
+                    "SELECT {} FROM proxy_users ORDER BY id".format(  # nosec B608
+                        ",".join(self.PROXY_COLUMNS)
+                    )
+                ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise BackupValidationError("恢复后的用户数据库无法读取") from exc
+
+    def _validate_applied_restore(
+        self, env_file, restored_hmac, manifest, directory, expected_database
+    ):
+        database_bytes = self._read_bounded(
+            self.database.path, self.FILE_LIMITS["data/panel.db"]
+        )
+        user_count = self._validate_database(database_bytes, restored_hmac, directory)
+        if self._proxy_rows(self.database.path) != self._proxy_rows(expected_database):
+            raise BackupValidationError("恢复后的用户数据与备份不一致")
+        certificate = self._read_bounded(
+            self.tls_cert, self.FILE_LIMITS["tls/server.crt"]
+        )
+        private_key = self._read_bounded(
+            self.tls_key, self.FILE_LIMITS["tls/server.key"]
+        )
+        certificate_path = Path(directory) / "applied-server.crt"
+        private_key_path = Path(directory) / "applied-server.key"
+        certificate_path.write_bytes(certificate)
+        private_key_path.write_bytes(private_key)
+        expires_at = self._certificate_details(certificate_path, private_key_path)
+        expected_certificate = manifest["certificate"]
+        if (
+            user_count != manifest["proxyUserCount"]
+            or self._sha256(certificate)
+            != manifest["files"]["tls/server.crt"]["sha256"]
+            or self._sha256(private_key)
+            != manifest["files"]["tls/server.key"]["sha256"]
+            or self._certificate_pin(certificate) != expected_certificate["pinSHA256"]
+            or expires_at != expected_certificate["notAfter"]
+        ):
+            raise BackupValidationError("恢复后的节点身份校验失败")
+        env_bytes = Path(env_file).read_bytes()
+        if not hmac.compare_digest(
+            self._required_env_value(env_bytes, "HY2PANEL_HMAC_KEY"),
+            restored_hmac.hex(),
+        ) or not hmac.compare_digest(
+            self._required_env_value(env_bytes, "HY2PANEL_CERT_PIN"),
+            expected_certificate["pinSHA256"],
+        ):
+            raise BackupValidationError("恢复后的签名密钥或证书指纹不一致")
+
     def apply_archive(self, archive_path, env_file, backup_root):
         self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         manifest = self.validate_archive(archive_path, require_compatible_endpoint=True)
@@ -693,6 +768,13 @@ class BackupManager:
                 self._replace_bytes(self.tls_cert, payloads["tls/server.crt"])
                 self._replace_bytes(self.tls_key, payloads["tls/server.key"])
                 self._replace_bytes(env_file, new_env)
+                self._validate_applied_restore(
+                    env_file,
+                    restored_hmac,
+                    manifest,
+                    temporary,
+                    incoming_database,
+                )
             except Exception:
                 self._replace_bytes(self.database.path, (backup_dir / "panel.db").read_bytes())
                 self._replace_bytes(self.tls_cert, (backup_dir / "server.crt").read_bytes())
@@ -701,6 +783,29 @@ class BackupManager:
                 raise
         result = dict(manifest)
         result["automaticBackup"] = str(backup_dir)
+        return result
+
+    def apply_pending_archive(self, env_file, backup_root):
+        if not self.pending_archive.is_file():
+            raise RuntimeError("no pending restore archive")
+        try:
+            result = self.apply_archive(
+                self.pending_archive,
+                env_file=env_file,
+                backup_root=backup_root,
+            )
+        except Exception:
+            quarantine = self.work_dir / "failed-restore-{}-{}.zip".format(
+                datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+                secrets.token_hex(4),
+            )
+            try:
+                os.chmod(self.pending_archive, 0o600)
+                os.replace(self.pending_archive, quarantine)
+            except OSError:
+                LOGGER.exception("failed restore archive could not be quarantined")
+            raise
+        self.pending_archive.unlink()
         return result
 
 
@@ -1493,13 +1598,37 @@ class PanelHandler(JsonHandler):
 
     def _send_html(self, status, body, headers=None):
         encoded = body.encode("utf-8")
+        if len(encoded) >= 1024 and self._accepts_gzip():
+            encoded = gzip.compress(encoded, compresslevel=5)
+            content_encoding = "gzip"
+        else:
+            content_encoding = ""
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Vary", "Accept-Encoding")
+        if content_encoding:
+            self.send_header("Content-Encoding", content_encoding)
         self.send_header("Content-Length", str(len(encoded)))
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _accepts_gzip(self):
+        for choice in self.headers.get("Accept-Encoding", "").split(","):
+            parts = [part.strip() for part in choice.split(";")]
+            if not parts or parts[0].lower() != "gzip":
+                continue
+            quality = 1.0
+            for parameter in parts[1:]:
+                name, separator, value = parameter.partition("=")
+                if separator and name.strip().lower() == "q":
+                    try:
+                        quality = float(value.strip())
+                    except ValueError:
+                        quality = 0.0
+            return quality > 0
+        return False
 
     def _send_favicon(self):
         self.send_response(200)
@@ -1730,7 +1859,7 @@ class PanelHandler(JsonHandler):
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">完整备份或恢复节点身份与全部用户数据。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">×</button></div>
-<p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；当前面板管理员账号不会被替换。</p>
+<p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS。当前面板管理员账号不会被替换。</p>
 <div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载完整备份</button></form></article>
 <article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article></div></div></dialog>
 <dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>节点信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点信息弹窗">×</button></div>
@@ -2741,6 +2870,62 @@ def initialize_admin(settings, username, password, if_missing=False):
     return True
 
 
+def run_supervised_services(panel_server, auth_server, usage_manager, panel_scheme):
+    stop_event = threading.Event()
+    failures = queue.Queue()
+
+    def worker(name, target):
+        try:
+            target()
+        except BaseException as exc:
+            failures.put((name, exc))
+        else:
+            failures.put((name, None))
+
+    workers = [
+        threading.Thread(
+            target=worker,
+            args=("panel-{}".format(panel_scheme), panel_server.serve_forever),
+            name="panel-{}".format(panel_scheme),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=worker,
+            args=("internal-auth", auth_server.serve_forever),
+            name="internal-auth",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=worker,
+            args=("traffic-collector", lambda: usage_manager.run_collector(stop_event)),
+            name="traffic-collector",
+            daemon=True,
+        ),
+    ]
+    for thread in workers:
+        thread.start()
+    try:
+        failed_worker, error = failures.get()
+        message = "{} worker exited unexpectedly".format(failed_worker)
+        if error is None:
+            raise RuntimeError(message)
+        raise RuntimeError(message) from error
+    finally:
+        stop_event.set()
+        for server in (panel_server, auth_server):
+            try:
+                server.shutdown()
+            except Exception:
+                LOGGER.exception("local service shutdown failed")
+        for thread in workers:
+            thread.join(timeout=5)
+        for server in (panel_server, auth_server):
+            try:
+                server.server_close()
+            except Exception:
+                LOGGER.exception("local service close failed")
+
+
 def run_service(settings):
     database = Database(settings.database_path, settings.hmac_key)
     database.initialize()
@@ -2779,20 +2964,6 @@ def run_service(settings):
     auth_server = make_internal_server(
         (settings.auth_host, settings.auth_port), database, usage_manager
     )
-    collector_stop = threading.Event()
-    collector_thread = threading.Thread(
-        target=usage_manager.run_collector,
-        args=(collector_stop,),
-        name="traffic-collector",
-        daemon=True,
-    )
-    panel_thread = threading.Thread(
-        target=panel_server.serve_forever,
-        name="panel-{}".format(settings.panel_scheme),
-        daemon=True,
-    )
-    panel_thread.start()
-    collector_thread.start()
     LOGGER.info(
         json.dumps(
             {
@@ -2803,13 +2974,12 @@ def run_service(settings):
             separators=(",", ":"),
         )
     )
-    try:
-        auth_server.serve_forever()
-    finally:
-        collector_stop.set()
-        auth_server.server_close()
-        panel_server.shutdown()
-        panel_server.server_close()
+    run_supervised_services(
+        panel_server,
+        auth_server,
+        usage_manager,
+        panel_scheme=settings.panel_scheme,
+    )
 
 
 def restore_pending(settings):
@@ -2823,14 +2993,10 @@ def restore_pending(settings):
         node_name=settings.node_name,
         work_dir=settings.database_path.parent / "backup-restore",
     )
-    if not manager.pending_archive.is_file():
-        raise RuntimeError("no pending restore archive")
-    result = manager.apply_archive(
-        manager.pending_archive,
+    result = manager.apply_pending_archive(
         env_file=Path("/etc/hysteria2-panel/panel.env"),
         backup_root=Path("/var/backups/hysteria2-panel"),
     )
-    manager.pending_archive.unlink()
     print(
         json.dumps(
             {

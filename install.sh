@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.12.2"
+PANEL_VERSION="0.13.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="d96bcd8fa03cc6b636ed5b255ed90cbf85e10448735a247eef4728483a62b949"
+PANEL_SHA256="687ff54bc3dac203c3437843396506a6529f0155df1d1ea453e4b795aa207f09"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -16,6 +16,13 @@ DEFAULT_STATS_PORT=19997
 DEFAULT_AUTH_PORT=19996
 MIN_QUIC_UDP_BUFFER=16777216
 SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel.conf
+ROLLBACK_REQUIRED=0
+BACKUP_DIR=""
+NETWORK_STACK_MUTATED=0
+ROLLBACK_RMEM=""
+ROLLBACK_WMEM=""
+ROLLBACK_QDISC=""
+ROLLBACK_CC=""
 
 usage() {
   cat <<'EOF'
@@ -40,13 +47,86 @@ Hysteria2-panel 一键部署
 EOF
 }
 
+rollback_existing_install() {
+  local status="${1:-1}"
+  local unit_file
+  if [[ "${ROLLBACK_REQUIRED:-0}" != "1" || "${EXISTING_INSTALL:-0}" != "1" || \
+    "${BACKUP_DIR:-}" != /var/backups/hysteria2-panel/* || ! -d "${BACKUP_DIR}" ]]; then
+    return 0
+  fi
+
+  ROLLBACK_REQUIRED=0
+  trap - ERR
+  set +e
+  echo "升级失败（退出码 ${status}），正在自动恢复升级前版本和节点身份…" >&2
+  systemctl stop hysteria2-panel-server.service hysteria2-panel-tcp-probe.service hysteria2-panel.service
+
+  if [[ -d "${BACKUP_DIR}/opt" ]]; then
+    if rm -r -- /opt/hysteria2-panel; then
+      cp -a "${BACKUP_DIR}/opt" /opt/hysteria2-panel
+    else
+      echo "警告：无法清理当前程序目录，已跳过程序文件回滚" >&2
+    fi
+  fi
+  if [[ -d "${BACKUP_DIR}/etc" ]]; then
+    if rm -r -- /etc/hysteria2-panel; then
+      cp -a "${BACKUP_DIR}/etc" /etc/hysteria2-panel
+    else
+      echo "警告：无法清理当前配置目录，已跳过配置文件回滚" >&2
+    fi
+  fi
+  if [[ -f "${BACKUP_DIR}/panel.db" ]]; then
+    cp -a "${BACKUP_DIR}/panel.db" /var/lib/hysteria2-panel/panel.db
+    chown hy2panel:hy2panel /var/lib/hysteria2-panel/panel.db
+    chmod 0600 /var/lib/hysteria2-panel/panel.db
+  else
+    rm -f -- /var/lib/hysteria2-panel/panel.db
+  fi
+
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service hysteria2-panel-restore.service hysteria2-panel-update.service; do
+    if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
+      cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
+    else
+      rm -f -- "/etc/systemd/system/${unit_file}"
+    fi
+  done
+  if [[ -f "${BACKUP_DIR}/99-hysteria2-panel.conf" ]]; then
+    cp -a "${BACKUP_DIR}/99-hysteria2-panel.conf" "${SYSCTL_FILE}"
+  else
+    rm -f -- "${SYSCTL_FILE}"
+  fi
+  if [[ -f "${BACKUP_DIR}/hysteria2-panel.sudoers" ]]; then
+    cp -a "${BACKUP_DIR}/hysteria2-panel.sudoers" /etc/sudoers.d/hysteria2-panel
+  else
+    rm -f -- /etc/sudoers.d/hysteria2-panel
+  fi
+
+  if [[ "${NETWORK_STACK_MUTATED:-0}" == "1" ]]; then
+    [[ "${ROLLBACK_RMEM}" =~ ^[1-9][0-9]*$ ]] && sysctl -w "net.core.rmem_max=${ROLLBACK_RMEM}" >/dev/null
+    [[ "${ROLLBACK_WMEM}" =~ ^[1-9][0-9]*$ ]] && sysctl -w "net.core.wmem_max=${ROLLBACK_WMEM}" >/dev/null
+    [[ -z "${ROLLBACK_QDISC}" ]] || sysctl -w "net.core.default_qdisc=${ROLLBACK_QDISC}" >/dev/null
+    [[ -z "${ROLLBACK_CC}" ]] || sysctl -w "net.ipv4.tcp_congestion_control=${ROLLBACK_CC}" >/dev/null
+  fi
+
+  systemctl daemon-reload
+  systemctl restart hysteria2-panel.service hysteria2-panel-server.service
+  if systemctl is-active --quiet hysteria2-panel.service && \
+    systemctl is-active --quiet hysteria2-panel-server.service; then
+    echo "已恢复升级前版本；节点身份与用户数据库保持不变。备份：${BACKUP_DIR}" >&2
+  else
+    echo "警告：文件已回滚，但旧服务未能自动启动，请使用备份目录人工恢复：${BACKUP_DIR}" >&2
+  fi
+}
+
 fail() {
   echo "错误：$*" >&2
+  rollback_existing_install 1
   exit 1
 }
 
 unexpected_error() {
   local status=$?
+  rollback_existing_install "${status}"
   echo "错误：部署在第 ${BASH_LINENO[0]} 行意外中断（退出码 ${status}）。请根据上一条系统输出处理后重试；重复运行会先备份并保持幂等。" >&2
   exit "${status}"
 }
@@ -119,6 +199,11 @@ optimize_network_stack() {
   target_wmem="${MIN_QUIC_UDP_BUFFER}"
   (( current_rmem <= target_rmem )) || target_rmem="${current_rmem}"
   (( current_wmem <= target_wmem )) || target_wmem="${current_wmem}"
+  ROLLBACK_RMEM="${current_rmem}"
+  ROLLBACK_WMEM="${current_wmem}"
+  ROLLBACK_QDISC="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+  ROLLBACK_CC="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+  NETWORK_STACK_MUTATED=1
   if [[ -f "${SYSCTL_FILE}" ]] && ! grep -q '^# Managed by Hysteria2-panel$' "${SYSCTL_FILE}"; then
     fail "${SYSCTL_FILE} 已存在且不属于本安装器，拒绝覆盖"
   fi
@@ -352,13 +437,13 @@ cleanup() {
 trap cleanup EXIT
 
 echo "下载并校验 Hysteria ${HYSTERIA_VERSION}…"
-curl -fL --retry 3 --connect-timeout 10 \
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" \
   -o "${TMP_DIR}/hysteria"
 printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
   || fail "Hysteria SHA-256 校验失败"
-curl -fL --retry 3 --connect-timeout 10 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
-curl -fL --retry 3 --connect-timeout 10 "${TCP_PROBE_SOURCE_URL}" -o "${TMP_DIR}/tcp_probe.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${TCP_PROBE_SOURCE_URL}" -o "${TMP_DIR}/tcp_probe.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
 printf '%s  %s\n' "${TCP_PROBE_SHA256}" "${TMP_DIR}/tcp_probe.py" | sha256sum --check --status \
@@ -367,7 +452,7 @@ printf '%s  %s\n' "${TCP_PROBE_SHA256}" "${TMP_DIR}/tcp_probe.py" | sha256sum --
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-BACKUP_DIR="/var/backups/hysteria2-panel/${timestamp}"
+BACKUP_DIR="/var/backups/hysteria2-panel/${timestamp}-$(openssl rand -hex 4)"
 if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria2-panel/panel.db ]]; then
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
@@ -387,6 +472,9 @@ with sqlite3.connect(sys.argv[1]) as source, sqlite3.connect(sys.argv[2]) as des
 PY
   fi
   echo "升级前备份：${BACKUP_DIR}"
+  if (( EXISTING_INSTALL == 1 )); then
+    ROLLBACK_REQUIRED=1
+  fi
 fi
 
 if ! getent group hy2tls >/dev/null 2>&1; then
@@ -692,6 +780,7 @@ wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
 ss -H -ltn "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria TCP 探测端口未监听"
 ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
+ROLLBACK_REQUIRED=0
 
 echo
 echo "部署完成"
