@@ -994,6 +994,21 @@ class PanelHttpTests(unittest.TestCase):
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
             self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
 
+    def test_login_page_exposes_svg_favicon(self):
+        with self.request("/login") as response:
+            body = response.read().decode()
+            self.assertIn(
+                '<link rel="icon" type="image/svg+xml" href="/favicon.svg">',
+                body,
+            )
+            self.assertIn("img-src 'self'", response.headers["Content-Security-Policy"])
+
+        with self.request("/favicon.svg") as response:
+            icon = response.read().decode()
+            self.assertEqual("image/svg+xml", response.headers["Content-Type"])
+            self.assertIn('<svg xmlns="http://www.w3.org/2000/svg"', icon)
+            self.assertIn('viewBox="0 0 64 64"', icon)
+
     def test_fifth_bad_login_immediately_locks_source_and_returns_retry_after(self):
         now = [1000.0]
         self.application.rate_limiter = LoginRateLimiter(
@@ -1426,7 +1441,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.11.1", body)
+        self.assertIn("v0.11.2", body)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
