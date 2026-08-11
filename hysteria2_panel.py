@@ -43,11 +43,16 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.11.1"
+PANEL_VERSION = "0.11.2"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
 MAX_STATS_RESPONSE_BYTES = 8 * 1024**2
+FAVICON_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<title>Hysteria 2 Panel</title><rect x="2" y="2" width="60" height="60" rx="14" fill="#0b1a2c" stroke="#284867" stroke-width="2"/>
+<path fill="#4bc493" d="M9 16h7v12h11V16h7v32h-7V35H16v13H9z"/>
+<path fill="#f3f7ff" d="M37 24c0-7 4-11 11-11s11 4 11 10c0 5-3 8-8 12l-6 6h14v7H37v-8l10-9c4-3 5-5 5-7 0-3-1-4-4-4-3 0-4 2-4 5h-7z"/>
+</svg>"""
 
 PAGE_STYLE = """
 :root{--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
@@ -1464,7 +1469,7 @@ class PanelHandler(JsonHandler):
         self.send_header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{}'; connect-src 'self'; "
-            "form-action 'self'; base-uri 'none'; frame-ancestors 'none'".format(
+            "img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'".format(
                 self._csp_nonce()
             ),
         )
@@ -1493,6 +1498,13 @@ class PanelHandler(JsonHandler):
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(encoded)
+
+    def _send_favicon(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(FAVICON_SVG)))
+        self.end_headers()
+        self.wfile.write(FAVICON_SVG)
 
     def _send_archive(self, archive_path):
         archive_path = Path(archive_path)
@@ -1556,7 +1568,7 @@ class PanelHandler(JsonHandler):
     def _page(self, title, content):
         return """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} · Hysteria 2 Panel</title><style>{style}</style></head><body><main>{content}</main>
+<title>{title} · Hysteria 2 Panel</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><style>{style}</style></head><body><main>{content}</main>
 <script nonce="{nonce}">{script}</script></body></html>""".format(
             title=html.escape(title),
             style=PAGE_STYLE,
@@ -1793,6 +1805,9 @@ class PanelHandler(JsonHandler):
 
     def do_GET(self):
         path = self._path()
+        if path == "/favicon.svg":
+            self._send_favicon()
+            return
         if path == "/healthz":
             self.send_json(200, {"status": "ok"})
             return
