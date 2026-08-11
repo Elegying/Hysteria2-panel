@@ -11,7 +11,8 @@
 ## 决策
 
 - 安装器持久化 `HY2PANEL_EGRESS_POLICY`，合法值只有 `web` 和 `full`；缺省为 `web`，升级沿用已有值。
-- `web` 先拒绝环回、RFC 1918、CGNAT、链路本地和 IPv6 ULA，再放行网页/视频所需端口，最后 `reject(all)`。
+- `web` 先仅对 `HY2PANEL_PANEL_ACCESS_IPS` 中经过校验的精确 IP 放行当前面板 TCP 端口，再拒绝环回、RFC 1918、CGNAT、链路本地和 IPv6 ULA，随后放行网页/视频所需端口，最后 `reject(all)`。
+- `HY2PANEL_PANEL_ACCESS_IPS` 最多接受 16 个 IPv4/IPv6 地址；全新安装默认使用本机检测 IP，升级沿用现有值。禁止用 `direct(all, tcp/面板端口)` 代替精确地址规则。
 - `full` 不写 ACL，只作为管理员明确选择的兼容模式。
 - 规则属于服务器部署策略，不写进用户数据库、迁移 ZIP 或分享 URI；恢复用户数据不会悄悄改变新服务器的出站策略。
 - 文档明确端口 ACL 不是 DPI，不能保证识别伪装在允许端口或外部中继中的加密 P2P。
