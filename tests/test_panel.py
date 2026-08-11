@@ -1,3 +1,4 @@
+import gzip
 import json
 import io
 import hashlib
@@ -39,6 +40,7 @@ from hysteria2_panel import (
     hash_password,
     make_internal_server,
     make_panel_server,
+    run_supervised_services,
     summarize_dashboard,
     verify_password,
 )
@@ -531,6 +533,48 @@ class UsageManagerTests(unittest.TestCase):
 
 
 class OperationsTests(unittest.TestCase):
+    def test_worker_exit_fails_the_process_and_closes_every_local_service(self):
+        class FakeServer:
+            def __init__(self, exits=False):
+                self.exits = exits
+                self.stopped = threading.Event()
+                self.closed = False
+
+            def serve_forever(self):
+                if self.exits:
+                    return
+                self.stopped.wait(2)
+
+            def shutdown(self):
+                self.stopped.set()
+
+            def server_close(self):
+                self.closed = True
+
+        class FakeUsageManager:
+            def __init__(self):
+                self.stopped = threading.Event()
+
+            def run_collector(self, stop_event):
+                stop_event.wait(2)
+                self.stopped.set()
+
+        panel_server = FakeServer(exits=True)
+        auth_server = FakeServer()
+        usage_manager = FakeUsageManager()
+
+        with self.assertRaisesRegex(RuntimeError, "panel-http"):
+            run_supervised_services(
+                panel_server,
+                auth_server,
+                usage_manager,
+                panel_scheme="http",
+            )
+
+        self.assertTrue(panel_server.closed)
+        self.assertTrue(auth_server.closed)
+        self.assertTrue(usage_manager.stopped.wait(1))
+
     def test_service_controller_uses_only_fixed_systemctl_commands(self):
         calls = []
 
@@ -977,6 +1021,24 @@ class BackupManagerTests(unittest.TestCase):
             hashlib.sha256(self.manager.pending_archive.read_bytes()).digest(),
         )
 
+    def test_failed_pending_restore_is_quarantined_and_does_not_block_retry(self):
+        payload = b"failed restore archive"
+        self.manager.work_dir.mkdir(parents=True, mode=0o700)
+        self.manager.pending_archive.write_bytes(payload)
+        self.manager.apply_archive = mock.Mock(side_effect=RuntimeError("simulated failure"))
+
+        with self.assertRaisesRegex(RuntimeError, "simulated failure"):
+            self.manager.apply_pending_archive(
+                env_file=self.root / "panel.env",
+                backup_root=self.root / "automatic-backups",
+            )
+
+        self.assertFalse(self.manager.pending_archive.exists())
+        quarantined = list(self.manager.work_dir.glob("failed-restore-*.zip"))
+        self.assertEqual(1, len(quarantined))
+        self.assertEqual(payload, quarantined[0].read_bytes())
+        self.assertEqual(0o600, quarantined[0].stat().st_mode & 0o777)
+
     def test_restore_preserves_destination_admin_and_restores_old_node_credentials(self):
         archive = self.manager.create_archive()
         destination_root = self.root / "destination"
@@ -1024,6 +1086,194 @@ class BackupManagerTests(unittest.TestCase):
         self.assertIn("HY2PANEL_HMAC_KEY={}".format(self.hmac_key.hex()), env_file.read_text())
         self.assertIn("HY2PANEL_CERT_PIN={}".format(result["certificate"]["pinSHA256"]), env_file.read_text())
         self.assertTrue((Path(result["automaticBackup"]) / "panel.db").is_file())
+
+    def test_restore_preserves_every_issued_link_identity_across_server_replacement(self):
+        second = self.database.create_proxy_user(
+            "bob", device_limit=7, traffic_limit_bytes=900 * 1024**3
+        )
+        legacy = self.database.create_proxy_user("legacy", token="legacy-issued-token")
+        self.database.add_traffic({"bob": {"tx": 789, "rx": 987}})
+        issued_tokens = {
+            "alice": self.user["token"],
+            "bob": second["token"],
+            "legacy": legacy["token"],
+        }
+        source_pin = self.manager._certificate_pin(self.certificate.read_bytes())
+        issued_uris = {
+            name: build_connection_uri(
+                "vpn.example.test", 19999, token, source_pin, "私家车-2026"
+            )
+            for name, token in issued_tokens.items()
+        }
+        archive = self.manager.create_archive()
+        destination_root = self.root / "replacement-server"
+        destination_root.mkdir()
+        destination_hmac = b"z" * 32
+        destination_db = Database(destination_root / "panel.db", destination_hmac)
+        destination_db.initialize()
+        destination_db.upsert_admin("replacement-admin", "replacement-password")
+        destination_cert, destination_key = create_test_certificate(
+            destination_root, "vpn.example.test"
+        )
+        env_file = destination_root / "panel.env"
+        env_file.write_text(
+            "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN=destination-pin\n"
+            "HY2PANEL_PUBLIC_HOST=vpn.example.test\nHY2PANEL_HYSTERIA_PORT=19999\n".format(
+                destination_hmac.hex()
+            )
+        )
+        destination = BackupManager(
+            database=destination_db,
+            hmac_key=destination_hmac,
+            tls_cert=destination_cert,
+            tls_key=destination_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            node_name="私家车-2026",
+            work_dir=destination_root / "work",
+        )
+
+        destination.apply_archive(
+            archive,
+            env_file=env_file,
+            backup_root=destination_root / "automatic-backups",
+        )
+
+        restored = Database(destination_db.path, self.hmac_key)
+        restored_users = {user["name"]: user for user in restored.list_proxy_users_for_usage()}
+        self.assertEqual(set(issued_tokens), set(restored_users))
+        for name, token in issued_tokens.items():
+            with self.subTest(name=name):
+                self.assertEqual(name, restored.authenticate_token(token))
+                recovered = restored.recover_proxy_token(restored_users[name]["id"])
+                if name == "legacy":
+                    self.assertIsNone(recovered)
+                else:
+                    self.assertEqual(token, recovered)
+                    self.assertEqual(
+                        issued_uris[name],
+                        build_connection_uri(
+                            "vpn.example.test",
+                            19999,
+                            recovered,
+                            destination._certificate_pin(destination_cert.read_bytes()),
+                            "私家车-2026",
+                        ),
+                    )
+        self.assertEqual(7, restored_users["bob"]["device_limit"])
+        self.assertEqual(900 * 1024**3, restored_users["bob"]["traffic_limit_bytes"])
+        self.assertEqual((789, 987), (restored_users["bob"]["tx_bytes"], restored_users["bob"]["rx_bytes"]))
+        self.assertEqual(self.certificate.read_bytes(), destination_cert.read_bytes())
+        self.assertEqual(self.private_key.read_bytes(), destination_key.read_bytes())
+
+    def test_restore_rolls_back_if_post_write_identity_verification_fails(self):
+        archive = self.manager.create_archive()
+        destination_root = self.root / "post-write-corruption"
+        destination_root.mkdir()
+        destination_hmac = b"q" * 32
+        destination_db = Database(destination_root / "panel.db", destination_hmac)
+        destination_db.initialize()
+        original_user = destination_db.create_proxy_user("original")
+        destination_cert, destination_key = create_test_certificate(
+            destination_root, "vpn.example.test"
+        )
+        env_file = destination_root / "panel.env"
+        env_file.write_text(
+            "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN=original-pin\n".format(
+                destination_hmac.hex()
+            )
+        )
+        original_cert = destination_cert.read_bytes()
+        original_key = destination_key.read_bytes()
+        original_env = env_file.read_bytes()
+        destination = BackupManager(
+            database=destination_db,
+            hmac_key=destination_hmac,
+            tls_cert=destination_cert,
+            tls_key=destination_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            work_dir=destination_root / "work",
+        )
+        replace_bytes = destination._replace_bytes
+        corrupted = {"value": False}
+
+        def corrupt_new_environment(path, value):
+            replace_bytes(path, value)
+            if Path(path) == env_file and not corrupted["value"]:
+                corrupted["value"] = True
+                env_file.write_bytes(value.replace(b"HY2PANEL_CERT_PIN=", b"HY2PANEL_CERT_PIN=corrupt-"))
+
+        destination._replace_bytes = corrupt_new_environment
+
+        with self.assertRaises(BackupValidationError):
+            destination.apply_archive(
+                archive,
+                env_file=env_file,
+                backup_root=destination_root / "automatic-backups",
+            )
+
+        restored_current = Database(destination_db.path, destination_hmac)
+        self.assertEqual("original", restored_current.authenticate_token(original_user["token"]))
+        self.assertEqual(original_cert, destination_cert.read_bytes())
+        self.assertEqual(original_key, destination_key.read_bytes())
+        self.assertEqual(original_env, env_file.read_bytes())
+
+    def test_restore_rolls_back_if_post_write_user_data_differs(self):
+        archive = self.manager.create_archive()
+        destination_root = self.root / "post-write-user-corruption"
+        destination_root.mkdir()
+        destination_hmac = b"r" * 32
+        destination_db = Database(destination_root / "panel.db", destination_hmac)
+        destination_db.initialize()
+        original_user = destination_db.create_proxy_user("original")
+        destination_cert, destination_key = create_test_certificate(
+            destination_root, "vpn.example.test"
+        )
+        env_file = destination_root / "panel.env"
+        env_file.write_text(
+            "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN=original-pin\n".format(
+                destination_hmac.hex()
+            )
+        )
+        original_cert = destination_cert.read_bytes()
+        original_key = destination_key.read_bytes()
+        original_env = env_file.read_bytes()
+        destination = BackupManager(
+            database=destination_db,
+            hmac_key=destination_hmac,
+            tls_cert=destination_cert,
+            tls_key=destination_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            work_dir=destination_root / "work",
+        )
+        replace_bytes = destination._replace_bytes
+        corrupted = {"value": False}
+
+        def corrupt_new_database(path, value):
+            replace_bytes(path, value)
+            if Path(path) == destination_db.path and not corrupted["value"]:
+                corrupted["value"] = True
+                with sqlite3.connect(str(destination_db.path)) as connection:
+                    connection.execute(
+                        "UPDATE proxy_users SET traffic_limit_bytes = traffic_limit_bytes + 1"
+                    )
+
+        destination._replace_bytes = corrupt_new_database
+
+        with self.assertRaises(BackupValidationError):
+            destination.apply_archive(
+                archive,
+                env_file=env_file,
+                backup_root=destination_root / "automatic-backups",
+            )
+
+        restored_current = Database(destination_db.path, destination_hmac)
+        self.assertEqual("original", restored_current.authenticate_token(original_user["token"]))
+        self.assertEqual(original_cert, destination_cert.read_bytes())
+        self.assertEqual(original_key, destination_key.read_bytes())
+        self.assertEqual(original_env, env_file.read_bytes())
 
     def test_restore_rolls_back_all_files_if_replacement_fails(self):
         archive = self.manager.create_archive()
@@ -1159,6 +1409,37 @@ class PanelHttpTests(unittest.TestCase):
             self.assertIn('type="password"', body)
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
             self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
+
+    def test_large_dashboard_uses_negotiated_gzip_without_caching_sensitive_html(self):
+        for index in range(356):
+            self.db.create_proxy_user("gzip-{:04d}".format(index))
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            identity = response.read()
+        compressed_headers = dict(headers)
+        compressed_headers["Accept-Encoding"] = "br, gzip, deflate"
+        with self.request("/", headers=compressed_headers) as response:
+            compressed = response.read()
+            content_encoding = response.headers.get("Content-Encoding")
+            vary = response.headers.get("Vary")
+            cache_control = response.headers.get("Cache-Control")
+
+        self.assertEqual("gzip", content_encoding)
+        self.assertEqual("Accept-Encoding", vary)
+        self.assertEqual("no-store", cache_control)
+        self.assertLess(len(compressed), len(identity) // 4)
+        self.assertIn("Hysteria 2 用户管理面板", gzip.decompress(compressed).decode())
+
+    def test_gzip_quality_zero_is_respected(self):
+        headers, _ = self.authenticated_headers()
+        headers["Accept-Encoding"] = "gzip;q=0"
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertIsNone(response.headers.get("Content-Encoding"))
+        self.assertIn("Hysteria 2 用户管理面板", body)
 
     def test_login_page_exposes_svg_favicon(self):
         with self.request("/login") as response:
@@ -1351,6 +1632,9 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('@media(max-width:640px)', body)
         self.assertIn('.user-table tr{display:grid;', body)
         self.assertIn('grid-template-columns:repeat(5,minmax(0,1fr))', body)
+        self.assertIn('.user-table th{position:sticky;', body)
+        self.assertIn('@media(prefers-reduced-motion:reduce)', body)
+        self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
         self.assertNotIn('td::before{content:attr(data-label)', body)
         self.assertNotIn('限 3 个并发连接', body)
 
@@ -1410,6 +1694,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(body.index('class="user-heading"'), body.index('class="user-search"'))
         self.assertLess(body.index('class="user-search"'), body.index('class="section-actions"'))
         self.assertIn('data-search-status', body)
+        self.assertIn('window.requestAnimationFrame(filterUsers)', body)
         self.assertIn('data-dialog-open="create-user-dialog"', body)
         self.assertIn('<dialog id="create-user-dialog"', body)
         self.assertIn('aria-labelledby="create-user-title"', body)
@@ -1607,7 +1892,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.12.2", body)
+        self.assertIn("v0.13.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()

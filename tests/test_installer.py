@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.12.2"', source)
+        self.assertIn('PANEL_VERSION="0.13.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="d96bcd8fa03cc6b636ed5b255ed90cbf85e10448735a247eef4728483a62b949"',
+            'PANEL_SHA256="687ff54bc3dac203c3437843396506a6529f0155df1d1ea453e4b795aa207f09"',
             source,
         )
         self.assertIn(
@@ -153,6 +153,19 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("systemctl restart hysteria2-panel-server.service", source)
         self.assertNotIn("ufw allow", source)
         self.assertIn(".managed-by-installer", source)
+
+    def test_failed_upgrade_automatically_rolls_back_node_identity_and_runtime(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("rollback_existing_install()", source)
+        self.assertIn('ROLLBACK_REQUIRED=1', source)
+        self.assertIn('rollback_existing_install "${status}"', source)
+        self.assertIn('cp -a "${BACKUP_DIR}/opt" /opt/hysteria2-panel', source)
+        self.assertIn('cp -a "${BACKUP_DIR}/etc" /etc/hysteria2-panel', source)
+        self.assertIn('cp -a "${BACKUP_DIR}/panel.db" /var/lib/hysteria2-panel/panel.db', source)
+        self.assertIn('ROLLBACK_REQUIRED=0\n\necho', source)
+        self.assertLess(source.index('ROLLBACK_REQUIRED=1'), source.rindex('\noptimize_network_stack\n'))
+        self.assertLess(source.index('面板端口未监听'), source.rindex('ROLLBACK_REQUIRED=0'))
 
     def test_installer_adds_tcp_probe_on_the_hysteria_port(self):
         source = INSTALLER.read_text()
