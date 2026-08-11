@@ -43,7 +43,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.11.0"
+PANEL_VERSION = "0.11.1"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -2199,7 +2199,12 @@ class HysteriaStatsClient:
         return online
 
     def kick(self, name):
-        self._request("/kick", [name])
+        self.kick_many([name])
+
+    def kick_many(self, names):
+        names = list(names)
+        if names:
+            self._request("/kick", names)
 
 
 class UsageManager:
@@ -2211,25 +2216,38 @@ class UsageManager:
         self.lock = threading.Lock()
         self.pending = {}
         self.last_online = {}
-        self.quota_kicked = set()
 
     def _collect_locked(self):
         traffic = self.stats_client.collect_and_clear()
         self.database.add_traffic(traffic)
-        for user in self.database.list_proxy_users_for_usage():
-            used = user["tx_bytes"] + user["rx_bytes"]
-            name = user["name"]
-            if used >= user["traffic_limit_bytes"]:
-                if name not in self.quota_kicked:
-                    self.stats_client.kick(name)
-                    self.quota_kicked.add(name)
-            else:
-                self.quota_kicked.discard(name)
         return traffic
+
+    def _blocked_online_names_locked(self):
+        users = {
+            user["name"]: user for user in self.database.list_proxy_users_for_usage()
+        }
+        online = self.stats_client.online()
+        blocked = []
+        for name, count in online.items():
+            user = users.get(name)
+            if count > 0 and (
+                not user
+                or not user["enabled"]
+                or user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]
+            ):
+                blocked.append(name)
+        return sorted(blocked)
 
     def collect_once(self):
         with self.lock:
-            return self._collect_locked()
+            traffic = self._collect_locked()
+            try:
+                blocked = self._blocked_online_names_locked()
+            except Exception:
+                LOGGER.exception("online reconciliation failed during traffic sync")
+                return traffic
+            self.stats_client.kick_many(blocked)
+            return traffic
 
     def authorize(self, name):
         with self.lock:
@@ -2296,14 +2314,12 @@ class UsageManager:
             user = self.database.get_proxy_user(user_id)
             self.database.reset_proxy_user_traffic(user_id, expected_generation)
             self.stats_client.kick(user["name"])
-            self.quota_kicked.discard(user["name"])
             self.pending.pop(user["name"], None)
 
     def reset_all(self):
         with self.lock:
             self._collect_locked()
             self.database.reset_all_traffic()
-            self.quota_kicked.clear()
 
     def run_collector(self, stop_event, interval=10):
         while not stop_event.wait(interval):
