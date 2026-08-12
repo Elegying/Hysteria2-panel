@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.14.0"
+PANEL_VERSION="0.14.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="231da73f3844a44541468bde40a68f954a12189e4e5f0c3d53ec5dbf84a71e5e"
+PANEL_SHA256="27641da5792539792c0154671e5fb60d9de1f5d839b921326b1b0f17d46226e2"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -312,7 +312,7 @@ if [[ "${AUTO_UPDATE}" == "1" && "${EXISTING_INSTALL}" != "1" ]]; then
   fail "在线更新只允许用于现有的受管安装"
 fi
 
-detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')"
+detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')" || true
 if (( EXISTING_INSTALL == 1 )); then
   EXISTING_NODE_NAME="${HY2PANEL_NODE_NAME:-Hysteria 2}"
   EXISTING_PUBLIC_HOST="${HY2PANEL_PUBLIC_HOST:-${detected_host}}"
@@ -743,7 +743,7 @@ ProtectHome=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 TasksMax=128
 MemoryMax=768M
 EOF
