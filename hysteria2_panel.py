@@ -45,7 +45,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.14.2"
+PANEL_VERSION = "0.15.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -67,6 +67,7 @@ h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.m
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
 .create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(240px,360px) auto;grid-template-areas:"heading search actions";align-items:center}.user-heading{grid-area:heading}.user-section-head .user-search{grid-area:search}.user-section-head .section-actions{grid-area:actions}.user-tools{justify-content:flex-end;margin-bottom:14px}.user-search{width:100%;margin:0}.search-status{margin:0;white-space:nowrap}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
+.checkbox-field{display:flex;align-items:flex-start;gap:10px;margin:0;padding:12px;border:1px solid #3a4d63;border-radius:10px;background:#101f31}.checkbox-field input{width:auto;margin:4px 0 0;flex:0 0 auto}.checkbox-field span{font-weight:650}.checkbox-field small{display:block;margin-top:3px;font-weight:400}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
 .migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
 @media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
@@ -125,6 +126,7 @@ function syncEditUserForm() {
   form.querySelector('[name="generation"]').value = option.dataset.generation;
   form.querySelector('[name="device_limit"]').value = option.dataset.deviceLimit;
   form.querySelector('[name="traffic_limit_gb"]').value = option.dataset.trafficLimitGb;
+  form.querySelector('[name="allow_udp_443"]').checked = option.dataset.allowUdp443 === '1';
 }
 function renderUpdateStatus(payload) {
   const status = document.querySelector('[data-update-status]');
@@ -220,12 +222,12 @@ document.addEventListener('submit', async function(event) {
   button.textContent = '保存中…';
   try {
     const payload = await submitInlineForm(form);
-    notify(payload.name + ' 的限制已更新', false);
+    notify(payload.name + ' 的用户设置已更新', false);
     const dialog = form.closest('dialog');
     if (dialog) dialog.close();
     window.setTimeout(function() { window.location.reload(); }, 700);
   } catch (error) {
-    notify(error.message || '用户限制更新失败，请重试', true);
+    notify(error.message || '用户设置更新失败，请重试', true);
   } finally {
     button.disabled = false;
     button.textContent = '保存修改';
@@ -362,8 +364,12 @@ class BackupManager:
         "traffic_limit_bytes",
         "tx_bytes",
         "rx_bytes",
+        "allow_udp_443",
         "created_at",
         "updated_at",
+    )
+    REQUIRED_PROXY_COLUMNS = tuple(
+        column for column in PROXY_COLUMNS if column != "allow_udp_443"
     )
 
     def __init__(
@@ -600,7 +606,7 @@ class BackupManager:
                 columns = {
                     row[1] for row in connection.execute("PRAGMA table_info(proxy_users)")
                 }
-                if not set(self.PROXY_COLUMNS).issubset(columns):
+                if not set(self.REQUIRED_PROXY_COLUMNS).issubset(columns):
                     raise BackupValidationError("用户数据库版本不兼容")
                 users = connection.execute(
                     "SELECT id, token_seed, token_fingerprint FROM proxy_users"
@@ -817,6 +823,13 @@ class BackupManager:
             incoming_database.write_bytes(payloads["data/panel.db"])
             with sqlite3.connect(str(incoming_database)) as source:
                 source.row_factory = sqlite3.Row
+                incoming_columns = {
+                    row[1] for row in source.execute("PRAGMA table_info(proxy_users)")
+                }
+                if "allow_udp_443" not in incoming_columns:
+                    source.execute(
+                        "ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0"
+                    )
                 rows = source.execute(
                     # Identifiers come only from the fixed PROXY_COLUMNS tuple.
                     "SELECT {} FROM proxy_users ORDER BY id".format(  # nosec B608
@@ -1026,6 +1039,7 @@ class Database:
                     traffic_limit_bytes INTEGER NOT NULL DEFAULT 268435456000 CHECK (traffic_limit_bytes > 0),
                     tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (tx_bytes >= 0),
                     rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (rx_bytes >= 0),
+                    allow_udp_443 INTEGER NOT NULL DEFAULT 0 CHECK (allow_udp_443 IN (0, 1)),
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -1059,6 +1073,7 @@ class Database:
                 "traffic_limit_bytes": "ALTER TABLE proxy_users ADD COLUMN traffic_limit_bytes INTEGER NOT NULL DEFAULT 268435456000",
                 "tx_bytes": "ALTER TABLE proxy_users ADD COLUMN tx_bytes INTEGER NOT NULL DEFAULT 0",
                 "rx_bytes": "ALTER TABLE proxy_users ADD COLUMN rx_bytes INTEGER NOT NULL DEFAULT 0",
+                "allow_udp_443": "ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0",
             }
             for column, statement in migrations.items():
                 if column not in columns:
@@ -1188,19 +1203,20 @@ class Database:
         except sqlite3.IntegrityError as exc:
             raise ValueError("user name or token already exists") from exc
 
-    def authenticate_token(self, token):
+    def authenticate_token(self, token, require_udp_443=False):
         if not isinstance(token, str) or not 1 <= len(token) <= 512:
             return None
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT name FROM proxy_users WHERE token_fingerprint = ? AND enabled = 1",
-                (self._fingerprint(token),),
-            ).fetchone()
+            query = "SELECT name FROM proxy_users WHERE token_fingerprint = ? AND enabled = 1"
+            if require_udp_443:
+                query += " AND allow_udp_443 = 1"
+            row = connection.execute(query, (self._fingerprint(token),)).fetchone()
         return row["name"] if row else None
 
     def _get_proxy_user(self, user_id, connection):
         row = connection.execute(
             """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+            allow_udp_443,
             tx_bytes, rx_bytes, created_at, updated_at
             FROM proxy_users WHERE id = ?""",
             (int(user_id),),
@@ -1217,6 +1233,7 @@ class Database:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                allow_udp_443,
                 tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users WHERE name = ? COLLATE NOCASE""",
                 (name,),
@@ -1252,10 +1269,13 @@ class Database:
         user_id,
         device_limit,
         traffic_limit_bytes,
+        allow_udp_443=None,
         expected_generation=None,
     ):
         device_limit = int(device_limit)
         traffic_limit_bytes = int(traffic_limit_bytes)
+        if allow_udp_443 not in {None, True, False, 0, 1}:
+            raise ValueError("UDP 443 access must be a boolean")
         if not 1 <= device_limit <= MAX_DEVICE_LIMIT:
             raise ValueError("device limit must be between 1 and 100")
         if not 1 <= traffic_limit_bytes <= MAX_TRAFFIC_LIMIT_BYTES:
@@ -1266,12 +1286,22 @@ class Database:
             generation = row["generation"] if expected_generation is None else int(expected_generation)
             if generation != row["generation"]:
                 raise ConflictError("proxy user changed; refresh and try again")
+            udp_443_value = row["allow_udp_443"]
+            if allow_udp_443 is not None:
+                udp_443_value = int(bool(allow_udp_443))
             cursor = connection.execute(
                 """UPDATE proxy_users
-                SET device_limit = ?, traffic_limit_bytes = ?,
+                SET device_limit = ?, traffic_limit_bytes = ?, allow_udp_443 = ?,
                     generation = generation + 1, updated_at = ?
                 WHERE id = ? AND generation = ?""",
-                (device_limit, traffic_limit_bytes, now, row["id"], generation),
+                (
+                    device_limit,
+                    traffic_limit_bytes,
+                    udp_443_value,
+                    now,
+                    row["id"],
+                    generation,
+                ),
             )
             if cursor.rowcount != 1:
                 raise ConflictError("proxy user changed; refresh and try again")
@@ -1324,6 +1354,7 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                allow_udp_443,
                 tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?
                 """,
@@ -1342,6 +1373,7 @@ class Database:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                allow_udp_443,
                 tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users ORDER BY name COLLATE NOCASE"""
             ).fetchall()
@@ -1397,7 +1429,7 @@ class Database:
             )
 
 
-def handle_auth_payload(database, raw_body, usage_manager=None):
+def handle_auth_payload(database, raw_body, usage_manager=None, require_udp_443=False):
     if len(raw_body) > 4096:
         return 413, {"error": {"code": "REQUEST_TOO_LARGE", "message": "Request too large"}}
     try:
@@ -1408,7 +1440,9 @@ def handle_auth_payload(database, raw_body, usage_manager=None):
             raise ValueError
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return 400, {"error": {"code": "INVALID_REQUEST", "message": "Invalid request"}}
-    user_id = database.authenticate_token(payload["auth"])
+    user_id = database.authenticate_token(
+        payload["auth"], require_udp_443=require_udp_443
+    )
     if user_id and usage_manager is not None and not usage_manager.authorize(user_id):
         user_id = None
     return 200, {"ok": bool(user_id), "id": user_id or ""}
@@ -1570,7 +1604,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
 class InternalAuthHandler(JsonHandler):
     def do_POST(self):
-        if self.path != "/auth":
+        if self.path not in {"/auth", "/auth/udp-443"}:
             self.send_json(404, {"error": {"code": "NOT_FOUND", "message": "Not found"}})
             return
         try:
@@ -1584,6 +1618,7 @@ class InternalAuthHandler(JsonHandler):
             self.server.database,
             self.rfile.read(content_length),
             self.server.usage_manager,
+            require_udp_443=self.path == "/auth/udp-443",
         )
         self.send_json(status, payload)
 
@@ -1934,11 +1969,12 @@ class PanelHandler(JsonHandler):
         if not rows:
             rows.append('<tr><td colspan="6" class="muted empty-state">暂无用户，请先创建。</td></tr>')
         edit_options = "".join(
-            """<option value="{id}" data-generation="{generation}" data-device-limit="{device_limit}" data-traffic-limit-gb="{traffic_limit_gb}">{name}</option>""".format(
+            """<option value="{id}" data-generation="{generation}" data-device-limit="{device_limit}" data-traffic-limit-gb="{traffic_limit_gb}" data-allow-udp443="{allow_udp_443}">{name}</option>""".format(
                 id=user["id"],
                 generation=user["generation"],
                 device_limit=user["device_limit"],
                 traffic_limit_gb=max(1, user["traffic_limit_bytes"] // 1024**3),
+                allow_udp_443="1" if user["allow_udp_443"] else "0",
                 name=html.escape(user["name"]),
             )
             for user in listed_users
@@ -2023,10 +2059,11 @@ class PanelHandler(JsonHandler):
 <form class="create-grid" method="post" action="/users" data-create-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机" autofocus></div>
 <div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
 <div><label for="traffic_limit_gb">总流量（GB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
-<dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户限制</h2><p class="muted">只修改设备数和总流量，不会改变已发放节点链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">×</button></div>
+<dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户</h2><p class="muted">修改限制或开放 UDP 443，不会改变已发放节点链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">×</button></div>
 <form class="create-grid" method="post" action="/users/{first_edit_id}/edit" data-edit-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><input type="hidden" name="generation" value="{first_edit_generation}"><div class="wide"><label for="edit-user-select">选择用户</label><select id="edit-user-select" data-edit-user-select required>{edit_options}</select></div>
 <div><label for="edit-device-limit">限制设备数</label><input id="edit-device-limit" name="device_limit" type="number" min="1" max="100" value="{first_edit_device_limit}" required></div>
-<div><label for="edit-traffic-limit-gb">总流量（GB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div><button type="submit"{edit_disabled}>保存修改</button></form>
+<div><label for="edit-traffic-limit-gb">总流量（GB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div>
+<label class="checkbox-field wide" for="edit-allow-udp-443"><input id="edit-allow-udp-443" name="allow_udp_443" type="checkbox" value="1"{first_edit_udp_443_checked}{udp_443_disabled}><span>允许该账号使用 UDP 443<small class="muted">开启后，客户端把服务器端口从 {port} 改为 443 即可；原 {port} 仍可继续使用。</small></span></label><button type="submit"{edit_disabled}>保存修改</button></form>
 <p class="notice">设备数按在线 Hysteria 客户端实例估算；标准通用节点链接不包含硬件设备指纹。</p></div></dialog>
 <p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
 <section class="card"><div class="section-head user-section-head"><div class="user-heading"><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
@@ -2081,6 +2118,12 @@ class PanelHandler(JsonHandler):
                 if first_edit_user
                 else DEFAULT_TRAFFIC_LIMIT_BYTES // 1024**3
             ),
+            first_edit_udp_443_checked=(
+                " checked"
+                if first_edit_user and first_edit_user["allow_udp_443"]
+                else ""
+            ),
+            udp_443_disabled="" if self.app.hysteria_port != 443 else " disabled",
             edit_disabled="" if first_edit_user else " disabled",
             user_total=len(listed_users),
             traffic_sort_aria=traffic_sort_aria,
@@ -2346,11 +2389,13 @@ class PanelHandler(JsonHandler):
             generation = int(form.get("generation", ""))
             device_limit = int(form.get("device_limit", ""))
             traffic_limit_gb = int(form.get("traffic_limit_gb", ""))
+            allow_udp_443 = form.get("allow_udp_443") == "1"
             with self.app.user_action_lock:
                 user = self.app.database.update_proxy_user_limits(
                     user_id,
                     device_limit=device_limit,
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
+                    allow_udp_443=allow_udp_443,
                     expected_generation=generation,
                 )
         except (TypeError, ValueError) as exc:
@@ -2377,6 +2422,7 @@ class PanelHandler(JsonHandler):
             "name": user["name"],
             "device_limit": user["device_limit"],
             "traffic_limit_gb": user["traffic_limit_bytes"] // 1024**3,
+            "allow_udp_443": bool(user["allow_udp_443"]),
             "generation": user["generation"],
         }
         if inline:
@@ -2628,7 +2674,7 @@ class HysteriaStatsClient:
             raise ValueError("Hysteria traffic response is invalid")
 
     def collect_and_clear(self):
-        traffic = self._request("/traffic?clear=true")
+        traffic = self._request("/traffic?clear=1")
         self._validate_traffic(traffic)
         return traffic
 
@@ -2650,6 +2696,67 @@ class HysteriaStatsClient:
             self._request("/kick", names)
 
 
+class PartialTrafficCollectionError(RuntimeError):
+    def __init__(self, traffic):
+        super().__init__("one or more Hysteria traffic endpoints are unavailable")
+        self.traffic = traffic
+
+
+class CombinedHysteriaStatsClient:
+    def __init__(self, *clients):
+        if len(clients) < 2:
+            raise ValueError("combined stats require at least two clients")
+        self.clients = clients
+
+    @staticmethod
+    def _merge_traffic(values):
+        merged = {}
+        for traffic in values:
+            for name, stats in traffic.items():
+                current = merged.setdefault(name, {"tx": 0, "rx": 0})
+                current["tx"] += stats.get("tx", 0)
+                current["rx"] += stats.get("rx", 0)
+        return merged
+
+    def collect_and_clear(self):
+        collected = []
+        failure = None
+        for client in self.clients:
+            try:
+                collected.append(client.collect_and_clear())
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+        traffic = self._merge_traffic(collected)
+        if failure is not None:
+            raise PartialTrafficCollectionError(traffic) from failure
+        return traffic
+
+    def online(self):
+        merged = {}
+        for client in self.clients:
+            for name, count in client.online().items():
+                merged[name] = merged.get(name, 0) + count
+        return merged
+
+    def kick(self, name):
+        self.kick_many([name])
+
+    def kick_many(self, names):
+        names = list(names)
+        if not names:
+            return
+        failure = None
+        for client in self.clients:
+            try:
+                client.kick_many(names)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
+
+
 class UsageManager:
     def __init__(self, database, stats_client, pending_ttl=5, clock=time.monotonic):
         self.database = database
@@ -2661,7 +2768,11 @@ class UsageManager:
         self.last_online = {}
 
     def _collect_locked(self):
-        traffic = self.stats_client.collect_and_clear()
+        try:
+            traffic = self.stats_client.collect_and_clear()
+        except PartialTrafficCollectionError as exc:
+            self.database.add_traffic(exc.traffic)
+            raise
         self.database.add_traffic(traffic)
         return traffic
 
@@ -3276,9 +3387,12 @@ class Settings:
         panel_port = _parse_port(mapping, "HY2PANEL_PANEL_PORT", 19998)
         auth_port = _parse_port(mapping, "HY2PANEL_AUTH_PORT", 19996)
         stats_port = _parse_port(mapping, "HY2PANEL_STATS_PORT", 19997)
-        ports = {hysteria_port, panel_port, auth_port, stats_port}
-        if len(ports) != 4:
-            raise ValueError("Hysteria, panel, auth and stats ports must be different")
+        stats_443_port = _parse_port(mapping, "HY2PANEL_STATS_443_PORT", 19995)
+        ports = {hysteria_port, panel_port, auth_port, stats_port, stats_443_port}
+        if len(ports) != 5:
+            raise ValueError(
+                "Hysteria, panel, auth and both stats ports must be different"
+            )
         return cls(
             database_path=Path(mapping.get("HY2PANEL_DB", "/var/lib/hysteria2-panel/panel.db")),
             hmac_key=hmac_key,
@@ -3293,6 +3407,7 @@ class Settings:
             auth_port=auth_port,
             stats_port=stats_port,
             stats_url="http://127.0.0.1:{}".format(stats_port),
+            stats_443_url="http://127.0.0.1:{}".format(stats_443_port),
             stats_secret=stats_secret,
             tls_cert=Path(mapping.get("HY2PANEL_TLS_CERT", "/etc/hysteria2-panel/server.crt")),
             tls_key=Path(mapping.get("HY2PANEL_TLS_KEY", "/etc/hysteria2-panel/server.key")),
@@ -3371,6 +3486,11 @@ def run_service(settings):
     if not database.has_admin():
         raise RuntimeError("no administrator exists; run init-admin first")
     stats_client = HysteriaStatsClient(settings.stats_url, settings.stats_secret)
+    if settings.hysteria_port != 443:
+        stats_client = CombinedHysteriaStatsClient(
+            stats_client,
+            HysteriaStatsClient(settings.stats_443_url, settings.stats_secret),
+        )
     usage_manager = UsageManager(database, stats_client)
     backup_manager = BackupManager(
         database=database,

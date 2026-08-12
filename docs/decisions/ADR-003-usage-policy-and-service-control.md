@@ -10,7 +10,7 @@
 
 ## 决策
 
-- 定期调用官方 `/traffic?clear=true` 原子取得用户流量增量，并分别累计到 SQLite 的 `tx_bytes` 与 `rx_bytes`。
+- 定期调用官方 `/traffic?clear=1` 原子取得用户流量增量，并分别累计到 SQLite 的 `tx_bytes` 与 `rx_bytes`。
 - 在 HTTP 认证回调中同步最新流量，检查总流量与并发连接上限；达到上限时返回官方约定的 `{"ok": false, "id": ""}`。
 - 把 `/online` 数量定义为“客户端实例/近似设备数”，不声称能识别物理硬件或 NAT 后设备。
 - 新建或轮换密钥时保存随机种子，实际 token 由服务器 HMAC key 派生；数据库不保存 token 明文。旧用户不自动轮换，避免升级使现有客户端失效。

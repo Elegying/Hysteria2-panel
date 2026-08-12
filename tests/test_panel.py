@@ -16,6 +16,8 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
+import hysteria2_panel
+
 from hysteria2_panel import (
     BackupManager,
     BackupValidationError,
@@ -204,6 +206,30 @@ class DatabaseTests(unittest.TestCase):
                 expected_generation=0,
             )
 
+    def test_udp_443_access_is_opt_in_and_preserves_the_issued_token(self):
+        created = self.db.create_proxy_user("alice")
+
+        self.assertFalse(self.db.get_proxy_user(created["id"])["allow_udp_443"])
+        self.assertIsNone(
+            self.db.authenticate_token(created["token"], require_udp_443=True)
+        )
+
+        updated = self.db.update_proxy_user_limits(
+            created["id"],
+            device_limit=3,
+            traffic_limit_bytes=250 * 1024**3,
+            allow_udp_443=True,
+            expected_generation=0,
+        )
+
+        self.assertTrue(updated["allow_udp_443"])
+        self.assertEqual("alice", self.db.authenticate_token(created["token"]))
+        self.assertEqual(
+            "alice",
+            self.db.authenticate_token(created["token"], require_udp_443=True),
+        )
+        self.assertEqual(created["token"], self.db.recover_proxy_token(created["id"]))
+
     def test_traffic_is_accumulated_and_can_be_reset(self):
         alice = self.db.create_proxy_user("alice")
         bob = self.db.create_proxy_user("bob")
@@ -248,7 +274,9 @@ class DatabaseTests(unittest.TestCase):
         record = legacy_db.get_proxy_user(1)
         self.assertEqual(3, record["device_limit"])
         self.assertEqual(250 * 1024**3, record["traffic_limit_bytes"])
+        self.assertFalse(record["allow_udp_443"])
         self.assertEqual("legacy", legacy_db.authenticate_token(token))
+        self.assertIsNone(legacy_db.authenticate_token(token, require_udp_443=True))
         self.assertIsNone(legacy_db.recover_proxy_token(1))
 
     def test_disable_rotate_and_delete_user(self):
@@ -377,6 +405,32 @@ class AuthContractTests(unittest.TestCase):
         self.assertEqual({"ok": True, "id": "alice"}, payload)
         self.assertEqual("application/json; charset=utf-8", response.headers["Content-Type"])
         self.assertEqual("nosniff", response.headers["X-Content-Type-Options"])
+
+    def test_udp_443_auth_endpoint_only_allows_opted_in_users(self):
+        server = make_internal_server(("127.0.0.1", 0), self.db)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = "http://127.0.0.1:{}/auth/udp-443".format(server.server_address[1])
+        body = json.dumps(
+            {"addr": "192.0.2.10:1234", "auth": "valid-token", "tx": 9}
+        ).encode()
+
+        request = urllib.request.Request(url, data=body, method="POST")
+        with urllib.request.urlopen(request, timeout=2) as response:
+            self.assertEqual({"ok": False, "id": ""}, json.load(response))
+
+        self.db.update_proxy_user_limits(
+            self.user["id"],
+            device_limit=3,
+            traffic_limit_bytes=250 * 1024**3,
+            allow_udp_443=True,
+            expected_generation=0,
+        )
+        request = urllib.request.Request(url, data=body, method="POST")
+        with urllib.request.urlopen(request, timeout=2) as response:
+            self.assertEqual({"ok": True, "id": "alice"}, json.load(response))
 
 
 class RateLimiterTests(unittest.TestCase):
@@ -534,6 +588,22 @@ class UsageManagerTests(unittest.TestCase):
         manager = UsageManager(self.db, stats)
 
         self.assertFalse(manager.authorize("alice"))
+
+    def test_partial_combined_traffic_is_saved_before_authentication_fails_closed(self):
+        user = self.db.create_proxy_user("alice", traffic_limit_bytes=300)
+        primary = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+        udp_443 = PolicyStatsClient()
+        udp_443.collect_and_clear = lambda: (_ for _ in ()).throw(
+            OSError("UDP 443 stats unavailable")
+        )
+        manager = UsageManager(
+            self.db,
+            hysteria2_panel.CombinedHysteriaStatsClient(primary, udp_443),
+        )
+
+        self.assertFalse(manager.authorize("alice"))
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
 
     def test_snapshot_and_resets_include_pending_hysteria_traffic(self):
         alice = self.db.create_proxy_user("alice")
@@ -1145,6 +1215,72 @@ class BackupManagerTests(unittest.TestCase):
                 )
         inspected = self.manager.validate_archive(archive)
         self.assertEqual(manifest["certificate"]["pinSHA256"], inspected["certificate"]["pinSHA256"])
+
+    def test_restore_migrates_backups_created_before_udp_443_support(self):
+        current_archive = self.manager.create_archive()
+        with zipfile.ZipFile(current_archive) as package:
+            payloads = {name: package.read(name) for name in package.namelist()}
+        legacy_database = self.root / "legacy-backup.db"
+        legacy_database.write_bytes(payloads["data/panel.db"])
+        legacy_columns = ",".join(BackupManager.REQUIRED_PROXY_COLUMNS)
+        with sqlite3.connect(legacy_database) as connection:
+            connection.execute(
+                "CREATE TABLE proxy_users_legacy AS SELECT {} FROM proxy_users".format(
+                    legacy_columns
+                )
+            )
+            connection.execute("DROP TABLE proxy_users")
+            connection.execute("ALTER TABLE proxy_users_legacy RENAME TO proxy_users")
+        payloads["data/panel.db"] = legacy_database.read_bytes()
+        manifest = json.loads(payloads["manifest.json"])
+        manifest["files"]["data/panel.db"] = {
+            "sha256": hashlib.sha256(payloads["data/panel.db"]).hexdigest(),
+            "size": len(payloads["data/panel.db"]),
+        }
+        payloads["manifest.json"] = json.dumps(
+            manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+        legacy_archive = self.root / "legacy-backup.zip"
+        with zipfile.ZipFile(legacy_archive, "w", compression=zipfile.ZIP_DEFLATED) as package:
+            for name, value in payloads.items():
+                package.writestr(name, value)
+
+        destination_root = self.root / "legacy-destination"
+        destination_root.mkdir()
+        destination_hmac = b"d" * 32
+        destination_database = Database(destination_root / "panel.db", destination_hmac)
+        destination_database.initialize()
+        destination_certificate, destination_key = create_test_certificate(
+            destination_root, "vpn.example.test"
+        )
+        env_file = destination_root / "panel.env"
+        env_file.write_text(
+            "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN=destination-pin\n".format(
+                destination_hmac.hex()
+            )
+        )
+        destination = BackupManager(
+            database=destination_database,
+            hmac_key=destination_hmac,
+            tls_cert=destination_certificate,
+            tls_key=destination_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            work_dir=destination_root / "work",
+        )
+
+        destination.apply_archive(
+            legacy_archive,
+            env_file=env_file,
+            backup_root=destination_root / "automatic-backups",
+        )
+
+        restored = Database(destination_database.path, self.hmac_key)
+        record = restored.get_proxy_user(self.user["id"])
+        self.assertFalse(record["allow_udp_443"])
+        self.assertIsNone(
+            restored.authenticate_token(self.user["token"], require_udp_443=True)
+        )
 
     def test_restore_rejects_path_traversal_and_mismatched_endpoint(self):
         malicious = self.root / "malicious.zip"
@@ -1822,6 +1958,7 @@ class PanelHttpTests(unittest.TestCase):
                 "generation": "0",
                 "device_limit": "6",
                 "traffic_limit_gb": "750",
+                "allow_udp_443": "1",
                 "inline": "1",
             },
             headers={**headers, "Accept": "application/json"},
@@ -1832,10 +1969,18 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual("editable", payload["name"])
         self.assertEqual(6, payload["device_limit"])
         self.assertEqual(750, payload["traffic_limit_gb"])
+        self.assertTrue(payload["allow_udp_443"])
         record = self.db.get_proxy_user(created["id"])
         self.assertEqual(6, record["device_limit"])
         self.assertEqual(750 * 1024**3, record["traffic_limit_bytes"])
+        self.assertTrue(record["allow_udp_443"])
         self.assertEqual(original_token, self.db.recover_proxy_token(created["id"]))
+
+        with self.request("/", headers=headers) as response:
+            dashboard = response.read().decode()
+        self.assertIn('name="allow_udp_443"', dashboard)
+        self.assertIn('data-allow-udp443="1"', dashboard)
+        self.assertIn("允许该账号使用 UDP 443", dashboard)
 
     def test_user_limit_edit_requires_csrf_and_detects_stale_generation(self):
         created = self.db.create_proxy_user("editable")
@@ -2117,7 +2262,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.14.2", body)
+        self.assertIn("v0.15.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
@@ -2315,7 +2460,7 @@ class StatsApiHandler(BaseHTTPRequestHandler):
         if self.path == "/traffic":
             self._json({"alice": {"tx": 100, "rx": 200}})
             return
-        if self.path == "/traffic?clear=true":
+        if self.path == "/traffic?clear=1":
             type(self).cleared += 1
             self._json({"alice": {"tx": 100, "rx": 200}})
             return
@@ -2391,6 +2536,45 @@ class StatsClientTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     HysteriaStatsClient(url, "stats-secret")
 
+    def test_combined_stats_merge_both_hysteria_entrypoints(self):
+        primary = PolicyStatsClient(
+            traffic={"alice": {"tx": 100, "rx": 200}},
+            online={"alice": 1},
+        )
+        udp_443 = PolicyStatsClient(
+            traffic={
+                "alice": {"tx": 7, "rx": 9},
+                "bob": {"tx": 3, "rx": 4},
+            },
+            online={"alice": 2, "bob": 1},
+        )
+        client = hysteria2_panel.CombinedHysteriaStatsClient(primary, udp_443)
+
+        self.assertEqual(
+            {
+                "alice": {"tx": 107, "rx": 209},
+                "bob": {"tx": 3, "rx": 4},
+            },
+            client.collect_and_clear(),
+        )
+        self.assertEqual({"alice": 3, "bob": 1}, client.online())
+        client.kick_many(["alice", "bob"])
+        self.assertEqual(["alice", "bob"], primary.kicked)
+        self.assertEqual(["alice", "bob"], udp_443.kicked)
+
+    def test_combined_stats_kicks_every_entrypoint_when_one_is_unavailable(self):
+        primary = PolicyStatsClient()
+        udp_443 = PolicyStatsClient()
+        primary.kick_many = lambda names: (_ for _ in ()).throw(
+            OSError("primary stats unavailable")
+        )
+        client = hysteria2_panel.CombinedHysteriaStatsClient(primary, udp_443)
+
+        with self.assertRaises(OSError):
+            client.kick_many(["alice"])
+
+        self.assertEqual(["alice"], udp_443.kicked)
+
 
 class SettingsTests(unittest.TestCase):
     def test_environment_contract_is_validated(self):
@@ -2413,6 +2597,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(19999, settings.hysteria_port)
         self.assertEqual(b"\xab" * 32, settings.hmac_key)
         self.assertEqual("http://127.0.0.1:19997", settings.stats_url)
+        self.assertEqual("http://127.0.0.1:19995", settings.stats_443_url)
         self.assertEqual("Hysteria 2", settings.node_name)
         self.assertEqual("http", settings.panel_scheme)
 

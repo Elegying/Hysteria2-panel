@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.14.2"', source)
+        self.assertIn('PANEL_VERSION="0.15.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="78adb1c5e4df5c60af611e90171fa3d889440977d7003e475694e7bed6f7eae8"',
+            'PANEL_SHA256="5a5671c0756e16bd5aed4c3537e33685f55ef1e14889c8711544058464f12b11"',
             source,
         )
         self.assertIn(
@@ -149,6 +149,19 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn("User=hy2panel", source)
         self.assertIn("User=hy2server", source)
         self.assertIn("Group=hy2tls", source)
+
+    def test_installer_adds_a_per_user_udp_443_entrypoint(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('DEFAULT_STATS_443_PORT=19995', source)
+        self.assertIn('HY2PANEL_STATS_443_PORT=${STATS_443_PORT}', source)
+        self.assertIn('/etc/hysteria2-panel/hysteria-443.yaml', source)
+        self.assertIn('url: http://127.0.0.1:${AUTH_PORT}/auth/udp-443', source)
+        self.assertIn('hysteria2-panel-server-443.service', source)
+        self.assertIn('PartOf=hysteria2-panel-server.service', source)
+        self.assertIn('Wants=hysteria2-panel-server-443.service', source)
+        self.assertIn('ss -H -lun "sport = :443"', source)
+        self.assertIn('请同时放行 UDP 443', source)
 
     def test_installer_restarts_upgrades_and_does_not_mutate_firewall(self):
         source = INSTALLER.read_text()
@@ -289,8 +302,8 @@ class InstallerContractTests(unittest.TestCase):
         )
         self.assertIn("visudo -cf", source)
         self.assertIn("sudo", source)
-        self.assertEqual(4, source.count("NoNewPrivileges=true"))
-        self.assertEqual(4, source.count("PrivateDevices=true"))
+        self.assertEqual(5, source.count("NoNewPrivileges=true"))
+        self.assertEqual(5, source.count("PrivateDevices=true"))
         for sandbox_option in (
             "ProtectKernelTunables=true",
             "ProtectKernelModules=true",
@@ -299,11 +312,11 @@ class InstallerContractTests(unittest.TestCase):
             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
         ):
             if sandbox_option in {"RestrictSUIDSGID=true", "LockPersonality=true"}:
-                expected_count = 4
+                expected_count = 5
             elif sandbox_option.endswith("AF_UNIX"):
-                expected_count = 3
+                expected_count = 4
             else:
-                expected_count = 3
+                expected_count = 4
             self.assertEqual(expected_count, source.count(sandbox_option), sandbox_option)
 
     def test_installer_adds_a_root_only_one_shot_restore_service(self):
@@ -319,7 +332,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            "Conflicts=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service",
+            "Conflicts=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service",
             source,
         )
         self.assertIn(

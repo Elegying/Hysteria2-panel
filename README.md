@@ -26,9 +26,11 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 | 用途 | 监听地址 | 默认端口 |
 |---|---|---:|
 | Hysteria 2 | 公网 UDP | `19999` |
+| 账号专属 Hysteria 入口 | 公网 UDP | `443`（按账号开启） |
 | TCP 连通性兼容探测 | 公网 TCP | 与 Hysteria 相同，默认 `19999` |
 | 管理面板 | 公网 HTTP TCP（可选 HTTPS） | `19998` |
 | 流量统计 API | `127.0.0.1` | `19997` |
+| UDP 443 入口流量统计 API | `127.0.0.1` | `19995` |
 | Hysteria 认证回调 | `127.0.0.1` | `19996` |
 
 服务器使用带 IP/域名 SAN 的 10 年自签名证书保护 Hysteria 连接。面板生成的 Hysteria URI 同时包含 `insecure=1` 和证书 SHA-256 固定指纹。面板使用 HTTP 并不影响 Hysteria 数据通道的 TLS 和证书固定。
@@ -37,7 +39,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 
 部分网络设备会检查明文 HTTP 的 `Host` 并主动重置特定域名连接。安装器在节点域名与本机检测 IP 不同时会同时打印备用面板地址；确认该 IP 可从公网路由后，可用 `http://服务器IP:面板端口/` 登录，不需要修改 Hysteria 节点域名、证书或已分享 URI。面板会安静处理这类预期断连，避免服务日志被无意义的异常栈淹没。
 
-> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999`；TCP `19998` 只应向管理员来源放行。为避免意外改变现有策略或把管理端口暴露给全网，脚本不会自动添加防火墙规则。
+> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999` 和 UDP `443`；TCP `19998` 只应向管理员来源放行。为避免意外改变现有策略或把管理端口暴露给全网，脚本不会自动添加防火墙规则。
 
 TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据。它用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；探测服务会随 Hysteria 服务启停。
 
@@ -45,7 +47,7 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 
 登录面板后可以：
 
-- 创建、编辑、启用、禁用和删除用户，并设置客户端实例数与总流量限制（默认 `3` 个实例、`250 GiB`）；编辑限额不会修改用户 token 或分享 URI；
+- 创建、编辑、启用、禁用和删除用户，并设置客户端实例数与总流量限制（默认 `3` 个实例、`250 GiB`）；编辑用户可单独开放 UDP `443`，不会修改用户 token 或分享 URI；
 - 在同一页查看全部用户，并通过用户名即时搜索；添加用户使用弹窗，不占用列表空间；
 - 轮换用户认证密钥，一键复制可导入的连接 URI；
 - 查看在线设备数、上传/下载流量、总流量进度和高流量前五用户；
@@ -59,6 +61,10 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 管理员登录按来源 IP 防破解：15 分钟内第 5 次密码错误会立即返回 HTTP `429` 并锁定该来源 15 分钟，锁定期间正确密码也不能登录；成功登录会清除该 IP 的失败记录。锁定状态保存在进程内存中，重启面板会清空；它用于阻挡普通单源爆破，不替代安全组来源限制或独立的主机级入侵防护。设计同时考虑了 [OWASP 对通用错误、登录限速和拒绝服务风险的建议](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)。
 
 分享 URI 的节点名称由安装参数 `NODE_NAME` 统一设置，不再随面板中的用户名称变化。
+
+每个账号默认只能使用主 Hysteria UDP 端口（默认 `19999`）。在“编辑用户”中开启 UDP `443` 后，该账号可以继续使用原 URI，也可以在客户端复制原配置后仅把服务器端口从 `19999` 改为 `443`；面板不会自动把分享 URI 改成 `443`。未开启的账号在 UDP `443` 入口会认证失败。两个入口共用相同域名、证书、token、设备数和流量额度，在线实例数与流量会合并统计。
+
+账号级端口授权由第二个 Hysteria 进程实现。Hysteria 单个服务端配置只有一个监听地址，HTTP 认证请求也不包含客户端连接的目标端口，因此单纯端口转发或一个监听器无法区分账号是否从 `443` 进入。第二进程只把认证回调切换为 `/auth/udp-443`，其余 TLS 和出站策略与主入口一致；设计依据见 [ADR-011](docs/decisions/ADR-011-per-user-udp-443-entrypoint.md)。
 
 新建或轮换的用户密钥由随机种子和服务器 HMAC key 派生，因此面板可以重新生成分享 URI，但数据库仍不保存认证密钥明文。旧版本用户保持原连接有效；由于原密钥只有不可逆指纹，需明确轮换一次后才能使用分享按钮。禁用、删除或轮换用户时，面板会调用 Hysteria 流量 API 断开现有连接。
 
@@ -104,8 +110,8 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 ## 运维
 
 ```bash
-systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-tcp-probe hysteria2-panel-update
-journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-tcp-probe -u hysteria2-panel-update --since today
+systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-update
+journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-update --since today
 curl http://127.0.0.1:19998/healthz
 ```
 
@@ -124,7 +130,7 @@ curl http://127.0.0.1:19998/healthz
 
 安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用与配置。v0.13.0 起，升级失败会自动执行以下回滚并尝试重新启动旧服务；以下步骤仅用于自动回滚也未能恢复时的人工兜底：
 
-1. 停止 `hysteria2-panel-server` 和 `hysteria2-panel`；
+1. 停止 `hysteria2-panel-server-443`、`hysteria2-panel-server` 和 `hysteria2-panel`；
 2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和 systemd unit 文件；回滚到 `v0.3.x` 时同时停用并删除 `hysteria2-panel-tcp-probe.service`；
 3. 执行 `systemctl daemon-reload`；
 4. 重新启动两个服务并检查健康接口和 UDP/TCP 监听。
@@ -141,7 +147,7 @@ ruff check hysteria2_panel.py tcp_probe.py tests
 bandit -q -r hysteria2_panel.py tcp_probe.py
 ```
 
-自动化只能验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界。发布后仍应在真实客户端完成：Hysteria 握手、网页访问、YouTube 连续播放、TCP `19999` 延迟探测、旧分享 URI、流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
+自动化只能验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界。发布后仍应在真实客户端完成：主端口与获准账号 UDP `443` 的 Hysteria 握手、未获准账号的 `443` 拒绝、网页访问、YouTube 连续播放、TCP `19999` 延迟探测、旧分享 URI、双入口流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
 
 ## 架构与接口
 
@@ -154,6 +160,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 - [ADR-007：固定来源的非交互在线更新](docs/decisions/ADR-007-fixed-source-online-update.md)
 - [ADR-008：工作线程监督与升级失败自动回滚](docs/decisions/ADR-008-runtime-supervision-upgrade-rollback.md)
 - [ADR-009：可观测在线更新与受限运维操作](docs/decisions/ADR-009-observable-update-and-admin-operations.md)
+- [ADR-011：单账号 UDP 443 双入口授权](docs/decisions/ADR-011-per-user-udp-443-entrypoint.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证
