@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.13.0"
+PANEL_VERSION="0.14.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="687ff54bc3dac203c3437843396506a6529f0155df1d1ea453e4b795aa207f09"
+PANEL_SHA256="231da73f3844a44541468bde40a68f954a12189e4e5f0c3d53ec5dbf84a71e5e"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -594,7 +594,7 @@ chown root:hy2tls /etc/hysteria2-panel/hysteria.yaml
 chmod 0640 /etc/hysteria2-panel/hysteria.yaml
 
 cat > "${TMP_DIR}/hysteria2-panel.sudoers" <<'EOF'
-hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service, /bin/systemctl --no-block start hysteria2-panel-restore.service, /bin/systemctl --no-block start hysteria2-panel-update.service
+hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service, /bin/systemctl --no-block start hysteria2-panel-restore.service, /bin/systemctl --no-block start hysteria2-panel-update.service, /bin/systemctl --no-block reboot
 EOF
 chmod 0440 "${TMP_DIR}/hysteria2-panel.sudoers"
 visudo -cf "${TMP_DIR}/hysteria2-panel.sudoers" >/dev/null || fail "服务控制权限配置无效"

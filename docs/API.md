@@ -49,6 +49,7 @@
 | `POST` | `/login` | 创建 HttpOnly、SameSite=Strict 会话；HTTPS 模式额外设置 Secure；按来源 IP 执行登录限速 |
 | `GET` | `/` | 服务控制、系统资源、版本、全局统计、高流量前五、完整用户列表、即时搜索与限额进度 |
 | `POST` | `/users` | 创建带设备/总流量限制的用户并显示认证密钥和 URI |
+| `POST` | `/users/{id}/edit` | 携带当前 `generation`，只修改客户端实例数和总流量限制，不修改 token 或 URI |
 | `POST` | `/users/{id}/toggle` | 携带当前 `generation`，启用或禁用用户 |
 | `POST` | `/users/{id}/rotate` | 携带当前 `generation`，轮换认证密钥并断开旧连接 |
 | `POST` | `/users/{id}/delete` | 携带当前 `generation`，删除用户并断开连接 |
@@ -56,14 +57,16 @@
 | `POST` | `/users/{id}/reset` | 携带当前 `generation`，重置该用户流量并断开旧连接 |
 | `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
+| `POST` | `/system/reboot` | 二次确认后通过固定 sudoers 白名单排队重启整台服务器，成功返回 HTTP 202 |
 | `POST` | `/updates/check` | 从固定 GitHub Release API 检查面板版本；有新正式版本时显示在线更新入口 |
 | `POST` | `/updates/apply` | 不接收版本或地址参数；排队启动固定的一次性 root 更新服务，成功返回 HTTP 202 |
+| `GET` | `/updates/status` | 查询持久更新状态；返回 `idle/queued/running/success/failed` 与目标版本和提示 |
 | `POST` | `/backup` | 表单 CSRF 校验后返回 `application/zip` 敏感备份，响应强制 `no-store` |
 | `POST` | `/restore` | 上传原始 `application/zip`；CSRF 通过 `X-HY2Panel-CSRF` 请求头提交，预检后排队执行一次性恢复服务 |
 | `POST` | `/logout` | 撤销管理会话 |
 
 面板没有对公网提供通用 JSON 管理 API，避免扩大认证和 CORS 攻击面。
-版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成的新凭据。
+版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。编辑用户时设备限制范围为 1 到 100，总流量必须为正值；该操作只更新两个限额并递增 `generation`，保留名称、认证 token 派生种子和累计流量。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成的新凭据。
 
 登录错误响应不区分账号不存在与密码错误。每个来源 IP 在 15 分钟窗口内前 4 次错误返回 HTTP `401`，第 5 次立即返回 HTTP `429` 并设置整数秒 `Retry-After`；锁定期间正确密码也会被拒绝。成功登录清除该来源的失败记录。限速表最多记录 4096 个来源并仅保存在进程内存，面板重启后清空，避免给 SQLite 增加高频攻击写入。所有登录响应均带 `no-store`、CSP、`nosniff`、拒绝嵌入和禁止 Referrer 等安全头。
 
@@ -71,6 +74,8 @@
 
 `POST /restore` 要求 `Content-Length` 在 1 字节到 64 MiB 之间，不解析 multipart。服务端只接受格式版本 1 的固定五文件 ZIP，限制单项与总解压大小，拒绝额外文件、重复路径、目录和符号链接，并校验清单 SHA-256、SQLite 完整性/表结构、每个可恢复用户 token、证书/私钥、证书指纹、源域名及 UDP 端口。上传预检通过后只写入固定的待恢复路径，再用固定 sudoers 命令启动 root oneshot；root 进程会重复全部校验。
 
-`POST /updates/apply` 只有在当前会话刚检查到新版本时可用，但 root 任务不会信任这份页面状态，而会重新访问固定仓库的 GitHub `releases/latest`。响应 tag 必须是比当前版本新的 `vX.Y.Z`，安装器只能从该 tag 对应的固定 `raw.githubusercontent.com/Elegying/Hysteria2-panel/` 路径下载。执行前还会限制响应大小、验证 UTF-8、bash 解释器头、内嵌版本与 tag 一致并通过 `bash -n`。更新进程使用固定环境变量进入安装器的现有受管安装模式，网页请求无法指定命令、仓库、版本、节点参数或管理员凭据。
+`POST /updates/apply` 只有在当前会话刚检查到新版本时可用，但 root 任务不会信任这份页面状态，而会重新访问固定仓库的 GitHub `releases/latest`。响应 tag 必须是比当前版本新的 `vX.Y.Z`，安装器只能从该 tag 对应的固定 `raw.githubusercontent.com/Elegying/Hysteria2-panel/` 路径下载。执行前还会限制响应大小、验证 UTF-8、bash 解释器头、内嵌版本与 tag 一致并通过 `bash -n`。更新进程使用固定环境变量进入安装器的现有受管安装模式，网页请求无法指定命令、仓库、版本、节点参数或管理员凭据。排队状态以 `0600` 原子文件保存在面板数据目录；`GET /updates/status` 再读取固定 systemd 单元状态，且只有更新单元已成功结束并且当前版本达到目标版本才返回 `success`。浏览器短暂失联时继续轮询，任务失败、退出码非零或任务结束但版本未变化时返回明确失败提示。
+
+`POST /system/reboot` 不接收命令、主机或延时参数。后端只执行固定的 `/usr/bin/sudo -n /bin/systemctl --no-block reboot`，并在排队前尽力落盘最新流量及写入审计记录。接口返回 202 只表示重启已排队，不表示系统已重新上线。
 
 Hysteria 流量统计客户端只接受带明确端口、无路径的 `http://127.0.0.1` 或 `http://[::1]`，单次响应最多 8 MiB，避免配置错误把面板变成外部请求入口或让异常统计响应无限占用内存。

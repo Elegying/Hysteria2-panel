@@ -12,14 +12,14 @@
 支持 Debian、Ubuntu、Rocky Linux、AlmaLinux、CentOS Stream 和 Fedora 等使用 `apt`、`dnf` 或 `yum` 且由 systemd 管理的 Linux amd64/arm64 主机，需要 root 权限和 Python 3.8 或更高版本。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.13.0/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.14.0/install.sh)
 ```
 
 安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `web`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
 重复运行安装器会先建立唯一的一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、用户数据库、systemd 单元、sudoers 和网络参数，并尝试重新拉起旧服务；只有全部服务和端口通过检查后才解除回滚保护。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
 
-面板发现新正式版本后会显示“立即更新”。该操作只允许已登录管理员携带 CSRF token 启动固定的 `hysteria2-panel-update.service`，浏览器不能传入版本、下载地址或命令。root 更新任务会重新查询固定 GitHub Release API，只接受严格的 `vX.Y.Z` 正式版本，从对应版本路径下载安装器，核对安装器内版本、解释器头和 shell 语法，再以专用非交互模式升级。在线升级强制沿用当前节点与面板参数并保留管理员、数据库、HMAC、统计密钥、TLS 证书和私钥；全新服务器不能使用该内部模式。
+面板发现新正式版本后会显示“立即更新”。点击后页面会显示排队、运行、成功或失败状态，并在面板进程因升级重启期间自动重试状态查询；只有固定更新任务已经成功结束且新进程的当前版本达到目标版本才会显示成功，不再把 systemd 任务已启动或新进程刚启动误报成升级完成。该操作只允许已登录管理员携带 CSRF token 启动固定的 `hysteria2-panel-update.service`，浏览器不能传入版本、下载地址或命令。root 更新任务会重新查询固定 GitHub Release API，只接受严格的 `vX.Y.Z` 正式版本，从对应版本路径下载安装器，核对安装器内版本、解释器头和 shell 语法，再以专用非交互模式升级。在线升级强制沿用当前节点与面板参数并保留管理员、数据库、HMAC、统计密钥、TLS 证书和私钥；全新服务器不能使用该内部模式。
 
 默认端口：
 
@@ -45,13 +45,13 @@ TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据�
 
 登录面板后可以：
 
-- 创建、启用、禁用和删除用户，并设置客户端实例数与总流量限制（默认 `3` 个实例、`250 GiB`）；
+- 创建、编辑、启用、禁用和删除用户，并设置客户端实例数与总流量限制（默认 `3` 个实例、`250 GiB`）；编辑限额不会修改用户 token 或分享 URI；
 - 在同一页查看全部用户，并通过用户名即时搜索；添加用户使用弹窗，不占用列表空间；
 - 轮换用户认证密钥，一键复制可导入的连接 URI；
 - 查看在线设备数、上传/下载流量、总流量进度和高流量前五用户；
 - 重置单个用户或全部用户的累计流量；
 - 查看服务状态、当前用户数、不活跃用户数、在线设备总数以及总上传/下载流量；
-- 查看 CPU、内存、磁盘、运行时长、面板版本，并检查和在线安装正式更新；
+- 查看 CPU、内存、磁盘、运行时长、面板版本，并检查和在线安装正式更新；系统资源模块提供带二次确认的整机重启入口；
 - 在面板内启动、停止或重启项目专用 Hysteria 服务。
 - 使用响应式桌面/手机布局；手机端用户表格会自动转为便于触控的卡片。
 - 从顶部“数据迁移”弹窗一键下载完整备份，或在新服务器上传恢复用户、流量、签名密钥和 TLS 节点身份。
@@ -66,7 +66,7 @@ Hysteria 的 `/kick` 对同一用户名使用一次性断开标记。禁用、�
 
 “设备限制”依据 Hysteria 官方 `/online` API 返回的 Hysteria 客户端实例数执行，不是活动代理流数量。默认限制为 3 时，已有 3 个实例会继续使用；第 4 个实例的认证返回失败，不会踢掉最早在线的实例，直到已有实例离线后才能连接。面板还用 5 秒短期预留防止多个认证同时越过上限；在线统计或流量统计不可用时，新认证会失败关闭。
 
-该接口不能识别物理硬件：同一个网关或热点客户端后面的多台终端可能只算 1 个实例，客户端重连或同时运行多个核心也可能产生多个实例。因此“3 台设备”应理解为“最多 3 个同时在线的 Hysteria 客户端实例”，不能作为硬件授权系统。
+该接口不能识别物理硬件：同一个网关或热点客户端后面的多台终端可能只算 1 个实例，客户端重连或同时运行多个核心也可能产生多个实例。因此“3 台设备”应理解为“最多 3 个同时在线的 Hysteria 客户端实例”，不能作为硬件授权系统。标准 Hysteria 认证请求没有稳定硬件 ID；用来源 IP/端口代替会在 NAT、移动网络切换和重连时误判。只有配套受控客户端、逐设备凭据和服务端设备登记才能实现接近硬件授权的限制，但这会改变现有的一用户一链接兼容方式。面板在统计值大于配置上限时会把用户名标红并显示“客户端实例超限”，便于管理员处理降低限额后的存量连接或统计时序竞争。
 
 > Hysteria TUN 只转发 TCP/UDP，不代理 ICMP。节点能正常访问网页但系统 `ping` 超时并不表示节点故障，服务端无法通过放行 UDP 端口改变这一协议边界。
 
@@ -118,7 +118,7 @@ curl http://127.0.0.1:19998/healthz
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署和恢复前的自动备份 |
 | `/etc/sysctl.d/99-hysteria2-panel.conf` | 16 MiB QUIC UDP 缓冲，以及内核支持时的 `fq`/TCP BBR |
-| `/etc/sudoers.d/hysteria2-panel` | 仅允许固定服务控制，以及启动一次性恢复/更新服务 |
+| `/etc/sudoers.d/hysteria2-panel` | 仅允许固定服务控制、整机重启，以及启动一次性恢复/更新服务 |
 
 ### 回滚
 
@@ -153,6 +153,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 - [ADR-006：网页/视频出站策略与 BT/PT 防滥用边界](docs/decisions/ADR-006-web-egress-abuse-control.md)
 - [ADR-007：固定来源的非交互在线更新](docs/decisions/ADR-007-fixed-source-online-update.md)
 - [ADR-008：工作线程监督与升级失败自动回滚](docs/decisions/ADR-008-runtime-supervision-upgrade-rollback.md)
+- [ADR-009：可观测在线更新与受限运维操作](docs/decisions/ADR-009-observable-update-and-admin-operations.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

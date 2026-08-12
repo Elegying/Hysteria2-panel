@@ -45,7 +45,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.13.0"
+PANEL_VERSION = "0.14.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -63,15 +63,15 @@ main{width:min(1420px,calc(100% - 40px));margin:20px auto 42px}.topbar{display:f
 h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.muted{color:var(--muted)}.ok{color:var(--success)}.bad{color:var(--danger)}.warning{color:var(--warning)}
 .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}.metric,.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:0 8px 28px rgba(0,0,0,.12)}.metric{padding:18px;border-top:3px solid var(--teal)}.metric strong{display:block;font-size:26px;margin:9px 0 3px;font-variant-numeric:tabular-nums}.metric span{color:var(--muted)}
 .operations{display:grid;gap:16px;margin-bottom:16px;align-items:start}.dashboard-trio{align-items:stretch;grid-template-columns:minmax(0,1.45fr) minmax(270px,.85fr) minmax(240px,.72fr)}.dashboard-trio>.card{height:100%;margin-bottom:0}.card{padding:20px;margin-bottom:16px}.section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--line);padding-bottom:15px;margin-bottom:16px}.dashboard-trio .section-head{padding-bottom:12px;margin-bottom:12px}.service-badge{border-radius:999px;padding:8px 13px;background:#123833;color:var(--success);font-weight:700;white-space:nowrap}.service-badge.off{background:#3a2028;color:#ff9aa4}
-.button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer;transition:filter .15s ease,transform .15s ease}button:hover,.button:hover{filter:brightness(1.08);transform:translateY(-1px)}button:active,.button:active{transform:none}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}
+.button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer;transition:filter .15s ease,transform .15s ease}button:hover,.button:hover{filter:brightness(1.08);transform:translateY(-1px)}button:active,.button:active{transform:none}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}.system-actions{flex:0 0 auto}.system-actions button{padding:8px 11px}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
-.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(240px,360px) auto;grid-template-areas:"heading search actions";align-items:center}.user-heading{grid-area:heading}.user-section-head .user-search{grid-area:search}.user-section-head .section-actions{grid-area:actions}.user-tools{justify-content:flex-end;margin-bottom:14px}.user-search{width:100%;margin:0}.search-status{margin:0;white-space:nowrap}label{display:block;font-weight:650;margin-bottom:6px}input,textarea{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}
+.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(240px,360px) auto;grid-template-areas:"heading search actions";align-items:center}.user-heading{grid-area:heading}.user-section-head .user-search{grid-area:search}.user-section-head .section-actions{grid-area:actions}.user-tools{justify-content:flex-end;margin-bottom:14px}.user-search{width:100%;margin:0}.search-status{margin:0;white-space:nowrap}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
 .migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
 @media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
 @media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.user-section-head{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"heading actions" "search search"}}
-@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.user-section-head{grid-template-columns:1fr;grid-template-areas:"heading" "actions" "search"}.user-tools{align-items:stretch;flex-direction:column}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
+@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.system-actions{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.section-actions form{grid-column:1/-1}.user-section-head{grid-template-columns:1fr;grid-template-areas:"heading" "actions" "search"}.user-tools{align-items:stretch;flex-direction:column}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
 @media(max-width:340px){.metrics{grid-template-columns:1fr}.pill{flex-basis:100%}.version-panel{padding-inline:8px}.version-row{align-items:flex-start;flex-direction:column;gap:4px}.bbr-detail strong,.version-row strong{font-size:16px}.compact-button{padding:7px 5px;font-size:11px;white-space:nowrap}.user-table .actions button{padding-inline:1px;font-size:10px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop{backdrop-filter:none}}
 """
@@ -115,9 +115,58 @@ async function submitInlineForm(form) {
   if (!response.ok) throw new Error(payload.error || '操作失败，请刷新页面后重试');
   return payload;
 }
+function syncEditUserForm() {
+  const form = document.querySelector('[data-edit-user-form]');
+  if (!form) return;
+  const selector = form.querySelector('[data-edit-user-select]');
+  const option = selector && selector.options[selector.selectedIndex];
+  if (!option || !option.value) return;
+  form.action = '/users/' + encodeURIComponent(option.value) + '/edit';
+  form.querySelector('[name="generation"]').value = option.dataset.generation;
+  form.querySelector('[name="device_limit"]').value = option.dataset.deviceLimit;
+  form.querySelector('[name="traffic_limit_gb"]').value = option.dataset.trafficLimitGb;
+}
+function renderUpdateStatus(payload) {
+  const status = document.querySelector('[data-update-status]');
+  if (!status) return;
+  status.dataset.state = payload.state || 'idle';
+  status.textContent = payload.message || '正在读取更新状态…';
+}
+async function pollUpdateStatus(button, deadline) {
+  try {
+    const response = await fetch('/updates/status', {
+      headers: {'Accept': 'application/json'},
+      credentials: 'same-origin',
+      cache: 'no-store'
+    });
+    if (!response.ok) throw new Error('状态读取失败');
+    const payload = await response.json();
+    renderUpdateStatus(payload);
+    if (payload.state === 'success') {
+      window.setTimeout(function() { window.location.reload(); }, 900);
+      return;
+    }
+    if (payload.state === 'failed') {
+      button.disabled = false;
+      button.textContent = '重新更新';
+      notify(payload.message || '在线更新失败', true);
+      return;
+    }
+  } catch (_) {
+    renderUpdateStatus({state: 'running', message: '面板正在重启，等待恢复连接…'});
+  }
+  if (Date.now() >= deadline) {
+    button.disabled = false;
+    button.textContent = '检查状态';
+    renderUpdateStatus({state: 'failed', message: '等待更新超时，请刷新页面查看当前版本'});
+    return;
+  }
+  window.setTimeout(function() { pollUpdateStatus(button, deadline); }, 1500);
+}
 document.addEventListener('click', function(event) {
   const opener = event.target.closest('[data-dialog-open]');
   if (opener) {
+    if (opener.dataset.dialogOpen === 'edit-user-dialog') syncEditUserForm();
     const dialog = document.getElementById(opener.dataset.dialogOpen);
     if (dialog && typeof dialog.showModal === 'function') dialog.showModal();
     return;
@@ -160,6 +209,44 @@ document.addEventListener('submit', async function(event) {
   } finally {
     button.disabled = false;
     window.setTimeout(function() { button.textContent = original; }, 2200);
+  }
+});
+document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-edit-user-form]');
+  if (!form || event.defaultPrevented) return;
+  event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = '保存中…';
+  try {
+    const payload = await submitInlineForm(form);
+    notify(payload.name + ' 的限制已更新', false);
+    const dialog = form.closest('dialog');
+    if (dialog) dialog.close();
+    window.setTimeout(function() { window.location.reload(); }, 700);
+  } catch (error) {
+    notify(error.message || '用户限制更新失败，请重试', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = '保存修改';
+  }
+});
+document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-update-form]');
+  if (!form || event.defaultPrevented) return;
+  event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = '正在排队…';
+  try {
+    const payload = await submitInlineForm(form);
+    renderUpdateStatus(payload);
+    button.textContent = '正在更新…';
+    pollUpdateStatus(button, Date.now() + 180000);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = '立即更新';
+    notify(error.message || '在线更新任务启动失败', true);
   }
 });
 document.addEventListener('submit', async function(event) {
@@ -213,6 +300,11 @@ const credentialsDialog = document.getElementById('credentials-dialog');
 if (credentialsDialog) credentialsDialog.addEventListener('close', function() {
   if (credentialsDialog.dataset.refreshOnClose === '1') window.location.href = '/';
 });
+const editUserSelect = document.querySelector('[data-edit-user-select]');
+if (editUserSelect) {
+  editUserSelect.addEventListener('change', syncEditUserForm);
+  syncEditUserForm();
+}
 const userSearch = document.querySelector('[data-user-search]');
 if (userSearch) {
   const userRows = Array.from(document.querySelectorAll('[data-user-name]'));
@@ -1154,7 +1246,36 @@ class Database:
             )
             if cursor.rowcount != 1:
                 raise ConflictError("proxy user changed; refresh and try again")
-            return dict(row)
+
+    def update_proxy_user_limits(
+        self,
+        user_id,
+        device_limit,
+        traffic_limit_bytes,
+        expected_generation=None,
+    ):
+        device_limit = int(device_limit)
+        traffic_limit_bytes = int(traffic_limit_bytes)
+        if not 1 <= device_limit <= MAX_DEVICE_LIMIT:
+            raise ValueError("device limit must be between 1 and 100")
+        if not 1 <= traffic_limit_bytes <= MAX_TRAFFIC_LIMIT_BYTES:
+            raise ValueError("traffic limit is out of range")
+        now = int(time.time())
+        with self._connect() as connection:
+            row = self._get_proxy_user(user_id, connection)
+            generation = row["generation"] if expected_generation is None else int(expected_generation)
+            if generation != row["generation"]:
+                raise ConflictError("proxy user changed; refresh and try again")
+            cursor = connection.execute(
+                """UPDATE proxy_users
+                SET device_limit = ?, traffic_limit_bytes = ?,
+                    generation = generation + 1, updated_at = ?
+                WHERE id = ? AND generation = ?""",
+                (device_limit, traffic_limit_bytes, now, row["id"], generation),
+            )
+            if cursor.rowcount != 1:
+                raise ConflictError("proxy user changed; refresh and try again")
+            return self._get_proxy_user(row["id"], connection)
 
     def rotate_proxy_token(self, user_id, token=None, expected_generation=None):
         token_seed = None
@@ -1496,6 +1617,7 @@ class PanelApplication:
         system_metrics=None,
         update_checker=None,
         update_controller=None,
+        reboot_controller=None,
         backup_manager=None,
         restore_controller=None,
     ):
@@ -1509,6 +1631,7 @@ class PanelApplication:
         self.system_metrics = system_metrics or SystemMetrics()
         self.update_checker = update_checker or UpdateChecker()
         self.update_controller = update_controller or UpdateController()
+        self.reboot_controller = reboot_controller or RebootController()
         self.backup_manager = backup_manager
         self.restore_controller = restore_controller or RestoreController()
         self.update_result = None
@@ -1763,7 +1886,9 @@ class PanelHandler(JsonHandler):
         for user in listed_users:
             name = user["name"]
             traffic = snapshot.get("traffic", {}).get(name, {})
-            online = snapshot.get("online", {}).get(name, 0)
+            online = _stat_int(snapshot.get("online", {}).get(name, 0))
+            device_limit = int(user["device_limit"])
+            over_device_limit = online > device_limit
             used = _stat_int(traffic.get("tx", 0)) + _stat_int(traffic.get("rx", 0))
             limit = user["traffic_limit_bytes"]
             percent = min(100.0, 100.0 * used / limit) if limit else 0.0
@@ -1771,7 +1896,7 @@ class PanelHandler(JsonHandler):
             action_label = "禁用" if enabled else "启用"
             action_class = "danger" if enabled else "secondary"
             rows.append(
-                """<tr data-user-name="{search_name}"><td data-label="名称"><strong>{name}</strong></td>
+                """<tr data-user-name="{search_name}" data-over-device-limit="{over_device_limit}"><td data-label="名称"><strong{name_class}>{name}</strong>{limit_alert}</td>
 <td data-label="状态"><span class="status {state_class}">{state}</span></td><td data-label="在线设备">{online} / {device_limit}</td><td data-label="上传 / 下载">{tx} / {rx}</td>
 <td class="traffic-cell" data-label="总流量"><progress max="100" value="{percent:.1f}" aria-label="{name} 总流量使用 {percent:.1f}%"></progress><div class="traffic-label"><span>{used} / {limit}</span><span>{percent:.1f}%</span></div></td>
 <td data-label="操作"><div class="actions">
@@ -1783,10 +1908,17 @@ class PanelHandler(JsonHandler):
 </div></td></tr>""".format(
                     name=html.escape(name),
                     search_name=html.escape(name, quote=True),
+                    name_class=' class="over-limit-name"' if over_device_limit else "",
+                    limit_alert=(
+                        '<span class="limit-alert">客户端实例超限</span>'
+                        if over_device_limit
+                        else ""
+                    ),
+                    over_device_limit="1" if over_device_limit else "0",
                     state="启用" if enabled else "禁用",
                     state_class="enabled" if enabled else "disabled",
-                    online=int(online),
-                    device_limit=user["device_limit"],
+                    online=online,
+                    device_limit=device_limit,
                     tx=_human_bytes(traffic.get("tx", 0)),
                     rx=_human_bytes(traffic.get("rx", 0)),
                     used=_human_bytes(used),
@@ -1801,6 +1933,17 @@ class PanelHandler(JsonHandler):
             )
         if not rows:
             rows.append('<tr><td colspan="6" class="muted empty-state">暂无用户，请先创建。</td></tr>')
+        edit_options = "".join(
+            """<option value="{id}" data-generation="{generation}" data-device-limit="{device_limit}" data-traffic-limit-gb="{traffic_limit_gb}">{name}</option>""".format(
+                id=user["id"],
+                generation=user["generation"],
+                device_limit=user["device_limit"],
+                traffic_limit_gb=max(1, user["traffic_limit_bytes"] // 1024**3),
+                name=html.escape(user["name"]),
+            )
+            for user in listed_users
+        )
+        first_edit_user = listed_users[0] if listed_users else None
         traffic_sort_next = "asc" if sort_order == "desc" else "desc"
         traffic_sort_mark = "↑" if sort_order == "asc" else "↓" if sort_order == "desc" else "⇅"
         traffic_sort_aria = (
@@ -1832,9 +1975,21 @@ class PanelHandler(JsonHandler):
             ).format(url=html.escape(update["url"], quote=True), latest=html.escape(update["latest"]))
         else:
             update_text = "尚未检查远程版本"
+        try:
+            update_status = self.app.update_controller.status()
+        except Exception:
+            LOGGER.exception("update status failed")
+            update_status = {
+                "state": "failed",
+                "message": "暂时无法读取更新任务状态",
+            }
+        update_state = update_status.get("state", "idle")
+        if update_state not in {"idle", "queued", "running", "success", "failed"}:
+            update_state = "failed"
+        update_status_text = html.escape(str(update_status.get("message", "")))
         update_action = ""
         if update and update["update_available"]:
-            update_action = """<form method="post" action="/updates/apply" data-confirm="在线更新会短暂重启面板与 Hysteria 服务，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button success" type="submit">立即更新</button></form>""".format(
+            update_action = """<form method="post" action="/updates/apply" data-update-form data-confirm="在线更新会短暂重启面板与 Hysteria 服务，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button success" type="submit">立即更新</button></form>""".format(
                 csrf=csrf
             )
         content = """<header class="topbar"><span class="eyebrow brand">HYSTERIA CONTROL CENTER</span><h1>Hysteria 2 用户管理面板</h1><span class="topbar-spacer"></span>
@@ -1852,8 +2007,8 @@ class PanelHandler(JsonHandler):
 <form method="post" action="/service/restart" data-confirm="确定重启 Hysteria 服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启 Hysteria</button></form>
 <form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止 Hysteria</button></form><a class="button secondary" href="/">刷新状态</a></div>
 <div class="service-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail"><span class="muted">服务端口</span><strong>UDP {port}</strong></div></div>
-<div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p></div></div></article>
-<article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div></div><div class="resource-grid">
+<div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
+<article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
 <div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu:.1f}%</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory:.1f}%</strong><small class="muted">{memory_used} / {memory_total}</small></div>
 <div class="resource"><span class="muted">磁盘占用</span><strong>{disk:.1f}%</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
@@ -1868,10 +2023,15 @@ class PanelHandler(JsonHandler):
 <form class="create-grid" method="post" action="/users" data-create-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机" autofocus></div>
 <div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
 <div><label for="traffic_limit_gb">总流量（GB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
+<dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户限制</h2><p class="muted">只修改设备数和总流量，不会改变已发放节点链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">×</button></div>
+<form class="create-grid" method="post" action="/users/{first_edit_id}/edit" data-edit-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><input type="hidden" name="generation" value="{first_edit_generation}"><div class="wide"><label for="edit-user-select">选择用户</label><select id="edit-user-select" data-edit-user-select required>{edit_options}</select></div>
+<div><label for="edit-device-limit">限制设备数</label><input id="edit-device-limit" name="device_limit" type="number" min="1" max="100" value="{first_edit_device_limit}" required></div>
+<div><label for="edit-traffic-limit-gb">总流量（GB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div><button type="submit"{edit_disabled}>保存修改</button></form>
+<p class="notice">设备数按在线 Hysteria 客户端实例估算；标准通用节点链接不包含硬件设备指纹。</p></div></dialog>
 <p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
 <section class="card"><div class="section-head user-section-head"><div class="user-heading"><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
 <div class="user-search"><input id="user-search" type="search" aria-label="搜索用户" placeholder="输入用户名搜索" autocomplete="off" data-user-search></div>
-<div class="section-actions"><button type="button" data-dialog-open="create-user-dialog">添加用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div></div>
+<div class="section-actions"><button type="button" data-dialog-open="create-user-dialog">添加用户</button><button class="secondary" type="button" data-dialog-open="edit-user-dialog"{edit_disabled}>编辑用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div></div>
 <div class="user-tools"><p class="muted search-status" data-search-status role="status" aria-live="polite">共 {user_total} 个用户</p></div>
 <div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="/?sort=traffic&amp;order={traffic_sort_next}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
             port=self.app.hysteria_port,
@@ -1890,6 +2050,8 @@ class PanelHandler(JsonHandler):
             version=PANEL_VERSION,
             update_text=update_text,
             update_action=update_action,
+            update_state=update_state,
+            update_status_text=update_status_text,
             cpu=resources["cpu_percent"],
             memory=resources["memory_percent"],
             memory_used=_human_bytes(resources["memory_used"]),
@@ -1902,6 +2064,24 @@ class PanelHandler(JsonHandler):
             qdisc=html.escape(resources["default_qdisc"]),
             rank_rows=rank_rows,
             rows="".join(rows),
+            edit_options=(
+                edit_options
+                if edit_options
+                else '<option value="">暂无可编辑用户</option>'
+            ),
+            first_edit_id=first_edit_user["id"] if first_edit_user else 0,
+            first_edit_generation=(
+                first_edit_user["generation"] if first_edit_user else 0
+            ),
+            first_edit_device_limit=(
+                first_edit_user["device_limit"] if first_edit_user else DEFAULT_DEVICE_LIMIT
+            ),
+            first_edit_traffic_limit_gb=(
+                max(1, first_edit_user["traffic_limit_bytes"] // 1024**3)
+                if first_edit_user
+                else DEFAULT_TRAFFIC_LIMIT_BYTES // 1024**3
+            ),
+            edit_disabled="" if first_edit_user else " disabled",
             user_total=len(listed_users),
             traffic_sort_aria=traffic_sort_aria,
             traffic_sort_next=traffic_sort_next,
@@ -1954,6 +2134,12 @@ class PanelHandler(JsonHandler):
             else:
                 self._send_html(200, self._login_page())
             return
+        if path == "/updates/status":
+            session = self._require_session()
+            if not session:
+                return
+            self.send_json(200, self.app.update_controller.status())
+            return
         if path == "/":
             session = self._require_session()
             if not session:
@@ -2005,6 +2191,9 @@ class PanelHandler(JsonHandler):
         if path == "/users/reset-traffic":
             self._handle_reset_all_traffic(session)
             return
+        if path == "/system/reboot":
+            self._handle_reboot(session)
+            return
         if path == "/backup":
             self._handle_backup(session)
             return
@@ -2017,6 +2206,10 @@ class PanelHandler(JsonHandler):
             return
         if path == "/updates/apply":
             self._handle_update_apply(session)
+            return
+        edit_match = re.fullmatch(r"/users/(\d+)/edit", path)
+        if edit_match:
+            self._handle_edit_user(session, int(edit_match.group(1)), form)
             return
         match = re.fullmatch(r"/users/(\d+)/(toggle|rotate|delete|share|reset)", path)
         if match:
@@ -2145,6 +2338,52 @@ class PanelHandler(JsonHandler):
             return
         self._send_html(201, self._credentials_page(session, credentials))
 
+    def _handle_edit_user(self, session, user_id, form):
+        inline = form.get("inline") == "1" or "application/json" in self.headers.get(
+            "Accept", ""
+        )
+        try:
+            generation = int(form.get("generation", ""))
+            device_limit = int(form.get("device_limit", ""))
+            traffic_limit_gb = int(form.get("traffic_limit_gb", ""))
+            with self.app.user_action_lock:
+                user = self.app.database.update_proxy_user_limits(
+                    user_id,
+                    device_limit=device_limit,
+                    traffic_limit_bytes=traffic_limit_gb * 1024**3,
+                    expected_generation=generation,
+                )
+        except (TypeError, ValueError) as exc:
+            if inline:
+                self.send_json(400, {"error": str(exc)})
+                return
+            self._error_page(400, "设备数或流量额度无效")
+            return
+        except ConflictError:
+            if inline:
+                self.send_json(409, {"error": "用户状态已变化，请刷新页面后重试"})
+                return
+            self._error_page(409, "用户状态已变化，请刷新页面后重试")
+            return
+        except KeyError:
+            if inline:
+                self.send_json(404, {"error": "用户不存在"})
+                return
+            self._error_page(404, "用户不存在")
+            return
+        self._audit_safely(session["username"], "proxy_user_limits_updated", user["name"])
+        payload = {
+            "id": user["id"],
+            "name": user["name"],
+            "device_limit": user["device_limit"],
+            "traffic_limit_gb": user["traffic_limit_bytes"] // 1024**3,
+            "generation": user["generation"],
+        }
+        if inline:
+            self.send_json(200, payload)
+            return
+        self._redirect("/")
+
     def _audit_safely(self, actor, action, target):
         try:
             self.app.database.audit(actor, action, target, self.client_address[0])
@@ -2260,6 +2499,24 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("service action failed")
             self._error_page(500, "服务控制失败，请检查服务日志")
 
+    def _handle_reboot(self, session):
+        try:
+            try:
+                self.app.usage_manager.collect_once()
+            except Exception:
+                LOGGER.exception("traffic sync before server reboot failed")
+            self._audit_safely(session["username"], "server_reboot_queued", "system")
+            self.app.reboot_controller.queue()
+        except RuntimeError:
+            LOGGER.exception("server reboot queue failed")
+            self._error_page(500, "服务器重启任务启动失败，请检查服务日志")
+            return
+        content = """<section class="card login"><h1>服务器正在重启</h1>
+<p>面板和所有节点连接会暂时中断，systemd 会在服务器启动后自动恢复服务。</p>
+<p class="notice">通常等待 30 到 90 秒后即可重新打开面板；服务器提供商的启动时间可能更长。</p>
+<p><a class="button secondary" href="/">稍后重试</a></p></section>"""
+        self._send_html(202, self._page("正在重启服务器", content))
+
     def _handle_update_check(self, session):
         try:
             self.app.update_result = self.app.update_checker.check()
@@ -2271,10 +2528,14 @@ class PanelHandler(JsonHandler):
 
     def _handle_update_apply(self, session):
         if not self.app.update_result or not self.app.update_result.get("update_available"):
-            self._error_page(409, "请先检查更新并确认存在新版本")
+            if "application/json" in self.headers.get("Accept", ""):
+                self.send_json(409, {"error": "请先检查更新并确认存在新版本"})
+            else:
+                self._error_page(409, "请先检查更新并确认存在新版本")
             return
         try:
-            self.app.update_controller.queue()
+            target = self.app.update_result["latest"]
+            self.app.update_controller.queue(target)
             self._audit_safely(
                 session["username"],
                 "panel_update_queued",
@@ -2282,7 +2543,13 @@ class PanelHandler(JsonHandler):
             )
         except Exception:
             LOGGER.exception("update queue failed")
-            self._error_page(500, "在线更新任务启动失败，请检查服务日志")
+            if "application/json" in self.headers.get("Accept", ""):
+                self.send_json(500, {"error": "在线更新任务启动失败，请检查服务日志"})
+            else:
+                self._error_page(500, "在线更新任务启动失败，请检查服务日志")
+            return
+        if "application/json" in self.headers.get("Accept", ""):
+            self.send_json(202, self.app.update_controller.status())
             return
         content = """<section class="card login"><h1>在线更新任务已启动</h1>
 <p>系统会重新核验最新正式版本，建立升级前备份并保留用户、节点参数、签名密钥、证书和管理员账号。</p>
@@ -2565,11 +2832,80 @@ class RestoreController:
 
 class UpdateController:
     SERVICE = "hysteria2-panel-update.service"
+    STATUS_PATH = Path("/var/lib/hysteria2-panel/update-status.json")
+    QUEUE_GRACE_SECONDS = 30
 
-    def __init__(self, runner=subprocess.run):
+    def __init__(
+        self,
+        runner=subprocess.run,
+        status_path=STATUS_PATH,
+        current_version=PANEL_VERSION,
+        clock=time.time,
+    ):
         self.runner = runner
+        self.status_path = Path(status_path)
+        self.current_version = str(current_version)
+        self.clock = clock
 
-    def queue(self):
+    @staticmethod
+    def _version_tuple(value):
+        match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(value))
+        if not match:
+            raise ValueError("update version is invalid")
+        return tuple(int(part) for part in match.groups())
+
+    @staticmethod
+    def _version_label(value):
+        return "v{}".format(str(value).lstrip("v"))
+
+    def _write_status(self, payload):
+        self.status_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        temporary_name = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=str(self.status_path.parent),
+                prefix=".update-status-",
+                delete=False,
+            ) as temporary:
+                temporary_name = temporary.name
+                json.dump(payload, temporary, ensure_ascii=False, sort_keys=True)
+                temporary.flush()
+                os.fsync(temporary.fileno())
+            os.chmod(temporary_name, 0o600)
+            os.replace(temporary_name, self.status_path)
+        finally:
+            if temporary_name:
+                try:
+                    os.unlink(temporary_name)
+                except FileNotFoundError:
+                    pass
+
+    def _read_status(self):
+        try:
+            with self.status_path.open("rb") as source:
+                raw = source.read(16385)
+        except FileNotFoundError:
+            return None
+        if not raw or len(raw) > 16384:
+            raise ValueError("update status file is invalid")
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("update status file is invalid")
+        return payload
+
+    def queue(self, target_version):
+        target = self._version_label(target_version)
+        if self._version_tuple(target) <= self._version_tuple(self.current_version):
+            raise ValueError("update target must be newer than the current version")
+        record = {
+            "state": "queued",
+            "target": target,
+            "queued_at": int(self.clock()),
+            "message": "更新任务已排队",
+        }
+        self._write_status(record)
         result = self.runner(
             [
                 "/usr/bin/sudo",
@@ -2585,7 +2921,110 @@ class UpdateController:
             check=False,
         )
         if result.returncode != 0:
+            record.update(
+                state="failed",
+                message="更新服务未能启动，请检查系统服务日志",
+            )
+            self._write_status(record)
             raise RuntimeError("update service could not be started")
+
+    def status(self):
+        current = self._version_label(self.current_version)
+        try:
+            record = self._read_status()
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            LOGGER.exception("update status could not be read")
+            return {
+                "state": "failed",
+                "target": None,
+                "current": current,
+                "message": "更新状态文件损坏或不可读",
+            }
+        if not record:
+            return {
+                "state": "idle",
+                "target": None,
+                "current": current,
+                "message": "尚未启动更新",
+            }
+        target = record.get("target")
+        try:
+            target_tuple = self._version_tuple(target)
+        except ValueError:
+            return {
+                "state": "failed",
+                "target": None,
+                "current": current,
+                "message": "更新目标版本无效",
+            }
+        result = {
+            "state": str(record.get("state", "queued")),
+            "target": self._version_label(target),
+            "current": current,
+            "message": str(record.get("message", "更新任务已排队")),
+        }
+        if result["state"] == "failed":
+            return result
+        unit = self.runner(
+            [
+                "/bin/systemctl",
+                "show",
+                self.SERVICE,
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=ExecMainStatus",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if unit.returncode != 0:
+            result.update(state="failed", message="无法读取更新服务状态")
+            return result
+        properties = {}
+        for line in unit.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if separator:
+                properties[key] = value
+        if properties.get("ActiveState") in {"activating", "active", "reloading"}:
+            result.update(state="running", message="正在安装 {}".format(result["target"]))
+            return result
+        service_result = properties.get("Result", "")
+        main_status = properties.get("ExecMainStatus", "0")
+        if service_result not in {"", "success"} or main_status not in {"", "0"}:
+            result.update(state="failed", message="更新任务执行失败，请检查更新服务日志")
+            return result
+        if self._version_tuple(current) >= target_tuple:
+            result.update(state="success", message="更新已完成，当前版本为 {}".format(current))
+            return result
+        try:
+            elapsed = max(0, int(self.clock()) - int(record.get("queued_at", 0)))
+        except (TypeError, ValueError):
+            elapsed = self.QUEUE_GRACE_SECONDS + 1
+        if elapsed <= self.QUEUE_GRACE_SECONDS:
+            result.update(state="queued", message="更新任务已排队，正在等待执行")
+            return result
+        result.update(state="failed", message="更新任务已经结束，但面板版本未改变")
+        return result
+
+
+class RebootController:
+    def __init__(self, runner=subprocess.run):
+        self.runner = runner
+
+    def queue(self):
+        result = self.runner(
+            ["/usr/bin/sudo", "-n", "/bin/systemctl", "--no-block", "reboot"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("server reboot could not be started")
 
 
 class UpdateChecker:

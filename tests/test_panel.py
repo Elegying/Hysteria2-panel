@@ -27,6 +27,7 @@ from hysteria2_panel import (
     MAX_STATS_RESPONSE_BYTES,
     PanelApplication,
     PanelHandler,
+    RebootController,
     RestoreController,
     Settings,
     ServiceController,
@@ -177,6 +178,31 @@ class DatabaseTests(unittest.TestCase):
             self.db.create_proxy_user("bad-devices", device_limit=0)
         with self.assertRaises(ValueError):
             self.db.create_proxy_user("bad-traffic", traffic_limit_bytes=0)
+
+    def test_updating_user_limits_preserves_issued_token_and_rejects_stale_edits(self):
+        created = self.db.create_proxy_user(
+            "alice", device_limit=3, traffic_limit_bytes=250 * 1024**3
+        )
+
+        updated = self.db.update_proxy_user_limits(
+            created["id"],
+            device_limit=5,
+            traffic_limit_bytes=500 * 1024**3,
+            expected_generation=0,
+        )
+
+        self.assertEqual(5, updated["device_limit"])
+        self.assertEqual(500 * 1024**3, updated["traffic_limit_bytes"])
+        self.assertEqual(1, updated["generation"])
+        self.assertEqual(created["token"], self.db.recover_proxy_token(created["id"]))
+        self.assertEqual("alice", self.db.authenticate_token(created["token"]))
+        with self.assertRaises(ConflictError):
+            self.db.update_proxy_user_limits(
+                created["id"],
+                device_limit=7,
+                traffic_limit_bytes=700 * 1024**3,
+                expected_generation=0,
+            )
 
     def test_traffic_is_accumulated_and_can_be_reset(self):
         alice = self.db.create_proxy_user("alice")
@@ -619,14 +645,51 @@ class OperationsTests(unittest.TestCase):
         )
         self.assertNotIn("shell", calls[0][1])
 
-    def test_update_controller_can_only_start_the_fixed_update_unit(self):
+    def test_update_controller_persists_target_and_reports_the_real_unit_state(self):
         calls = []
+        unit_active = [True]
 
         def runner(command, **kwargs):
             calls.append((command, kwargs))
-            return type("Result", (), {"returncode": 0, "stdout": ""})()
+            if command[1] == "show":
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "returncode": 0,
+                        "stdout": (
+                            "ActiveState={}\nSubState={}\n".format(
+                                "active" if unit_active[0] else "inactive",
+                                "running" if unit_active[0] else "dead",
+                            )
+                            + "Result=success\nExecMainStatus=0\n"
+                        ),
+                        "stderr": "",
+                    },
+                )()
+            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        UpdateController(runner=runner).queue()
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "update-status.json"
+            controller = UpdateController(
+                runner=runner,
+                status_path=status_path,
+                current_version="0.13.0",
+                clock=lambda: 1000,
+            )
+            controller.queue("v0.14.0")
+            status = controller.status()
+            with self.assertRaises(ValueError):
+                controller.queue("v0.15.0;reboot")
+            restarted_controller = UpdateController(
+                runner=runner,
+                status_path=status_path,
+                current_version="0.14.0",
+                clock=lambda: 1001,
+            )
+            still_installing = restarted_controller.status()
+            unit_active[0] = False
+            completed = restarted_controller.status()
 
         self.assertEqual(
             [
@@ -637,6 +700,84 @@ class OperationsTests(unittest.TestCase):
                 "start",
                 "hysteria2-panel-update.service",
             ],
+            calls[0][0],
+        )
+        self.assertEqual(
+            [
+                "/bin/systemctl",
+                "show",
+                "hysteria2-panel-update.service",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=ExecMainStatus",
+                "--no-pager",
+            ],
+            calls[1][0],
+        )
+        self.assertEqual("running", status["state"])
+        self.assertEqual("v0.14.0", status["target"])
+        self.assertEqual("running", still_installing["state"])
+        self.assertEqual("success", completed["state"])
+        self.assertTrue(all("shell" not in kwargs for _, kwargs in calls))
+
+    def test_update_controller_records_queue_failure_and_stale_success(self):
+        def failed_start(command, **_kwargs):
+            return type(
+                "Result", (), {"returncode": 1, "stdout": "", "stderr": "denied"}
+            )()
+
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "update-status.json"
+            controller = UpdateController(
+                runner=failed_start,
+                status_path=status_path,
+                current_version="0.13.0",
+                clock=lambda: 1000,
+            )
+            with self.assertRaises(RuntimeError):
+                controller.queue("v0.14.0")
+            self.assertEqual("failed", controller.status()["state"])
+
+        def inactive_unit(_command, **_kwargs):
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": (
+                        "ActiveState=inactive\nSubState=dead\n"
+                        "Result=success\nExecMainStatus=0\n"
+                    ),
+                    "stderr": "",
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "update-status.json"
+            controller = UpdateController(
+                runner=inactive_unit,
+                status_path=status_path,
+                current_version="0.13.0",
+                clock=lambda: 1000,
+            )
+            controller.queue("v0.14.0")
+            controller.clock = lambda: 1031
+            status = controller.status()
+            self.assertEqual("failed", status["state"])
+            self.assertIn("版本未改变", status["message"])
+
+    def test_reboot_controller_uses_only_the_fixed_nonblocking_command(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        RebootController(runner=runner).queue()
+
+        self.assertEqual(
+            ["/usr/bin/sudo", "-n", "/bin/systemctl", "--no-block", "reboot"],
             calls[0][0],
         )
         self.assertNotIn("shell", calls[0][1])
@@ -854,6 +995,24 @@ class FakeRestoreController:
 
 
 class FakeUpdateController:
+    def __init__(self):
+        self.queued = 0
+        self.target = None
+
+    def queue(self, target):
+        self.queued += 1
+        self.target = target
+
+    def status(self):
+        return {
+            "state": "queued" if self.queued else "idle",
+            "target": self.target,
+            "current": "v0.13.0",
+            "message": "更新任务已排队" if self.queued else "尚未启动更新",
+        }
+
+
+class FakeRebootController:
     def __init__(self):
         self.queued = 0
 
@@ -1341,6 +1500,7 @@ class PanelHttpTests(unittest.TestCase):
         self.service_controller = FakeServiceController()
         self.restore_controller = FakeRestoreController()
         self.update_controller = FakeUpdateController()
+        self.reboot_controller = FakeRebootController()
         certificate, private_key = create_test_certificate(self.temp_dir.name)
         self.backup_manager = BackupManager(
             database=self.db,
@@ -1365,6 +1525,7 @@ class PanelHttpTests(unittest.TestCase):
             backup_manager=self.backup_manager,
             restore_controller=self.restore_controller,
             update_controller=self.update_controller,
+            reboot_controller=self.reboot_controller,
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -1622,6 +1783,9 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('aria-labelledby="migration-title"', body)
         self.assertIn('data-dialog-close', body)
         self.assertIn('data-create-user-form', body)
+        self.assertIn('data-dialog-open="edit-user-dialog"', body)
+        self.assertIn('<dialog id="edit-user-dialog"', body)
+        self.assertIn('data-edit-user-form', body)
         self.assertIn('<dialog id="credentials-dialog"', body)
         self.assertIn('data-share-form', body)
         self.assertIn('data-label="名称"', body)
@@ -1634,6 +1798,70 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
         self.assertNotIn('td::before{content:attr(data-label)', body)
         self.assertNotIn('限 3 个并发连接', body)
+
+    def test_dashboard_marks_users_over_the_client_instance_limit(self):
+        self.db.create_proxy_user("alice", device_limit=1)
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertIn('class="over-limit-name">alice</strong>', body)
+        self.assertIn('客户端实例超限', body)
+        self.assertIn('data-over-device-limit="1"', body)
+
+    def test_user_limits_can_be_edited_without_changing_the_issued_link(self):
+        created = self.db.create_proxy_user("editable")
+        original_token = self.db.recover_proxy_token(created["id"])
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request(
+            "/users/{}/edit".format(created["id"]),
+            {
+                "csrf": csrf_token,
+                "generation": "0",
+                "device_limit": "6",
+                "traffic_limit_gb": "750",
+                "inline": "1",
+            },
+            headers={**headers, "Accept": "application/json"},
+        ) as response:
+            payload = json.loads(response.read().decode())
+
+        self.assertEqual(200, response.status)
+        self.assertEqual("editable", payload["name"])
+        self.assertEqual(6, payload["device_limit"])
+        self.assertEqual(750, payload["traffic_limit_gb"])
+        record = self.db.get_proxy_user(created["id"])
+        self.assertEqual(6, record["device_limit"])
+        self.assertEqual(750 * 1024**3, record["traffic_limit_bytes"])
+        self.assertEqual(original_token, self.db.recover_proxy_token(created["id"]))
+
+    def test_user_limit_edit_requires_csrf_and_detects_stale_generation(self):
+        created = self.db.create_proxy_user("editable")
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request(
+                "/users/{}/edit".format(created["id"]),
+                {"generation": "0", "device_limit": "4", "traffic_limit_gb": "300"},
+                headers=headers,
+            )
+        self.assertEqual(403, missing_csrf.exception.code)
+
+        self.db.set_proxy_user_enabled(created["id"], False, expected_generation=0)
+        with self.assertRaises(urllib.error.HTTPError) as stale:
+            self.request(
+                "/users/{}/edit".format(created["id"]),
+                {
+                    "csrf": csrf_token,
+                    "generation": "0",
+                    "device_limit": "4",
+                    "traffic_limit_gb": "300",
+                },
+                headers=headers,
+            )
+        self.assertEqual(409, stale.exception.code)
 
     def test_dashboard_compacts_operations_and_keeps_login_actions_separate(self):
         self.db.create_proxy_user("alice")
@@ -1665,9 +1893,9 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        newest = '<tr data-user-name="newest"><td data-label="名称"><strong>newest</strong>'
-        middle = '<tr data-user-name="middle"><td data-label="名称"><strong>middle</strong>'
-        oldest = '<tr data-user-name="oldest"><td data-label="名称"><strong>oldest</strong>'
+        newest = '<tr data-user-name="newest" data-over-device-limit="0"><td data-label="名称"><strong>newest</strong>'
+        middle = '<tr data-user-name="middle" data-over-device-limit="0"><td data-label="名称"><strong>middle</strong>'
+        oldest = '<tr data-user-name="oldest" data-over-device-limit="0"><td data-label="名称"><strong>oldest</strong>'
         self.assertLess(body.index(newest), body.index(middle))
         self.assertLess(body.index(middle), body.index(oldest))
 
@@ -1813,9 +2041,9 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/?sort=traffic&order=asc", headers=headers) as response:
             ascending = response.read().decode()
 
-        beta_row = '<tr data-user-name="beta"><td data-label="名称"><strong>beta</strong>'
-        gamma_row = '<tr data-user-name="gamma"><td data-label="名称"><strong>gamma</strong>'
-        alpha_row = '<tr data-user-name="alpha"><td data-label="名称"><strong>alpha</strong>'
+        beta_row = '<tr data-user-name="beta" data-over-device-limit="0"><td data-label="名称"><strong>beta</strong>'
+        gamma_row = '<tr data-user-name="gamma" data-over-device-limit="0"><td data-label="名称"><strong>gamma</strong>'
+        alpha_row = '<tr data-user-name="alpha" data-over-device-limit="0"><td data-label="名称"><strong>alpha</strong>'
         self.assertLess(descending.index(beta_row), descending.index(gamma_row))
         self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
         self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
@@ -1889,7 +2117,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.13.0", body)
+        self.assertIn("v0.14.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
@@ -1908,16 +2136,49 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
         self.assertIn('action="/updates/apply"', body)
+        self.assertIn('data-update-form', body)
+        self.assertIn('data-update-status', body)
         self.assertIn("立即更新", body)
 
         with self.request(
             "/updates/apply",
             {"csrf": csrf_token},
-            headers=headers,
+            headers={**headers, "Accept": "application/json"},
+        ) as response:
+            payload = json.loads(response.read().decode())
+            self.assertEqual(202, response.status)
+            self.assertEqual("queued", payload["state"])
+            self.assertEqual("v0.4.0", payload["target"])
+        self.assertEqual(1, self.update_controller.queued)
+        self.assertEqual("v0.4.0", self.update_controller.target)
+
+        with self.request("/updates/status", headers=headers) as response:
+            status = json.loads(response.read().decode())
+        self.assertEqual("queued", status["state"])
+        with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
+            self.request("/updates/status", follow_redirects=False)
+        self.assertEqual(303, unauthenticated.exception.code)
+
+    def test_server_reboot_requires_csrf_and_queues_the_fixed_action(self):
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+        self.assertIn('action="/system/reboot"', body)
+        self.assertIn("重启服务器", body)
+        self.assertIn("所有节点连接会暂时中断", body)
+
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request("/system/reboot", {}, headers=headers)
+        self.assertEqual(403, missing_csrf.exception.code)
+        self.assertEqual(0, self.reboot_controller.queued)
+
+        with self.request(
+            "/system/reboot", {"csrf": csrf_token}, headers=headers
         ) as response:
             self.assertEqual(202, response.status)
-            self.assertIn("在线更新任务已启动", response.read().decode())
-        self.assertEqual(1, self.update_controller.queued)
+            self.assertIn("服务器正在重启", response.read().decode())
+        self.assertEqual(1, self.reboot_controller.queued)
 
     def test_http_mode_omits_secure_cookie_and_hsts(self):
         self.application.secure_cookies = False
