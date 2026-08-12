@@ -17,7 +17,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 
 安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `web`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
-重复运行安装器会先建立唯一的一致性备份，并自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、用户数据库、systemd 单元、sudoers 和网络参数，并尝试重新拉起旧服务；只有全部服务和端口通过检查后才解除回滚保护。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
+重复运行安装器会先暂停面板写入而保持旧 Hysteria 统计端点运行，结算流量并截断 SQLite WAL 后建立一致性备份；最终切换前会在认证入口已停止时踢下现有客户端、确认在线数归零，再执行最后一次流量结算。恢复、手工安装和在线更新共用维护锁，不允许两项维护交叉写入。随后自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、systemd 单元、sudoers 和网络参数；数据库优先保留升级窗口内通过完整性校验的最新状态，仅在损坏时清除 WAL/SHM 后恢复升级前快照。只有全部服务和端口通过检查后才解除回滚保护。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
 
 面板发现新正式版本后会显示“立即更新”。点击后页面会显示排队、运行、成功或失败状态，并在面板进程因升级重启期间自动重试状态查询；只有固定更新任务已经成功结束且新进程的当前版本达到目标版本才会显示成功，不再把 systemd 任务已启动或新进程刚启动误报成升级完成。该操作只允许已登录管理员携带 CSRF token 启动固定的 `hysteria2-panel-update.service`，浏览器不能传入版本、下载地址或命令。root 更新任务会重新查询固定 GitHub Release API，只接受严格的 `vX.Y.Z` 正式版本，从对应版本路径下载安装器，核对安装器内版本、解释器头和 shell 语法，再以专用非交互模式升级。在线升级强制沿用当前节点与面板参数并保留管理员、数据库、HMAC、统计密钥、TLS 证书和私钥；全新服务器不能使用该内部模式。
 
@@ -39,7 +39,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 
 部分网络设备会检查明文 HTTP 的 `Host` 并主动重置特定域名连接。安装器在节点域名与本机检测 IP 不同时会同时打印备用面板地址；确认该 IP 可从公网路由后，可用 `http://服务器IP:面板端口/` 登录，不需要修改 Hysteria 节点域名、证书或已分享 URI。面板会安静处理这类预期断连，避免服务日志被无意义的异常栈淹没。
 
-> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999` 和 TCP/UDP `443`；TCP `19998` 只应向管理员来源放行。为避免意外改变现有策略或把管理端口暴露给全网，脚本不会自动添加防火墙规则。
+> 安装器会先识别防火墙所有权：UFW 或 firewalld 中恰好一个启用时，以该管理器的查询结果为准并自动放行用户输入的 Hysteria 端口（TCP/UDP）、面板端口（TCP）和账号专属入口 `443`（TCP/UDP）。UFW 对冲突或无法证明无关的入站 deny/reject/limit 会停止；firewalld 目标 zone 存在 rich rule 时也会安全停止。写入后会再次复查全部目标规则与 zone，任何漂移或缺失都会撤销本次已添加规则。两者都未启用时才只读检查 nftables、IPv4 iptables 与 IPv6 ip6tables；无规则则保持不变，自定义入站策略或检查失败则停止。安装器不会主动启用防火墙；云平台安全组不在主机控制范围内，仍需人工放行。自动开放的面板端口对所有来源生效；生产环境应再在安全组中把该端口限制为固定管理 IP。设计依据见 [ADR-012](docs/decisions/ADR-012-managed-firewall-port-opening.md)。
 
 TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后立即关闭，不读取或返回应用数据。它们用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；两个探测服务分别随对应的 Hysteria 服务启停。TCP `443` 探测成功也不代表账号已获准使用 UDP `443`。
 
@@ -90,14 +90,14 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 
 ## 跨服务器备份与恢复
 
-面板的“用户数据迁移”模块可下载一个 ZIP，包含只保留代理用户数据的一致性 `panel.db` 快照、用户 token 派生所需的 HMAC 签名密钥、当前 TLS 证书和私钥，以及记录源节点域名、UDP 端口、节点名、证书指纹、证书有效期和各文件 SHA-256 的清单。旧管理员密码哈希、面板会话和审计日志不会写入 ZIP。这个 ZIP 仍等同于全部节点登录凭据，尤其在 HTTP 面板模式下下载和上传都没有传输层加密，必须只在可信网络操作并离线保管。
+面板的“用户数据迁移”模块可下载一个 ZIP，包含只保留代理用户数据的一致性 `panel.db` 快照、用户 token 派生所需的 HMAC 签名密钥、当前 TLS 证书和私钥，以及记录源节点域名、UDP 端口、节点名、证书指纹、证书有效期和各文件 SHA-256 的清单。当前格式会保留每个账号的 `443` 授权；从缺少该字段的旧备份恢复时默认关闭，必须由管理员重新开启。旧管理员密码哈希、面板会话和审计日志不会写入 ZIP。这个 ZIP 仍等同于全部节点登录凭据，尤其在 HTTP 面板模式下下载和上传都没有传输层加密，必须只在可信网络操作并离线保管。
 
 推荐迁移顺序：
 
 1. 在旧服务器下载备份，不要删除旧服务器；
 2. 在新服务器用与旧节点完全相同的 `PUBLIC_HOST` 和 `HYSTERIA_PORT` 完成一键部署；
-3. 先放行新服务器对应 TCP/UDP 端口，通过新服务器 IP 打开面板并上传 ZIP；不要提前把 DNS 指向尚未恢复用户身份的新服务器；
-4. 恢复服务会再次独立校验、自动备份新服务器当前状态、恢复代理用户/流量/签名密钥/证书，落盘后再次校验并重启。若失败，当前状态自动回滚，失败 ZIP 会隔离保存且不会堵塞下一次上传；
+3. 先在云平台安全组放行新服务器对应 TCP/UDP 端口（受管主机 UFW/firewalld 由安装器处理），通过新服务器 IP 打开面板并上传 ZIP；不要提前把 DNS 指向尚未恢复用户身份的新服务器；
+4. 恢复服务会再次独立校验、结算未落盘流量、自动备份新服务器当前身份，再以持久事务标记恢复代理用户/流量/签名密钥/证书。启动前的 `restore-recover` 阶段只负责把文件收口为完整的新身份或完整的回滚身份；服务启动后的 `restore-resume` 阶段连续复核 systemd、HTTP、统计和 TCP 健康后才删除标记。进程退出或主机重启会从标记继续，失败 ZIP 会隔离保存且不会堵塞下一次上传；
 5. 确认新面板用户数、证书指纹和服务状态正确后再切换 DNS，用已有客户端旧配置完成 Hysteria 握手和网页/视频测试；
 6. 至少保留旧服务器一个 DNS TTL 回退窗口，确认稳定后再停用。
 
@@ -110,8 +110,8 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 ## 运维
 
 ```bash
-systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-update
-journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-update --since today
+systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-restore hysteria2-panel-restore-recover hysteria2-panel-restore-resume hysteria2-panel-update
+journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-restore -u hysteria2-panel-restore-recover -u hysteria2-panel-restore-resume -u hysteria2-panel-update --since today
 curl http://127.0.0.1:19998/healthz
 ```
 
@@ -125,29 +125,27 @@ curl http://127.0.0.1:19998/healthz
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署和恢复前的自动备份 |
 | `/etc/sysctl.d/99-hysteria2-panel.conf` | 16 MiB QUIC UDP 缓冲，以及内核支持时的 `fq`/TCP BBR |
 | `/etc/sudoers.d/hysteria2-panel` | 仅允许固定服务控制、整机重启，以及启动一次性恢复/更新服务 |
+| `/etc/tmpfiles.d/hysteria2-panel.conf` | 每次开机重建维护锁目录；root 任务持排他锁，面板仅能只读取得恢复上传准入共享锁 |
 
 ### 回滚
 
-安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用与配置。v0.13.0 起，升级失败会自动执行以下回滚并尝试重新启动旧服务；以下步骤仅用于自动回滚也未能恢复时的人工兜底：
+安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用、配置、全部项目 systemd unit、启用状态、sudoers、sysctl 和 tmpfiles。升级失败会自动恢复旧版本并复核所有旧入口。
 
-1. 停止 `hysteria2-panel-tcp-probe-443`、`hysteria2-panel-server-443`、`hysteria2-panel-server` 和 `hysteria2-panel`；
-2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和 systemd unit 文件；回滚到旧版本时同时停用并删除当时尚不存在的 TCP 探测 unit；
-3. 执行 `systemctl daemon-reload`；
-4. 重新启动两个服务并检查健康接口和 UDP/TCP 监听。
+若自动回滚仍明确报告失败，不要只复制某个 `panel.db` 或只启动两个服务：当前拓扑还包含主/`443` Hysteria、两条 TCP 探测、恢复前置/后置任务、更新任务、WAL/SHM、启用链接和持久恢复标记。应先保持当前文件与最近的 `/var/backups/hysteria2-panel/<时间戳>/` 不变，记录 `systemctl status` 与上述各 unit 的日志，再在停机维护窗内按该备份整体恢复；无法确认服务已全部停止、数据库检查通过和身份四件套（数据库、HMAC 环境、证书、私钥）一致时不要覆盖。恢复后必须执行 `daemon-reload`，并重新验证面板/认证健康、主端口与获准 `443` 的 UDP/TCP 监听和旧链接握手。
 
 ## 本地验证
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m py_compile hysteria2_panel.py tcp_probe.py
-bash -n install.sh
-shellcheck install.sh
+bash -n install.sh tests/firewall_integration.sh tests/systemd_integration.sh
+shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh
 python3 -m pip install ruff==0.12.11 bandit==1.8.6
 ruff check hysteria2_panel.py tcp_probe.py tests
 bandit -q -r hysteria2_panel.py tcp_probe.py
 ```
 
-自动化只能验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界。发布后仍应在真实客户端完成：主端口与获准账号 UDP `443` 的 Hysteria 握手、未获准账号的 `443` 拒绝、网页访问、YouTube 连续播放、TCP `19999` 和 TCP `443` 延迟探测、旧分享 URI、双入口流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
+自动化会验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界，并在 Linux CI 中执行真实 UFW、firewalld 与 systemd 依赖语义测试。发布后仍应在真实客户端完成：主端口与获准账号 UDP `443` 的 Hysteria 握手、未获准账号的 `443` 拒绝、网页访问、YouTube 连续播放、TCP `19999` 和 TCP `443` 延迟探测、旧分享 URI、双入口流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
 
 ## 架构与接口
 
@@ -160,7 +158,9 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 - [ADR-007：固定来源的非交互在线更新](docs/decisions/ADR-007-fixed-source-online-update.md)
 - [ADR-008：工作线程监督与升级失败自动回滚](docs/decisions/ADR-008-runtime-supervision-upgrade-rollback.md)
 - [ADR-009：可观测在线更新与受限运维操作](docs/decisions/ADR-009-observable-update-and-admin-operations.md)
+- [ADR-010：网页策略下允许公网 SSH 运维](docs/decisions/ADR-010-public-ssh-egress.md)
 - [ADR-011：单账号 UDP 443 双入口授权](docs/decisions/ADR-011-per-user-udp-443-entrypoint.md)
+- [ADR-012：受管防火墙端口自动开放](docs/decisions/ADR-012-managed-firewall-port-opening.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

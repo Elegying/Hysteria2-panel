@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受，2026-08-11。取代 ADR-002 中关于缺省协议、UDP 缓冲和 TCP 拥塞控制的决策。
+已接受，2026-08-11。取代 ADR-002 中关于缺省协议、UDP 缓冲和 TCP 拥塞控制的决策；其中“不自动修改防火墙”的决定已于 2026-08-12 被 [ADR-012](ADR-012-managed-firewall-port-opening.md) 取代，其余决定继续有效。
 
 ## 背景
 
@@ -16,7 +16,7 @@
 - Hysteria 配置明确使用 `congestion.type: bbr`、`bbrProfile: standard` 和 `ignoreClientBandwidth: true`。不自动估算线路带宽，也不启用依赖准确带宽值的 Brutal。
 - Linux UDP 收发缓冲上限提高到至少 16 MiB，已有更高值不降低；Hysteria 服务设置 `Nice=-5` 和高文件描述符上限。
 - 内核提供 BBR 时启用 `fq` 与 Linux TCP BBR，改善服务器到以 TCP/HTTPS 提供内容的网页和视频源站连接；不支持时恢复原设置并继续部署。内核 TCP BBR 不被描述为 Hysteria UDP/QUIC 拥塞控制的替代品。
-- 安装器不自动修改防火墙，不伪造 ICMP/TCP 延迟，不写入缺少官方依据的额外 sysctl。
+- 本决策最初要求安装器不自动修改防火墙；该部分已由 ADR-012 取代。仍不伪造 ICMP/TCP 延迟，也不写入缺少官方依据的额外 sysctl。
 
 ## 备选方案
 

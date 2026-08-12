@@ -76,7 +76,9 @@
 
 全局统计只汇总当前数据库中的用户，避免已删除用户仍残留在 Hysteria 统计快照时污染总数。不活跃用户定义为上传和下载均为 0 的账户。面板分别从主入口和 UDP `443` 入口使用 Hysteria `/traffic?clear=1` 取得增量，按用户名相加后写入 SQLite；`/online` 实例数也按用户名相加，因此两个入口共同执行同一设备与流量额度，正常重启不会清空累计流量。
 
-`POST /restore` 要求 `Content-Length` 在 1 字节到 64 MiB 之间，不解析 multipart。服务端只接受格式版本 1 的固定五文件 ZIP，限制单项与总解压大小，拒绝额外文件、重复路径、目录和符号链接，并校验清单 SHA-256、SQLite 完整性/表结构、每个可恢复用户 token、证书/私钥、证书指纹、源域名及 UDP 端口。上传预检通过后只写入固定的待恢复路径，再用固定 sudoers 命令启动 root oneshot；root 进程会重复全部校验。
+`POST /restore` 要求 `Content-Length` 在 1 字节到 64 MiB 之间，不解析 multipart。服务端只接受格式版本 1 的固定五文件 ZIP，限制单项与总解压大小，拒绝额外文件、重复路径、目录和符号链接，并校验清单 SHA-256、SQLite 完整性/表结构、每个可恢复用户 token、证书/私钥、证书指纹、源域名及 UDP 端口。上传预检还必须在安装/更新/恢复共用锁文件上取得短暂只读共享准入；root 维护任务持排他锁或已有恢复标记时拒绝上传。预检通过后只写入固定待恢复路径，再用固定 sudoers 命令启动 root oneshot。
+
+root 进程不信任 Web 预检，会以 `O_NOFOLLOW` 和固定所有权/权限合同再次读取归档，并把恢复推进为持久的 `queued → prepared → disk-consistent → services-pending` 事务。启动前的 `restore-recover` oneshot 只验证、完成或回滚数据库/HMAC 环境/TLS 身份并清理 SQLite sidecar；业务服务强依赖该阶段成功。服务启动后的 `restore-resume` oneshot 连续验证 systemd、HTTP、统计和 TCP 健康后才删除标记。普通退出、信号或重启均从标记幂等继续；孤立或失败归档会隔离并释放固定上传路径。
 
 `POST /updates/apply` 只有在当前会话刚检查到新版本时可用，但 root 任务不会信任这份页面状态，而会重新访问固定仓库的 GitHub `releases/latest`。响应 tag 必须是比当前版本新的 `vX.Y.Z`，安装器只能从该 tag 对应的固定 `raw.githubusercontent.com/Elegying/Hysteria2-panel/` 路径下载。执行前还会限制响应大小、验证 UTF-8、bash 解释器头、内嵌版本与 tag 一致并通过 `bash -n`。更新进程使用固定环境变量进入安装器的现有受管安装模式，网页请求无法指定命令、仓库、版本、节点参数或管理员凭据。排队状态以 `0600` 原子文件保存在面板数据目录；`GET /updates/status` 再读取固定 systemd 单元状态，且只有更新单元已成功结束并且当前版本达到目标版本才返回 `success`。浏览器短暂失联时继续轮询，任务失败、退出码非零或任务结束但版本未变化时返回明确失败提示。
 

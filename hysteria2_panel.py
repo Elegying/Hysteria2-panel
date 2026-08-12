@@ -3,7 +3,10 @@
 
 import argparse
 import base64
+import contextlib
 import datetime
+import errno
+import fcntl
 import functools
 import getpass
 import gzip
@@ -18,6 +21,8 @@ import queue
 import re
 import secrets
 import shutil
+import signal
+import socket
 import sqlite3
 import ssl
 import stat
@@ -45,11 +50,25 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.15.2"
+PANEL_VERSION = "0.16.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
 MAX_STATS_RESPONSE_BYTES = 8 * 1024**2
+MAX_PENDING_TRAFFIC_BYTES = 2 * MAX_STATS_RESPONSE_BYTES + 64 * 1024
+MAINTENANCE_LOCK_PATH = Path("/run/hysteria2-panel-maintenance/lock")
+RESTORE_ACTIVE_MARKER = Path("/etc/hysteria2-panel/.restore-active")
+RESTORE_TRANSACTION_VERSION = 1
+RESTORE_ENV_FILE = Path("/etc/hysteria2-panel/panel.env")
+RESTORE_BACKUP_ROOT = Path("/var/backups/hysteria2-panel")
+RESTORE_WORK_DIR = Path("/var/lib/hysteria2-panel/backup-restore")
+RESTORE_STOP_UNITS = (
+    "hysteria2-panel-tcp-probe-443.service",
+    "hysteria2-panel-server-443.service",
+    "hysteria2-panel-tcp-probe.service",
+    "hysteria2-panel-server.service",
+    "hysteria2-panel.service",
+)
 FAVICON_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <title>Hysteria 2 Panel</title><rect x="2" y="2" width="60" height="60" rx="14" fill="#0b1a2c" stroke="#284867" stroke-width="2"/>
 <path fill="#4bc493" d="M9 16h7v12h11V16h7v32h-7V35H16v13H9z"/>
@@ -339,6 +358,209 @@ class BackupValidationError(ValueError):
     """Raised when a backup cannot be restored safely."""
 
 
+def _fsync_directory(path):
+    descriptor = os.open(
+        str(Path(path)), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_file(path):
+    descriptor = os.open(str(Path(path)), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_write_json(path, payload, attempts=3):
+    path = Path(path)
+    value = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    failure = None
+    for _attempt in range(max(1, int(attempts))):
+        descriptor = None
+        temporary = None
+        try:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=".restore-transaction.", dir=str(path.parent)
+            )
+            with os.fdopen(descriptor, "wb") as target:
+                descriptor = None
+                os.fchmod(target.fileno(), 0o600)
+                target.write(value)
+                target.flush()
+                os.fsync(target.fileno())
+            os.replace(temporary, path)
+            temporary = None
+            _fsync_directory(path.parent)
+            return
+        except OSError as exc:
+            failure = exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+    raise RuntimeError("restore transaction could not be persisted") from failure
+
+
+def _durable_unlink(path, missing_ok=True):
+    path = Path(path)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        if missing_ok:
+            return
+        raise
+    _fsync_directory(path.parent)
+
+
+def _durable_move(source, destination):
+    source = Path(source)
+    destination = Path(destination)
+    try:
+        os.replace(source, destination)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".restore-move.", dir=str(destination.parent)
+        )
+        try:
+            with source.open("rb") as reader, os.fdopen(descriptor, "wb") as writer:
+                descriptor = None
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
+                writer.flush()
+                os.fsync(writer.fileno())
+            os.replace(temporary, destination)
+            temporary = None
+            _fsync_directory(destination.parent)
+            _durable_unlink(source, missing_ok=False)
+            return
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+    _fsync_directory(source.parent)
+    if destination.parent != source.parent:
+        _fsync_directory(destination.parent)
+
+
+def _read_secure_regular(path, maximum, allowed_uids=None, required_mode=None):
+    path = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(str(path), flags)
+    except OSError as exc:
+        raise RuntimeError("unsafe restore file: {}".format(path)) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (allowed_uids is not None and metadata.st_uid not in allowed_uids)
+            or (
+                required_mode is not None
+                and stat.S_IMODE(metadata.st_mode) != required_mode
+            )
+            or metadata.st_size < 0
+            or metadata.st_size > maximum
+        ):
+            raise RuntimeError("unsafe restore file: {}".format(path))
+        chunks = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        value = b"".join(chunks)
+        if len(value) > maximum:
+            raise RuntimeError("restore file is too large: {}".format(path))
+        return value
+    finally:
+        os.close(descriptor)
+
+
+def _write_all(descriptor, value):
+    view = memoryview(value)
+    offset = 0
+    while offset < len(view):
+        written = os.write(descriptor, view[offset:])
+        if written <= 0:
+            raise OSError(errno.EIO, "short write while persisting restore data")
+        offset += written
+
+
+def _quarantine_secure_orphan(source, destination, maximum, owner_uid):
+    source = Path(source)
+    destination = Path(destination)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(str(source), flags)
+    except OSError as exc:
+        raise RuntimeError("unsafe orphan restore file: {}".format(source)) from exc
+    temporary = None
+    target_descriptor = None
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or metadata.st_uid != owner_uid
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_size <= 0
+            or metadata.st_size > maximum
+        ):
+            raise RuntimeError("unsafe orphan restore file: {}".format(source))
+        target_descriptor, temporary = tempfile.mkstemp(
+            prefix=".restore-orphan.", dir=str(destination.parent)
+        )
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            _write_all(target_descriptor, chunk)
+        os.fchmod(target_descriptor, 0o600)
+        os.fsync(target_descriptor)
+        os.close(target_descriptor)
+        target_descriptor = None
+        os.replace(temporary, destination)
+        temporary = None
+        _fsync_directory(destination.parent)
+        consumed = source.parent / ".consumed-orphan-{}".format(secrets.token_hex(8))
+        os.replace(source, consumed)
+        _fsync_directory(source.parent)
+        moved = os.lstat(consumed)
+        if (moved.st_dev, moved.st_ino) != (metadata.st_dev, metadata.st_ino):
+            _durable_unlink(consumed)
+            _durable_unlink(destination)
+            raise RuntimeError("orphan restore file changed during quarantine")
+        _durable_unlink(consumed)
+    finally:
+        if target_descriptor is not None:
+            os.close(target_descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+        os.close(descriptor)
+
+
 class BackupManager:
     FILE_LIMITS = {
         "manifest.json": 64 * 1024,
@@ -382,6 +604,11 @@ class BackupManager:
         hysteria_port,
         node_name="Hysteria 2",
         work_dir=Path("/var/lib/hysteria2-panel/backup-restore"),
+        maintenance_lock_path=MAINTENANCE_LOCK_PATH,
+        maintenance_lock_owner=0,
+        maintenance_lock_group=None,
+        maintenance_lock_mode=0o640,
+        restore_marker_path=RESTORE_ACTIVE_MARKER,
         runner=subprocess.run,
     ):
         self.database = database
@@ -392,6 +619,11 @@ class BackupManager:
         self.hysteria_port = int(hysteria_port)
         self.node_name = str(node_name)
         self.work_dir = Path(work_dir)
+        self.maintenance_lock_path = Path(maintenance_lock_path)
+        self.maintenance_lock_owner = maintenance_lock_owner
+        self.maintenance_lock_group = maintenance_lock_group
+        self.maintenance_lock_mode = maintenance_lock_mode
+        self.restore_marker_path = Path(restore_marker_path)
         self.runner = runner
 
     @property
@@ -453,6 +685,11 @@ class BackupManager:
         with sqlite3.connect(str(source_path), timeout=10) as source:
             with sqlite3.connect(str(destination_path), timeout=10) as destination:
                 source.backup(destination)
+        descriptor = os.open(str(destination_path), os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _read_bounded(path, maximum):
@@ -663,33 +900,53 @@ class BackupManager:
     def stage_archive(self, source, content_length):
         if content_length <= 0 or content_length > MAX_BACKUP_ARCHIVE_BYTES:
             raise BackupValidationError("备份文件大小无效")
-        self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=".upload-", suffix=".zip", dir=str(self.work_dir)
-        )
-        remaining = content_length
         try:
-            with os.fdopen(descriptor, "wb") as target:
-                while remaining:
-                    chunk = source.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise BackupValidationError("备份文件上传不完整")
-                    target.write(chunk)
-                    remaining -= len(chunk)
-                target.flush()
-                os.fsync(target.fileno())
-            manifest = self.validate_archive(
-                temporary, require_compatible_endpoint=True
-            )
-            os.chmod(temporary, 0o600)
-            try:
-                os.link(temporary, self.pending_archive)
-            except FileExistsError as exc:
-                raise BackupValidationError("已有恢复任务正在等待或执行") from exc
-            return manifest
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+            with maintenance_upload_slot(
+                self.maintenance_lock_path,
+                expected_uid=self.maintenance_lock_owner,
+                expected_gid=self.maintenance_lock_group,
+                expected_mode=self.maintenance_lock_mode,
+            ):
+                try:
+                    os.lstat(self.restore_marker_path)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise BackupValidationError(
+                        "已有恢复事务正在完成健康检查，请稍后再上传"
+                    )
+                self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                descriptor, temporary = tempfile.mkstemp(
+                    prefix=".upload-", suffix=".zip", dir=str(self.work_dir)
+                )
+                remaining = content_length
+                try:
+                    with os.fdopen(descriptor, "wb") as target:
+                        while remaining:
+                            chunk = source.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise BackupValidationError("备份文件上传不完整")
+                            target.write(chunk)
+                            remaining -= len(chunk)
+                        target.flush()
+                        os.fsync(target.fileno())
+                    manifest = self.validate_archive(
+                        temporary, require_compatible_endpoint=True
+                    )
+                    os.chmod(temporary, 0o600)
+                    try:
+                        os.link(temporary, self.pending_archive)
+                    except FileExistsError as exc:
+                        raise BackupValidationError("已有恢复任务正在等待或执行") from exc
+                    _fsync_directory(self.work_dir)
+                    return manifest
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+        except RuntimeError as exc:
+            if "维护任务正在运行" in str(exc):
+                raise BackupValidationError("服务器维护任务正在运行，请稍后重试恢复") from exc
+            raise
 
     @staticmethod
     def _updated_env(original, values):
@@ -725,9 +982,136 @@ class BackupManager:
             if hasattr(os, "chown"):
                 os.chown(temporary, existing.st_uid, existing.st_gid)
             os.replace(temporary, path)
+            _fsync_directory(path.parent)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+
+    def _secure_pending_archive(self, captured_path=None, pending_path=None):
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        target_descriptor = None
+        temporary = None
+        try:
+            descriptor = os.open(str(pending_path or self.pending_archive), flags)
+        except OSError as exc:
+            raise BackupValidationError("待恢复文件不安全或不存在") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            database_owner = self.database.path.stat().st_uid
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != database_owner
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_size <= 0
+                or metadata.st_size > MAX_BACKUP_ARCHIVE_BYTES
+            ):
+                raise BackupValidationError("待恢复文件所有权或类型无效")
+            digest = hashlib.sha256()
+            if captured_path is not None:
+                captured_path = Path(captured_path)
+                target_descriptor, temporary = tempfile.mkstemp(
+                    prefix=".restore-capture.", dir=str(captured_path.parent)
+                )
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                if target_descriptor is not None:
+                    _write_all(target_descriptor, chunk)
+            if target_descriptor is not None:
+                os.fchmod(target_descriptor, 0o600)
+                os.fsync(target_descriptor)
+                os.close(target_descriptor)
+                target_descriptor = None
+                os.replace(temporary, captured_path)
+                temporary = None
+                _fsync_directory(captured_path.parent)
+            return digest.hexdigest(), metadata.st_size, metadata
+        finally:
+            if target_descriptor is not None:
+                os.close(target_descriptor)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+            os.close(descriptor)
+
+    def _consume_captured_pending(self, captured_metadata):
+        consumed = self.work_dir / ".consumed-restore-{}.zip".format(
+            secrets.token_hex(8)
+        )
+        os.replace(self.pending_archive, consumed)
+        _fsync_directory(self.work_dir)
+        consumed_metadata = os.lstat(consumed)
+        if (consumed_metadata.st_dev, consumed_metadata.st_ino) != (
+            captured_metadata.st_dev,
+            captured_metadata.st_ino,
+        ):
+            _durable_unlink(consumed)
+            raise BackupValidationError("待恢复文件在捕获期间发生变化")
+        _durable_unlink(consumed)
+
+    def _discard_matching_pending(self, digest, size):
+        try:
+            pending_digest, pending_size, metadata = self._secure_pending_archive()
+        except BackupValidationError:
+            return
+        if pending_digest != digest or pending_size != size:
+            raise BackupValidationError("待恢复文件在捕获期间发生变化")
+        self._consume_captured_pending(metadata)
+
+    def queue_restore_transaction(self, marker_path, env_file, backup_root):
+        captured_archive = Path(str(marker_path) + ".archive")
+        digest, size, captured_metadata = self._secure_pending_archive(captured_archive)
+        try:
+            self.validate_archive(captured_archive, require_compatible_endpoint=True)
+        except Exception:
+            quarantine = self.work_dir / "failed-restore-{}-{}.zip".format(
+                datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+                secrets.token_hex(4),
+            )
+            _durable_move(captured_archive, quarantine)
+            self._discard_matching_pending(digest, size)
+            raise
+        record = {
+            "version": RESTORE_TRANSACTION_VERSION,
+            "phase": "queued",
+            "pendingArchive": str(self.pending_archive),
+            "pendingSha256": digest,
+            "pendingSize": size,
+            "queuedArchive": str(captured_archive),
+            "databasePath": str(self.database.path),
+            "tlsCert": str(self.tls_cert),
+            "tlsKey": str(self.tls_key),
+            "envFile": str(Path(env_file)),
+            "workDir": str(self.work_dir),
+            "backupRoot": str(Path(backup_root)),
+            "publicHost": self.public_host,
+            "hysteriaPort": self.hysteria_port,
+            "nodeName": self.node_name,
+        }
+        _atomic_write_json(marker_path, record)
+        self._consume_captured_pending(captured_metadata)
+        return record
+
+    def _quarantine_pending(self):
+        quarantine = self.work_dir / "failed-restore-{}-{}.zip".format(
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+            secrets.token_hex(4),
+        )
+        try:
+            os.replace(self.pending_archive, quarantine)
+        except FileNotFoundError:
+            return None
+        _fsync_directory(self.work_dir)
+        return quarantine
 
     @staticmethod
     def _required_env_value(env_bytes, key):
@@ -797,7 +1181,9 @@ class BackupManager:
         ):
             raise BackupValidationError("恢复后的签名密钥或证书指纹不一致")
 
-    def apply_archive(self, archive_path, env_file, backup_root):
+    def apply_archive(
+        self, archive_path, env_file, backup_root, transaction_path=None
+    ):
         self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         manifest = self.validate_archive(archive_path, require_compatible_endpoint=True)
         _, payloads = self._read_archive(archive_path)
@@ -816,6 +1202,39 @@ class BackupManager:
         shutil.copy2(self.tls_cert, backup_dir / "server.crt")
         shutil.copy2(self.tls_key, backup_dir / "server.key")
         shutil.copy2(env_file, backup_dir / "panel.env")
+        incoming_archive = backup_dir / "incoming.zip"
+        shutil.copyfile(archive_path, incoming_archive)
+        for durable_file in (
+            backup_dir / "panel.db",
+            backup_dir / "server.crt",
+            backup_dir / "server.key",
+            backup_dir / "panel.env",
+            incoming_archive,
+        ):
+            os.chmod(durable_file, 0o600)
+            _fsync_file(durable_file)
+        _fsync_directory(backup_dir)
+        _fsync_directory(backup_root)
+        if transaction_path is not None:
+            record = _read_restore_transaction(
+                transaction_path,
+                expected_uid=os.geteuid() if hasattr(os, "geteuid") else None,
+                strict_paths=False,
+            )
+            if record["phase"] != "queued":
+                raise RuntimeError("restore transaction phase is invalid")
+            record.update(
+                {
+                    "phase": "prepared",
+                    "backupDir": str(backup_dir),
+                    "incomingArchive": str(incoming_archive),
+                    "oldFiles": {
+                        name: self._sha256((backup_dir / name).read_bytes())
+                        for name in ("panel.db", "server.crt", "server.key", "panel.env")
+                    },
+                }
+            )
+            _atomic_write_json(transaction_path, record)
         with tempfile.TemporaryDirectory(dir=str(self.work_dir)) as temporary:
             staged_database = Path(temporary) / "panel.db"
             incoming_database = Path(temporary) / "incoming.db"
@@ -868,8 +1287,7 @@ class BackupManager:
                 )
                 for suffix in ("-wal", "-shm"):
                     sidecar = Path(str(self.database.path) + suffix)
-                    if sidecar.exists():
-                        sidecar.unlink()
+                    _durable_unlink(sidecar)
                 self._replace_bytes(self.tls_cert, payloads["tls/server.crt"])
                 self._replace_bytes(self.tls_key, payloads["tls/server.key"])
                 self._replace_bytes(env_file, new_env)
@@ -882,35 +1300,45 @@ class BackupManager:
                 )
             except Exception:
                 self._replace_bytes(self.database.path, (backup_dir / "panel.db").read_bytes())
+                for suffix in ("-wal", "-shm"):
+                    _durable_unlink(Path(str(self.database.path) + suffix))
                 self._replace_bytes(self.tls_cert, (backup_dir / "server.crt").read_bytes())
                 self._replace_bytes(self.tls_key, (backup_dir / "server.key").read_bytes())
                 self._replace_bytes(env_file, (backup_dir / "panel.env").read_bytes())
+                if transaction_path is not None:
+                    record["phase"] = "disk-consistent"
+                    record["outcome"] = "rolled-back"
+                    _atomic_write_json(transaction_path, record)
                 raise
+        if transaction_path is not None:
+            record["phase"] = "disk-consistent"
+            record["outcome"] = "applied"
+            _atomic_write_json(transaction_path, record)
         result = dict(manifest)
         result["automaticBackup"] = str(backup_dir)
         return result
 
-    def apply_pending_archive(self, env_file, backup_root):
-        if not self.pending_archive.is_file():
-            raise RuntimeError("no pending restore archive")
+    def apply_pending_archive(
+        self, env_file, backup_root, transaction_path=None, archive_path=None
+    ):
+        archive_path = Path(archive_path) if archive_path is not None else self.pending_archive
+        if archive_path == self.pending_archive:
+            self._secure_pending_archive()
         try:
             result = self.apply_archive(
-                self.pending_archive,
+                archive_path,
                 env_file=env_file,
                 backup_root=backup_root,
+                transaction_path=transaction_path,
             )
         except Exception:
-            quarantine = self.work_dir / "failed-restore-{}-{}.zip".format(
-                datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
-                secrets.token_hex(4),
-            )
             try:
-                os.chmod(self.pending_archive, 0o600)
-                os.replace(self.pending_archive, quarantine)
+                if archive_path == self.pending_archive:
+                    self._quarantine_pending()
             except OSError:
                 LOGGER.exception("failed restore archive could not be quarantined")
             raise
-        self.pending_archive.unlink()
+        _durable_unlink(archive_path)
         return result
 
 
@@ -1057,6 +1485,10 @@ class Database:
                     action TEXT NOT NULL,
                     target TEXT NOT NULL,
                     remote_ip TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS applied_traffic_batches (
+                    batch_id TEXT PRIMARY KEY,
+                    applied_at INTEGER NOT NULL
                 );
                 """
             )
@@ -1380,10 +1812,19 @@ class Database:
         return [dict(row) for row in rows]
 
     def add_traffic(self, traffic_by_user):
+        self.apply_traffic_batch(uuid.uuid4().hex, traffic_by_user)
+
+    def apply_traffic_batch(self, batch_id, traffic_by_user):
+        if not isinstance(batch_id, str) or not re.fullmatch(r"[0-9a-f]{32}", batch_id):
+            raise ValueError("traffic batch id is invalid")
         if not isinstance(traffic_by_user, dict):
             raise ValueError("traffic must be a mapping")
         now = int(time.time())
         with self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM applied_traffic_batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone():
+                return False
             for name, traffic in traffic_by_user.items():
                 if not isinstance(name, str) or not isinstance(traffic, dict):
                     raise ValueError("traffic entry is invalid")
@@ -1396,6 +1837,15 @@ class Database:
                     updated_at = ? WHERE name = ? COLLATE NOCASE""",
                     (tx, rx, now, name),
                 )
+            connection.execute(
+                "INSERT INTO applied_traffic_batches(batch_id, applied_at) VALUES (?, ?)",
+                (batch_id, now),
+            )
+            connection.execute(
+                "DELETE FROM applied_traffic_batches WHERE applied_at < ?",
+                (now - 30 * 86400,),
+            )
+        return True
 
     def reset_proxy_user_traffic(self, user_id, expected_generation=None):
         now = int(time.time())
@@ -1555,7 +2005,8 @@ class JsonHandler(BaseHTTPRequestHandler):
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
-    daemon_threads = True
+    daemon_threads = False
+    block_on_close = True
     request_queue_size = 64
 
     def __init__(self, address, handler, max_workers=64, request_timeout=10):
@@ -1563,34 +2014,77 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self.request_timeout = max(1, int(request_timeout))
         self.tls_context = None
         self._worker_slots = threading.BoundedSemaphore(self.max_workers)
+        self._active_requests = set()
+        self._active_requests_lock = threading.Lock()
+        self._active_request_shutdown_started = False
         super().__init__(address, handler)
 
     def get_request(self):
         request, client_address = super().get_request()
         request.settimeout(self.request_timeout)
-        if self.tls_context is not None:
-            try:
-                request = self.tls_context.wrap_socket(request, server_side=True)
-            except Exception:
-                request.close()
-                raise
         return request, client_address
 
     def process_request(self, request, client_address):
         if not self._worker_slots.acquire(blocking=False):
             self.shutdown_request(request)
             return
+        with self._active_requests_lock:
+            reject_request = self._active_request_shutdown_started
+            if not reject_request:
+                self._active_requests.add(request)
+        if reject_request:
+            self._worker_slots.release()
+            self.shutdown_request(request)
+            return
         try:
             super().process_request(request, client_address)
         except Exception:
+            with self._active_requests_lock:
+                self._active_requests.discard(request)
             self._worker_slots.release()
             raise
 
     def process_request_thread(self, request, client_address):
+        tracked_request = request
         try:
-            super().process_request_thread(request, client_address)
+            try:
+                if self.tls_context is not None:
+                    request = self.tls_context.wrap_socket(request, server_side=True)
+                    with self._active_requests_lock:
+                        self._active_requests.discard(tracked_request)
+                        self._active_requests.add(request)
+                        shutdown_started = self._active_request_shutdown_started
+                    tracked_request = request
+                    if shutdown_started:
+                        try:
+                            request.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        self.shutdown_request(request)
+                        return
+            except OSError:
+                self.shutdown_request(request)
+            except Exception:
+                try:
+                    self.handle_error(request, client_address)
+                finally:
+                    self.shutdown_request(request)
+            else:
+                super().process_request_thread(request, client_address)
         finally:
+            with self._active_requests_lock:
+                self._active_requests.discard(tracked_request)
             self._worker_slots.release()
+
+    def shutdown_active_requests(self):
+        with self._active_requests_lock:
+            self._active_request_shutdown_started = True
+            requests = list(self._active_requests)
+        for request in requests:
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
     def handle_error(self, request, client_address):
         error = sys.exc_info()[1]
@@ -2266,11 +2760,9 @@ class PanelHandler(JsonHandler):
             return
         try:
             with self.app.user_action_lock:
-                try:
-                    self.app.usage_manager.collect_once()
-                except Exception:
-                    LOGGER.exception("traffic sync before backup failed")
-                archive = self.app.backup_manager.create_archive()
+                archive = self.app.usage_manager.run_after_collect(
+                    self.app.backup_manager.create_archive
+                )
             self._audit_safely(session["username"], "backup_downloaded", "proxy-users")
             self._send_archive(archive)
         except Exception:
@@ -2765,15 +3257,133 @@ class UsageManager:
         self.clock = clock
         self.lock = threading.Lock()
         self.pending = {}
+        self.pending_traffic_path = database.path.with_name("pending-traffic.json")
+        self.pending_traffic_batch_id = None
+        self.pending_traffic = {}
+        self._load_pending_traffic()
         self.last_online = {}
 
+    def _load_pending_traffic(self):
+        try:
+            raw = self.pending_traffic_path.read_bytes()
+        except FileNotFoundError:
+            return
+        if len(raw) > MAX_PENDING_TRAFFIC_BYTES:
+            raise ValueError("pending traffic journal is too large")
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("pending traffic journal is invalid")
+        batch_id = payload.get("batch_id")
+        traffic = payload.get("traffic")
+        if not isinstance(batch_id, str) or not re.fullmatch(r"[0-9a-f]{32}", batch_id):
+            raise ValueError("pending traffic batch id is invalid")
+        HysteriaStatsClient._validate_traffic(traffic)
+        self.pending_traffic_batch_id = batch_id
+        self.pending_traffic = traffic
+
+    def _persist_pending_traffic_locked(self, traffic):
+        if not traffic:
+            return
+        batch_id = uuid.uuid4().hex
+        self.pending_traffic_batch_id = batch_id
+        self.pending_traffic = traffic
+        descriptor = None
+        temporary = None
+        try:
+            payload = json.dumps(
+                {"batch_id": batch_id, "traffic": traffic},
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            if len(payload) > MAX_PENDING_TRAFFIC_BYTES:
+                raise ValueError("pending traffic journal is too large")
+            self.pending_traffic_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=".pending-traffic.", dir=str(self.pending_traffic_path.parent)
+            )
+            metadata = self.database.path.stat()
+            handle = os.fdopen(descriptor, "wb")
+            descriptor = None
+            with handle:
+                os.fchmod(handle.fileno(), 0o600)
+                if hasattr(os, "geteuid") and os.geteuid() == 0:
+                    os.fchown(handle.fileno(), metadata.st_uid, metadata.st_gid)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.pending_traffic_path)
+            temporary = None
+            self._fsync_pending_directory()
+        except Exception as journal_error:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    LOGGER.exception("pending traffic journal descriptor cleanup failed")
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    LOGGER.exception("pending traffic journal temporary cleanup failed")
+            database_error = None
+            for _attempt in range(3):
+                try:
+                    self.database.apply_traffic_batch(batch_id, traffic)
+                    database_error = None
+                    break
+                except Exception as exc:
+                    database_error = exc
+            if database_error is not None:
+                raise journal_error from database_error
+            try:
+                self._remove_pending_traffic_locked()
+            except Exception:
+                LOGGER.exception(
+                    "pending traffic journal cleanup failed after database fallback"
+                )
+            self.pending_traffic_batch_id = None
+            self.pending_traffic = {}
+
+    def _remove_pending_traffic_locked(self):
+        try:
+            self.pending_traffic_path.unlink()
+        except FileNotFoundError:
+            return
+        self._fsync_pending_directory()
+
+    def _fsync_pending_directory(self):
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        descriptor = os.open(self.pending_traffic_path.parent, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _flush_pending_traffic_locked(self):
+        if not self.pending_traffic:
+            return
+        self.database.apply_traffic_batch(
+            self.pending_traffic_batch_id, self.pending_traffic
+        )
+        self._remove_pending_traffic_locked()
+        self.pending_traffic_batch_id = None
+        self.pending_traffic = {}
+
     def _collect_locked(self):
+        self._flush_pending_traffic_locked()
         try:
             traffic = self.stats_client.collect_and_clear()
         except PartialTrafficCollectionError as exc:
-            self.database.add_traffic(exc.traffic)
+            self._persist_pending_traffic_locked(exc.traffic)
+            self._flush_pending_traffic_locked()
             raise
-        self.database.add_traffic(traffic)
+        self._persist_pending_traffic_locked(traffic)
+        self._flush_pending_traffic_locked()
         return traffic
 
     def _blocked_online_names_locked(self):
@@ -2802,6 +3412,11 @@ class UsageManager:
                 return traffic
             self.stats_client.kick_many(blocked)
             return traffic
+
+    def run_after_collect(self, action):
+        with self.lock:
+            self._collect_locked()
+            return action()
 
     def authorize(self, name):
         with self.lock:
@@ -3254,7 +3869,6 @@ class UpdateInstaller:
                 ["/bin/bash", str(installer_path)],
                 env=environment,
                 text=True,
-                timeout=900,
                 check=False,
             )
             if result.returncode != 0:
@@ -3389,9 +4003,12 @@ class Settings:
         stats_port = _parse_port(mapping, "HY2PANEL_STATS_PORT", 19997)
         stats_443_port = _parse_port(mapping, "HY2PANEL_STATS_443_PORT", 19995)
         ports = {hysteria_port, panel_port, auth_port, stats_port, stats_443_port}
-        if len(ports) != 5:
+        if len(ports) != 5 or (
+            hysteria_port != 443
+            and 443 in {panel_port, auth_port, stats_port, stats_443_port}
+        ):
             raise ValueError(
-                "Hysteria, panel, auth and both stats ports must be different"
+                "Hysteria, panel, auth, both stats and the secondary 443 ports must be different"
             )
         return cls(
             database_path=Path(mapping.get("HY2PANEL_DB", "/var/lib/hysteria2-panel/panel.db")),
@@ -3424,9 +4041,187 @@ def initialize_admin(settings, username, password, if_missing=False):
     return True
 
 
+def make_stats_client(settings, primary_only=False, secondary_only=False):
+    if primary_only and secondary_only:
+        raise ValueError("traffic maintenance endpoint selection is ambiguous")
+    if secondary_only:
+        if settings.hysteria_port == 443:
+            raise ValueError("the secondary Hysteria stats endpoint is not enabled")
+        return HysteriaStatsClient(settings.stats_443_url, settings.stats_secret)
+    stats_client = HysteriaStatsClient(settings.stats_url, settings.stats_secret)
+    if settings.hysteria_port != 443 and not primary_only:
+        stats_client = CombinedHysteriaStatsClient(
+            stats_client,
+            HysteriaStatsClient(settings.stats_443_url, settings.stats_secret),
+        )
+    return stats_client
+
+
+def quiesce_stats_client(
+    stats_client,
+    attempts=30,
+    interval=0.1,
+    stable_empty_snapshots=3,
+    sleeper=time.sleep,
+):
+    attempts = max(1, int(attempts))
+    interval = max(0, float(interval))
+    stable_empty_snapshots = max(2, int(stable_empty_snapshots))
+    empty_snapshots = 0
+    for _attempt in range(attempts):
+        online = {
+            name: count
+            for name, count in stats_client.online().items()
+            if count > 0
+        }
+        if online:
+            empty_snapshots = 0
+            stats_client.kick_many(sorted(online))
+        else:
+            empty_snapshots += 1
+            if empty_snapshots >= stable_empty_snapshots:
+                return
+        sleeper(interval)
+    raise RuntimeError("维护切换失败：仍有在线连接或离线状态尚未稳定")
+
+
+@contextlib.contextmanager
+def defer_termination_signals():
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    deferred = []
+    previous = {}
+
+    def remember(signum, _frame):
+        if not deferred:
+            deferred.append(signum)
+
+    handled = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    failure = None
+    for signum in handled:
+        previous[signum] = signal.getsignal(signum)
+        signal.signal(signum, remember)
+    try:
+        try:
+            yield
+        except BaseException as exc:
+            failure = exc
+    finally:
+        for signum in handled:
+            signal.signal(signum, previous[signum])
+    if deferred:
+        if failure is not None:
+            raise SystemExit(128 + deferred[0]) from failure
+        raise SystemExit(128 + deferred[0])
+    if failure is not None:
+        raise failure
+
+
+@contextlib.contextmanager
+def exclusive_maintenance_lock(
+    path=MAINTENANCE_LOCK_PATH,
+    blocking=False,
+    expected_uid=None,
+    expected_gid=None,
+    expected_mode=None,
+):
+    path = Path(path)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (expected_uid is not None and metadata.st_uid != expected_uid)
+            or (expected_gid is not None and metadata.st_gid != expected_gid)
+            or (
+                expected_mode is not None
+                and stat.S_IMODE(metadata.st_mode) != expected_mode
+            )
+        ):
+            raise RuntimeError("维护锁不是普通文件")
+        try:
+            operation = fcntl.LOCK_EX
+            if not blocking:
+                operation |= fcntl.LOCK_NB
+            fcntl.flock(descriptor, operation)
+        except BlockingIOError as exc:
+            raise RuntimeError("已有维护任务正在运行") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+@contextlib.contextmanager
+def maintenance_upload_slot(
+    path=MAINTENANCE_LOCK_PATH,
+    expected_uid=0,
+    expected_gid=None,
+    expected_mode=0o640,
+):
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(str(Path(path)), flags)
+    except OSError as exc:
+        raise RuntimeError("维护任务状态不可用") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (expected_uid is not None and metadata.st_uid != expected_uid)
+            or (expected_gid is not None and metadata.st_gid != expected_gid)
+            or stat.S_IMODE(metadata.st_mode) != expected_mode
+        ):
+            raise RuntimeError("维护锁不安全")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("已有维护任务正在运行") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def sync_traffic(
+    settings,
+    primary_only=False,
+    secondary_only=False,
+    quiesce=False,
+):
+    database = Database(settings.database_path, settings.hmac_key)
+    database.initialize()
+    stats_client = make_stats_client(
+        settings,
+        primary_only=primary_only,
+        secondary_only=secondary_only,
+    )
+    if quiesce:
+        quiesce_stats_client(stats_client)
+    UsageManager(database, stats_client).collect_once()
+
+
 def run_supervised_services(panel_server, auth_server, usage_manager, panel_scheme):
     stop_event = threading.Event()
     failures = queue.Queue()
+    previous_termination_handler = None
+    termination_requested = [False]
+
+    def request_graceful_shutdown(_signum, _frame):
+        termination_requested[0] = True
 
     def worker(name, target):
         try:
@@ -3456,28 +4251,73 @@ def run_supervised_services(panel_server, auth_server, usage_manager, panel_sche
             daemon=True,
         ),
     ]
-    for thread in workers:
-        thread.start()
+    started_workers = []
+    started_servers = []
+    if threading.current_thread() is threading.main_thread():
+        previous_termination_handler = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, request_graceful_shutdown)
     try:
-        failed_worker, error = failures.get()
+        for thread in workers:
+            thread.start()
+            started_workers.append(thread)
+            if thread.name in {"panel-{}".format(panel_scheme), "internal-auth"}:
+                started_servers.append(
+                    panel_server if thread.name.startswith("panel-") else auth_server
+                )
+        while not termination_requested[0]:
+            try:
+                failed_worker, error = failures.get(timeout=0.2)
+                break
+            except queue.Empty:
+                continue
+        else:
+            failed_worker, error = "termination", None
+        if failed_worker == "termination":
+            return
         message = "{} worker exited unexpectedly".format(failed_worker)
         if error is None:
             raise RuntimeError(message)
         raise RuntimeError(message) from error
     finally:
-        stop_event.set()
-        for server in (panel_server, auth_server):
+        primary_error = sys.exc_info()[1]
+        cleanup_error = None
+        try:
             try:
-                server.shutdown()
-            except Exception:
-                LOGGER.exception("local service shutdown failed")
-        for thread in workers:
-            thread.join(timeout=5)
-        for server in (panel_server, auth_server):
-            try:
-                server.server_close()
-            except Exception:
-                LOGGER.exception("local service close failed")
+                stop_event.set()
+                for server in started_servers:
+                    try:
+                        server.shutdown()
+                        if hasattr(server, "shutdown_active_requests"):
+                            server.shutdown_active_requests()
+                    except Exception:
+                        LOGGER.exception("local service shutdown failed")
+                for thread in started_workers:
+                    thread.join(timeout=30)
+                for server in (panel_server, auth_server):
+                    try:
+                        server.server_close()
+                    except Exception:
+                        LOGGER.exception("local service close failed")
+                alive = [thread.name for thread in started_workers if thread.is_alive()]
+                if alive:
+                    cleanup_error = RuntimeError(
+                        "service workers did not stop: {}".format(", ".join(alive))
+                    )
+            except BaseException as exc:
+                cleanup_error = exc
+            if started_workers:
+                try:
+                    usage_manager.collect_once()
+                except BaseException as exc:
+                    if primary_error is None and cleanup_error is None:
+                        cleanup_error = exc
+                    else:
+                        LOGGER.exception("final traffic sync failed during service shutdown")
+            if primary_error is None and cleanup_error is not None:
+                raise cleanup_error
+        finally:
+            if previous_termination_handler is not None:
+                signal.signal(signal.SIGTERM, previous_termination_handler)
 
 
 def run_service(settings):
@@ -3485,12 +4325,7 @@ def run_service(settings):
     database.initialize()
     if not database.has_admin():
         raise RuntimeError("no administrator exists; run init-admin first")
-    stats_client = HysteriaStatsClient(settings.stats_url, settings.stats_secret)
-    if settings.hysteria_port != 443:
-        stats_client = CombinedHysteriaStatsClient(
-            stats_client,
-            HysteriaStatsClient(settings.stats_443_url, settings.stats_secret),
-        )
+    stats_client = make_stats_client(settings)
     usage_manager = UsageManager(database, stats_client)
     backup_manager = BackupManager(
         database=database,
@@ -3501,6 +4336,7 @@ def run_service(settings):
         hysteria_port=settings.hysteria_port,
         node_name=settings.node_name,
         work_dir=settings.database_path.parent / "backup-restore",
+        maintenance_lock_group=os.getgid() if hasattr(os, "getgid") else None,
     )
     application = PanelApplication(
         database=database,
@@ -3541,21 +4377,736 @@ def run_service(settings):
     )
 
 
-def restore_pending(settings):
-    manager = BackupManager(
-        database=Database(settings.database_path, settings.hmac_key),
-        hmac_key=settings.hmac_key,
-        tls_cert=settings.tls_cert,
-        tls_key=settings.tls_key,
-        public_host=settings.public_host,
-        hysteria_port=settings.hysteria_port,
-        node_name=settings.node_name,
-        work_dir=settings.database_path.parent / "backup-restore",
+def _systemctl_result(runner, arguments, timeout=60):
+    return runner(
+        ["/bin/systemctl"] + list(arguments),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
-    result = manager.apply_pending_archive(
-        env_file=Path("/etc/hysteria2-panel/panel.env"),
-        backup_root=Path("/var/backups/hysteria2-panel"),
+
+
+def _systemd_unit_state(unit, runner=subprocess.run):
+    result = _systemctl_result(
+        runner,
+        ["show", "--no-pager", "--property=LoadState", "--property=ActiveState", unit],
     )
+    if result.returncode != 0:
+        raise RuntimeError("systemd service state could not be inspected")
+    values = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key not in {"LoadState", "ActiveState"} or key in values:
+            raise RuntimeError("systemd service state is invalid")
+        values[key] = value
+    if set(values) != {"LoadState", "ActiveState"}:
+        raise RuntimeError("systemd service state is incomplete")
+    return values["LoadState"], values["ActiveState"]
+
+
+def stop_restore_services(runner=subprocess.run):
+    for unit in RESTORE_STOP_UNITS:
+        load_state, active_state = _systemd_unit_state(unit, runner=runner)
+        if load_state not in {"loaded", "not-found"}:
+            raise RuntimeError("restore service ownership is invalid")
+        if active_state == "inactive":
+            continue
+        result = _systemctl_result(runner, ["stop", unit])
+        if result.returncode != 0:
+            raise RuntimeError("restore could not stop project services")
+    for unit in RESTORE_STOP_UNITS:
+        _load_state, active_state = _systemd_unit_state(unit, runner=runner)
+        if active_state != "inactive":
+            raise RuntimeError("restore project services did not stop")
+
+
+def _default_restore_health_probe(url, settings):
+    allowed_urls = {
+        "{}://127.0.0.1:{}/healthz".format(
+            settings.panel_scheme, settings.panel_port
+        ),
+        "http://127.0.0.1:{}/healthz".format(settings.auth_port),
+    }
+    if url not in allowed_urls:
+        raise RuntimeError("restore health probe URL is not a fixed loopback endpoint")
+    context = None
+    if url.startswith("https://"):
+        # The exact loopback URL above uses the panel's restored self-signed cert.
+        context = ssl._create_unverified_context()  # nosec B323
+    request = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(request, timeout=2, context=context) as response:  # nosec B310
+        if response.status != 200 or json.load(response) != {"status": "ok"}:
+            raise RuntimeError("restored HTTP health endpoint is unavailable")
+
+
+def _default_restore_stats_probe(url, secret):
+    HysteriaStatsClient(url, secret).online()
+
+
+def _default_restore_tcp_probe(port):
+    with socket.create_connection(("127.0.0.1", int(port)), timeout=2):
+        return
+
+
+def _restore_expected_units(settings, runner):
+    required_units = {
+        "hysteria2-panel.service",
+        "hysteria2-panel-server.service",
+        "hysteria2-panel-tcp-probe.service",
+    }
+    if settings.hysteria_port != 443:
+        required_units.update(
+            {
+                "hysteria2-panel-server-443.service",
+                "hysteria2-panel-tcp-probe-443.service",
+            }
+        )
+    expected = []
+    for unit in RESTORE_STOP_UNITS:
+        load_state, active_state = _systemd_unit_state(unit, runner=runner)
+        if (
+            load_state == "not-found"
+            and active_state == "inactive"
+            and unit not in required_units
+        ):
+            continue
+        if load_state != "loaded" or active_state != "active":
+            raise RuntimeError("restored project services are not active")
+        expected.append(unit)
+    return expected
+
+
+def _probe_restored_services(
+    settings,
+    expected_units,
+    health_probe,
+    stats_probe,
+    tcp_probe,
+):
+    panel_url = "{}://127.0.0.1:{}/healthz".format(
+        settings.panel_scheme, settings.panel_port
+    )
+    auth_url = "http://127.0.0.1:{}/healthz".format(settings.auth_port)
+    health_probe(panel_url, settings)
+    health_probe(auth_url, settings)
+    stats_probe(settings.stats_url, settings.stats_secret)
+    tcp_probe(settings.hysteria_port)
+    if "hysteria2-panel-server-443.service" in expected_units:
+        stats_probe(settings.stats_443_url, settings.stats_secret)
+    if "hysteria2-panel-tcp-probe-443.service" in expected_units:
+        tcp_probe(443)
+
+
+def start_restore_services(
+    settings,
+    runner=subprocess.run,
+    health_probe=_default_restore_health_probe,
+    stats_probe=_default_restore_stats_probe,
+    tcp_probe=_default_restore_tcp_probe,
+    attempts=30,
+    interval=0.2,
+    sleeper=time.sleep,
+):
+    result = _systemctl_result(
+        runner,
+        ["start", "hysteria2-panel.service", "hysteria2-panel-server.service"],
+    )
+    if result.returncode != 0:
+        raise RuntimeError("restored project services could not be started")
+    attempt_limit = max(2, int(attempts))
+    failure = None
+    consecutive_successes = 0
+    for attempt in range(attempt_limit):
+        try:
+            expected_units = _restore_expected_units(settings, runner)
+            _probe_restored_services(
+                settings,
+                expected_units,
+                health_probe,
+                stats_probe,
+                tcp_probe,
+            )
+            consecutive_successes += 1
+            if consecutive_successes >= 2:
+                return
+        except Exception as exc:
+            failure = exc
+            consecutive_successes = 0
+        if attempt + 1 < attempt_limit:
+            sleeper(max(0, float(interval)))
+    if failure is not None:
+        raise RuntimeError("restored project services are not healthy") from failure
+
+
+def stop_panel_for_restore(runner=subprocess.run, attempts=120, sleeper=time.sleep):
+    result = _systemctl_result(
+        runner,
+        ["kill", "--kill-who=main", "--signal=SIGTERM", "hysteria2-panel.service"],
+    )
+    if result.returncode != 0:
+        raise RuntimeError("restore could not stop panel writes")
+    for attempt in range(max(1, int(attempts))):
+        _load_state, active_state = _systemd_unit_state(
+            "hysteria2-panel.service", runner=runner
+        )
+        if active_state == "inactive":
+            return
+        if attempt + 1 < max(1, int(attempts)):
+            sleeper(0.1)
+    raise RuntimeError("restore panel writes did not stop")
+
+
+def make_restore_stats_client(settings, runner=subprocess.run):
+    primary_load, primary_state = _systemd_unit_state(
+        "hysteria2-panel-server.service", runner=runner
+    )
+    secondary_load, secondary_state = _systemd_unit_state(
+        "hysteria2-panel-server-443.service", runner=runner
+    )
+    allowed_load_states = {"loaded", "not-found"}
+    allowed_active_states = {"active", "inactive", "failed"}
+    for load_state, active_state in (
+        (primary_load, primary_state),
+        (secondary_load, secondary_state),
+    ):
+        if (
+            load_state not in allowed_load_states
+            or active_state not in allowed_active_states
+            or (load_state == "not-found" and active_state != "inactive")
+        ):
+            raise RuntimeError("restore Hysteria service state is invalid")
+    if primary_load != "loaded":
+        raise RuntimeError("restore primary Hysteria service is missing")
+    if settings.hysteria_port != 443 and secondary_load != "loaded":
+        raise RuntimeError("restore secondary Hysteria service is missing")
+    if primary_state == "active" and secondary_state == "active":
+        return make_stats_client(settings)
+    if primary_state == "active":
+        return make_stats_client(settings, primary_only=True)
+    if secondary_state == "active":
+        return make_stats_client(settings, secondary_only=True)
+    raise RuntimeError("restore has no active Hysteria stats endpoint")
+
+
+def settle_restore_traffic(settings, runner=subprocess.run, quiesce=quiesce_stats_client):
+    stop_panel_for_restore(runner=runner)
+    stats_client = make_restore_stats_client(settings, runner=runner)
+    quiesce(stats_client)
+    database = Database(settings.database_path, settings.hmac_key)
+    database.initialize()
+    manager = UsageManager(database, stats_client)
+    manager.collect_once()
+    if manager.pending_traffic_path.exists():
+        raise RuntimeError("restore traffic journal is not empty")
+    with sqlite3.connect(str(settings.database_path), timeout=5) as connection:
+        busy, _checkpointed, _remaining = connection.execute(
+            "PRAGMA wal_checkpoint(TRUNCATE)"
+        ).fetchone()
+    if busy:
+        raise RuntimeError("restore database checkpoint is busy")
+
+
+def _remove_restore_marker(path):
+    _durable_unlink(path)
+
+
+def _read_restore_transaction(
+    path, expected_uid=0, strict_paths=True, maximum=64 * 1024
+):
+    path = Path(path)
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or (expected_uid is not None and metadata.st_uid != expected_uid)
+        or (expected_uid == 0 and metadata.st_gid != 0)
+        or metadata.st_size <= 0
+        or metadata.st_size > maximum
+        or metadata.st_nlink != 1
+    ):
+        raise RuntimeError("restore marker is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(str(path), flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise RuntimeError("restore marker changed while being read")
+        raw = os.read(descriptor, maximum + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        record = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("restore marker JSON is invalid") from exc
+    required = {
+        "version", "phase", "pendingArchive", "pendingSha256", "pendingSize",
+        "databasePath", "tlsCert", "tlsKey", "envFile", "workDir",
+        "backupRoot", "publicHost", "hysteriaPort", "nodeName",
+        "queuedArchive",
+    }
+    if (
+        not isinstance(record, dict)
+        or not required.issubset(record)
+        or record["version"] != RESTORE_TRANSACTION_VERSION
+        or record["phase"]
+        not in {"queued", "prepared", "disk-consistent", "services-pending"}
+        or not re.fullmatch(r"[0-9a-f]{64}", record["pendingSha256"] or "")
+        or not isinstance(record["pendingSize"], int)
+        or record["pendingSize"] <= 0
+        or not isinstance(record["hysteriaPort"], int)
+    ):
+        raise RuntimeError("restore marker fields are invalid")
+    if strict_paths:
+        expected = {
+            "pendingArchive": str(RESTORE_WORK_DIR / "pending-restore.zip"),
+            "databasePath": "/var/lib/hysteria2-panel/panel.db",
+            "tlsCert": "/etc/hysteria2-panel/server.crt",
+            "tlsKey": "/etc/hysteria2-panel/server.key",
+            "envFile": str(RESTORE_ENV_FILE),
+            "workDir": str(RESTORE_WORK_DIR),
+            "backupRoot": str(RESTORE_BACKUP_ROOT),
+            "queuedArchive": str(RESTORE_ACTIVE_MARKER) + ".archive",
+        }
+        if any(record.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("restore marker path is invalid")
+    if record["phase"] == "prepared" or (
+        record["phase"] in {"disk-consistent", "services-pending"}
+        and (record.get("outcome") == "applied" or "backupDir" in record)
+    ):
+        backup_root = Path(record["backupRoot"])
+        backup_dir = Path(record.get("backupDir", ""))
+        incoming = Path(record.get("incomingArchive", ""))
+        try:
+            direct_child = backup_dir.parent == backup_root
+            incoming_child = incoming.parent == backup_dir
+        except (TypeError, ValueError):
+            direct_child = incoming_child = False
+        if (
+            not direct_child
+            or not incoming_child
+            or not re.fullmatch(r"restore-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", backup_dir.name)
+            or incoming.name != "incoming.zip"
+            or not isinstance(record.get("oldFiles"), dict)
+            or set(record["oldFiles"]) != {"panel.db", "server.crt", "server.key", "panel.env"}
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", value or "")
+                for value in record["oldFiles"].values()
+            )
+        ):
+            raise RuntimeError("restore marker backup path is invalid")
+    return record
+
+
+def _restore_manager_from_record(record):
+    return BackupManager(
+        database=Database(Path(record["databasePath"]), b"\0" * 32),
+        hmac_key=b"\0" * 32,
+        tls_cert=Path(record["tlsCert"]),
+        tls_key=Path(record["tlsKey"]),
+        public_host=record["publicHost"],
+        hysteria_port=record["hysteriaPort"],
+        node_name=record["nodeName"],
+        work_dir=Path(record["workDir"]),
+    )
+
+
+def _restore_env_identity(env_file, root_uid=0):
+    raw = _read_secure_regular(
+        env_file, 1024 * 1024, allowed_uids={root_uid}, required_mode=0o640
+    )
+    values = {}
+    for line in raw.decode("utf-8").splitlines():
+        match = re.fullmatch(r"([A-Z][A-Z0-9_]*)=(.*)", line)
+        if match:
+            if match.group(1) in values:
+                raise RuntimeError("restore environment has duplicate values")
+            values[match.group(1)] = match.group(2)
+    try:
+        key = bytes.fromhex(values["HY2PANEL_HMAC_KEY"])
+        pin = values["HY2PANEL_CERT_PIN"]
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError("restore environment identity is invalid") from exc
+    if len(key) < 32 or not pin:
+        raise RuntimeError("restore environment identity is invalid")
+    return raw, key, pin
+
+
+def _validate_current_restore_identity(record, root_uid=0):
+    manager = _restore_manager_from_record(record)
+    env_bytes, hmac_key, pin = _restore_env_identity(record["envFile"], root_uid)
+    database_path = Path(record["databasePath"])
+    database_uid = os.lstat(database_path.parent).st_uid
+    database = _read_secure_regular(
+        database_path,
+        manager.FILE_LIMITS["data/panel.db"],
+        allowed_uids={database_uid},
+        required_mode=0o600,
+    )
+    cert = _read_secure_regular(
+        record["tlsCert"],
+        manager.FILE_LIMITS["tls/server.crt"],
+        allowed_uids={root_uid},
+        required_mode=0o640,
+    )
+    key = _read_secure_regular(
+        record["tlsKey"],
+        manager.FILE_LIMITS["tls/server.key"],
+        allowed_uids={root_uid},
+        required_mode=0o640,
+    )
+    with tempfile.TemporaryDirectory(dir=record["workDir"]) as temporary:
+        manager._validate_database(database, hmac_key, temporary)
+        cert_path = Path(temporary) / "server.crt"
+        key_path = Path(temporary) / "server.key"
+        cert_path.write_bytes(cert)
+        key_path.write_bytes(key)
+        manager._certificate_details(cert_path, key_path)
+    if not hmac.compare_digest(manager._certificate_pin(cert), pin):
+        raise RuntimeError("restore certificate pin is inconsistent")
+    return {
+        "panel.db": manager._sha256(database),
+        "server.crt": manager._sha256(cert),
+        "server.key": manager._sha256(key),
+        "panel.env": manager._sha256(env_bytes),
+    }
+
+
+def _validate_applied_transaction(record):
+    manager = _restore_manager_from_record(record)
+    manifest, payloads = manager._read_archive(record["incomingArchive"])
+    restored_hmac = bytes.fromhex(payloads["secrets/hmac-key.hex"].decode("ascii").strip())
+    with tempfile.TemporaryDirectory(dir=record["workDir"]) as temporary:
+        expected_database = Path(temporary) / "expected.db"
+        expected_database.write_bytes(payloads["data/panel.db"])
+        with sqlite3.connect(str(expected_database)) as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(proxy_users)")}
+            if "allow_udp_443" not in columns:
+                connection.execute("ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0")
+        manager._validate_applied_restore(
+            record["envFile"], restored_hmac, manifest, temporary, expected_database
+        )
+
+
+def _validate_backup_directory(record, root_uid=0):
+    backup_dir = Path(record["backupDir"])
+    metadata = os.lstat(backup_dir)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != root_uid
+        or (root_uid == 0 and metadata.st_gid != 0)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise RuntimeError("restore backup directory is invalid")
+    for name, digest in record["oldFiles"].items():
+        path = backup_dir / name
+        maximum = {
+            "panel.db": MAX_BACKUP_CONTENT_BYTES,
+            "server.crt": 1024 * 1024,
+            "server.key": 1024 * 1024,
+            "panel.env": 1024 * 1024,
+        }[name]
+        value = _read_secure_regular(
+            path, maximum, allowed_uids={root_uid}, required_mode=0o600
+        )
+        if hashlib.sha256(value).hexdigest() != digest:
+            raise RuntimeError("restore backup file is invalid")
+
+
+def _restore_old_files(record, root_uid=0):
+    _validate_backup_directory(record, root_uid)
+    manager = _restore_manager_from_record(record)
+    backup_dir = Path(record["backupDir"])
+    for target, name in (
+        (record["databasePath"], "panel.db"),
+        (record["tlsCert"], "server.crt"),
+        (record["tlsKey"], "server.key"),
+        (record["envFile"], "panel.env"),
+    ):
+        maximum = {
+            "panel.db": MAX_BACKUP_CONTENT_BYTES,
+            "server.crt": 1024 * 1024,
+            "server.key": 1024 * 1024,
+            "panel.env": 1024 * 1024,
+        }[name]
+        manager._replace_bytes(
+            target,
+            _read_secure_regular(
+                backup_dir / name,
+                maximum,
+                allowed_uids={root_uid},
+                required_mode=0o600,
+            ),
+        )
+    for suffix in ("-wal", "-shm"):
+        _durable_unlink(Path(record["databasePath"] + suffix))
+    if _validate_current_restore_identity(record, root_uid) != record["oldFiles"]:
+        raise RuntimeError("restored rollback identity does not match its backup")
+
+
+def _quarantine_queued_transaction(record, root_uid=0):
+    manager = _restore_manager_from_record(record)
+    archive = Path(record["queuedArchive"])
+    value = _read_secure_regular(
+        archive,
+        MAX_BACKUP_ARCHIVE_BYTES,
+        allowed_uids={root_uid},
+        required_mode=0o600,
+    )
+    if (
+        hashlib.sha256(value).hexdigest() != record["pendingSha256"]
+        or len(value) != record["pendingSize"]
+    ):
+        raise RuntimeError("pending restore archive changed")
+    quarantine = manager.work_dir / "failed-restore-{}-{}.zip".format(
+        datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        secrets.token_hex(4),
+    )
+    _durable_move(archive, quarantine)
+
+
+def _discard_recorded_pending(record):
+    manager = _restore_manager_from_record(record)
+    try:
+        digest, size, metadata = manager._secure_pending_archive()
+    except BackupValidationError as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            return
+        raise
+    if digest != record["pendingSha256"] or size != record["pendingSize"]:
+        raise RuntimeError("pending restore archive changed")
+    manager._consume_captured_pending(metadata)
+
+
+def _cleanup_recorded_uploads(record, root_uid=0):
+    try:
+        _quarantine_queued_transaction(record, root_uid)
+    except RuntimeError as exc:
+        if not isinstance(exc.__cause__, FileNotFoundError):
+            raise
+    _discard_recorded_pending(record)
+
+
+def _reconcile_restore_transaction(record, marker_path, identity_uid=0):
+    if record["phase"] == "services-pending":
+        _cleanup_recorded_uploads(record, identity_uid)
+        return record
+    if record["phase"] == "queued":
+        record["oldFiles"] = _validate_current_restore_identity(record, identity_uid)
+        record["phase"] = "disk-consistent"
+        record["outcome"] = "rolled-back"
+        _atomic_write_json(marker_path, record)
+        _cleanup_recorded_uploads(record, identity_uid)
+        return record
+    if record["phase"] == "prepared":
+        try:
+            _validate_applied_transaction(record)
+        except Exception:
+            _restore_old_files(record, identity_uid)
+            record["outcome"] = "rolled-back"
+        else:
+            record["outcome"] = "applied"
+        record["phase"] = "disk-consistent"
+        _atomic_write_json(marker_path, record)
+        _cleanup_recorded_uploads(record, identity_uid)
+        return record
+    if record.get("outcome") == "applied":
+        _validate_applied_transaction(record)
+    elif record.get("outcome") == "rolled-back":
+        current = _validate_current_restore_identity(record, identity_uid)
+        if current != record["oldFiles"]:
+            raise RuntimeError("rolled-back restore identity changed")
+    else:
+        raise RuntimeError("restore transaction outcome is invalid")
+    _cleanup_recorded_uploads(record, identity_uid)
+    return record
+
+
+def _reconcile_to_services_pending(record, marker_path, identity_uid=0):
+    record = _reconcile_restore_transaction(
+        record, marker_path, identity_uid=identity_uid
+    )
+    if record["phase"] == "disk-consistent":
+        record["phase"] = "services-pending"
+        _atomic_write_json(marker_path, record)
+    elif record["phase"] != "services-pending":
+        raise RuntimeError("restore files are not consistent")
+    return record
+
+
+def recover_restore_files(
+    lock_path=MAINTENANCE_LOCK_PATH,
+    marker_path=RESTORE_ACTIVE_MARKER,
+    pending_path=RESTORE_WORK_DIR / "pending-restore.zip",
+    captured_path=None,
+    work_dir=RESTORE_WORK_DIR,
+    pending_uid=None,
+    expected_uid=0,
+    strict_paths=True,
+):
+    captured_path = Path(captured_path or (str(marker_path) + ".archive"))
+    try:
+        os.lstat(marker_path)
+    except FileNotFoundError:
+        pending_exists = captured_exists = True
+        try:
+            os.lstat(pending_path)
+        except FileNotFoundError:
+            pending_exists = False
+        try:
+            os.lstat(captured_path)
+        except FileNotFoundError:
+            captured_exists = False
+        if not pending_exists and not captured_exists:
+            return
+    with exclusive_maintenance_lock(lock_path, blocking=True):
+        record = _read_restore_transaction(
+            marker_path, expected_uid=expected_uid, strict_paths=strict_paths
+        )
+        if record is not None:
+            _reconcile_to_services_pending(
+                record, marker_path, identity_uid=expected_uid
+            )
+            return
+        work_metadata = os.lstat(work_dir)
+        if (
+            not stat.S_ISDIR(work_metadata.st_mode)
+            or stat.S_IMODE(work_metadata.st_mode) != 0o700
+        ):
+            raise RuntimeError("restore work directory is unsafe")
+        allowed_pending_uid = work_metadata.st_uid if pending_uid is None else pending_uid
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ"
+        )
+        for source, owner_uid, label in (
+            (Path(pending_path), allowed_pending_uid, "pending"),
+            (captured_path, expected_uid, "captured"),
+        ):
+            try:
+                os.lstat(source)
+            except FileNotFoundError:
+                continue
+            quarantine = Path(work_dir) / "failed-restore-orphan-{}-{}-{}.zip".format(
+                label, timestamp, secrets.token_hex(4)
+            )
+            _quarantine_secure_orphan(
+                source, quarantine, MAX_BACKUP_ARCHIVE_BYTES, owner_uid
+            )
+
+
+def verify_restore_services(
+    settings,
+    runner=subprocess.run,
+    health_probe=_default_restore_health_probe,
+    stats_probe=_default_restore_stats_probe,
+    tcp_probe=_default_restore_tcp_probe,
+    attempts=30,
+    interval=0.2,
+    sleeper=time.sleep,
+):
+    failure = None
+    consecutive = 0
+    for attempt in range(max(2, int(attempts))):
+        try:
+            expected = _restore_expected_units(settings, runner)
+            _probe_restored_services(settings, expected, health_probe, stats_probe, tcp_probe)
+            consecutive += 1
+            if consecutive >= 2:
+                return
+        except Exception as exc:
+            failure = exc
+            consecutive = 0
+        if attempt + 1 < max(2, int(attempts)):
+            sleeper(max(0, float(interval)))
+    raise RuntimeError("restored project services are not healthy") from failure
+
+
+def resume_after_restore(
+    settings,
+    lock_path=MAINTENANCE_LOCK_PATH,
+    marker_path=RESTORE_ACTIVE_MARKER,
+    runner=subprocess.run,
+    marker_reader=_read_restore_transaction,
+    expected_uid=0,
+    strict_paths=True,
+    **start_options
+):
+    with exclusive_maintenance_lock(lock_path, blocking=True):
+        record = marker_reader(
+            marker_path, expected_uid=expected_uid, strict_paths=strict_paths
+        )
+        if record is None:
+            return
+        if record["phase"] != "services-pending":
+            raise RuntimeError("restore files have not passed preflight recovery")
+        verify_restore_services(settings, runner=runner, **start_options)
+        _remove_restore_marker(marker_path)
+
+
+def restore_pending(
+    settings,
+    lock_path=MAINTENANCE_LOCK_PATH,
+    marker_path=RESTORE_ACTIVE_MARKER,
+    runner=subprocess.run,
+    quiesce=quiesce_stats_client,
+):
+    with exclusive_maintenance_lock(lock_path, blocking=True), defer_termination_signals():
+        manager = BackupManager(
+            database=Database(settings.database_path, settings.hmac_key),
+            hmac_key=settings.hmac_key,
+            tls_cert=settings.tls_cert,
+            tls_key=settings.tls_key,
+            public_host=settings.public_host,
+            hysteria_port=settings.hysteria_port,
+            node_name=settings.node_name,
+            work_dir=settings.database_path.parent / "backup-restore",
+        )
+        if _read_restore_transaction(
+            marker_path,
+            expected_uid=os.geteuid() if hasattr(os, "geteuid") else None,
+            strict_paths=False,
+        ) is not None:
+            raise RuntimeError("an earlier restore transaction still requires recovery")
+        manager.queue_restore_transaction(
+            marker_path, RESTORE_ENV_FILE, RESTORE_BACKUP_ROOT
+        )
+        try:
+            settle_restore_traffic(settings, runner=runner, quiesce=quiesce)
+            stop_restore_services(runner=runner)
+            result = manager.apply_pending_archive(
+                env_file=RESTORE_ENV_FILE,
+                backup_root=RESTORE_BACKUP_ROOT,
+                transaction_path=marker_path,
+                archive_path=Path(str(marker_path) + ".archive"),
+            )
+            record = _read_restore_transaction(
+                marker_path,
+                expected_uid=os.geteuid() if hasattr(os, "geteuid") else None,
+                strict_paths=False,
+            )
+            if record is None:
+                raise RuntimeError("restore transaction marker disappeared after apply")
+            _reconcile_to_services_pending(
+                record,
+                marker_path,
+                identity_uid=os.geteuid() if hasattr(os, "geteuid") else 0,
+            )
+        except Exception:
+            record = _read_restore_transaction(
+                marker_path,
+                expected_uid=os.geteuid() if hasattr(os, "geteuid") else None,
+                strict_paths=False,
+            )
+            if record is not None:
+                _reconcile_to_services_pending(
+                    record,
+                    marker_path,
+                    identity_uid=os.geteuid() if hasattr(os, "geteuid") else 0,
+                )
+            raise
     print(
         json.dumps(
             {
@@ -3575,11 +5126,30 @@ def main(argv=None):
     init_parser.add_argument("--username", required=True)
     init_parser.add_argument("--if-missing", action="store_true")
     subcommands.add_parser("serve", help="run the authentication service and panel")
+    sync_parser = subcommands.add_parser(
+        "sync-traffic", help="flush Hysteria traffic before maintenance"
+    )
+    sync_endpoints = sync_parser.add_mutually_exclusive_group()
+    sync_endpoints.add_argument("--primary-only", action="store_true")
+    sync_endpoints.add_argument("--secondary-only", action="store_true")
+    sync_parser.add_argument("--quiesce", action="store_true")
     subcommands.add_parser("restore-pending", help="apply the staged backup as root")
+    subcommands.add_parser("recover-restore-files", help=argparse.SUPPRESS)
+    subcommands.add_parser("resume-after-restore", help=argparse.SUPPRESS)
     subcommands.add_parser("apply-update", help="install the latest formal release as root")
     args = parser.parse_args(argv)
     try:
+        if args.command == "recover-restore-files":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("recover-restore-files must run as root")
+            recover_restore_files()
+            return 0
         settings = Settings.from_mapping(os.environ)
+        if args.command == "resume-after-restore":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("resume-after-restore must run as root")
+            resume_after_restore(settings)
+            return 0
         if args.command == "init-admin":
             password = os.environ.get("HY2PANEL_ADMIN_PASSWORD") or getpass.getpass("Admin password: ")
             changed = initialize_admin(settings, args.username, password, args.if_missing)
@@ -3589,6 +5159,17 @@ def main(argv=None):
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("restore-pending must run as root")
             restore_pending(settings)
+            return 0
+        if args.command == "sync-traffic":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("sync-traffic must run as root")
+            with defer_termination_signals():
+                sync_traffic(
+                    settings,
+                    primary_only=args.primary_only,
+                    secondary_only=args.secondary_only,
+                    quiesce=args.quiesce,
+                )
             return 0
         if args.command == "apply-update":
             if hasattr(os, "geteuid") and os.geteuid() != 0:

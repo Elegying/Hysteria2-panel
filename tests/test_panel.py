@@ -3,10 +3,15 @@ import json
 import io
 import hashlib
 import os
+import socket
 import sqlite3
+import ssl
 import subprocess
+import sys
 import tempfile
 import threading
+import time
+import textwrap
 import unittest
 import zipfile
 import urllib.error
@@ -43,6 +48,7 @@ from hysteria2_panel import (
     hash_password,
     make_internal_server,
     make_panel_server,
+    make_stats_client,
     run_supervised_services,
     summarize_dashboard,
     verify_password,
@@ -514,6 +520,170 @@ class UsageManagerTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_maintenance_sync_can_target_legacy_primary_stats_only(self):
+        settings = mock.Mock(
+            stats_url="http://127.0.0.1:19997",
+            stats_443_url="http://127.0.0.1:19995",
+            stats_secret="stats-secret",
+            hysteria_port=19999,
+        )
+
+        primary = make_stats_client(settings, primary_only=True)
+        combined = make_stats_client(settings, primary_only=False)
+        secondary = make_stats_client(settings, secondary_only=True)
+
+        self.assertIsInstance(primary, HysteriaStatsClient)
+        self.assertNotIsInstance(primary, hysteria2_panel.CombinedHysteriaStatsClient)
+        self.assertIsInstance(combined, hysteria2_panel.CombinedHysteriaStatsClient)
+        self.assertIsInstance(secondary, HysteriaStatsClient)
+        self.assertEqual("http://127.0.0.1:19995", secondary.base_url)
+
+    def test_maintenance_stats_endpoint_selection_rejects_ambiguous_or_absent_secondary(self):
+        settings = mock.Mock(
+            stats_url="http://127.0.0.1:19997",
+            stats_443_url="http://127.0.0.1:19995",
+            stats_secret="stats-secret",
+            hysteria_port=19999,
+        )
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            make_stats_client(settings, primary_only=True, secondary_only=True)
+        settings.hysteria_port = 443
+        with self.assertRaisesRegex(ValueError, "not enabled"):
+            make_stats_client(settings, secondary_only=True)
+
+    def test_maintenance_quiesce_kicks_clients_before_the_final_collection(self):
+        events = []
+        stats = mock.Mock()
+        stats.online.side_effect = [
+            {"alice": 2, "bob": 1},
+            {},
+            {},
+            {},
+        ]
+        stats.kick_many.side_effect = lambda names: events.append(
+            ("kick", list(names))
+        )
+
+        hysteria2_panel.quiesce_stats_client(
+            stats,
+            attempts=4,
+            interval=0.01,
+            sleeper=lambda delay: events.append(("sleep", delay)),
+        )
+
+        self.assertEqual(
+            [
+                ("kick", ["alice", "bob"]),
+                ("sleep", 0.01),
+                ("sleep", 0.01),
+                ("sleep", 0.01),
+            ],
+            events,
+        )
+        self.assertEqual(4, stats.online.call_count)
+
+    def test_maintenance_quiesce_catches_a_late_authenticated_client(self):
+        stats = mock.Mock()
+        stats.online.side_effect = [
+            {},
+            {"late-auth": 1},
+            {},
+            {},
+            {},
+        ]
+
+        hysteria2_panel.quiesce_stats_client(
+            stats,
+            attempts=5,
+            interval=0,
+            sleeper=lambda _delay: None,
+        )
+
+        stats.kick_many.assert_called_once_with(["late-auth"])
+        self.assertEqual(5, stats.online.call_count)
+
+    def test_maintenance_quiesce_fails_closed_while_clients_remain_online(self):
+        stats = mock.Mock()
+        stats.online.return_value = {"alice": 1}
+
+        with self.assertRaisesRegex(RuntimeError, "仍有在线连接"):
+            hysteria2_panel.quiesce_stats_client(
+                stats,
+                attempts=2,
+                interval=0,
+                sleeper=lambda _delay: None,
+            )
+
+        self.assertEqual(
+            [mock.call(["alice"]), mock.call(["alice"])],
+            stats.kick_many.call_args_list,
+        )
+
+    def test_sync_traffic_cli_wires_the_quiesce_flag(self):
+        settings = mock.Mock()
+        with mock.patch.object(
+            hysteria2_panel.Settings, "from_mapping", return_value=settings
+        ), mock.patch.object(
+            hysteria2_panel.os, "geteuid", return_value=0, create=True
+        ), mock.patch.object(hysteria2_panel, "sync_traffic") as sync:
+            result = hysteria2_panel.main(
+                ["sync-traffic", "--primary-only", "--quiesce"]
+            )
+
+        self.assertEqual(0, result)
+        sync.assert_called_once_with(
+            settings,
+            primary_only=True,
+            secondary_only=False,
+            quiesce=True,
+        )
+
+    def test_maintenance_sync_defers_termination_until_the_critical_section_finishes(self):
+        installed = {}
+        restored = []
+
+        def install_handler(signum, handler):
+            previous = installed.get(signum, hysteria2_panel.signal.SIG_DFL)
+            installed[signum] = handler
+            restored.append((signum, handler))
+            return previous
+
+        completed = []
+        with mock.patch.object(
+            hysteria2_panel.signal, "signal", side_effect=install_handler
+        ), mock.patch.object(
+            hysteria2_panel.signal,
+            "getsignal",
+            return_value=hysteria2_panel.signal.SIG_DFL,
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                with hysteria2_panel.defer_termination_signals():
+                    installed[hysteria2_panel.signal.SIGTERM](
+                        hysteria2_panel.signal.SIGTERM, None
+                    )
+                    completed.append(True)
+
+        self.assertEqual([True], completed)
+        self.assertEqual(128 + hysteria2_panel.signal.SIGTERM, raised.exception.code)
+        self.assertGreaterEqual(len(restored), 6)
+
+    def test_deferred_termination_wins_over_a_concurrent_operation_error(self):
+        with self.assertRaises(SystemExit) as raised:
+            with hysteria2_panel.defer_termination_signals():
+                os.kill(os.getpid(), hysteria2_panel.signal.SIGTERM)
+                raise RuntimeError("operation also failed")
+
+        self.assertEqual(128 + hysteria2_panel.signal.SIGTERM, raised.exception.code)
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+
+    def test_backup_callback_runs_while_traffic_collection_is_locked(self):
+        stats = PolicyStatsClient(traffic={})
+        manager = UsageManager(self.db, stats)
+
+        result = manager.run_after_collect(lambda: manager.lock.locked())
+
+        self.assertTrue(result)
+
     def test_collects_durable_traffic_and_kicks_users_at_quota(self):
         user = self.db.create_proxy_user("alice", traffic_limit_bytes=300)
         stats = PolicyStatsClient(
@@ -551,6 +721,265 @@ class UsageManagerTests(unittest.TestCase):
         record = self.db.get_proxy_user(user["id"])
         self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
         self.assertEqual([], stats.kicked)
+
+    def test_database_failure_buffers_cleared_traffic_until_the_next_success(self):
+        user = self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+        manager = UsageManager(self.db, stats)
+        durable_add = self.db.apply_traffic_batch
+        attempts = 0
+
+        def fail_once(batch_id, traffic):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise sqlite3.OperationalError("disk unavailable")
+            return durable_add(batch_id, traffic)
+
+        self.db.apply_traffic_batch = fail_once
+
+        with self.assertRaises(sqlite3.OperationalError):
+            manager.collect_once()
+        self.assertEqual(
+            {"alice": {"tx": 10, "rx": 20}}, manager.pending_traffic
+        )
+        self.assertEqual({}, stats.traffic_values)
+        self.assertTrue(manager.pending_traffic_path.is_file())
+
+        manager.collect_once()
+
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+        self.assertEqual({}, manager.pending_traffic)
+        self.assertFalse(manager.pending_traffic_path.exists())
+        self.assertEqual(2, attempts)
+
+    def test_pending_traffic_survives_manager_restart(self):
+        user = self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+        durable_apply = self.db.apply_traffic_batch
+        manager = UsageManager(self.db, stats)
+        self.db.apply_traffic_batch = lambda _batch_id, _traffic: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database unavailable")
+        )
+
+        with self.assertRaises(sqlite3.OperationalError):
+            manager.collect_once()
+        journal = manager.pending_traffic_path
+        self.assertTrue(journal.is_file())
+        self.assertEqual(0o600, journal.stat().st_mode & 0o777)
+
+        self.db.apply_traffic_batch = durable_apply
+        restarted = UsageManager(self.db, PolicyStatsClient())
+        self.assertEqual({"alice": {"tx": 10, "rx": 20}}, restarted.pending_traffic)
+        restarted.collect_once()
+
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+        self.assertFalse(journal.exists())
+
+    def test_pending_journal_has_a_separate_two_endpoint_size_limit(self):
+        manager = UsageManager(self.db, PolicyStatsClient())
+        traffic = {"alice": {"tx": 10, "rx": 20}}
+        manager._persist_pending_traffic_locked(traffic)
+        self.assertGreater(manager.pending_traffic_path.stat().st_size, 1)
+
+        with mock.patch.object(hysteria2_panel, "MAX_STATS_RESPONSE_BYTES", 1):
+            restarted = UsageManager(self.db, PolicyStatsClient())
+
+        self.assertEqual(traffic, restarted.pending_traffic)
+
+    def test_pending_journal_size_uses_utf8_instead_of_ascii_escapes(self):
+        manager = UsageManager(self.db, PolicyStatsClient())
+        traffic = {
+            "用户{:03d}".format(index): {"tx": index, "rx": index + 1}
+            for index in range(256)
+        }
+        payload = {"batch_id": "0" * 32, "traffic": traffic}
+        utf8_size = len(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        escaped_size = len(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        )
+        self.assertLess(utf8_size, escaped_size)
+
+        with mock.patch.object(
+            hysteria2_panel,
+            "MAX_PENDING_TRAFFIC_BYTES",
+            (utf8_size + escaped_size) // 2,
+        ):
+            manager._persist_pending_traffic_locked(traffic)
+
+        journal = json.loads(manager.pending_traffic_path.read_text())
+        self.assertEqual(traffic, journal["traffic"])
+
+    def test_journal_creation_failure_commits_before_manager_is_destroyed(self):
+        user = self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+        manager = UsageManager(self.db, stats)
+        durable_apply = self.db.apply_traffic_batch
+        applied_batch_ids = []
+
+        def record_apply(batch_id, traffic):
+            applied_batch_ids.append(batch_id)
+            return durable_apply(batch_id, traffic)
+
+        self.db.apply_traffic_batch = record_apply
+
+        fixed_batch_id = "a" * 32
+        with mock.patch(
+            "hysteria2_panel.uuid.uuid4",
+            return_value=mock.Mock(hex=fixed_batch_id),
+        ), mock.patch(
+            "hysteria2_panel.tempfile.mkstemp", side_effect=OSError("disk full")
+        ):
+            manager.collect_once()
+
+        self.assertEqual({}, stats.traffic_values)
+        self.assertEqual([fixed_batch_id], applied_batch_ids)
+        self.assertEqual({}, manager.pending_traffic)
+        self.assertFalse(manager.pending_traffic_path.exists())
+
+        del manager
+        reopened_database = Database(self.db.path, self.db.hmac_key)
+        reopened_database.initialize()
+        restarted = UsageManager(reopened_database, PolicyStatsClient())
+        restarted.collect_once()
+
+        record = reopened_database.get_proxy_user(user["id"])
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+
+    def test_transient_journal_and_database_failures_still_survive_process_restart(self):
+        user = self.db.create_proxy_user("alice")
+        manager = UsageManager(
+            self.db,
+            PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}}),
+        )
+        durable_apply = self.db.apply_traffic_batch
+        calls = {"value": 0}
+
+        def fail_database_once(batch_id, traffic):
+            calls["value"] += 1
+            if calls["value"] == 1:
+                raise sqlite3.OperationalError("database temporarily unavailable")
+            return durable_apply(batch_id, traffic)
+
+        self.db.apply_traffic_batch = fail_database_once
+        try:
+            with mock.patch(
+                "hysteria2_panel.tempfile.mkstemp", side_effect=OSError("disk temporarily unavailable")
+            ):
+                manager.collect_once()
+        finally:
+            self.db.apply_traffic_batch = durable_apply
+
+        del manager
+        restarted_database = Database(self.db.path, self.db.hmac_key)
+        restarted_database.initialize()
+        record = restarted_database.get_proxy_user(user["id"])
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+
+    def test_journal_and_database_failure_keep_cleared_traffic_for_runtime_retry(self):
+        self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+        manager = UsageManager(self.db, stats)
+        durable_apply = self.db.apply_traffic_batch
+        self.db.apply_traffic_batch = lambda *_args: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database unavailable")
+        )
+
+        try:
+            with mock.patch(
+                "hysteria2_panel.tempfile.mkstemp", side_effect=OSError("disk full")
+            ):
+                with self.assertRaisesRegex(OSError, "disk full") as raised:
+                    manager.collect_once()
+        finally:
+            self.db.apply_traffic_batch = durable_apply
+
+        self.assertIsInstance(raised.exception.__cause__, sqlite3.OperationalError)
+        self.assertEqual({}, stats.traffic_values)
+        self.assertEqual({"alice": {"tx": 10, "rx": 20}}, manager.pending_traffic)
+        self.assertRegex(manager.pending_traffic_batch_id, r"^[0-9a-f]{32}$")
+
+        manager.collect_once()
+
+        record = self.db.get_proxy_user_by_name("alice")
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+
+    def test_pending_journal_rename_and_removal_are_directory_fsynced(self):
+        self.db.create_proxy_user("alice")
+        manager = UsageManager(
+            self.db,
+            PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}}),
+        )
+        directory_syncs = []
+        real_fsync = os.fsync
+
+        def record_fsync(descriptor):
+            if hysteria2_panel.stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                directory_syncs.append(descriptor)
+            return real_fsync(descriptor)
+
+        with mock.patch.object(hysteria2_panel.os, "fsync", side_effect=record_fsync):
+            manager.collect_once()
+
+        self.assertEqual(2, len(directory_syncs))
+        self.assertFalse(manager.pending_traffic_path.exists())
+
+    def test_root_maintenance_journal_inherits_the_database_owner(self):
+        manager = UsageManager(
+            self.db,
+            PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}}),
+        )
+        expected = self.db.path.stat()
+        ownership = []
+
+        with mock.patch.object(
+            hysteria2_panel.os, "geteuid", return_value=0, create=True
+        ), mock.patch.object(
+            hysteria2_panel.os,
+            "fchown",
+            side_effect=lambda _fd, uid, gid: ownership.append((uid, gid)),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                durable_apply = self.db.apply_traffic_batch
+                self.db.apply_traffic_batch = lambda *_args: (_ for _ in ()).throw(
+                    sqlite3.OperationalError("database unavailable")
+                )
+                try:
+                    manager.collect_once()
+                finally:
+                    self.db.apply_traffic_batch = durable_apply
+
+        self.assertEqual([(expected.st_uid, expected.st_gid)], ownership)
+
+    def test_pending_traffic_replay_is_idempotent_after_commit_before_cleanup(self):
+        user = self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+        manager = UsageManager(self.db, stats)
+        remove = manager._remove_pending_traffic_locked
+        manager._remove_pending_traffic_locked = lambda: (_ for _ in ()).throw(
+            OSError("simulated crash before journal cleanup")
+        )
+
+        with self.assertRaises(OSError):
+            manager.collect_once()
+        self.assertTrue(manager.pending_traffic_path.is_file())
+        manager._remove_pending_traffic_locked = remove
+
+        restarted = UsageManager(self.db, PolicyStatsClient())
+        restarted.collect_once()
+
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+        self.assertFalse(manager.pending_traffic_path.exists())
 
     def test_reserves_pending_connections_to_enforce_the_limit(self):
         self.db.create_proxy_user("alice", device_limit=3)
@@ -629,6 +1058,1544 @@ class UsageManagerTests(unittest.TestCase):
 
 
 class OperationsTests(unittest.TestCase):
+    @staticmethod
+    def restore_settings(directory):
+        return mock.Mock(
+            database_path=Path(directory) / "panel.db",
+            hmac_key=b"r" * 32,
+            tls_cert=Path(directory) / "server.crt",
+            tls_key=Path(directory) / "server.key",
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            node_name="test-node",
+            panel_scheme="http",
+            panel_port=19998,
+            auth_port=19996,
+            stats_url="http://127.0.0.1:19997",
+            stats_443_url="http://127.0.0.1:19995",
+            stats_secret="stats-secret",
+        )
+
+    def test_restore_marker_is_persistent_root_configuration_state(self):
+        self.assertEqual(
+            Path("/etc/hysteria2-panel/.restore-active"),
+            hysteria2_panel.RESTORE_ACTIVE_MARKER,
+        )
+
+    def test_resume_after_restore_cli_loads_and_passes_environment_settings(self):
+        settings = mock.Mock()
+        with mock.patch.object(
+            hysteria2_panel.Settings, "from_mapping", return_value=settings
+        ) as load_settings, mock.patch.object(
+            hysteria2_panel, "resume_after_restore"
+        ) as resume, mock.patch.object(
+            hysteria2_panel.os, "geteuid", return_value=0
+        ):
+            result = hysteria2_panel.main(["resume-after-restore"])
+
+        self.assertEqual(0, result)
+        load_settings.assert_called_once_with(os.environ)
+        resume.assert_called_once_with(settings)
+
+    def test_restore_and_resume_reject_a_symlink_marker_without_starting_services(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            marker.symlink_to(Path(directory) / "missing-target")
+            settings = self.restore_settings(directory)
+            with mock.patch.object(
+                hysteria2_panel, "start_restore_services"
+            ) as start_services:
+                with self.assertRaisesRegex(RuntimeError, "marker is invalid"):
+                    hysteria2_panel.resume_after_restore(
+                        settings,
+                        lock_path=Path(directory) / "resume.lock",
+                        marker_path=marker,
+                    )
+                with self.assertRaisesRegex(RuntimeError, "marker is invalid"):
+                    hysteria2_panel.restore_pending(
+                        settings,
+                        lock_path=Path(directory) / "restore.lock",
+                        marker_path=marker,
+                    )
+
+            start_services.assert_not_called()
+
+    def test_recover_restore_files_cli_runs_before_environment_settings_load(self):
+        with mock.patch.object(
+            hysteria2_panel.Settings, "from_mapping"
+        ) as load_settings, mock.patch.object(
+            hysteria2_panel, "recover_restore_files"
+        ) as recover, mock.patch.object(hysteria2_panel.os, "geteuid", return_value=0):
+            result = hysteria2_panel.main(["recover-restore-files"])
+
+        self.assertEqual(0, result)
+        recover.assert_called_once_with()
+        load_settings.assert_not_called()
+
+    def test_maintenance_lock_is_exclusive_and_released(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "maintenance.lock"
+            with hysteria2_panel.exclusive_maintenance_lock(lock_path):
+                with self.assertRaisesRegex(RuntimeError, "维护任务正在运行"):
+                    with hysteria2_panel.exclusive_maintenance_lock(lock_path):
+                        self.fail("the second maintenance lock must not be acquired")
+
+            with hysteria2_panel.exclusive_maintenance_lock(lock_path):
+                self.assertTrue(lock_path.is_file())
+                self.assertEqual(0o600, lock_path.stat().st_mode & 0o777)
+
+    def test_maintenance_lock_can_wait_until_the_owner_releases_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "maintenance.lock"
+            attempting = threading.Event()
+            acquired = threading.Event()
+
+            def wait_for_lock():
+                attempting.set()
+                with hysteria2_panel.exclusive_maintenance_lock(
+                    lock_path, blocking=True
+                ):
+                    acquired.set()
+
+            with hysteria2_panel.exclusive_maintenance_lock(lock_path):
+                waiter = threading.Thread(target=wait_for_lock)
+                waiter.start()
+                self.assertTrue(attempting.wait(1))
+                self.assertFalse(acquired.wait(0.1))
+
+            waiter.join(1)
+            self.assertFalse(waiter.is_alive())
+            self.assertTrue(acquired.is_set())
+
+    def test_recover_without_marker_never_waits_for_an_installer_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "maintenance.lock"
+            marker = Path(directory) / "restore-active"
+            with hysteria2_panel.exclusive_maintenance_lock(lock_path), mock.patch.object(
+                hysteria2_panel, "_read_restore_transaction"
+            ) as read_transaction:
+                started = time.monotonic()
+                hysteria2_panel.recover_restore_files(
+                    lock_path=lock_path,
+                    marker_path=marker,
+                    expected_uid=os.geteuid(),
+                    strict_paths=False,
+                )
+                self.assertLess(time.monotonic() - started, 0.1)
+            read_transaction.assert_not_called()
+
+    def test_boot_recover_quarantines_an_orphan_pending_upload_without_a_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work_dir = root / "work"
+            work_dir.mkdir(mode=0o700)
+            work_dir.chmod(0o700)
+            pending = work_dir / "pending-restore.zip"
+            pending.write_bytes(b"orphan upload")
+            pending.chmod(0o600)
+            pending_uid = pending.stat().st_uid
+
+            hysteria2_panel.recover_restore_files(
+                lock_path=root / "maintenance.lock",
+                marker_path=root / "restore-active",
+                pending_path=pending,
+                work_dir=work_dir,
+                pending_uid=pending_uid,
+                expected_uid=0,
+                strict_paths=False,
+            )
+
+            self.assertFalse(pending.exists())
+            quarantined = list(work_dir.glob("failed-restore-orphan-*.zip"))
+            self.assertEqual(1, len(quarantined))
+            self.assertEqual(b"orphan upload", quarantined[0].read_bytes())
+
+    def test_boot_recover_quarantines_a_captured_orphan_without_a_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work_dir = root / "work"
+            work_dir.mkdir(mode=0o700)
+            work_dir.chmod(0o700)
+            captured = root / "restore-active.archive"
+            captured.write_bytes(b"captured orphan")
+            captured.chmod(0o600)
+
+            hysteria2_panel.recover_restore_files(
+                lock_path=root / "maintenance.lock",
+                marker_path=root / "restore-active",
+                pending_path=work_dir / "pending-restore.zip",
+                captured_path=captured,
+                work_dir=work_dir,
+                pending_uid=os.geteuid(),
+                expected_uid=os.geteuid(),
+                strict_paths=False,
+            )
+
+            self.assertFalse(captured.exists())
+            quarantined = list(work_dir.glob("failed-restore-orphan-captured-*.zip"))
+            self.assertEqual(1, len(quarantined))
+            self.assertEqual(b"captured orphan", quarantined[0].read_bytes())
+
+    def test_recover_rechecks_marker_after_waiting_for_the_maintenance_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work_dir = root / "work"
+            work_dir.mkdir(mode=0o700)
+            work_dir.chmod(0o700)
+            marker = root / "restore-active"
+            pending = work_dir / "pending-restore.zip"
+            pending.write_bytes(b"pending")
+            pending.chmod(0o600)
+            entered = threading.Event()
+            completed = threading.Event()
+            record = {"phase": "disk-consistent", "outcome": "rolled-back"}
+
+            def recover():
+                entered.set()
+                hysteria2_panel.recover_restore_files(
+                    lock_path=root / "maintenance.lock",
+                    marker_path=marker,
+                    pending_path=pending,
+                    work_dir=work_dir,
+                    pending_uid=os.geteuid(),
+                    expected_uid=os.geteuid(),
+                    strict_paths=False,
+                )
+                completed.set()
+
+            with mock.patch.object(
+                hysteria2_panel,
+                "_read_restore_transaction",
+                return_value=record,
+            ), mock.patch.object(
+                hysteria2_panel,
+                "_reconcile_to_services_pending",
+                return_value={"phase": "services-pending"},
+            ) as reconcile:
+                with hysteria2_panel.exclusive_maintenance_lock(
+                    root / "maintenance.lock"
+                ):
+                    worker = threading.Thread(target=recover)
+                    worker.start()
+                    self.assertTrue(entered.wait(1))
+                    self.assertFalse(completed.wait(0.1))
+                    marker.write_text("{}", encoding="utf-8")
+                    marker.chmod(0o600)
+                    pending.unlink()
+
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(completed.is_set())
+            reconcile.assert_called_once()
+
+    def test_durable_move_handles_cross_filesystem_restore_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.zip"
+            target_dir = Path(directory) / "target"
+            target_dir.mkdir()
+            destination = target_dir / "failed.zip"
+            source.write_bytes(b"restore archive")
+            real_replace = os.replace
+            first = {"value": True}
+
+            def replace_with_cross_device(source_path, destination_path):
+                if first["value"]:
+                    first["value"] = False
+                    raise OSError(hysteria2_panel.errno.EXDEV, "cross-device")
+                return real_replace(source_path, destination_path)
+
+            with mock.patch.object(
+                hysteria2_panel.os, "replace", side_effect=replace_with_cross_device
+            ):
+                hysteria2_panel._durable_move(source, destination)
+
+            self.assertFalse(source.exists())
+            self.assertEqual(b"restore archive", destination.read_bytes())
+
+    def test_secure_restore_copy_handles_short_writes_and_preserves_source_on_stall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "pending-restore.zip"
+            captured = root / "captured.zip"
+            source.write_bytes(b"complete restore payload")
+            source.chmod(0o600)
+            database = Database(root / "panel.db", b"r" * 32)
+            database.initialize()
+            manager = BackupManager(
+                database=database,
+                hmac_key=b"r" * 32,
+                tls_cert=root / "server.crt",
+                tls_key=root / "server.key",
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                work_dir=root,
+            )
+            real_write = os.write
+
+            def short_write(descriptor, value):
+                return real_write(descriptor, value[: max(1, len(value) // 2)])
+
+            with mock.patch.object(hysteria2_panel.os, "write", side_effect=short_write):
+                manager._secure_pending_archive(captured)
+            self.assertEqual(source.read_bytes(), captured.read_bytes())
+
+            captured.unlink()
+            with mock.patch.object(hysteria2_panel.os, "write", return_value=0):
+                with self.assertRaisesRegex(OSError, "short write"):
+                    manager._secure_pending_archive(captured)
+            self.assertEqual(b"complete restore payload", source.read_bytes())
+            self.assertFalse(captured.exists())
+
+    def test_orphan_quarantine_handles_short_writes_and_preserves_source_on_stall(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "orphan.zip"
+            destination = root / "quarantined.zip"
+            payload = b"complete orphan restore payload"
+            source.write_bytes(payload)
+            source.chmod(0o600)
+            real_write = os.write
+
+            def short_write(descriptor, value):
+                return real_write(descriptor, value[: max(1, len(value) // 2)])
+
+            with mock.patch.object(hysteria2_panel.os, "write", side_effect=short_write):
+                hysteria2_panel._quarantine_secure_orphan(
+                    source,
+                    destination,
+                    hysteria2_panel.MAX_BACKUP_ARCHIVE_BYTES,
+                    os.geteuid(),
+                )
+            self.assertFalse(source.exists())
+            self.assertEqual(payload, destination.read_bytes())
+
+            destination.unlink()
+            source.write_bytes(payload)
+            source.chmod(0o600)
+            with mock.patch.object(hysteria2_panel.os, "write", return_value=0):
+                with self.assertRaisesRegex(OSError, "short write"):
+                    hysteria2_panel._quarantine_secure_orphan(
+                        source,
+                        destination,
+                        hysteria2_panel.MAX_BACKUP_ARCHIVE_BYTES,
+                        os.geteuid(),
+                    )
+            self.assertEqual(payload, source.read_bytes())
+            self.assertFalse(destination.exists())
+
+    def test_restore_transaction_persistence_retries_transient_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            real_replace = os.replace
+            calls = {"value": 0}
+
+            def fail_once(source, destination):
+                calls["value"] += 1
+                if calls["value"] == 1:
+                    raise OSError("transient rename failure")
+                return real_replace(source, destination)
+
+            with mock.patch.object(
+                hysteria2_panel.os, "replace", side_effect=fail_once
+            ):
+                hysteria2_panel._atomic_write_json(
+                    marker, {"version": 1, "phase": "queued"}
+                )
+
+            self.assertEqual(
+                {"phase": "queued", "version": 1},
+                json.loads(marker.read_text(encoding="utf-8")),
+            )
+
+    def test_queue_marker_is_durable_before_the_only_pending_archive_is_consumed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = Database(root / "panel.db", b"r" * 32)
+            database.initialize()
+            certificate, private_key = create_test_certificate(root)
+            certificate.chmod(0o640)
+            private_key.chmod(0o640)
+            manager = BackupManager(
+                database=database,
+                hmac_key=b"r" * 32,
+                tls_cert=certificate,
+                tls_key=private_key,
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                work_dir=root / "work",
+                maintenance_lock_path=root / "maintenance.lock",
+                maintenance_lock_owner=os.geteuid(),
+                maintenance_lock_mode=0o600,
+                restore_marker_path=root / "restore-active",
+            )
+            (root / "maintenance.lock").touch(mode=0o600)
+            archive = manager.create_archive()
+            manager.stage_archive(
+                io.BytesIO(archive.read_bytes()), archive.stat().st_size
+            )
+            marker = root / "restore-active"
+            original_consume = manager._consume_captured_pending
+
+            def crash_after_marker(metadata):
+                self.assertTrue(marker.is_file())
+                record = json.loads(marker.read_text(encoding="utf-8"))
+                self.assertEqual("queued", record["phase"])
+                self.assertTrue(Path(record["queuedArchive"]).is_file())
+                raise RuntimeError("simulated power loss before pending cleanup")
+
+            manager._consume_captured_pending = crash_after_marker
+            with self.assertRaisesRegex(RuntimeError, "simulated power loss"):
+                manager.queue_restore_transaction(
+                    marker, root / "panel.env", root / "backups"
+                )
+            manager._consume_captured_pending = original_consume
+
+            self.assertTrue(manager.pending_archive.is_file())
+            self.assertEqual(
+                hashlib.sha256(manager.pending_archive.read_bytes()).hexdigest(),
+                json.loads(marker.read_text(encoding="utf-8"))["pendingSha256"],
+            )
+
+            record = hysteria2_panel._read_restore_transaction(
+                marker, expected_uid=os.geteuid(), strict_paths=False
+            )
+            with mock.patch.object(
+                hysteria2_panel,
+                "_validate_current_restore_identity",
+                return_value={
+                    "panel.db": "1" * 64,
+                    "server.crt": "2" * 64,
+                    "server.key": "3" * 64,
+                    "panel.env": "4" * 64,
+                },
+            ):
+                hysteria2_panel._reconcile_restore_transaction(
+                    record, marker, identity_uid=os.geteuid()
+                )
+
+            self.assertFalse(manager.pending_archive.exists())
+            hysteria2_panel._remove_restore_marker(marker)
+            manager.stage_archive(
+                io.BytesIO(archive.read_bytes()), archive.stat().st_size
+            )
+            self.assertTrue(manager.pending_archive.is_file())
+
+    def test_root_revalidation_failure_does_not_block_the_next_upload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = Database(root / "panel.db", b"r" * 32)
+            database.initialize()
+            certificate, private_key = create_test_certificate(root)
+            manager = BackupManager(
+                database=database,
+                hmac_key=b"r" * 32,
+                tls_cert=certificate,
+                tls_key=private_key,
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                work_dir=root / "work",
+                maintenance_lock_path=root / "maintenance.lock",
+                maintenance_lock_owner=os.geteuid(),
+                maintenance_lock_mode=0o600,
+                restore_marker_path=root / "restore-active",
+            )
+            (root / "maintenance.lock").touch(mode=0o600)
+            archive = manager.create_archive()
+            archive_bytes = archive.read_bytes()
+            manager.stage_archive(io.BytesIO(archive_bytes), len(archive_bytes))
+
+            with mock.patch.object(
+                manager,
+                "validate_archive",
+                side_effect=BackupValidationError("root revalidation failed"),
+            ):
+                with self.assertRaisesRegex(
+                    BackupValidationError, "root revalidation failed"
+                ):
+                    manager.queue_restore_transaction(
+                        root / "restore-active", root / "panel.env", root / "backups"
+                    )
+
+            self.assertFalse(manager.pending_archive.exists())
+            manager.stage_archive(io.BytesIO(archive_bytes), len(archive_bytes))
+            self.assertTrue(manager.pending_archive.is_file())
+
+    def test_queue_crash_recovery_writes_a_readable_disk_consistent_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            queued_archive = Path(directory) / "restore-active.archive"
+            (Path(directory) / "work").mkdir()
+            queued_archive.write_bytes(b"valid captured archive")
+            queued_archive.chmod(0o600)
+            current_files = {
+                "panel.db": "1" * 64,
+                "server.crt": "2" * 64,
+                "server.key": "3" * 64,
+                "panel.env": "4" * 64,
+            }
+            record = {
+                "version": hysteria2_panel.RESTORE_TRANSACTION_VERSION,
+                "phase": "queued",
+                "pendingArchive": str(Path(directory) / "pending-restore.zip"),
+                "queuedArchive": str(queued_archive),
+                "pendingSha256": hashlib.sha256(queued_archive.read_bytes()).hexdigest(),
+                "pendingSize": queued_archive.stat().st_size,
+                "databasePath": str(Path(directory) / "panel.db"),
+                "tlsCert": str(Path(directory) / "server.crt"),
+                "tlsKey": str(Path(directory) / "server.key"),
+                "envFile": str(Path(directory) / "panel.env"),
+                "workDir": str(Path(directory) / "work"),
+                "backupRoot": str(Path(directory) / "backups"),
+                "publicHost": "vpn.example.test",
+                "hysteriaPort": 19999,
+                "nodeName": "test-node",
+            }
+            marker.write_text(json.dumps(record), encoding="utf-8")
+            marker.chmod(0o600)
+
+            with mock.patch.object(
+                hysteria2_panel,
+                "_validate_current_restore_identity",
+                return_value=current_files,
+            ):
+                hysteria2_panel._reconcile_restore_transaction(
+                    record, marker, identity_uid=os.geteuid()
+                )
+
+            reread = hysteria2_panel._read_restore_transaction(
+                marker, expected_uid=os.geteuid(), strict_paths=False
+            )
+            self.assertEqual("disk-consistent", reread["phase"])
+            self.assertEqual("rolled-back", reread["outcome"])
+            self.assertEqual(current_files, reread["oldFiles"])
+            self.assertFalse(queued_archive.exists())
+
+    def test_restore_defers_termination_until_all_identity_files_are_applied(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = mock.Mock(
+                database_path=Path(directory) / "panel.db",
+                hmac_key=b"r" * 32,
+                tls_cert=Path(directory) / "server.crt",
+                tls_key=Path(directory) / "server.key",
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                node_name="test-node",
+            )
+            applied = []
+            manager = mock.Mock()
+
+            def apply_archive(**_kwargs):
+                os.kill(os.getpid(), hysteria2_panel.signal.SIGTERM)
+                applied.append("database")
+                applied.append("certificate")
+                applied.append("private-key")
+                applied.append("environment")
+                return {"proxyUserCount": 1, "automaticBackup": "backup.zip"}
+
+            manager.apply_pending_archive.side_effect = apply_archive
+            systemd = mock.Mock(return_value=mock.Mock(returncode=0, stdout=""))
+            applied_record = {"phase": "disk-consistent", "outcome": "applied"}
+            with mock.patch.object(
+                hysteria2_panel, "BackupManager", return_value=manager
+            ), mock.patch.object(
+                hysteria2_panel, "settle_restore_traffic"
+            ), mock.patch.object(
+                hysteria2_panel, "stop_restore_services"
+            ), mock.patch.object(
+                hysteria2_panel, "start_restore_services"
+            ), mock.patch.object(
+                hysteria2_panel,
+                "_read_restore_transaction",
+                side_effect=[None, applied_record],
+            ), mock.patch.object(
+                hysteria2_panel,
+                "_reconcile_to_services_pending",
+                return_value={"phase": "services-pending", "outcome": "applied"},
+            ), mock.patch("builtins.print"):
+                with self.assertRaises(SystemExit) as raised:
+                    hysteria2_panel.restore_pending(
+                        settings,
+                        lock_path=Path(directory) / "maintenance.lock",
+                        marker_path=Path(directory) / "restore-active",
+                        runner=systemd,
+                    )
+
+            self.assertEqual(128 + hysteria2_panel.signal.SIGTERM, raised.exception.code)
+            self.assertEqual(
+                ["database", "certificate", "private-key", "environment"],
+                applied,
+            )
+
+    def test_restore_requests_a_blocking_lock_before_stopping_services(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock_path = Path(directory) / "maintenance.lock"
+            settings = self.restore_settings(directory)
+            events = []
+            manager = mock.Mock()
+            manager.apply_pending_archive.return_value = {
+                "proxyUserCount": 1,
+                "automaticBackup": "backup.zip",
+            }
+            applied_record = {"phase": "disk-consistent", "outcome": "applied"}
+
+            @hysteria2_panel.contextlib.contextmanager
+            def lock_context(path, blocking=False):
+                events.append(("lock", path, blocking))
+                yield
+
+            @hysteria2_panel.contextlib.contextmanager
+            def signal_context():
+                events.append(("signals",))
+                yield
+
+            with mock.patch.object(
+                hysteria2_panel,
+                "exclusive_maintenance_lock",
+                side_effect=lock_context,
+            ) as maintenance_lock, mock.patch.object(
+                hysteria2_panel,
+                "defer_termination_signals",
+                side_effect=signal_context,
+            ), mock.patch.object(
+                hysteria2_panel, "BackupManager", return_value=manager
+            ), mock.patch.object(
+                hysteria2_panel,
+                "settle_restore_traffic",
+                side_effect=lambda *_args, **_kwargs: events.append(("settle",)),
+            ), mock.patch.object(
+                hysteria2_panel, "stop_restore_services"
+            ) as stop_services, mock.patch.object(
+                hysteria2_panel, "start_restore_services"
+            ), mock.patch.object(
+                hysteria2_panel,
+                "_read_restore_transaction",
+                side_effect=[None, applied_record],
+            ), mock.patch.object(
+                hysteria2_panel,
+                "_reconcile_to_services_pending",
+                return_value={"phase": "services-pending", "outcome": "applied"},
+            ), mock.patch("builtins.print"):
+                hysteria2_panel.restore_pending(
+                    settings,
+                    lock_path=lock_path,
+                    marker_path=Path(directory) / "restore-active",
+                )
+
+            maintenance_lock.assert_called_once_with(lock_path, blocking=True)
+            self.assertEqual(
+                [("lock", lock_path, True), ("signals",), ("settle",)],
+                events[:3],
+            )
+            stop_services.assert_called_once_with(runner=subprocess.run)
+
+    def test_restore_failure_leaves_recovery_marker_and_defers_service_start(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = mock.Mock(
+                database_path=Path(directory) / "panel.db",
+                hmac_key=b"r" * 32,
+                tls_cert=Path(directory) / "server.crt",
+                tls_key=Path(directory) / "server.key",
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                node_name="test-node",
+            )
+            manager = mock.Mock()
+            manager.apply_pending_archive.side_effect = RuntimeError("restore failed")
+            marker = Path(directory) / "restore-active"
+            with mock.patch.object(
+                hysteria2_panel, "BackupManager", return_value=manager
+            ), mock.patch.object(
+                hysteria2_panel, "settle_restore_traffic"
+            ), mock.patch.object(
+                hysteria2_panel, "stop_restore_services"
+            ) as stop_services, mock.patch.object(
+                hysteria2_panel, "start_restore_services"
+            ) as start_services:
+                with self.assertRaisesRegex(RuntimeError, "restore failed"):
+                    hysteria2_panel.restore_pending(
+                        settings,
+                        lock_path=Path(directory) / "maintenance.lock",
+                        marker_path=marker,
+                    )
+
+            stop_services.assert_called_once_with(runner=subprocess.run)
+            start_services.assert_not_called()
+            manager.queue_restore_transaction.assert_called_once()
+
+    def test_resume_accepts_normal_traffic_changes_after_files_are_preflight_verified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work_dir = root / "work"
+            backup_root = root / "backups"
+            work_dir.mkdir()
+            backup_root.mkdir()
+            database_path = root / "panel.db"
+            hmac_key = b"r" * 32
+            database = Database(database_path, hmac_key)
+            database.initialize()
+            database_path.chmod(0o600)
+            user = database.create_proxy_user("alice")
+            certificate, private_key = create_test_certificate(root)
+            certificate.chmod(0o640)
+            private_key.chmod(0o640)
+            manager = BackupManager(
+                database=database,
+                hmac_key=hmac_key,
+                tls_cert=certificate,
+                tls_key=private_key,
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                node_name="test-node",
+                work_dir=work_dir,
+            )
+            env_file = root / "panel.env"
+            env_file.write_text(
+                "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN={}\n".format(
+                    hmac_key.hex(),
+                    manager._certificate_pin(certificate.read_bytes()),
+                ),
+                encoding="utf-8",
+            )
+            env_file.chmod(0o640)
+            marker = root / "restore-active"
+            record = {
+                "version": hysteria2_panel.RESTORE_TRANSACTION_VERSION,
+                "phase": "disk-consistent",
+                "outcome": "rolled-back",
+                "pendingArchive": str(work_dir / "pending-restore.zip"),
+                "queuedArchive": str(root / "restore-active.archive"),
+                "pendingSha256": "0" * 64,
+                "pendingSize": 1,
+                "databasePath": str(database_path),
+                "tlsCert": str(certificate),
+                "tlsKey": str(private_key),
+                "envFile": str(env_file),
+                "workDir": str(work_dir),
+                "backupRoot": str(backup_root),
+                "publicHost": "vpn.example.test",
+                "hysteriaPort": 19999,
+                "nodeName": "test-node",
+            }
+            record["oldFiles"] = hysteria2_panel._validate_current_restore_identity(
+                record, root_uid=os.geteuid()
+            )
+            hysteria2_panel._atomic_write_json(marker, record)
+
+            hysteria2_panel.recover_restore_files(
+                lock_path=root / "maintenance.lock",
+                marker_path=marker,
+                expected_uid=os.geteuid(),
+                strict_paths=False,
+            )
+            self.assertEqual(
+                "services-pending",
+                json.loads(marker.read_text(encoding="utf-8"))["phase"],
+            )
+
+            database.apply_traffic_batch(
+                "f" * 32, {"alice": {"tx": 10, "rx": 20}}
+            )
+            self.assertEqual(
+                (10, 20),
+                tuple(
+                    database.get_proxy_user(user["id"])[name]
+                    for name in ("tx_bytes", "rx_bytes")
+                ),
+            )
+
+            settings = self.restore_settings(directory)
+            settings.hmac_key = hmac_key
+
+            def runner(command, **_kwargs):
+                self.assertEqual("show", command[1])
+                return mock.Mock(
+                    returncode=0,
+                    stdout="LoadState=loaded\nActiveState=active\n",
+                    stderr="",
+                )
+
+            hysteria2_panel.resume_after_restore(
+                settings,
+                lock_path=root / "maintenance.lock",
+                marker_path=marker,
+                runner=runner,
+                expected_uid=os.geteuid(),
+                strict_paths=False,
+                health_probe=lambda *_args: None,
+                stats_probe=lambda *_args: None,
+                tcp_probe=lambda *_args: None,
+                attempts=2,
+                sleeper=lambda _seconds: None,
+            )
+
+            self.assertFalse(marker.exists())
+
+    def test_restore_preflight_rejects_a_symlinked_current_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            work_dir = root / "work"
+            work_dir.mkdir()
+            real_database_path = root / "real.db"
+            hmac_key = b"r" * 32
+            database = Database(real_database_path, hmac_key)
+            database.initialize()
+            real_database_path.chmod(0o600)
+            database.create_proxy_user("alice")
+            database_path = root / "panel.db"
+            database_path.symlink_to(real_database_path)
+            certificate, private_key = create_test_certificate(root)
+            certificate.chmod(0o640)
+            private_key.chmod(0o640)
+            manager = BackupManager(
+                database=database,
+                hmac_key=hmac_key,
+                tls_cert=certificate,
+                tls_key=private_key,
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                work_dir=work_dir,
+            )
+            env_file = root / "panel.env"
+            env_file.write_text(
+                "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN={}\n".format(
+                    hmac_key.hex(),
+                    manager._certificate_pin(certificate.read_bytes()),
+                ),
+                encoding="utf-8",
+            )
+            env_file.chmod(0o640)
+            record = {
+                "databasePath": str(database_path),
+                "tlsCert": str(certificate),
+                "tlsKey": str(private_key),
+                "envFile": str(env_file),
+                "workDir": str(work_dir),
+                "publicHost": "vpn.example.test",
+                "hysteriaPort": 19999,
+                "nodeName": "test-node",
+            }
+
+            with self.assertRaisesRegex(RuntimeError, "unsafe restore file"):
+                hysteria2_panel._validate_current_restore_identity(record)
+
+    def test_restore_marker_creation_fsyncs_the_parent_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            synced_types = []
+            real_fsync = os.fsync
+
+            def record_fsync(descriptor):
+                metadata = os.fstat(descriptor)
+                synced_types.append(
+                    "directory"
+                    if hysteria2_panel.stat.S_ISDIR(metadata.st_mode)
+                    else "file"
+                )
+                return real_fsync(descriptor)
+
+            with mock.patch.object(
+                hysteria2_panel.os, "fsync", side_effect=record_fsync
+            ):
+                hysteria2_panel._atomic_write_json(marker, {"phase": "queued"})
+
+            self.assertEqual(["file", "directory"], synced_types)
+
+    def test_restore_keeps_marker_when_loaded_secondary_service_is_failed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            settings = mock.Mock(
+                database_path=Path(directory) / "panel.db",
+                hmac_key=b"r" * 32,
+                tls_cert=Path(directory) / "server.crt",
+                tls_key=Path(directory) / "server.key",
+                public_host="vpn.example.test",
+                hysteria_port=19999,
+                node_name="test-node",
+            )
+            manager = mock.Mock()
+            manager.apply_pending_archive.return_value = {
+                "proxyUserCount": 1,
+                "automaticBackup": "backup.zip",
+            }
+            states = {
+                "hysteria2-panel-tcp-probe-443.service": ("loaded", "active"),
+                "hysteria2-panel-server-443.service": ("loaded", "failed"),
+                "hysteria2-panel-tcp-probe.service": ("loaded", "active"),
+                "hysteria2-panel-server.service": ("loaded", "active"),
+                "hysteria2-panel.service": ("loaded", "active"),
+            }
+            inspected = []
+
+            def runner(command, **_kwargs):
+                if command[1] == "start":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if command[1] == "show":
+                    unit = command[-1]
+                    inspected.append(unit)
+                    load_state, active_state = states[unit]
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="LoadState={}\nActiveState={}\n".format(
+                            load_state, active_state
+                        ),
+                        stderr="",
+                    )
+                self.fail("unexpected systemctl command: {}".format(command))
+
+            record = {"phase": "services-pending", "outcome": "rolled-back"}
+            marker.write_text("{}", encoding="utf-8")
+            marker.chmod(0o600)
+            with mock.patch.object(
+                hysteria2_panel,
+                "_read_restore_transaction",
+                return_value=record,
+            ), mock.patch.object(
+                hysteria2_panel,
+                "_reconcile_restore_transaction",
+                return_value=record,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "not healthy"):
+                    hysteria2_panel.resume_after_restore(
+                        settings,
+                        lock_path=Path(directory) / "maintenance.lock",
+                        marker_path=marker,
+                        runner=runner,
+                        health_probe=lambda *_args: None,
+                        stats_probe=lambda *_args: None,
+                        tcp_probe=lambda *_args: None,
+                        attempts=2,
+                        sleeper=lambda _seconds: None,
+                        marker_reader=lambda *_args, **_kwargs: record,
+                    )
+
+            self.assertIn("hysteria2-panel-server-443.service", inspected)
+            self.assertTrue(marker.is_file())
+
+    def test_restore_service_start_allows_only_absent_optional_units(self):
+        inspected = []
+        required_units = {
+            "hysteria2-panel.service",
+            "hysteria2-panel-server.service",
+            "hysteria2-panel-tcp-probe.service",
+        }
+
+        def runner(command, **_kwargs):
+            if command[1] == "start":
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            if command[1] == "show":
+                unit = command[-1]
+                inspected.append(unit)
+                if unit in required_units:
+                    load_state, active_state = "loaded", "active"
+                else:
+                    load_state, active_state = "not-found", "inactive"
+                return mock.Mock(
+                    returncode=0,
+                    stdout="LoadState={}\nActiveState={}\n".format(
+                        load_state, active_state
+                    ),
+                    stderr="",
+                )
+            self.fail("unexpected systemctl command: {}".format(command))
+
+        settings = self.restore_settings(tempfile.gettempdir())
+        settings.hysteria_port = 443
+        health_checks = []
+        stats_checks = []
+        tcp_checks = []
+        hysteria2_panel.start_restore_services(
+            settings,
+            runner=runner,
+            health_probe=lambda url, _settings: health_checks.append(url),
+            stats_probe=lambda url, secret: stats_checks.append((url, secret)),
+            tcp_probe=lambda port: tcp_checks.append(port),
+            attempts=1,
+            sleeper=lambda _seconds: None,
+        )
+
+        self.assertEqual(list(hysteria2_panel.RESTORE_STOP_UNITS) * 2, inspected)
+        self.assertEqual(
+            [
+                "http://127.0.0.1:19998/healthz",
+                "http://127.0.0.1:19996/healthz",
+                "http://127.0.0.1:19998/healthz",
+                "http://127.0.0.1:19996/healthz",
+            ],
+            health_checks,
+        )
+        self.assertEqual(
+            [
+                ("http://127.0.0.1:19997", "stats-secret"),
+                ("http://127.0.0.1:19997", "stats-secret"),
+            ],
+            stats_checks,
+        )
+        self.assertEqual([443, 443], tcp_checks)
+
+    def test_restore_health_checks_loaded_secondary_stats_and_tcp_probe(self):
+        def runner(command, **_kwargs):
+            if command[1] == "start":
+                return mock.Mock(returncode=0, stdout="", stderr="")
+            if command[1] == "show":
+                return mock.Mock(
+                    returncode=0,
+                    stdout="LoadState=loaded\nActiveState=active\n",
+                    stderr="",
+                )
+            self.fail("unexpected systemctl command: {}".format(command))
+
+        settings = self.restore_settings(tempfile.gettempdir())
+        stats_checks = []
+        tcp_checks = []
+        hysteria2_panel.start_restore_services(
+            settings,
+            runner=runner,
+            health_probe=lambda *_args: None,
+            stats_probe=lambda url, secret: stats_checks.append((url, secret)),
+            tcp_probe=lambda port: tcp_checks.append(port),
+            attempts=2,
+            sleeper=lambda _seconds: None,
+        )
+
+        self.assertEqual(
+            [
+                (settings.stats_url, settings.stats_secret),
+                (settings.stats_443_url, settings.stats_secret),
+            ]
+            * 2,
+            stats_checks,
+        )
+        self.assertEqual([settings.hysteria_port, 443] * 2, tcp_checks)
+
+    def test_restore_health_probe_rejects_non_loopback_urls_before_network_io(self):
+        settings = self.restore_settings(tempfile.gettempdir())
+        with mock.patch(
+            "hysteria2_panel.urllib.request.urlopen"
+        ) as opener, self.assertRaises(RuntimeError):
+            hysteria2_panel._default_restore_health_probe(
+                "https://attacker.example/healthz", settings
+            )
+        opener.assert_not_called()
+
+    def test_restore_health_rechecks_units_and_keeps_marker_after_transient_active(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            marker.write_text("", encoding="utf-8")
+            settings = self.restore_settings(directory)
+            calls = 0
+
+            def runner(command, **_kwargs):
+                nonlocal calls
+                if command[1] == "start":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                unit = command[-1]
+                if command[1] == "show":
+                    calls += 1
+                    active_state = (
+                        "failed"
+                        if unit == "hysteria2-panel-server.service"
+                        and calls > len(hysteria2_panel.RESTORE_STOP_UNITS)
+                        else "active"
+                    )
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="LoadState=loaded\nActiveState={}\n".format(active_state),
+                        stderr="",
+                    )
+                self.fail("unexpected command: {}".format(command))
+
+            record = {"phase": "services-pending", "outcome": "rolled-back"}
+            with mock.patch.object(
+                hysteria2_panel,
+                "_reconcile_restore_transaction",
+                return_value=record,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "healthy"):
+                    hysteria2_panel.resume_after_restore(
+                        settings,
+                        lock_path=Path(directory) / "maintenance.lock",
+                        marker_path=marker,
+                        runner=runner,
+                        health_probe=lambda *_args: None,
+                        stats_probe=lambda *_args: None,
+                        tcp_probe=lambda *_args: None,
+                        attempts=2,
+                        sleeper=lambda _seconds: None,
+                        marker_reader=lambda *_args, **_kwargs: record,
+                    )
+
+            self.assertTrue(marker.is_file())
+
+    def test_restore_stats_selection_fails_closed_on_secondary_transitions(self):
+        settings = self.restore_settings(tempfile.gettempdir())
+
+        for secondary_state in ("activating", "deactivating", "unknown"):
+            with self.subTest(secondary_state=secondary_state):
+                def runner(command, **_kwargs):
+                    state = (
+                        "active"
+                        if command[-1] == "hysteria2-panel-server.service"
+                        else secondary_state
+                    )
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="LoadState=loaded\nActiveState={}\n".format(state),
+                        stderr="",
+                    )
+
+                with mock.patch.object(
+                    hysteria2_panel, "make_stats_client"
+                ) as make_client, self.assertRaisesRegex(
+                    RuntimeError, "state is invalid"
+                ):
+                    hysteria2_panel.make_restore_stats_client(
+                        settings, runner=runner
+                    )
+                make_client.assert_not_called()
+
+    def test_restore_stats_selection_requires_the_configured_endpoint_topology(self):
+        settings = self.restore_settings(tempfile.gettempdir())
+
+        def runner(command, **_kwargs):
+            if command[-1] == "hysteria2-panel-server.service":
+                load_state, active_state = "loaded", "active"
+            else:
+                load_state, active_state = "not-found", "inactive"
+            return mock.Mock(
+                returncode=0,
+                stdout="LoadState={}\nActiveState={}\n".format(
+                    load_state, active_state
+                ),
+                stderr="",
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "secondary.*missing"):
+            hysteria2_panel.make_restore_stats_client(settings, runner=runner)
+
+        settings.hysteria_port = 443
+        primary_client = mock.Mock()
+        with mock.patch.object(
+            hysteria2_panel, "make_stats_client", return_value=primary_client
+        ) as make_client:
+            self.assertIs(
+                primary_client,
+                hysteria2_panel.make_restore_stats_client(settings, runner=runner),
+            )
+        make_client.assert_called_once_with(settings, primary_only=True)
+
+    def test_restore_settles_traffic_before_archive_apply_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self.restore_settings(directory)
+            database = Database(settings.database_path, settings.hmac_key)
+            database.initialize()
+            user = database.create_proxy_user("alice")
+            stats = PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}})
+            manager = mock.Mock()
+            manager.apply_pending_archive.side_effect = RuntimeError("restore failed")
+            marker = Path(directory) / "restore-active"
+            stopped = []
+
+            def runner(command, **_kwargs):
+                action = command[1]
+                unit = command[-1]
+                if action == "kill":
+                    stopped.append("panel")
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if action == "show":
+                    if unit == "hysteria2-panel.service":
+                        state = "inactive" if stopped else "active"
+                    elif unit == "hysteria2-panel-server.service":
+                        state = (
+                            "inactive"
+                            if unit in stopped
+                            else "active"
+                        )
+                    else:
+                        state = "inactive"
+                    load = "not-found" if state == "inactive" and unit not in {
+                        "hysteria2-panel.service",
+                        "hysteria2-panel-server.service",
+                    } else "loaded"
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="LoadState={}\nActiveState={}\n".format(load, state),
+                        stderr="",
+                    )
+                if action == "stop":
+                    stopped.append(unit)
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if action == "start":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                self.fail("unexpected command: {}".format(command))
+
+            with mock.patch.object(
+                hysteria2_panel, "BackupManager", return_value=manager
+            ), mock.patch.object(
+                hysteria2_panel,
+                "make_restore_stats_client",
+                return_value=stats,
+            ), mock.patch.object(
+                hysteria2_panel, "start_restore_services"
+            ):
+                with self.assertRaisesRegex(RuntimeError, "restore failed"):
+                    hysteria2_panel.restore_pending(
+                        settings,
+                        lock_path=Path(directory) / "maintenance.lock",
+                        marker_path=marker,
+                        runner=runner,
+                        quiesce=lambda _client: None,
+                    )
+
+            record = database.get_proxy_user(user["id"])
+            self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
+            manager.queue_restore_transaction.assert_called_once()
+            manager.apply_pending_archive.assert_called_once()
+
+    def test_sigterm_waits_for_inflight_traffic_collection_before_service_exit(self):
+        class BlockingServer:
+            def __init__(self):
+                self.started = threading.Event()
+                self.stopped = threading.Event()
+                self.closed = False
+
+            def serve_forever(self):
+                self.started.set()
+                self.stopped.wait(2)
+
+            def shutdown(self):
+                self.stopped.set()
+
+            def server_close(self):
+                self.closed = True
+
+        class InflightUsage:
+            def __init__(self):
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.persisted = False
+                self.final_collections = 0
+
+            def run_collector(self, stop_event):
+                self.started.set()
+                self.release.wait(2)
+                self.persisted = True
+                stop_event.wait(2)
+
+            def collect_once(self):
+                self.final_collections += 1
+
+        panel_server = BlockingServer()
+        auth_server = BlockingServer()
+        usage = InflightUsage()
+        installed = {}
+        handler_ready = threading.Event()
+
+        def install_handler(signum, handler):
+            installed[signum] = handler
+            if signum == hysteria2_panel.signal.SIGTERM and callable(handler):
+                handler_ready.set()
+            return hysteria2_panel.signal.SIG_DFL
+
+        def terminate_after_collection_starts():
+            self.assertTrue(handler_ready.wait(1))
+            self.assertTrue(usage.started.wait(1))
+            installed[hysteria2_panel.signal.SIGTERM](
+                hysteria2_panel.signal.SIGTERM, None
+            )
+            time.sleep(0.05)
+            self.assertFalse(usage.persisted)
+            usage.release.set()
+
+        terminator = threading.Thread(target=terminate_after_collection_starts)
+        terminator.start()
+        with mock.patch.object(
+            hysteria2_panel.signal, "signal", side_effect=install_handler
+        ), mock.patch.object(
+            hysteria2_panel.signal,
+            "getsignal",
+            return_value=hysteria2_panel.signal.SIG_DFL,
+        ):
+            hysteria2_panel.run_supervised_services(
+                panel_server,
+                auth_server,
+                usage,
+                panel_scheme="http",
+            )
+        terminator.join(2)
+
+        self.assertFalse(terminator.is_alive())
+        self.assertTrue(usage.persisted)
+        self.assertEqual(1, usage.final_collections)
+        self.assertTrue(panel_server.closed)
+        self.assertTrue(auth_server.closed)
+
+    def test_second_sigterm_during_final_collection_is_deferred_until_persisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ready = Path(directory) / "collector-ready"
+            final_started = Path(directory) / "final-started"
+            persisted = Path(directory) / "persisted"
+            script = textwrap.dedent(
+                """
+                import threading
+                import time
+                from pathlib import Path
+
+                from hysteria2_panel import run_supervised_services
+
+                ready = Path({ready!r})
+                final_started = Path({final_started!r})
+                persisted = Path({persisted!r})
+
+                class Server:
+                    def __init__(self):
+                        self.stopped = threading.Event()
+
+                    def serve_forever(self):
+                        self.stopped.wait(5)
+
+                    def shutdown(self):
+                        self.stopped.set()
+
+                    def server_close(self):
+                        return
+
+                class Usage:
+                    def run_collector(self, stop_event):
+                        ready.write_text("ready", encoding="utf-8")
+                        stop_event.wait(5)
+
+                    def collect_once(self):
+                        final_started.write_text("started", encoding="utf-8")
+                        time.sleep(0.5)
+                        persisted.write_text("persisted", encoding="utf-8")
+
+                run_supervised_services(Server(), Server(), Usage(), "http")
+                """
+            ).format(
+                ready=str(ready),
+                final_started=str(final_started),
+                persisted=str(persisted),
+            )
+            project_root = str(Path(hysteria2_panel.__file__).resolve().parent)
+            process = subprocess.Popen(
+                [sys.executable, "-c", script],
+                cwd=project_root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            def wait_for(path):
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if path.exists():
+                        return True
+                    if process.poll() is not None:
+                        return False
+                    time.sleep(0.01)
+                return False
+
+            stderr = ""
+            try:
+                self.assertTrue(wait_for(ready), "collector worker did not start")
+                process.send_signal(hysteria2_panel.signal.SIGTERM)
+                self.assertTrue(wait_for(final_started), "final collection did not start")
+                process.send_signal(hysteria2_panel.signal.SIGTERM)
+                _stdout, stderr = process.communicate(timeout=5)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=5)
+
+            self.assertEqual(0, process.returncode, stderr)
+            self.assertTrue(persisted.is_file())
+
+    def test_server_close_waits_for_an_inflight_http_request(self):
+        request_started = threading.Event()
+        release_request = threading.Event()
+        close_finished = threading.Event()
+
+        class BlockingHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                request_started.set()
+                release_request.wait(2)
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), BlockingHandler, max_workers=1
+        )
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        request = threading.Thread(
+            target=lambda: urllib.request.urlopen(
+                "http://127.0.0.1:{}/".format(server.server_address[1]),
+                timeout=2,
+            ).close()
+        )
+        request.start()
+        self.assertTrue(request_started.wait(1))
+
+        server.shutdown()
+        closing = threading.Thread(
+            target=lambda: (server.server_close(), close_finished.set())
+        )
+        closing.start()
+        self.assertFalse(close_finished.wait(0.05))
+        release_request.set()
+
+        self.assertTrue(close_finished.wait(1))
+        request.join(1)
+        serving.join(1)
+        closing.join(1)
+        self.assertFalse(request.is_alive())
+        self.assertFalse(serving.is_alive())
+        self.assertFalse(closing.is_alive())
+
+    def test_shutdown_interrupts_a_slow_request_before_waiting_for_threads(self):
+        request_started = threading.Event()
+
+        class SlowBodyHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                request_started.set()
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), SlowBodyHandler, max_workers=1, request_timeout=1
+        )
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        client = socket.create_connection(server.server_address, timeout=1)
+        client.sendall(
+            b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1000\r\n\r\nx"
+        )
+        self.assertTrue(request_started.wait(1))
+
+        server.shutdown()
+        server.shutdown_active_requests()
+        closing = threading.Thread(target=server.server_close)
+        closing.start()
+        closing.join(1)
+
+        client.close()
+        serving.join(1)
+        self.assertFalse(closing.is_alive())
+        self.assertFalse(serving.is_alive())
+
+    def test_tls_socket_registered_after_shutdown_is_closed_immediately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            certificate, private_key = create_test_certificate(directory)
+            wrapped_ready = threading.Event()
+            release_wrapped_socket = threading.Event()
+            close_finished = threading.Event()
+
+            class IdleHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    self.send_response(204)
+                    self.end_headers()
+
+                def log_message(self, _format, *_args):
+                    return
+
+            real_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            real_context.load_cert_chain(str(certificate), str(private_key))
+
+            class BarrierTlsContext:
+                def wrap_socket(self, *args, **kwargs):
+                    wrapped = real_context.wrap_socket(*args, **kwargs)
+                    wrapped_ready.set()
+                    release_wrapped_socket.wait(5)
+                    return wrapped
+
+            server = BoundedThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                IdleHandler,
+                max_workers=1,
+                request_timeout=30,
+            )
+            server.tls_context = BarrierTlsContext()
+            serving = threading.Thread(target=server.serve_forever)
+            serving.start()
+            client_context = ssl._create_unverified_context()
+            client = client_context.wrap_socket(
+                socket.create_connection(server.server_address, timeout=2),
+                server_hostname="vpn.example.test",
+            )
+            closing = None
+            try:
+                self.assertTrue(wrapped_ready.wait(2))
+                server.shutdown()
+                server.shutdown_active_requests()
+                closing = threading.Thread(
+                    target=lambda: (server.server_close(), close_finished.set())
+                )
+                closing.start()
+                self.assertFalse(close_finished.wait(0.05))
+
+                release_wrapped_socket.set()
+
+                self.assertTrue(close_finished.wait(1))
+            finally:
+                release_wrapped_socket.set()
+                client.close()
+                if closing is None:
+                    server.server_close()
+                else:
+                    closing.join(2)
+                serving.join(2)
+
+            self.assertFalse(serving.is_alive())
+            self.assertFalse(closing.is_alive())
+
+    def test_partial_worker_start_failure_does_not_shutdown_an_unstarted_server(self):
+        class FakeServer:
+            def __init__(self):
+                self.stopped = threading.Event()
+                self.shutdown_calls = 0
+
+            def serve_forever(self):
+                self.stopped.wait(1)
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+                self.stopped.set()
+
+            def server_close(self):
+                return
+
+        panel_server = FakeServer()
+        auth_server = FakeServer()
+        usage = mock.Mock()
+        real_start = threading.Thread.start
+        starts = 0
+
+        def fail_second_start(thread):
+            nonlocal starts
+            starts += 1
+            if starts == 2:
+                raise RuntimeError("thread unavailable")
+            return real_start(thread)
+
+        with mock.patch.object(threading.Thread, "start", new=fail_second_start):
+            with self.assertRaisesRegex(RuntimeError, "thread unavailable"):
+                hysteria2_panel.run_supervised_services(
+                    panel_server,
+                    auth_server,
+                    usage,
+                    panel_scheme="http",
+                )
+
+        self.assertEqual(1, panel_server.shutdown_calls)
+        self.assertEqual(0, auth_server.shutdown_calls)
+
     def test_worker_exit_fails_the_process_and_closes_every_local_service(self):
         class FakeServer:
             def __init__(self, exits=False):
@@ -655,6 +2622,9 @@ class OperationsTests(unittest.TestCase):
                 stop_event.wait(2)
                 self.stopped.set()
 
+            def collect_once(self):
+                raise RuntimeError("final traffic sync unavailable")
+
         panel_server = FakeServer(exits=True)
         auth_server = FakeServer()
         usage_manager = FakeUsageManager()
@@ -670,6 +2640,43 @@ class OperationsTests(unittest.TestCase):
         self.assertTrue(panel_server.closed)
         self.assertTrue(auth_server.closed)
         self.assertTrue(usage_manager.stopped.wait(1))
+
+    def test_worker_exit_final_collection_persists_real_usage(self):
+        class Server:
+            def __init__(self, exits=False):
+                self.exits = exits
+                self.stopped = threading.Event()
+
+            def serve_forever(self):
+                if self.exits:
+                    return
+                self.stopped.wait(2)
+
+            def shutdown(self):
+                self.stopped.set()
+
+            def server_close(self):
+                return
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "panel.db", b"w" * 32)
+            database.initialize()
+            user = database.create_proxy_user("alice")
+            usage = UsageManager(
+                database,
+                PolicyStatsClient(traffic={"alice": {"tx": 10, "rx": 20}}),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "panel-http"):
+                run_supervised_services(
+                    Server(exits=True),
+                    Server(),
+                    usage,
+                    panel_scheme="http",
+                )
+
+            record = database.get_proxy_user(user["id"])
+            self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
 
     def test_service_controller_uses_only_fixed_systemctl_commands(self):
         calls = []
@@ -915,6 +2922,7 @@ class OperationsTests(unittest.TestCase):
         self.assertNotIn("shell", calls[1][1])
         self.assertEqual("1", calls[1][1]["env"]["HY2PANEL_AUTO_UPDATE"])
         self.assertEqual("v0.12.0", calls[1][1]["env"]["PANEL_REF"])
+        self.assertNotIn("timeout", calls[1][1])
         self.assertNotIn("ADMIN_PASSWORD", calls[1][1]["env"])
         self.assertEqual(
             {"current": "v0.11.2", "latest": "v0.12.0", "updated": True},
@@ -1178,7 +3186,12 @@ class BackupManagerTests(unittest.TestCase):
             hysteria_port=19999,
             node_name="私家车-2026",
             work_dir=self.root / "work",
+            maintenance_lock_path=self.root / "maintenance.lock",
+            maintenance_lock_owner=os.geteuid(),
+            maintenance_lock_mode=0o600,
+            restore_marker_path=self.root / "restore-active",
         )
+        (self.root / "maintenance.lock").touch(mode=0o600)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -1316,10 +3329,48 @@ class BackupManagerTests(unittest.TestCase):
             hashlib.sha256(self.manager.pending_archive.read_bytes()).digest(),
         )
 
+    def test_restore_upload_is_rejected_while_installer_holds_maintenance_lock(self):
+        archive = self.manager.create_archive()
+        archive_bytes = archive.read_bytes()
+
+        with hysteria2_panel.exclusive_maintenance_lock(
+            self.root / "maintenance.lock"
+        ):
+            with self.assertRaisesRegex(BackupValidationError, "维护任务"):
+                self.manager.stage_archive(
+                    io.BytesIO(archive_bytes), len(archive_bytes)
+                )
+
+        self.assertFalse(self.manager.pending_archive.exists())
+
+    def test_restore_upload_is_rejected_until_the_previous_health_marker_is_cleared(self):
+        archive = self.manager.create_archive()
+        archive_bytes = archive.read_bytes()
+        self.manager.restore_marker_path.write_text(
+            json.dumps({"phase": "services-pending"}), encoding="utf-8"
+        )
+        self.manager.restore_marker_path.chmod(0o600)
+
+        with self.assertRaisesRegex(BackupValidationError, "健康检查"):
+            self.manager.stage_archive(
+                io.BytesIO(archive_bytes), len(archive_bytes)
+            )
+
+        self.assertFalse(self.manager.pending_archive.exists())
+
+        self.manager.restore_marker_path.unlink()
+        self.manager.restore_marker_path.symlink_to(self.root / "missing-marker-target")
+        with self.assertRaisesRegex(BackupValidationError, "健康检查"):
+            self.manager.stage_archive(
+                io.BytesIO(archive_bytes), len(archive_bytes)
+            )
+        self.assertFalse(self.manager.pending_archive.exists())
+
     def test_failed_pending_restore_is_quarantined_and_does_not_block_retry(self):
         payload = b"failed restore archive"
         self.manager.work_dir.mkdir(parents=True, mode=0o700)
         self.manager.pending_archive.write_bytes(payload)
+        self.manager.pending_archive.chmod(0o600)
         self.manager.apply_archive = mock.Mock(side_effect=RuntimeError("simulated failure"))
 
         with self.assertRaisesRegex(RuntimeError, "simulated failure"):
@@ -1383,14 +3434,23 @@ class BackupManagerTests(unittest.TestCase):
         self.assertTrue((Path(result["automaticBackup"]) / "panel.db").is_file())
 
     def test_restore_preserves_every_issued_link_identity_across_server_replacement(self):
-        second = self.database.create_proxy_user(
+        created_second = self.database.create_proxy_user(
             "bob", device_limit=7, traffic_limit_bytes=900 * 1024**3
+        )
+        second_token = created_second["token"]
+        second_current = self.database.get_proxy_user(created_second["id"])
+        self.database.update_proxy_user_limits(
+            created_second["id"],
+            device_limit=7,
+            traffic_limit_bytes=900 * 1024**3,
+            allow_udp_443=True,
+            expected_generation=second_current["generation"],
         )
         legacy = self.database.create_proxy_user("legacy", token="legacy-issued-token")
         self.database.add_traffic({"bob": {"tx": 789, "rx": 987}})
         issued_tokens = {
             "alice": self.user["token"],
-            "bob": second["token"],
+            "bob": second_token,
             "legacy": legacy["token"],
         }
         source_pin = self.manager._certificate_pin(self.certificate.read_bytes())
@@ -1457,6 +3517,7 @@ class BackupManagerTests(unittest.TestCase):
                     )
         self.assertEqual(7, restored_users["bob"]["device_limit"])
         self.assertEqual(900 * 1024**3, restored_users["bob"]["traffic_limit_bytes"])
+        self.assertTrue(restored_users["bob"]["allow_udp_443"])
         self.assertEqual((789, 987), (restored_users["bob"]["tx_bytes"], restored_users["bob"]["rx_bytes"]))
         self.assertEqual(self.certificate.read_bytes(), destination_cert.read_bytes())
         self.assertEqual(self.private_key.read_bytes(), destination_key.read_bytes())
@@ -1620,6 +3681,194 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(original_key, destination_key.read_bytes())
         self.assertEqual(original_env, env_file.read_bytes())
 
+    def test_prepared_transaction_recovers_from_power_loss_using_durable_backups(self):
+        archive = self.manager.create_archive()
+        destination_root = self.root / "prepared-power-loss"
+        destination_root.mkdir()
+        destination_hmac = b"p" * 32
+        destination_db = Database(destination_root / "panel.db", destination_hmac)
+        destination_db.initialize()
+        original = destination_db.create_proxy_user("original")
+        destination_db.path.chmod(0o600)
+        destination_cert, destination_key = create_test_certificate(
+            destination_root, "vpn.example.test"
+        )
+        destination_cert.chmod(0o640)
+        destination_key.chmod(0o640)
+        destination_work = destination_root / "work"
+        maintenance_lock = destination_root / "maintenance.lock"
+        maintenance_lock.touch(mode=0o600)
+        marker = destination_root / "restore-active"
+        env_file = destination_root / "panel.env"
+        destination = BackupManager(
+            database=destination_db,
+            hmac_key=destination_hmac,
+            tls_cert=destination_cert,
+            tls_key=destination_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            work_dir=destination_work,
+            maintenance_lock_path=maintenance_lock,
+            maintenance_lock_owner=os.geteuid(),
+            maintenance_lock_mode=0o600,
+            restore_marker_path=marker,
+        )
+        env_file.write_text(
+            "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN={}\n".format(
+                destination_hmac.hex(),
+                destination._certificate_pin(destination_cert.read_bytes()),
+            ),
+            encoding="utf-8",
+        )
+        env_file.chmod(0o640)
+        archive_bytes = archive.read_bytes()
+        destination.stage_archive(io.BytesIO(archive_bytes), len(archive_bytes))
+        destination.queue_restore_transaction(
+            marker, env_file, destination_root / "automatic-backups"
+        )
+        real_replace = destination._replace_bytes
+        destination._replace_bytes = lambda *_args: (_ for _ in ()).throw(
+            KeyboardInterrupt("simulated power loss")
+        )
+        try:
+            with self.assertRaisesRegex(KeyboardInterrupt, "power loss"):
+                destination.apply_pending_archive(
+                    env_file=env_file,
+                    backup_root=destination_root / "automatic-backups",
+                    transaction_path=marker,
+                    archive_path=Path(str(marker) + ".archive"),
+                )
+        finally:
+            destination._replace_bytes = real_replace
+
+        prepared = hysteria2_panel._read_restore_transaction(
+            marker, expected_uid=os.geteuid(), strict_paths=False
+        )
+        self.assertEqual("prepared", prepared["phase"])
+        for name in ("panel.db", "server.crt", "server.key", "panel.env"):
+            self.assertEqual(
+                0o600, (Path(prepared["backupDir"]) / name).stat().st_mode & 0o777
+            )
+
+        hysteria2_panel._reconcile_to_services_pending(
+            prepared, marker, identity_uid=os.geteuid()
+        )
+        recovered = hysteria2_panel._read_restore_transaction(
+            marker, expected_uid=os.geteuid(), strict_paths=False
+        )
+        self.assertEqual("services-pending", recovered["phase"])
+        self.assertEqual("rolled-back", recovered["outcome"])
+        self.assertEqual(
+            "original", Database(destination_db.path, destination_hmac).authenticate_token(
+                original["token"]
+            )
+        )
+
+    def test_explicit_restore_advances_to_health_phase_and_resume_clears_marker(self):
+        archive = self.manager.create_archive()
+        destination_root = self.root / "explicit-transaction"
+        destination_root.mkdir()
+        database_path = destination_root / "panel.db"
+        destination_hmac = b"e" * 32
+        destination_db = Database(database_path, destination_hmac)
+        destination_db.initialize()
+        destination_db.create_proxy_user("old-user")
+        database_path.chmod(0o600)
+        certificate, private_key = create_test_certificate(
+            destination_root, "vpn.example.test"
+        )
+        certificate.chmod(0o640)
+        private_key.chmod(0o640)
+        env_file = destination_root / "panel.env"
+        staging = BackupManager(
+            database=destination_db,
+            hmac_key=destination_hmac,
+            tls_cert=certificate,
+            tls_key=private_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            node_name="test-node",
+            work_dir=destination_root / "backup-restore",
+            maintenance_lock_path=destination_root / "maintenance.lock",
+            maintenance_lock_owner=os.geteuid(),
+            maintenance_lock_mode=0o600,
+            restore_marker_path=destination_root / "restore-active",
+        )
+        (destination_root / "maintenance.lock").touch(mode=0o600)
+        env_file.write_text(
+            "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN={}\n".format(
+                destination_hmac.hex(),
+                staging._certificate_pin(certificate.read_bytes()),
+            ),
+            encoding="utf-8",
+        )
+        env_file.chmod(0o640)
+        archive_bytes = archive.read_bytes()
+        staging.stage_archive(io.BytesIO(archive_bytes), len(archive_bytes))
+        marker = destination_root / "restore-active"
+        backup_root = destination_root / "automatic-backups"
+        settings = mock.Mock(
+            database_path=database_path,
+            hmac_key=destination_hmac,
+            tls_cert=certificate,
+            tls_key=private_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            node_name="test-node",
+            panel_scheme="http",
+            panel_port=19998,
+            auth_port=19996,
+            stats_url="http://127.0.0.1:19997",
+            stats_443_url="http://127.0.0.1:19995",
+            stats_secret="stats-secret",
+        )
+
+        with mock.patch.object(
+            hysteria2_panel, "RESTORE_ENV_FILE", env_file
+        ), mock.patch.object(
+            hysteria2_panel, "RESTORE_BACKUP_ROOT", backup_root
+        ), mock.patch.object(
+            hysteria2_panel, "settle_restore_traffic"
+        ), mock.patch.object(
+            hysteria2_panel, "stop_restore_services"
+        ), mock.patch("builtins.print"):
+            hysteria2_panel.restore_pending(
+                settings,
+                lock_path=destination_root / "maintenance.lock",
+                marker_path=marker,
+            )
+
+        transaction = hysteria2_panel._read_restore_transaction(
+            marker, expected_uid=os.geteuid(), strict_paths=False
+        )
+        self.assertEqual("services-pending", transaction["phase"])
+        self.assertEqual("applied", transaction["outcome"])
+        restored = Database(database_path, self.hmac_key)
+        self.assertEqual("alice", restored.authenticate_token(self.user["token"]))
+
+        def runner(command, **_kwargs):
+            self.assertEqual("show", command[1])
+            return mock.Mock(
+                returncode=0,
+                stdout="LoadState=loaded\nActiveState=active\n",
+                stderr="",
+            )
+
+        hysteria2_panel.resume_after_restore(
+            settings,
+            lock_path=destination_root / "maintenance.lock",
+            marker_path=marker,
+            runner=runner,
+            expected_uid=os.geteuid(),
+            strict_paths=False,
+            health_probe=lambda *_args: None,
+            stats_probe=lambda *_args: None,
+            tcp_probe=lambda *_args: None,
+            attempts=2,
+            sleeper=lambda _seconds: None,
+        )
+        self.assertFalse(marker.exists())
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -1638,6 +3887,8 @@ class PanelHttpTests(unittest.TestCase):
         self.update_controller = FakeUpdateController()
         self.reboot_controller = FakeRebootController()
         certificate, private_key = create_test_certificate(self.temp_dir.name)
+        maintenance_lock = Path(self.temp_dir.name) / "maintenance.lock"
+        maintenance_lock.touch(mode=0o600)
         self.backup_manager = BackupManager(
             database=self.db,
             hmac_key=b"c" * 32,
@@ -1647,6 +3898,10 @@ class PanelHttpTests(unittest.TestCase):
             hysteria_port=19999,
             node_name="私家车-2026",
             work_dir=Path(self.temp_dir.name) / "backup-restore",
+            maintenance_lock_path=maintenance_lock,
+            maintenance_lock_owner=os.geteuid(),
+            maintenance_lock_mode=0o600,
+            restore_marker_path=Path(self.temp_dir.name) / "restore-active",
         )
         self.application = PanelApplication(
             database=self.db,
@@ -2113,6 +4368,27 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(1, self.restore_controller.queued)
         self.assertTrue(self.backup_manager.pending_archive.is_file())
 
+    def test_backup_fails_closed_when_pending_traffic_cannot_be_flushed(self):
+        headers, csrf_token = self.authenticated_headers()
+        original_run = self.application.usage_manager.run_after_collect
+
+        def fail_collect(_action):
+            raise RuntimeError("traffic database unavailable")
+
+        self.application.usage_manager.run_after_collect = fail_collect
+        try:
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                self.request(
+                    "/backup",
+                    {"csrf": csrf_token},
+                    headers=headers,
+                    follow_redirects=False,
+                )
+            self.assertEqual(500, raised.exception.code)
+            self.assertEqual([], list(self.backup_manager.work_dir.glob("*.zip")))
+        finally:
+            self.application.usage_manager.run_after_collect = original_run
+
     def test_restore_rejects_wrong_content_type_and_csrf(self):
         archive = self.backup_manager.create_archive().read_bytes()
         headers, csrf_token = self.authenticated_headers()
@@ -2262,7 +4538,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.15.2", body)
+        self.assertIn("v0.16.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
@@ -2401,6 +4677,32 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(10, self.server.request_timeout)
         self.assertEqual(64, self.server.max_workers)
         self.assertIsNone(self.server.tls_context)
+
+    def test_slow_tls_handshake_does_not_block_later_https_request(self):
+        server = make_panel_server(("127.0.0.1", 0), self.application)
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(
+            str(self.backup_manager.tls_cert), str(self.backup_manager.tls_key)
+        )
+        server.tls_context = tls_context
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        slow_client = socket.create_connection(("127.0.0.1", port), timeout=1)
+        try:
+            time.sleep(0.1)
+            started = time.monotonic()
+            with urllib.request.urlopen(
+                "https://127.0.0.1:{}/healthz".format(port),
+                context=ssl._create_unverified_context(),
+                timeout=1,
+            ) as response:
+                self.assertEqual({"status": "ok"}, json.load(response))
+            self.assertLess(time.monotonic() - started, 1)
+        finally:
+            slow_client.close()
+            server.shutdown()
+            server.server_close()
 
     def test_expected_client_disconnect_does_not_emit_server_traceback(self):
         server = object.__new__(BoundedThreadingHTTPServer)
@@ -2632,6 +4934,26 @@ class SettingsTests(unittest.TestCase):
             Settings.from_mapping({**base, "HY2PANEL_NODE_NAME": "bad\nname"})
         with self.assertRaises(ValueError):
             Settings.from_mapping({**base, "HY2PANEL_PANEL_SCHEME": "ftp"})
+
+    def test_configured_ports_preserve_privileged_endpoints_but_reserve_secondary_443(self):
+        base = {
+            "HY2PANEL_HMAC_KEY": "ab" * 32,
+            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_STATS_SECRET": "stats-secret",
+            "HY2PANEL_CERT_PIN": "AA:BB:CC",
+        }
+        settings = Settings.from_mapping({**base, "HY2PANEL_HYSTERIA_PORT": "443"})
+        self.assertEqual(443, settings.hysteria_port)
+
+        for variable in (
+            "HY2PANEL_PANEL_PORT",
+            "HY2PANEL_AUTH_PORT",
+            "HY2PANEL_STATS_PORT",
+            "HY2PANEL_STATS_443_PORT",
+        ):
+            with self.subTest(variable=variable):
+                with self.assertRaisesRegex(ValueError, "must be different"):
+                    Settings.from_mapping({**base, variable: "443"})
 
 
 class ConnectionUriTests(unittest.TestCase):

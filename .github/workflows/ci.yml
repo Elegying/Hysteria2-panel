@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -26,6 +27,32 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Compile Python services
         run: python -m py_compile hysteria2_panel.py tcp_probe.py
+      - name: Verify release tag matches source version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          panel = pathlib.Path("hysteria2_panel.py").read_text()
+          installer = pathlib.Path("install.sh").read_text()
+          panel_match = re.search(r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$', panel, re.MULTILINE)
+          installer_match = re.search(r'^PANEL_VERSION="([0-9]+\.[0-9]+\.[0-9]+)"$', installer, re.MULTILINE)
+          if not panel_match or not installer_match:
+              raise SystemExit("release version metadata is missing")
+          panel_version = panel_match.group(1)
+          installer_version = installer_match.group(1)
+          expected_tag = "v{}".format(panel_version)
+          if installer_version != panel_version or os.environ["RELEASE_TAG"] != expected_tag:
+              raise SystemExit(
+                  "tag/source mismatch: tag={}, panel={}, installer={}".format(
+                      os.environ["RELEASE_TAG"], panel_version, installer_version
+                  )
+              )
+          PY
 
   static-analysis:
     runs-on: ubuntu-latest
@@ -35,6 +62,80 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: Verify release metadata contract
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+
+          panel = pathlib.Path("hysteria2_panel.py").read_text()
+          installer = pathlib.Path("install.sh").read_text()
+          changelog = pathlib.Path("CHANGELOG.md").read_text()
+          readme = pathlib.Path("README.md").read_text()
+
+          panel_match = re.search(
+              r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$',
+              panel,
+              re.MULTILINE,
+          )
+          installer_match = re.search(
+              r'^PANEL_VERSION="([0-9]+\.[0-9]+\.[0-9]+)"$',
+              installer,
+              re.MULTILINE,
+          )
+          changelog_match = re.search(
+              r'^## \[([0-9]+\.[0-9]+\.[0-9]+)\]',
+              changelog,
+              re.MULTILINE,
+          )
+          if not panel_match or not installer_match or not changelog_match:
+              raise SystemExit("release version metadata is missing")
+
+          versions = {
+              panel_match.group(1),
+              installer_match.group(1),
+              changelog_match.group(1),
+          }
+          if len(versions) != 1:
+              raise SystemExit(
+                  "release version mismatch: panel={}, installer={}, changelog={}".format(
+                      panel_match.group(1),
+                      installer_match.group(1),
+                      changelog_match.group(1),
+                  )
+              )
+          if 'PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"' not in installer:
+              raise SystemExit("installer no longer defaults PANEL_REF to its version tag")
+          versionless_url = (
+              "https://raw.githubusercontent.com/"
+              "Elegying/Hysteria2-panel/main/install.sh"
+          )
+          if versionless_url not in readme:
+              raise SystemExit("README versionless main installer URL is missing")
+          PY
+      - name: Require the version tag to point at a main push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          version="$(python - <<'PY'
+          import pathlib
+          import re
+
+          source = pathlib.Path("hysteria2_panel.py").read_text()
+          match = re.search(
+              r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$',
+              source,
+              re.MULTILINE,
+          )
+          if not match:
+              raise SystemExit("panel version metadata is missing")
+          print(match.group(1))
+          PY
+          )"
+          git fetch --force origin "refs/tags/v${version}:refs/tags/v${version}"
+          tag_commit="$(git rev-parse "v${version}^{commit}")"
+          test "${tag_commit}" = "${EXPECTED_COMMIT}"
       - name: Install pinned audit tools
         run: python -m pip install ruff==0.12.11 bandit==1.8.6
       - name: Lint Python
@@ -46,6 +147,39 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint installer
-        run: shellcheck install.sh
+        run: shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh
       - name: Reject whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
+
+  managed-firewall-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install managed firewall implementations
+        run: sudo apt-get update && sudo apt-get install -y firewalld ufw nftables iptables
+      - name: Test real UFW and firewalld behavior
+        run: sudo bash tests/firewall_integration.sh
+
+  systemd-service-semantics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify dependency-preserving panel shutdown
+        run: sudo bash tests/systemd_integration.sh
+
+  rhel-firewall-package-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    container: rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6
+    steps:
+      - name: Verify RHEL-family firewall command packages
+        run: |
+          dnf install -y python3 nftables iptables-nft firewalld
+          command -v nft
+          command -v iptables-save
+          command -v ip6tables-save
+          command -v firewall-cmd
+          nft --version
+          firewall-cmd --version
