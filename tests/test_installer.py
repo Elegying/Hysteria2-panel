@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.15.1"', source)
+        self.assertIn('PANEL_VERSION="0.15.2"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="a032cbe6932c7d30f87ebdb9a954d7abe40ee1eba5d0062b73200acdceb3c7b4"',
+            'PANEL_SHA256="f41b1740cb585775fd3d15fe6ae4d751b09df64c196927bf1228911691757295"',
             source,
         )
         self.assertIn(
@@ -166,10 +166,10 @@ class InstallerContractTests(unittest.TestCase):
         )[1].split("\nEOF", 1)[0]
         self.assertIn('AmbientCapabilities=CAP_NET_BIND_SERVICE', secondary_unit)
         self.assertIn('CapabilityBoundingSet=CAP_NET_BIND_SERVICE', secondary_unit)
-        self.assertEqual(1, source.count('AmbientCapabilities=CAP_NET_BIND_SERVICE'))
-        self.assertEqual(1, source.count('CapabilityBoundingSet=CAP_NET_BIND_SERVICE'))
+        self.assertEqual(2, source.count('AmbientCapabilities=CAP_NET_BIND_SERVICE'))
+        self.assertEqual(2, source.count('CapabilityBoundingSet=CAP_NET_BIND_SERVICE'))
         self.assertIn('ss -H -lun "sport = :443"', source)
-        self.assertIn('请同时放行 UDP 443', source)
+        self.assertIn('请同时放行 TCP/UDP 443', source)
 
     def test_installer_restarts_upgrades_and_does_not_mutate_firewall(self):
         source = INSTALLER.read_text()
@@ -208,6 +208,52 @@ class InstallerContractTests(unittest.TestCase):
         )
         self.assertIn('ss -H -ltn "sport = :${HYSTERIA_PORT}"', source)
         self.assertIn('TCP/UDP ${HYSTERIA_PORT}', source)
+
+    def test_installer_mirrors_the_tcp_probe_on_the_udp_443_entrypoint(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("hysteria2-panel-tcp-probe-443.service", source)
+        self.assertIn("Wants=hysteria2-panel-tcp-probe-443.service", source)
+        secondary_probe_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-tcp-probe-443.service <<EOF",
+            1,
+        )[1].split("\nEOF", 1)[0]
+        self.assertIn("BindsTo=hysteria2-panel-server-443.service", secondary_probe_unit)
+        self.assertIn("PartOf=hysteria2-panel-server-443.service", secondary_probe_unit)
+        self.assertIn("DynamicUser=true", secondary_probe_unit)
+        self.assertIn(
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/tcp_probe.py 443",
+            secondary_probe_unit,
+        )
+        self.assertIn(
+            "CapabilityBoundingSet=CAP_NET_BIND_SERVICE", secondary_probe_unit
+        )
+        self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", secondary_probe_unit)
+        self.assertIn(
+            'if (( UDP_443_ENABLED == 1 )) && ss -H -ltn "sport = :443" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-tcp-probe-443.service; then',
+            source,
+        )
+        self.assertIn(
+            "systemctl stop hysteria2-panel-tcp-probe-443.service",
+            source,
+        )
+        self.assertIn(
+            "hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-restore.service",
+            source,
+        )
+        self.assertIn(
+            "hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service\nBefore=",
+            source,
+        )
+        self.assertIn(
+            'systemctl is-active --quiet hysteria2-panel-tcp-probe-443.service || fail "TCP 443 连通性探测服务启动失败"',
+            source,
+        )
+        self.assertIn(
+            'ss -H -ltn "sport = :443" | grep -q . || fail "Hysteria TCP 443 探测端口未监听"',
+            source,
+        )
+        self.assertIn("请同时放行 TCP/UDP 443", source)
 
     def test_installer_waits_for_service_readiness(self):
         source = INSTALLER.read_text()
@@ -310,8 +356,8 @@ class InstallerContractTests(unittest.TestCase):
         )
         self.assertIn("visudo -cf", source)
         self.assertIn("sudo", source)
-        self.assertEqual(5, source.count("NoNewPrivileges=true"))
-        self.assertEqual(5, source.count("PrivateDevices=true"))
+        self.assertEqual(6, source.count("NoNewPrivileges=true"))
+        self.assertEqual(6, source.count("PrivateDevices=true"))
         for sandbox_option in (
             "ProtectKernelTunables=true",
             "ProtectKernelModules=true",
@@ -320,11 +366,11 @@ class InstallerContractTests(unittest.TestCase):
             "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
         ):
             if sandbox_option in {"RestrictSUIDSGID=true", "LockPersonality=true"}:
-                expected_count = 5
+                expected_count = 6
             elif sandbox_option.endswith("AF_UNIX"):
                 expected_count = 4
             else:
-                expected_count = 4
+                expected_count = 5
             self.assertEqual(expected_count, source.count(sandbox_option), sandbox_option)
 
     def test_installer_adds_a_root_only_one_shot_restore_service(self):
@@ -340,7 +386,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            "Conflicts=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service",
+            "Conflicts=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service",
             source,
         )
         self.assertIn(

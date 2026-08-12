@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.15.1"
+PANEL_VERSION="0.15.2"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="a032cbe6932c7d30f87ebdb9a954d7abe40ee1eba5d0062b73200acdceb3c7b4"
+PANEL_SHA256="f41b1740cb585775fd3d15fe6ae4d751b09df64c196927bf1228911691757295"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -34,6 +34,7 @@ Hysteria2-panel 一键部署
 
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
+  账号专属入口: UDP 443（同时提供 TCP 连通性探测）
   管理面板:   HTTP TCP 19998（可选 HTTPS）
 
 支持系统：
@@ -60,7 +61,7 @@ rollback_existing_install() {
   trap - ERR
   set +e
   echo "升级失败（退出码 ${status}），正在自动恢复升级前版本和节点身份…" >&2
-  systemctl stop hysteria2-panel-server-443.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service hysteria2-panel.service
+  systemctl stop hysteria2-panel-tcp-probe-443.service hysteria2-panel-server-443.service hysteria2-panel-server.service hysteria2-panel-tcp-probe.service hysteria2-panel.service
 
   if [[ -d "${BACKUP_DIR}/opt" ]]; then
     if rm -r -- /opt/hysteria2-panel; then
@@ -84,7 +85,7 @@ rollback_existing_install() {
     rm -f -- /var/lib/hysteria2-panel/panel.db
   fi
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-restore.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-restore.service hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -295,6 +296,7 @@ if [[ ! -e "${MANAGED_MARKER}" ]] && {
     [[ -e /etc/systemd/system/hysteria2-panel-server.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-server-443.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe-443.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-restore.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-update.service ]]
 }; then
@@ -419,6 +421,9 @@ fi
 if (( UDP_443_ENABLED == 1 )) && ss -H -lun "sport = :443" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-server-443.service; then
   fail "UDP 443 已被其他服务占用"
 fi
+if (( UDP_443_ENABLED == 1 )) && ss -H -ltn "sport = :443" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-tcp-probe-443.service; then
+  fail "TCP 443 已被其他服务占用"
+fi
 if (( UDP_443_ENABLED == 1 )) && ss -H -ltn "sport = :${STATS_443_PORT}" | grep -q . && ! systemctl is-active --quiet hysteria2-panel-server-443.service; then
   fail "TCP ${STATS_443_PORT} 已被其他服务占用"
 fi
@@ -473,7 +478,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-restore.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-restore.service hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
@@ -709,6 +714,7 @@ Description=Hysteria 2 per-user UDP 443 server
 After=network-online.target hysteria2-panel.service
 Requires=hysteria2-panel.service
 PartOf=hysteria2-panel-server.service
+Wants=hysteria2-panel-tcp-probe-443.service
 
 [Service]
 Type=simple
@@ -736,8 +742,40 @@ TasksMax=256
 MemoryMax=768M
 LimitNOFILE=1048576
 EOF
+
+  cat > /etc/systemd/system/hysteria2-panel-tcp-probe-443.service <<EOF
+[Unit]
+Description=Hysteria 2 TCP 443 connectivity probe
+After=hysteria2-panel-server-443.service
+BindsTo=hysteria2-panel-server-443.service
+PartOf=hysteria2-panel-server-443.service
+
+[Service]
+Type=simple
+DynamicUser=true
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/tcp_probe.py 443
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+TasksMax=16
+MemoryMax=64M
+LimitNOFILE=4096
+EOF
 else
-  rm -f -- /etc/systemd/system/hysteria2-panel-server-443.service
+  rm -f -- /etc/systemd/system/hysteria2-panel-server-443.service /etc/systemd/system/hysteria2-panel-tcp-probe-443.service
 fi
 
 cat > /etc/systemd/system/hysteria2-panel-tcp-probe.service <<EOF
@@ -773,8 +811,8 @@ EOF
 cat > /etc/systemd/system/hysteria2-panel-restore.service <<EOF
 [Unit]
 Description=Restore Hysteria 2 panel users and node identity
-Conflicts=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service
-Before=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service
+Conflicts=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service
+Before=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service
 
 [Service]
 Type=oneshot
@@ -846,6 +884,7 @@ systemctl is-active --quiet hysteria2-panel-server.service || fail "Hysteria 服
 systemctl is-active --quiet hysteria2-panel-tcp-probe.service || fail "TCP 连通性探测服务启动失败"
 if (( UDP_443_ENABLED == 1 )); then
   systemctl is-active --quiet hysteria2-panel-server-443.service || fail "Hysteria UDP 443 服务启动失败"
+  systemctl is-active --quiet hysteria2-panel-tcp-probe-443.service || fail "TCP 443 连通性探测服务启动失败"
 fi
 
 PANEL_HEALTH_TLS_MODE=strict
@@ -857,6 +896,7 @@ wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
 if (( UDP_443_ENABLED == 1 )); then
   ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 端口未监听"
+  ss -H -ltn "sport = :443" | grep -q . || fail "Hysteria TCP 443 探测端口未监听"
 fi
 ss -H -ltn "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria TCP 探测端口未监听"
 ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
@@ -867,7 +907,8 @@ echo "部署完成"
 echo "面板地址：${PANEL_SCHEME}://${PUBLIC_HOST}:${PANEL_PORT}/"
 echo "Hysteria 端口：TCP/UDP ${HYSTERIA_PORT}"
 if (( UDP_443_ENABLED == 1 )); then
-  echo "账号专属入口：UDP 443（需在编辑用户中单独开启）"
+  echo "账号专属 Hysteria 入口：UDP 443（需在编辑用户中单独开启）"
+  echo "TCP 连通性探测：TCP 443"
 fi
 if [[ "${EGRESS_POLICY}" == "web" ]]; then
   echo "出站策略：web（网页/视频白名单，阻断常规 BT/PT 与非网页端口）"
@@ -879,7 +920,7 @@ fi
 echo "证书指纹：${CERT_PIN}"
 echo "如云平台或主机启用了防火墙，请放行 TCP/UDP ${HYSTERIA_PORT} 与 TCP ${PANEL_PORT}。"
 if (( UDP_443_ENABLED == 1 )); then
-  echo "请同时放行 UDP 443，供已授权账号使用。"
+  echo "请同时放行 TCP/UDP 443；TCP 用于连通性探测，UDP 供已授权账号使用。"
 fi
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
   echo "首次打开自签名 HTTPS 地址时，浏览器会显示证书警告。"

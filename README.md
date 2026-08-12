@@ -27,7 +27,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 |---|---|---:|
 | Hysteria 2 | 公网 UDP | `19999` |
 | 账号专属 Hysteria 入口 | 公网 UDP | `443`（按账号开启） |
-| TCP 连通性兼容探测 | 公网 TCP | 与 Hysteria 相同，默认 `19999` |
+| TCP 连通性兼容探测 | 公网 TCP | `19999` 和 `443` |
 | 管理面板 | 公网 HTTP TCP（可选 HTTPS） | `19998` |
 | 流量统计 API | `127.0.0.1` | `19997` |
 | UDP 443 入口流量统计 API | `127.0.0.1` | `19995` |
@@ -39,9 +39,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/mai
 
 部分网络设备会检查明文 HTTP 的 `Host` 并主动重置特定域名连接。安装器在节点域名与本机检测 IP 不同时会同时打印备用面板地址；确认该 IP 可从公网路由后，可用 `http://服务器IP:面板端口/` 登录，不需要修改 Hysteria 节点域名、证书或已分享 URI。面板会安静处理这类预期断连，避免服务日志被无意义的异常栈淹没。
 
-> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999` 和 UDP `443`；TCP `19998` 只应向管理员来源放行。为避免意外改变现有策略或把管理端口暴露给全网，脚本不会自动添加防火墙规则。
+> 云服务器安全组或主机防火墙必须放行 TCP/UDP `19999` 和 TCP/UDP `443`；TCP `19998` 只应向管理员来源放行。为避免意外改变现有策略或把管理端口暴露给全网，脚本不会自动添加防火墙规则。
 
-TCP 兼容探测只接受连接后立即关闭，不读取或返回应用数据。它用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；探测服务会随 Hysteria 服务启停。
+TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后立即关闭，不读取或返回应用数据。它们用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；两个探测服务分别随对应的 Hysteria 服务启停。TCP `443` 探测成功也不代表账号已获准使用 UDP `443`。
 
 ## 多用户管理
 
@@ -110,8 +110,8 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 ## 运维
 
 ```bash
-systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-update
-journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-update --since today
+systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-update
+journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-update --since today
 curl http://127.0.0.1:19998/healthz
 ```
 
@@ -130,8 +130,8 @@ curl http://127.0.0.1:19998/healthz
 
 安装器在覆盖已有部署前会在线生成一致的 SQLite 备份，并复制应用与配置。v0.13.0 起，升级失败会自动执行以下回滚并尝试重新启动旧服务；以下步骤仅用于自动回滚也未能恢复时的人工兜底：
 
-1. 停止 `hysteria2-panel-server-443`、`hysteria2-panel-server` 和 `hysteria2-panel`；
-2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和 systemd unit 文件；回滚到 `v0.3.x` 时同时停用并删除 `hysteria2-panel-tcp-probe.service`；
+1. 停止 `hysteria2-panel-tcp-probe-443`、`hysteria2-panel-server-443`、`hysteria2-panel-server` 和 `hysteria2-panel`；
+2. 从最近的 `/var/backups/hysteria2-panel/<时间戳>/` 恢复 `opt`、`etc`、`panel.db` 和 systemd unit 文件；回滚到旧版本时同时停用并删除当时尚不存在的 TCP 探测 unit；
 3. 执行 `systemctl daemon-reload`；
 4. 重新启动两个服务并检查健康接口和 UDP/TCP 监听。
 
@@ -147,7 +147,7 @@ ruff check hysteria2_panel.py tcp_probe.py tests
 bandit -q -r hysteria2_panel.py tcp_probe.py
 ```
 
-自动化只能验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界。发布后仍应在真实客户端完成：主端口与获准账号 UDP `443` 的 Hysteria 握手、未获准账号的 `443` 拒绝、网页访问、YouTube 连续播放、TCP `19999` 延迟探测、旧分享 URI、双入口流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
+自动化只能验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界。发布后仍应在真实客户端完成：主端口与获准账号 UDP `443` 的 Hysteria 握手、未获准账号的 `443` 拒绝、网页访问、YouTube 连续播放、TCP `19999` 和 TCP `443` 延迟探测、旧分享 URI、双入口流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
 
 ## 架构与接口
 
