@@ -12,7 +12,7 @@
 支持 Debian、Ubuntu、Rocky Linux、AlmaLinux、CentOS Stream 和 Fedora 等使用 `apt`、`dnf` 或 `yum` 且由 systemd 管理的 Linux amd64/arm64 主机，需要 root 权限和 Python 3.8 或更高版本。
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.14.1/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.14.2/install.sh)
 ```
 
 安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `web`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
@@ -78,9 +78,9 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 
 ### BT/PT 与出站防滥用
 
-默认 `EGRESS_POLICY=web` 使用 Hysteria 官方 ACL：先拒绝环回、私网、链路本地、CGNAT 和 IPv6 ULA，再允许公网目标的管理面板 TCP 端口、TCP `80/443`、UDP `443`、TCP/UDP `53` 和 UDP `123`，最后拒绝其他目标与端口。统一放行面板端口后，当前节点可以访问以后新增服务器的面板，不需要回头修改每台旧节点；相应地，用户也能访问互联网上其他使用同一 TCP 端口的服务，但不能借此绕过本面板的登录认证。该策略仍会阻断常规 BT/PT peer、DHT、uTP、SMTP、SSH 扫描和多数非网页流量。ACL 规则按官方的从上到下首条匹配语义执行：[Hysteria ACL 文档](https://v2.hysteria.network/docs/advanced/ACL/)。
+默认 `EGRESS_POLICY=web` 使用 Hysteria 官方 ACL：先拒绝环回、私网、链路本地、CGNAT 和 IPv6 ULA，再允许公网目标的 SSH TCP `22`、管理面板 TCP 端口、TCP `80/443`、UDP `443`、TCP/UDP `53` 和 UDP `123`，最后拒绝其他目标与端口。放行公网 TCP `22` 后，连接节点时可以用 SSH 管理任意公网服务器；私网和本机 SSH 仍被前置拒绝。该策略仍会阻断常规 BT/PT peer、DHT、uTP、SMTP 和多数非网页流量，但代理账号也可能被滥用于公网 SSH 扫描或爆破，管理员需要通过用户限额、审计和禁用及时处置。ACL 规则按官方的从上到下首条匹配语义执行：[Hysteria ACL 文档](https://v2.hysteria.network/docs/advanced/ACL/)。
 
-这是端口和目标地址策略，不是 DPI。BitTorrent 可以加密，也可以伪装到允许的 `80/443` 或经外部中继传输，所以任何仅靠 Hysteria ACL 的方案都不能诚实保证 100% 识别所有 BT/PT。`web` 模式还会阻止游戏、邮件、SSH、非标准端口 API 和部分语音应用；确实需要完整代理能力时，可由管理员明确设置 `EGRESS_POLICY=full` 后重新运行安装器。切换策略不会改变用户链接、认证密钥、证书或证书指纹。
+这是端口和目标地址策略，不是 DPI。BitTorrent 可以加密，也可以伪装到允许的 `80/443` 或经外部中继传输，所以任何仅靠 Hysteria ACL 的方案都不能诚实保证 100% 识别所有 BT/PT。`web` 模式还会阻止游戏、邮件、非标准 SSH 端口、非标准端口 API 和部分语音应用；确实需要完整代理能力时，可由管理员明确设置 `EGRESS_POLICY=full` 后重新运行安装器。切换策略不会改变用户链接、认证密钥、证书或证书指纹。
 
 ## 跨服务器备份与恢复
 

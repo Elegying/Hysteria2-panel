@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PANEL_VERSION="0.14.1"
+PANEL_VERSION="0.14.2"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="27641da5792539792c0154671e5fb60d9de1f5d839b921326b1b0f17d46226e2"
+PANEL_SHA256="78adb1c5e4df5c60af611e90171fa3d889440977d7003e475694e7bed6f7eae8"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -559,7 +559,7 @@ trafficStats:
 EOF
 if [[ "${EGRESS_POLICY}" == "web" ]]; then
   # Hysteria ACL uses the first matching rule. Keep private ranges rejected, then allow the
-  # public panel port so future servers do not require every existing node to be reconfigured.
+  # public SSH and panel ports so administrators can manage public servers through the node.
   # Source: https://v2.hysteria.network/docs/advanced/ACL/
   cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
 acl:
@@ -573,6 +573,7 @@ acl:
     - "reject(::1/128)"
     - "reject(fc00::/7)"
     - "reject(fe80::/10)"
+    - "direct(all, tcp/22)"
     - "direct(all, tcp/${PANEL_PORT})"
     - "direct(all, tcp/53)"
     - "direct(all, udp/53)"
@@ -788,7 +789,7 @@ echo "面板地址：${PANEL_SCHEME}://${PUBLIC_HOST}:${PANEL_PORT}/"
 echo "Hysteria 端口：TCP/UDP ${HYSTERIA_PORT}"
 if [[ "${EGRESS_POLICY}" == "web" ]]; then
   echo "出站策略：web（网页/视频白名单，阻断常规 BT/PT 与非网页端口）"
-  echo "节点内面板访问：允许公网 TCP ${PANEL_PORT}（私网目标仍拒绝）"
+  echo "运维访问：允许公网 TCP 22 与 ${PANEL_PORT}（私网目标仍拒绝）"
   echo "边界提示：端口 ACL 不是 DPI，无法保证识别伪装在 80/443 上的加密 P2P。"
 else
   echo "出站策略：full（完整代理能力，未启用 BT/PT 端口防护）"
