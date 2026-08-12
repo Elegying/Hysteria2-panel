@@ -20,7 +20,7 @@ Hysteria 服务端配置的 `listen` 是单个监听地址。官方 HTTP 认证�
 
 代理用户表增加默认值为假的 `allow_udp_443` 字段。`/auth/udp-443` 只认证已启用且该字段为真的账号；主 `/auth` 不检查该字段。面板把两个 Hysteria 进程的 `/traffic` 和 `/online` 结果按用户名相加，统一执行原有设备数、流量额度、断开和重置逻辑。
 
-第二进程由 `hysteria2-panel-server-443.service` 管理，并通过 `Wants` 与 `PartOf` 跟随主 Hysteria 服务启停和重启。安装器把配置、服务单元、端口占用、健康检查、升级备份和失败回滚作为同一个部署事务处理。
+第二进程由 `hysteria2-panel-server-443.service` 管理，并通过 `Wants` 与 `PartOf` 跟随主 Hysteria 服务启停和重启。服务继续以非 root 的 `hy2server` 运行，仅通过 systemd 获得绑定特权端口所需的 `CAP_NET_BIND_SERVICE`。安装器把配置、服务单元、端口占用、健康检查、升级备份和失败回滚作为同一个部署事务处理。
 
 ## 考虑过的替代方案
 

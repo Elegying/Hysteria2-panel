@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.15.0"', source)
+        self.assertIn('PANEL_VERSION="0.15.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="5a5671c0756e16bd5aed4c3537e33685f55ef1e14889c8711544058464f12b11"',
+            'PANEL_SHA256="a032cbe6932c7d30f87ebdb9a954d7abe40ee1eba5d0062b73200acdceb3c7b4"',
             source,
         )
         self.assertIn(
@@ -160,6 +160,14 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('hysteria2-panel-server-443.service', source)
         self.assertIn('PartOf=hysteria2-panel-server.service', source)
         self.assertIn('Wants=hysteria2-panel-server-443.service', source)
+        secondary_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-server-443.service <<'EOF'",
+            1,
+        )[1].split("\nEOF", 1)[0]
+        self.assertIn('AmbientCapabilities=CAP_NET_BIND_SERVICE', secondary_unit)
+        self.assertIn('CapabilityBoundingSet=CAP_NET_BIND_SERVICE', secondary_unit)
+        self.assertEqual(1, source.count('AmbientCapabilities=CAP_NET_BIND_SERVICE'))
+        self.assertEqual(1, source.count('CapabilityBoundingSet=CAP_NET_BIND_SERVICE'))
         self.assertIn('ss -H -lun "sport = :443"', source)
         self.assertIn('请同时放行 UDP 443', source)
 
