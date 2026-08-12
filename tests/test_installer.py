@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.14.0"', source)
+        self.assertIn('PANEL_VERSION="0.14.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="231da73f3844a44541468bde40a68f954a12189e4e5f0c3d53ec5dbf84a71e5e"',
+            'PANEL_SHA256="27641da5792539792c0154671e5fb60d9de1f5d839b921326b1b0f17d46226e2"',
             source,
         )
         self.assertIn(
@@ -79,6 +79,10 @@ class InstallerContractTests(unittest.TestCase):
 
         self.assertIn('AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"', source)
         self.assertIn('在线更新只允许用于现有的受管安装', source)
+        self.assertIn(
+            """detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')" || true""",
+            source,
+        )
         self.assertIn('NODE_NAME="${EXISTING_NODE_NAME}"', source)
         self.assertIn('PUBLIC_HOST="${EXISTING_PUBLIC_HOST}"', source)
         self.assertIn('HYSTERIA_PORT="${EXISTING_HYSTERIA_PORT}"', source)
@@ -334,6 +338,13 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn("TimeoutStartSec=15min", source)
+        update_unit = source.split(
+            'cat > /etc/systemd/system/hysteria2-panel-update.service <<EOF', 1
+        )[1].split("EOF", 1)[0]
+        self.assertIn(
+            "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
+            update_unit,
+        )
         self.assertNotIn(
             "User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-update",
             source,
