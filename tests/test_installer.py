@@ -26,7 +26,7 @@ class InstallerContractTests(unittest.TestCase):
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.14.1"', source)
+        self.assertIn('PANEL_VERSION="0.14.2"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -37,7 +37,7 @@ class InstallerContractTests(unittest.TestCase):
             source,
         )
         self.assertIn(
-            'PANEL_SHA256="27641da5792539792c0154671e5fb60d9de1f5d839b921326b1b0f17d46226e2"',
+            'PANEL_SHA256="78adb1c5e4df5c60af611e90171fa3d889440977d7003e475694e7bed6f7eae8"',
             source,
         )
         self.assertIn(
@@ -224,7 +224,7 @@ class InstallerContractTests(unittest.TestCase):
         self.assertIn('HY2PANEL_EGRESS_POLICY=${EGRESS_POLICY}', source)
         self.assertIn('EGRESS_POLICY 只能是 web 或 full', source)
 
-    def test_web_egress_policy_blocks_private_networks_and_non_web_ports(self):
+    def test_web_egress_policy_blocks_private_networks_and_allows_public_ssh(self):
         source = INSTALLER.read_text()
 
         for rule in (
@@ -237,6 +237,7 @@ class InstallerContractTests(unittest.TestCase):
             "reject(::1/128)",
             "reject(fc00::/7)",
             "reject(fe80::/10)",
+            "direct(all, tcp/22)",
             "direct(all, tcp/53)",
             "direct(all, udp/53)",
             "direct(all, tcp/80)",
@@ -247,6 +248,8 @@ class InstallerContractTests(unittest.TestCase):
         ):
             self.assertIn(rule, source)
         self.assertLess(source.index("reject(127.0.0.0/8)"), source.index("direct(all, tcp/80)"))
+        self.assertLess(source.index("reject(fe80::/10)"), source.index("direct(all, tcp/22)"))
+        self.assertLess(source.index("direct(all, tcp/22)"), source.index("reject(all)"))
         self.assertIn('if [[ "${EGRESS_POLICY}" == "web" ]]; then', source)
 
     def test_web_egress_policy_allows_the_public_panel_port_on_future_servers(self):
