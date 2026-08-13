@@ -101,7 +101,7 @@ ConditionPathExists=${RESUME_MARKER}
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'systemctl is-active --quiet ${PANEL_UNIT}; systemctl is-active --quiet ${SERVER_UNIT}; printf post >> ${RESUME_CAPTURE}; rm -f ${RESUME_MARKER}'
+ExecStart=/bin/sh -c 'systemctl is-active --quiet ${PANEL_UNIT} && systemctl is-active --quiet ${SERVER_UNIT} && printf post >> ${RESUME_CAPTURE} && rm -f ${RESUME_MARKER}'
 
 [Install]
 WantedBy=multi-user.target
