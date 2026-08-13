@@ -1,8 +1,10 @@
 import gzip
+import html
 import json
 import io
 import hashlib
 import os
+import re
 import socket
 import sqlite3
 import ssl
@@ -4292,9 +4294,9 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        newest = '<tr data-user-name="newest" data-over-device-limit="0"><td data-label="名称"><strong>newest</strong>'
-        middle = '<tr data-user-name="middle" data-over-device-limit="0"><td data-label="名称"><strong>middle</strong>'
-        oldest = '<tr data-user-name="oldest" data-over-device-limit="0"><td data-label="名称"><strong>oldest</strong>'
+        newest = 'data-user-name="newest"'
+        middle = 'data-user-name="middle"'
+        oldest = 'data-user-name="oldest"'
         self.assertLess(body.index(newest), body.index(middle))
         self.assertLess(body.index(middle), body.index(oldest))
 
@@ -4313,10 +4315,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-user-search', body)
         self.assertIn('class="section-head user-section-head"', body)
         self.assertIn('class="user-heading"', body)
-        self.assertIn('aria-label="搜索用户"', body)
-        self.assertNotIn('for="user-search">搜索用户', body)
+        self.assertIn('for="user-search">用户名', body)
         self.assertLess(body.index('class="user-heading"'), body.index('class="user-search"'))
-        self.assertLess(body.index('class="user-search"'), body.index('class="section-actions"'))
         self.assertIn('data-search-status', body)
         self.assertIn('window.requestAnimationFrame(filterUsers)', body)
         self.assertIn('data-dialog-open="create-user-dialog"', body)
@@ -4324,6 +4324,72 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('aria-labelledby="create-user-title"', body)
         self.assertIn('class="section-actions"', body)
         self.assertIn('placeholder="例如：Alice 手机" autofocus', body)
+
+    def test_dashboard_combines_search_status_online_and_udp443_filters(self):
+        allowed = self.db.create_proxy_user("Alice & Co")
+        disabled = self.db.create_proxy_user("disabled-user")
+        self.db.update_proxy_user_limits(
+            allowed["id"],
+            3,
+            250 * 1024**3,
+            allow_udp_443=True,
+            expected_generation=0,
+        )
+        self.db.set_proxy_user_enabled(
+            disabled["id"], False, expected_generation=0
+        )
+        self.stats.snapshot = lambda: {
+            "traffic": {},
+            "online": {"Alice & Co": 2},
+            "available": True,
+        }
+        headers, _ = self.authenticated_headers()
+
+        with self.request(
+            "/?q=Alice%20%26%20Co&status=enabled&online=active&udp443=allowed",
+            headers=headers,
+        ) as response:
+            body = response.read().decode()
+
+        self.assertIn('class="user-filters"', body)
+        self.assertIn('name="q" type="search" value="Alice &amp; Co"', body)
+        self.assertIn('<option value="enabled" selected>启用</option>', body)
+        self.assertIn('<option value="active" selected>在线</option>', body)
+        self.assertIn('<option value="allowed" selected>已开放</option>', body)
+        self.assertIn('data-enabled="1"', body)
+        self.assertIn('data-online="2"', body)
+        self.assertIn('data-allow-udp443="1"', body)
+        self.assertIn('data-filter-empty', body)
+        self.assertIn('data-clear-user-filters', body)
+        self.assertIn("new URLSearchParams(new FormData(filterForm))", body)
+        self.assertIn("row.dataset.enabled === (statusFilter.value === 'enabled' ? '1' : '0')", body)
+        self.assertIn("row.dataset.allowUdp443 === (udp443Filter.value === 'allowed' ? '1' : '0')", body)
+        self.assertIn("history.replaceState", body)
+        self.assertIn("userSearch.value = '';", body)
+        self.assertNotIn("filterForm.reset();", body)
+
+    def test_dashboard_rejects_unknown_filter_values_and_bounds_search_text(self):
+        self.db.create_proxy_user("safe-user")
+        headers, _ = self.authenticated_headers()
+        query = urllib.parse.urlencode(
+            {
+                "q": '<script>alert("x")</script>' + "x" * 100,
+                "status": "unknown",
+                "online": "unknown",
+                "udp443": "unknown",
+            }
+        )
+
+        with self.request("/?" + query, headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertNotIn('<script>alert("x")</script>', body)
+        self.assertIn('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;', body)
+        self.assertNotIn('value="unknown" selected', body)
+        search_value = re.search(
+            r'name="q" type="search" value="([^"]*)"', body
+        ).group(1)
+        self.assertLessEqual(len(html.unescape(search_value)), 96)
 
     def test_backup_download_and_restore_upload_are_authenticated_and_csrf_protected(self):
         self.db.create_proxy_user("migrating-user")
@@ -4461,9 +4527,9 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/?sort=traffic&order=asc", headers=headers) as response:
             ascending = response.read().decode()
 
-        beta_row = '<tr data-user-name="beta" data-over-device-limit="0"><td data-label="名称"><strong>beta</strong>'
-        gamma_row = '<tr data-user-name="gamma" data-over-device-limit="0"><td data-label="名称"><strong>gamma</strong>'
-        alpha_row = '<tr data-user-name="alpha" data-over-device-limit="0"><td data-label="名称"><strong>alpha</strong>'
+        beta_row = 'data-user-name="beta"'
+        gamma_row = 'data-user-name="gamma"'
+        alpha_row = 'data-user-name="alpha"'
         self.assertLess(descending.index(beta_row), descending.index(gamma_row))
         self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
         self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
@@ -4485,9 +4551,9 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/?sort=online&order=asc", headers=headers) as response:
             ascending = response.read().decode()
 
-        beta_row = '<tr data-user-name="beta" data-over-device-limit="0"><td data-label="名称"><strong>beta</strong>'
-        gamma_row = '<tr data-user-name="gamma" data-over-device-limit="0"><td data-label="名称"><strong>gamma</strong>'
-        alpha_row = '<tr data-user-name="alpha" data-over-device-limit="0"><td data-label="名称"><strong>alpha</strong>'
+        beta_row = 'data-user-name="beta"'
+        gamma_row = 'data-user-name="gamma"'
+        alpha_row = 'data-user-name="alpha"'
         self.assertLess(descending.index(beta_row), descending.index(gamma_row))
         self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
         self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
@@ -4566,7 +4632,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.17.0", body)
+        self.assertIn("v0.18.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()

@@ -50,7 +50,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.17.0"
+PANEL_VERSION = "0.18.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -85,13 +85,13 @@ h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.m
 .button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer;transition:filter .15s ease,transform .15s ease}button:hover,.button:hover{filter:brightness(1.08);transform:translateY(-1px)}button:active,.button:active{transform:none}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}.system-actions{flex:0 0 auto}.system-actions button{padding:8px 11px}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
-.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:grid;grid-template-columns:minmax(220px,1fr) minmax(240px,360px) auto;grid-template-areas:"heading search actions";align-items:center}.user-heading{grid-area:heading}.user-section-head .user-search{grid-area:search}.user-section-head .section-actions{grid-area:actions}.user-tools{justify-content:flex-end;margin-bottom:14px}.user-search{width:100%;margin:0}.search-status{margin:0;white-space:nowrap}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
+.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:flex;align-items:center;flex-wrap:wrap}.user-heading{flex:1 1 240px}.user-section-head .section-actions{flex:0 0 auto}.user-tools{justify-content:space-between;margin-bottom:14px}.user-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(120px,1fr)) auto;align-items:end;gap:9px;flex:1}.user-filters label{margin-bottom:4px;font-size:12px;color:var(--muted)}.user-filters button{padding:10px 12px}.search-status{margin:0;white-space:nowrap}.filter-empty{margin:0 0 14px;padding:11px 14px;border:1px dashed #3a526b;border-radius:10px;text-align:center}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
 .checkbox-field{display:flex;align-items:flex-start;gap:10px;margin:0;padding:12px;border:1px solid #3a4d63;border-radius:10px;background:#101f31}.checkbox-field input{width:auto;margin:4px 0 0;flex:0 0 auto}.checkbox-field span{font-weight:650}.checkbox-field small{display:block;margin-top:3px;font-weight:400}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
 .migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
 @media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
-@media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.user-section-head{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"heading actions" "search search"}}
-@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.system-actions{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.section-actions form{grid-column:1/-1}.user-section-head{grid-template-columns:1fr;grid-template-areas:"heading" "actions" "search"}.user-tools{align-items:stretch;flex-direction:column}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
+@media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.user-filters{grid-template-columns:minmax(200px,2fr) repeat(3,minmax(105px,1fr)) auto}}
+@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.system-actions{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.section-actions form{grid-column:1/-1}.user-tools{align-items:stretch;flex-direction:column}.user-filters{grid-template-columns:1fr 1fr;width:100%}.user-filters .user-search{grid-column:1/-1}.user-filters button{width:100%}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
 @media(max-width:340px){.metrics{grid-template-columns:1fr}.pill{flex-basis:100%}.version-panel{padding-inline:8px}.version-row{align-items:flex-start;flex-direction:column;gap:4px}.bbr-detail strong,.version-row strong{font-size:16px}.compact-button{padding:7px 5px;font-size:11px;white-space:nowrap}.user-table .actions button{padding-inline:1px;font-size:10px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop{backdrop-filter:none}}
 """
@@ -326,24 +326,67 @@ if (editUserSelect) {
   editUserSelect.addEventListener('change', syncEditUserForm);
   syncEditUserForm();
 }
-const userSearch = document.querySelector('[data-user-search]');
-if (userSearch) {
+const filterForm = document.querySelector('[data-user-filters]');
+if (filterForm) {
+  const userSearch = filterForm.querySelector('[data-user-search]');
+  const statusFilter = filterForm.querySelector('[data-status-filter]');
+  const onlineFilter = filterForm.querySelector('[data-online-filter]');
+  const udp443Filter = filterForm.querySelector('[data-udp443-filter]');
+  const clearFilters = filterForm.querySelector('[data-clear-user-filters]');
   const userRows = Array.from(document.querySelectorAll('[data-user-name]'));
   const searchStatus = document.querySelector('[data-search-status]');
+  const filterEmpty = document.querySelector('[data-filter-empty]');
   let filterFrame = 0;
+  function syncFilterUrl() {
+    const params = new URLSearchParams(new FormData(filterForm));
+    const url = new URL(window.location.href);
+    ['q', 'status', 'online', 'udp443'].forEach(function(name) {
+      const value = params.get(name);
+      if (value) url.searchParams.set(name, value);
+      else url.searchParams.delete(name);
+    });
+    history.replaceState(null, '', url.pathname + url.search);
+    document.querySelectorAll('.sort-link').forEach(function(link) {
+      const sortUrl = new URL(link.href);
+      ['q', 'status', 'online', 'udp443'].forEach(function(name) {
+        const value = params.get(name);
+        if (value) sortUrl.searchParams.set(name, value);
+        else sortUrl.searchParams.delete(name);
+      });
+      link.href = sortUrl.pathname + sortUrl.search;
+    });
+  }
   function filterUsers() {
     const query = userSearch.value.trim().toLocaleLowerCase();
     let visible = 0;
     userRows.forEach(function(row) {
-      const matches = row.dataset.userName.toLocaleLowerCase().includes(query);
+      const online = Number(row.dataset.online || '0');
+      const matchesName = row.dataset.userName.toLocaleLowerCase().includes(query);
+      const matchesStatus = !statusFilter.value || row.dataset.enabled === (statusFilter.value === 'enabled' ? '1' : '0');
+      const matchesOnline = !onlineFilter.value || (onlineFilter.value === 'active' ? online > 0 : online === 0);
+      const matchesUdp443 = !udp443Filter.value || row.dataset.allowUdp443 === (udp443Filter.value === 'allowed' ? '1' : '0');
+      const matches = matchesName && matchesStatus && matchesOnline && matchesUdp443;
       row.hidden = !matches;
       if (matches) visible += 1;
     });
-    if (searchStatus) searchStatus.textContent = query ? '显示 ' + visible + ' / ' + userRows.length + ' 个用户' : '共 ' + userRows.length + ' 个用户';
+    if (filterEmpty) filterEmpty.hidden = visible !== 0 || userRows.length === 0;
+    if (searchStatus) searchStatus.textContent = visible === userRows.length ? '共 ' + userRows.length + ' 个用户' : '显示 ' + visible + ' / ' + userRows.length + ' 个用户';
+    syncFilterUrl();
   }
-  userSearch.addEventListener('input', function() {
+  function scheduleFilter() {
     if (filterFrame) window.cancelAnimationFrame(filterFrame);
     filterFrame = window.requestAnimationFrame(filterUsers);
+  }
+  filterForm.addEventListener('submit', function(event) { event.preventDefault(); filterUsers(); });
+  filterForm.addEventListener('input', scheduleFilter);
+  filterForm.addEventListener('change', scheduleFilter);
+  if (clearFilters) clearFilters.addEventListener('click', function() {
+    userSearch.value = '';
+    statusFilter.value = '';
+    onlineFilter.value = '';
+    udp443Filter.value = '';
+    filterUsers();
+    userSearch.focus();
   });
   filterUsers();
 }
@@ -2368,7 +2411,16 @@ class PanelHandler(JsonHandler):
 <p class="login-actions"><button type="submit">登录</button></p></form></section>""".format(error=error_html)
         return self._page("登录", content)
 
-    def _dashboard(self, session, sort_by="", sort_order=""):
+    def _dashboard(
+        self,
+        session,
+        sort_by="",
+        sort_order="",
+        search_query="",
+        status_filter="",
+        online_filter="",
+        udp443_filter="",
+    ):
         try:
             snapshot = self.app.usage_manager.snapshot()
         except Exception:
@@ -2377,6 +2429,10 @@ class PanelHandler(JsonHandler):
         all_users = self.app.database.list_proxy_users_for_usage()
         sort_by = sort_by if sort_by in {"traffic", "online"} else ""
         sort_order = sort_order if sort_order in {"asc", "desc"} else ""
+        search_query = str(search_query)[:96]
+        status_filter = status_filter if status_filter in {"enabled", "disabled"} else ""
+        online_filter = online_filter if online_filter in {"active", "inactive"} else ""
+        udp443_filter = udp443_filter if udp443_filter in {"allowed", "blocked"} else ""
         listed_users = sorted(
             all_users,
             key=lambda item: (item["created_at"], item["id"]),
@@ -2433,7 +2489,7 @@ class PanelHandler(JsonHandler):
             action_label = "禁用" if enabled else "启用"
             action_class = "danger" if enabled else "secondary"
             rows.append(
-                """<tr data-user-name="{search_name}" data-over-device-limit="{over_device_limit}"><td data-label="名称"><strong{name_class}>{name}</strong>{limit_alert}</td>
+                """<tr data-user-name="{search_name}" data-enabled="{enabled_value}" data-online="{online}" data-allow-udp443="{allow_udp_443}" data-over-device-limit="{over_device_limit}"><td data-label="名称"><strong{name_class}>{name}</strong>{limit_alert}</td>
 <td data-label="状态"><span class="status {state_class}">{state}</span></td><td data-label="在线设备">{online} / {device_limit}</td><td data-label="上传 / 下载">{tx} / {rx}</td>
 <td class="traffic-cell" data-label="总流量"><progress max="100" value="{percent:.1f}" aria-label="{name} 总流量使用 {percent:.1f}%"></progress><div class="traffic-label"><span>{used} / {limit}</span><span>{percent:.1f}%</span></div></td>
 <td data-label="操作"><div class="actions">
@@ -2452,6 +2508,8 @@ class PanelHandler(JsonHandler):
                         else ""
                     ),
                     over_device_limit="1" if over_device_limit else "0",
+                    enabled_value="1" if enabled else "0",
+                    allow_udp_443="1" if user["allow_udp_443"] else "0",
                     state="启用" if enabled else "禁用",
                     state_class="enabled" if enabled else "disabled",
                     online=online,
@@ -2492,6 +2550,15 @@ class PanelHandler(JsonHandler):
         traffic_sort_next = "asc" if traffic_sort_order == "desc" else "desc"
         traffic_sort_mark = sort_marks.get(traffic_sort_order, "⇅")
         traffic_sort_aria = sort_aria.get(traffic_sort_order, "none")
+        filter_values = {
+            "search_query": html.escape(search_query, quote=True),
+            "status_enabled": " selected" if status_filter == "enabled" else "",
+            "status_disabled": " selected" if status_filter == "disabled" else "",
+            "online_active": " selected" if online_filter == "active" else "",
+            "online_inactive": " selected" if online_filter == "inactive" else "",
+            "udp443_allowed": " selected" if udp443_filter == "allowed" else "",
+            "udp443_blocked": " selected" if udp443_filter == "blocked" else "",
+        }
         stats_state = "正常" if summary["service_available"] else "异常"
         service_running = service_status == "active"
         service_label = "Hysteria 运行中" if service_running else "Hysteria 已停止"
@@ -2574,9 +2641,13 @@ class PanelHandler(JsonHandler):
 <p class="notice">设备数按在线 Hysteria 客户端实例估算；标准通用节点链接不包含硬件设备指纹。</p></div></dialog>
 <p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
 <section class="card"><div class="section-head user-section-head"><div class="user-heading"><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
-<div class="user-search"><input id="user-search" type="search" aria-label="搜索用户" placeholder="输入用户名搜索" autocomplete="off" data-user-search></div>
 <div class="section-actions"><button type="button" data-dialog-open="create-user-dialog">添加用户</button><button class="secondary" type="button" data-dialog-open="edit-user-dialog"{edit_disabled}>编辑用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div></div>
-<div class="user-tools"><p class="muted search-status" data-search-status role="status" aria-live="polite">共 {user_total} 个用户</p></div>
+<div class="user-tools"><form class="user-filters" data-user-filters><div class="user-search"><label for="user-search">用户名</label><input id="user-search" name="q" type="search" value="{search_query}" placeholder="输入用户名搜索" autocomplete="off" maxlength="96" data-user-search></div>
+<div><label for="user-status-filter">状态</label><select id="user-status-filter" name="status" data-status-filter><option value="">全部</option><option value="enabled"{status_enabled}>启用</option><option value="disabled"{status_disabled}>禁用</option></select></div>
+<div><label for="user-online-filter">在线</label><select id="user-online-filter" name="online" data-online-filter><option value="">全部</option><option value="active"{online_active}>在线</option><option value="inactive"{online_inactive}>离线</option></select></div>
+<div><label for="user-udp443-filter">UDP 443</label><select id="user-udp443-filter" name="udp443" data-udp443-filter><option value="">全部</option><option value="allowed"{udp443_allowed}>已开放</option><option value="blocked"{udp443_blocked}>未开放</option></select></div>
+<button class="ghost" type="button" data-clear-user-filters>清除</button></form><p class="muted search-status" data-search-status role="status" aria-live="polite">共 {user_total} 个用户</p></div>
+<p class="muted filter-empty" data-filter-empty hidden>没有符合当前条件的用户。</p>
 <div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th aria-sort="{online_sort_aria}"><a class="sort-link" href="/?sort=online&amp;order={online_sort_next}">在线设备 {online_sort_mark}</a></th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="/?sort=traffic&amp;order={traffic_sort_next}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
             port=self.app.hysteria_port,
             public_host=html.escape(self.app.public_host),
@@ -2639,6 +2710,7 @@ class PanelHandler(JsonHandler):
             traffic_sort_aria=traffic_sort_aria,
             traffic_sort_next=traffic_sort_next,
             traffic_sort_mark=traffic_sort_mark,
+            **filter_values,
         )
         return self._page("控制台", content)
 
@@ -2704,6 +2776,10 @@ class PanelHandler(JsonHandler):
                     session,
                     query.get("sort", [""])[0],
                     query.get("order", [""])[0],
+                    query.get("q", [""])[0],
+                    query.get("status", [""])[0],
+                    query.get("online", [""])[0],
+                    query.get("udp443", [""])[0],
                 ),
             )
             return
