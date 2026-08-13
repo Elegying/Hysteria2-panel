@@ -88,6 +88,9 @@ firewall-cmd() {{
         ;;
     esac
   fi
+  if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "permanent-target" && "$*" == *"--get-target"* && "$*" != *"--permanent"* ]]; then
+    return 2
+  fi
   case "$*" in
     "--help")
       if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "help-error" ]]; then
@@ -1197,7 +1200,12 @@ ip6tables-save() { :; }
         self.assertEqual(10, len(calls))
 
     def test_active_firewalld_allows_safe_or_disabled_host_policy(self):
-        for mode in ("safe-policy", "disabled-policy", "quiet-output"):
+        for mode in (
+            "safe-policy",
+            "disabled-policy",
+            "quiet-output",
+            "permanent-target",
+        ):
             with self.subTest(mode=mode):
                 result, calls = self.run_firewall_function(
                     r'''

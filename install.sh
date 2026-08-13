@@ -1406,7 +1406,7 @@ firewalld_has_global_conflicts() {
           [[ "${zone_name}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 2
         done
         [[ " ${egress_zones} " == *" HOST "* ]] || continue
-        target="$("${options[@]}" --policy="${policy}" \
+        target="$(firewall-cmd --permanent --policy="${policy}" \
           --get-target 2>/dev/null)" || return 2
         case "${target}" in
           DROP|REJECT) return 0 ;;
