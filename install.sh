@@ -1221,8 +1221,8 @@ ufw_listeners_are_allowed() {
 
 firewalld_zone_has_complex_rules() {
   local rich_rules scope="$1" zone="$2"
-  local options=(--quiet --zone="${zone}")
-  [[ "${scope}" != "permanent" ]] || options=(--quiet --permanent --zone="${zone}")
+  local options=(--zone="${zone}")
+  [[ "${scope}" != "permanent" ]] || options=(--permanent --zone="${zone}")
   rich_rules="$(firewall-cmd "${options[@]}" --list-rich-rules 2>/dev/null)" || return 2
   [[ -z "${rich_rules}" ]] || return 0
   return 1
@@ -1384,35 +1384,36 @@ firewalld_has_global_conflicts() {
 
   if firewalld_option_supported --get-policies; then
     for scope in runtime permanent; do
-      options=(--quiet)
-      [[ "${scope}" != "permanent" ]] || options=(--quiet --permanent)
-      policies="$(firewall-cmd "${options[@]}" --get-policies 2>/dev/null)" || return 2
+      options=(firewall-cmd)
+      [[ "${scope}" != "permanent" ]] || options=(firewall-cmd --permanent)
+      policies="$("${options[@]}" --get-policies 2>/dev/null)" || return 2
       for policy in ${policies}; do
         [[ "${policy}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 2
         if firewalld_option_supported --query-disable; then
-          if firewall-cmd "${options[@]}" --policy="${policy}" --query-disable; then
+          if "${options[@]}" --policy="${policy}" --query-disable \
+            >/dev/null 2>&1; then
             continue
           else
             query_status=$?
             (( query_status == 1 )) || return 2
           fi
         fi
-        ingress_zones="$(firewall-cmd "${options[@]}" --policy="${policy}" \
+        ingress_zones="$("${options[@]}" --policy="${policy}" \
           --list-ingress-zones 2>/dev/null)" || return 2
-        egress_zones="$(firewall-cmd "${options[@]}" --policy="${policy}" \
+        egress_zones="$("${options[@]}" --policy="${policy}" \
           --list-egress-zones 2>/dev/null)" || return 2
         for zone_name in ${ingress_zones} ${egress_zones}; do
           [[ "${zone_name}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 2
         done
         [[ " ${egress_zones} " == *" HOST "* ]] || continue
-        target="$(firewall-cmd "${options[@]}" --policy="${policy}" \
+        target="$("${options[@]}" --policy="${policy}" \
           --get-target 2>/dev/null)" || return 2
         case "${target}" in
           DROP|REJECT) return 0 ;;
           CONTINUE|ACCEPT) ;;
           *) return 2 ;;
         esac
-        rich_rules="$(firewall-cmd "${options[@]}" --policy="${policy}" \
+        rich_rules="$("${options[@]}" --policy="${policy}" \
           --list-rich-rules 2>/dev/null)" || return 2
         if firewalld_policy_has_blocking_rich_rules "${rich_rules}"; then
           return 0

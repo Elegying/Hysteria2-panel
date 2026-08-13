@@ -81,6 +81,13 @@ ufw() {{
 }}
 eval "mocked_$(declare -f firewall-cmd)"
 firewall-cmd() {{
+  if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "quiet-output" && "$*" == *"--quiet"* ]]; then
+    case "$*" in
+      *"--get-policies"*|*"--list-ingress-zones"*|*"--list-egress-zones"*|*"--get-target"*|*"--list-rich-rules"*)
+        return 2
+        ;;
+    esac
+  fi
   case "$*" in
     "--help")
       if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "help-error" ]]; then
@@ -1190,7 +1197,7 @@ ip6tables-save() { :; }
         self.assertEqual(10, len(calls))
 
     def test_active_firewalld_allows_safe_or_disabled_host_policy(self):
-        for mode in ("safe-policy", "disabled-policy"):
+        for mode in ("safe-policy", "disabled-policy", "quiet-output"):
             with self.subTest(mode=mode):
                 result, calls = self.run_firewall_function(
                     r'''
