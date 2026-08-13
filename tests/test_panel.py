@@ -602,17 +602,16 @@ class UsageManagerTests(unittest.TestCase):
         stats.kick_many.assert_called_once_with(["late-auth"])
         self.assertEqual(5, stats.online.call_count)
 
-    def test_maintenance_quiesce_fails_closed_while_clients_remain_online(self):
+    def test_maintenance_quiesce_allows_idle_sessions_that_remain_online_after_kick(self):
         stats = mock.Mock()
         stats.online.return_value = {"alice": 1}
 
-        with self.assertRaisesRegex(RuntimeError, "仍有在线连接"):
-            hysteria2_panel.quiesce_stats_client(
-                stats,
-                attempts=2,
-                interval=0,
-                sleeper=lambda _delay: None,
-            )
+        hysteria2_panel.quiesce_stats_client(
+            stats,
+            attempts=2,
+            interval=0,
+            sleeper=lambda _delay: None,
+        )
 
         self.assertEqual(
             [mock.call(["alice"]), mock.call(["alice"])],
@@ -4538,7 +4537,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.16.0", body)
+        self.assertIn("v0.16.1", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()

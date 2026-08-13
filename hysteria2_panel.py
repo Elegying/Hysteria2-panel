@@ -50,7 +50,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.16.0"
+PANEL_VERSION = "0.16.1"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -4082,7 +4082,8 @@ def quiesce_stats_client(
             if empty_snapshots >= stable_empty_snapshots:
                 return
         sleeper(interval)
-    raise RuntimeError("维护切换失败：仍有在线连接或离线状态尚未稳定")
+    # Hysteria's /kick marks an ID for its next traffic event; an idle session
+    # can therefore remain in /online until the server is stopped.
 
 
 @contextlib.contextmanager
