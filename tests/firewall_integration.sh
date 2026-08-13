@@ -144,6 +144,10 @@ iptables -D INPUT -p tcp --dport 29999 -j DROP
 
 ufw --force disable >/dev/null
 ufw --force reset >/dev/null
+# The UFW and firewalld scenarios share only this disposable network namespace.
+# Remove UFW's live nft compatibility chains before starting the independent
+# firewalld scenario; production correctly rejects both managers coexisting.
+nft flush ruleset
 systemctl start firewalld.service
 [[ "$(read_firewalld_backend)" == "nftables" ]]
 zone="$(firewall-cmd --get-default-zone)"
