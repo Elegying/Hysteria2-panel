@@ -4470,6 +4470,35 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(ascending.index(gamma_row), ascending.index(beta_row))
         self.assertIn('href="/?sort=traffic&amp;order=asc"', descending)
 
+    def test_online_device_header_sorts_users_in_both_directions(self):
+        for name in ("alpha", "beta", "gamma"):
+            self.db.create_proxy_user(name)
+        self.stats.snapshot = lambda: {
+            "traffic": {},
+            "online": {"alpha": 1, "beta": 3, "gamma": 2},
+            "available": True,
+        }
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/?sort=online&order=desc", headers=headers) as response:
+            descending = response.read().decode()
+        with self.request("/?sort=online&order=asc", headers=headers) as response:
+            ascending = response.read().decode()
+
+        beta_row = '<tr data-user-name="beta" data-over-device-limit="0"><td data-label="名称"><strong>beta</strong>'
+        gamma_row = '<tr data-user-name="gamma" data-over-device-limit="0"><td data-label="名称"><strong>gamma</strong>'
+        alpha_row = '<tr data-user-name="alpha" data-over-device-limit="0"><td data-label="名称"><strong>alpha</strong>'
+        self.assertLess(descending.index(beta_row), descending.index(gamma_row))
+        self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
+        self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
+        self.assertLess(ascending.index(gamma_row), ascending.index(beta_row))
+        self.assertIn('href="/?sort=online&amp;order=asc"', descending)
+        self.assertIn('<th aria-sort="descending"><a class="sort-link" href="/?sort=online', descending)
+        self.assertIn(
+            '<th aria-sort="none"><a class="sort-link" href="/?sort=traffic&amp;order=desc">总流量 ⇅</a>',
+            descending,
+        )
+
     def test_share_and_traffic_reset_actions_are_csrf_protected(self):
         created = self.db.create_proxy_user("carol")
         self.db.add_traffic({"carol": {"tx": 10, "rx": 20}})
@@ -4537,7 +4566,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.16.1", body)
+        self.assertIn("v0.17.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()

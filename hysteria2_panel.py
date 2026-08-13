@@ -50,7 +50,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.16.1"
+PANEL_VERSION = "0.17.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
@@ -2375,7 +2375,7 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("stats snapshot failed")
             snapshot = {"traffic": {}, "online": {}, "available": False}
         all_users = self.app.database.list_proxy_users_for_usage()
-        sort_by = "traffic" if sort_by == "traffic" else ""
+        sort_by = sort_by if sort_by in {"traffic", "online"} else ""
         sort_order = sort_order if sort_order in {"asc", "desc"} else ""
         listed_users = sorted(
             all_users,
@@ -2386,6 +2386,14 @@ class PanelHandler(JsonHandler):
             listed_users = sorted(
                 all_users,
                 key=lambda item: item["tx_bytes"] + item["rx_bytes"],
+                reverse=sort_order == "desc",
+            )
+        elif sort_by == "online" and sort_order:
+            listed_users = sorted(
+                all_users,
+                key=lambda item: _stat_int(
+                    snapshot.get("online", {}).get(item["name"], 0)
+                ),
                 reverse=sort_order == "desc",
             )
         summary = summarize_dashboard([user["name"] for user in all_users], snapshot)
@@ -2474,11 +2482,16 @@ class PanelHandler(JsonHandler):
             for user in listed_users
         )
         first_edit_user = listed_users[0] if listed_users else None
-        traffic_sort_next = "asc" if sort_order == "desc" else "desc"
-        traffic_sort_mark = "↑" if sort_order == "asc" else "↓" if sort_order == "desc" else "⇅"
-        traffic_sort_aria = (
-            "ascending" if sort_order == "asc" else "descending" if sort_order == "desc" else "none"
-        )
+        sort_marks = {"asc": "↑", "desc": "↓"}
+        sort_aria = {"asc": "ascending", "desc": "descending"}
+        online_sort_order = sort_order if sort_by == "online" else ""
+        online_sort_next = "asc" if online_sort_order == "desc" else "desc"
+        online_sort_mark = sort_marks.get(online_sort_order, "⇅")
+        online_sort_aria = sort_aria.get(online_sort_order, "none")
+        traffic_sort_order = sort_order if sort_by == "traffic" else ""
+        traffic_sort_next = "asc" if traffic_sort_order == "desc" else "desc"
+        traffic_sort_mark = sort_marks.get(traffic_sort_order, "⇅")
+        traffic_sort_aria = sort_aria.get(traffic_sort_order, "none")
         stats_state = "正常" if summary["service_available"] else "异常"
         service_running = service_status == "active"
         service_label = "Hysteria 运行中" if service_running else "Hysteria 已停止"
@@ -2564,7 +2577,7 @@ class PanelHandler(JsonHandler):
 <div class="user-search"><input id="user-search" type="search" aria-label="搜索用户" placeholder="输入用户名搜索" autocomplete="off" data-user-search></div>
 <div class="section-actions"><button type="button" data-dialog-open="create-user-dialog">添加用户</button><button class="secondary" type="button" data-dialog-open="edit-user-dialog"{edit_disabled}>编辑用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div></div>
 <div class="user-tools"><p class="muted search-status" data-search-status role="status" aria-live="polite">共 {user_total} 个用户</p></div>
-<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th>在线设备</th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="/?sort=traffic&amp;order={traffic_sort_next}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
+<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th aria-sort="{online_sort_aria}"><a class="sort-link" href="/?sort=online&amp;order={online_sort_next}">在线设备 {online_sort_mark}</a></th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="/?sort=traffic&amp;order={traffic_sort_next}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
             port=self.app.hysteria_port,
             public_host=html.escape(self.app.public_host),
             stats=stats_state,
@@ -2620,6 +2633,9 @@ class PanelHandler(JsonHandler):
             udp_443_disabled="" if self.app.hysteria_port != 443 else " disabled",
             edit_disabled="" if first_edit_user else " disabled",
             user_total=len(listed_users),
+            online_sort_aria=online_sort_aria,
+            online_sort_next=online_sort_next,
+            online_sort_mark=online_sort_mark,
             traffic_sort_aria=traffic_sort_aria,
             traffic_sort_next=traffic_sort_next,
             traffic_sort_mark=traffic_sort_mark,
