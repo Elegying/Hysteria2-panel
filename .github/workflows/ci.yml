@@ -157,9 +157,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install managed firewall implementations
-        run: sudo apt-get update && sudo apt-get install -y firewalld ufw nftables iptables
+        run: sudo apt-get update && sudo apt-get install -y firewalld ufw nftables iptables iproute2
       - name: Test real UFW and firewalld behavior
-        run: sudo bash tests/firewall_integration.sh
+        run: |
+          sudo bash -euo pipefail <<'SH'
+          namespace=hysteria2-panel-ci
+          override=/run/systemd/system/firewalld.service.d/50-hysteria2-panel-ci.conf
+          cleanup() {
+            set +e
+            systemctl stop firewalld.service
+            rm -f -- "${override}"
+            rmdir -- "${override%/*}" 2>/dev/null || true
+            systemctl daemon-reload
+            ip netns delete "${namespace}"
+          }
+          trap cleanup EXIT
+          ip netns add "${namespace}"
+          install -d -m 0755 -- "${override%/*}"
+          printf '[Service]\nNetworkNamespacePath=/run/netns/%s\n' "${namespace}" >"${override}"
+          systemctl daemon-reload
+          ip netns exec "${namespace}" bash tests/firewall_integration.sh
+          SH
 
   systemd-service-semantics:
     runs-on: ubuntu-latest
@@ -182,4 +200,4 @@ jobs:
           command -v ip6tables-save
           command -v firewall-cmd
           nft --version
-          firewall-cmd --version
+          firewall-cmd --help >/dev/null

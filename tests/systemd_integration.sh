@@ -28,6 +28,20 @@ RESUME_MARKER="/run/hysteria2-panel-ci-restore-active"
 RESUME_CAPTURE="/run/hysteria2-panel-ci-resume-capture"
 RECOVER_FAILURE="/run/hysteria2-panel-ci-recover-failure"
 
+report_error() {
+  local status="$1" line="$2"
+  trap - ERR
+  set +e
+  echo "systemd integration failed at line ${line} (status ${status})" >&2
+  systemctl --no-pager --full status \
+    "${RECOVER_UNIT}" "${PANEL_UNIT}" "${SERVER_UNIT}" "${RESUME_UNIT}" \
+    "${LEGACY_RESTORE_UNIT}" >&2
+  journalctl --no-pager -n 120 \
+    -u "${RECOVER_UNIT}" -u "${PANEL_UNIT}" -u "${SERVER_UNIT}" \
+    -u "${RESUME_UNIT}" -u "${LEGACY_RESTORE_UNIT}" >&2
+  exit "${status}"
+}
+
 cleanup() {
   local status=$?
   trap - EXIT
@@ -43,6 +57,7 @@ cleanup() {
   exit "${status}"
 }
 trap cleanup EXIT
+trap 'report_error "$?" "$LINENO"' ERR
 
 cat >"${PANEL_PATH}" <<EOF
 [Unit]
