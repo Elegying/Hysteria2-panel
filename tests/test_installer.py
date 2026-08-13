@@ -91,6 +91,9 @@ firewall-cmd() {{
   if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "permanent-target" && "$*" == *"--get-target"* && "$*" != *"--permanent"* ]]; then
     return 2
   fi
+  if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "quiet-chain" && "$*" == *"--quiet"* && "$*" == *"--get-all-chains"* ]]; then
+    return 0
+  fi
   case "$*" in
     "--help")
       if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "help-error" ]]; then
@@ -113,7 +116,7 @@ firewall-cmd() {{
       ;;
     *"--direct --get-all-chains")
       [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" != "error" ]] || return 2
-      [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" != "chain" ]] || printf 'ipv4 filter H2P-BLOCK\n'
+      [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" != "chain" && "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" != "quiet-chain" ]] || printf 'ipv4 filter H2P-BLOCK\n'
       ;;
     *"--direct --get-all-passthroughs")
       [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" != "error" ]] || return 2
@@ -1135,6 +1138,7 @@ ip6tables-save() { :; }
         for mode in (
             "panic",
             "chain",
+            "quiet-chain",
             "direct",
             "passthrough",
             "policy",

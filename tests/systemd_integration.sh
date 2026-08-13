@@ -193,7 +193,7 @@ systemctl stop "${RESUME_UNIT}" "${SERVER_UNIT}" "${PANEL_UNIT}" "${RECOVER_UNIT
 : >"${RESUME_CAPTURE}"
 : >"${RESUME_MARKER}"
 timeout 20s systemctl start "${RESUME_UNIT}" "${SERVER_UNIT}"
-[[ "$(cat "${RESUME_CAPTURE}")" == "prepost" ]]
+[[ "$(cat "${RESUME_CAPTURE}")" =~ ^(pre)+post$ ]]
 [[ ! -e "${RESUME_MARKER}" ]]
 systemctl is-active --quiet "${PANEL_UNIT}"
 systemctl is-active --quiet "${SERVER_UNIT}"

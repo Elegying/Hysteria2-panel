@@ -1372,11 +1372,10 @@ firewalld_has_global_conflicts() {
       firewalld_option_supported "${direct_state}" || return 2
     done
     for scope in runtime permanent; do
-      options=(--quiet)
-      [[ "${scope}" != "permanent" ]] || options=(--quiet --permanent)
+      options=(firewall-cmd --direct)
+      [[ "${scope}" != "permanent" ]] || options=(firewall-cmd --permanent --direct)
       for direct_state in --get-all-chains --get-all-rules --get-all-passthroughs; do
-        direct_state="$(firewall-cmd "${options[@]}" --direct \
-          "${direct_state}" 2>/dev/null)" || return 2
+        direct_state="$("${options[@]}" "${direct_state}" 2>/dev/null)" || return 2
         [[ -z "${direct_state}" ]] || return 0
       done
     done
