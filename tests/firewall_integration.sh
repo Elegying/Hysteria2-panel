@@ -148,19 +148,19 @@ systemctl start firewalld.service
 [[ "$(read_firewalld_backend)" == "nftables" ]]
 zone="$(firewall-cmd --get-default-zone)"
 if firewalld_has_global_conflicts; then
-  fail "default firewalld state was classified as conflicting"
+  global_status=0
 else
   global_status=$?
-  if (( global_status != 1 )); then
-    firewall-cmd --version >&2 || true
-    firewall-cmd --get-policies >&2 || true
-    firewall-cmd --permanent --get-policies >&2 || true
-    PS4='+ firewalld diagnostic ${LINENO}: '
-    set -x
-    firewalld_has_global_conflicts || global_status=$?
-    { set +x; } 2>/dev/null
-    fail "default firewalld state could not be inspected (status ${global_status})"
-  fi
+fi
+if (( global_status != 1 )); then
+  firewall-cmd --version >&2 || true
+  firewall-cmd --get-policies >&2 || true
+  firewall-cmd --permanent --get-policies >&2 || true
+  PS4='+ firewalld diagnostic ${LINENO}: '
+  set -x
+  firewalld_has_global_conflicts || global_status=$?
+  { set +x; } 2>/dev/null
+  fail "default firewalld state was not clean (status ${global_status})"
 fi
 prepare_firewall
 [[ "${FIREWALL_MANAGER}" == "firewalld" ]]
