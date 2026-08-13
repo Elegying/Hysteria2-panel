@@ -23,10 +23,15 @@ declare UFW_RULES_PATH=/etc/ufw UFW_TEMPLATE_PATH=/usr/share/ufw/iptables
 declare -a FIREWALL_RULES=() FIREWALL_ZONES=() FIREWALL_PENDING=() FIREWALL_APPLIED=()
 RULES=(29999/tcp 29999/udp 29998/tcp 443/tcp 443/udp)
 TEST_TMP="$(mktemp -d /tmp/hysteria2-panel-firewall.XXXXXX)"
+LISTENER_PID=""
 
 cleanup() {
   local rule zone
   set +e
+  if [[ -n "${LISTENER_PID}" ]]; then
+    kill "${LISTENER_PID}" >/dev/null 2>&1
+    wait "${LISTENER_PID}" >/dev/null 2>&1
+  fi
   iptables -D INPUT -p tcp --dport 29999 -j DROP >/dev/null 2>&1
   if [[ -s "${TEST_TMP}/before.rules" ]]; then
     cp -a "${TEST_TMP}/before.rules" /etc/ufw/before.rules
@@ -47,6 +52,37 @@ cleanup() {
   rm -r -- "${TEST_TMP}"
 }
 trap cleanup EXIT
+
+python3 - "${TEST_TMP}/listeners.ready" <<'PY' &
+import pathlib
+import signal
+import socket
+import sys
+
+sockets = []
+for kind, port in (
+    (socket.SOCK_STREAM, 29999),
+    (socket.SOCK_STREAM, 29998),
+    (socket.SOCK_STREAM, 443),
+    (socket.SOCK_DGRAM, 29999),
+    (socket.SOCK_DGRAM, 443),
+):
+    listener = socket.socket(socket.AF_INET, kind)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("0.0.0.0", port))
+    if kind == socket.SOCK_STREAM:
+        listener.listen()
+    sockets.append(listener)
+pathlib.Path(sys.argv[1]).touch()
+signal.pause()
+PY
+LISTENER_PID=$!
+for _attempt in $(seq 1 50); do
+  [[ ! -e "${TEST_TMP}/listeners.ready" ]] || break
+  kill -0 "${LISTENER_PID}" 2>/dev/null || fail "test listeners exited before becoming ready"
+  sleep 0.1
+done
+[[ -e "${TEST_TMP}/listeners.ready" ]] || fail "test listeners did not become ready"
 
 expect_prepare_failure() {
   local message="$1"

@@ -141,9 +141,16 @@ mkdir -m 0755 -- "${LEGACY_RESTORE_GUARD_DIR}"
   printf '[Unit]\nRefuseManualStart=yes\n' >"${LEGACY_RESTORE_GUARD_DROPIN}"
 )
 # This is the SIGKILL window after the exact file is durable but before PID 1
-# has reloaded it. A retry may safely verify this disk state and reload it.
-[[ "$(systemctl show "${LEGACY_RESTORE_UNIT}" --property=RefuseManualStart --value)" == "no" ]]
-[[ -z "$(systemctl show "${LEGACY_RESTORE_UNIT}" --property=DropInPaths --value)" ]]
+# has explicitly reloaded it. PID 1 may notice the drop-in first, so both the
+# not-yet-loaded and already-loaded states are valid and recoverable.
+pre_reload_refuse="$(systemctl show "${LEGACY_RESTORE_UNIT}" --property=RefuseManualStart --value)"
+pre_reload_dropins="$(systemctl show "${LEGACY_RESTORE_UNIT}" --property=DropInPaths --value)"
+if [[ "${pre_reload_refuse}" == "no" ]]; then
+  [[ -z "${pre_reload_dropins}" ]]
+else
+  [[ "${pre_reload_refuse}" == "yes" ]]
+  [[ "${pre_reload_dropins}" == "${LEGACY_RESTORE_GUARD_DROPIN}" ]]
+fi
 systemctl daemon-reload
 [[ "$(systemctl show "${LEGACY_RESTORE_UNIT}" --property=RefuseManualStart --value)" == "yes" ]]
 [[ "$(systemctl show "${LEGACY_RESTORE_UNIT}" --property=DropInPaths --value)" == "${LEGACY_RESTORE_GUARD_DROPIN}" ]]
