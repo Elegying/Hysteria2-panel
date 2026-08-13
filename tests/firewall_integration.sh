@@ -152,6 +152,9 @@ if firewalld_has_global_conflicts; then
 else
   global_status=$?
   if (( global_status != 1 )); then
+    firewall-cmd --version >&2 || true
+    firewall-cmd --get-policies >&2 || true
+    firewall-cmd --permanent --get-policies >&2 || true
     PS4='+ firewalld diagnostic ${LINENO}: '
     set -x
     firewalld_has_global_conflicts || global_status=$?
