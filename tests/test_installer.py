@@ -88,16 +88,8 @@ firewall-cmd() {{
         ;;
     esac
   fi
-  if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "runtime-drop" && "$*" == *"--get-target"* ]]; then
-    if [[ "$*" == *"--permanent"* ]]; then
-      printf 'CONTINUE\n'
-    else
-      printf 'DROP\n'
-    fi
-    return 0
-  fi
-  if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "runtime-default" && "$*" == *"--get-target"* && "$*" != *"--permanent"* ]]; then
-    return 0
+  if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "permanent-target" && "$*" == *"--get-target"* && "$*" != *"--permanent"* ]]; then
+    return 2
   fi
   if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "quiet-chain" && "$*" == *"--quiet"* && "$*" == *"--get-all-chains"* ]]; then
     return 0
@@ -1216,7 +1208,7 @@ ip6tables-save() { :; }
             "safe-policy",
             "disabled-policy",
             "quiet-output",
-            "runtime-default",
+            "permanent-target",
         ):
             with self.subTest(mode=mode):
                 result, calls = self.run_firewall_function(
@@ -1249,39 +1241,6 @@ ip6tables-save() { :; }
 
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual(10, len(calls))
-
-    def test_active_firewalld_runtime_drop_policy_fails_before_writes(self):
-        result, calls = self.run_firewall_function(
-            r'''
-MOCK_FIREWALLD_GLOBAL_MODE=runtime-drop
-ufw() { printf 'Status: inactive\n'; }
-firewall-cmd() {
-  state_file="${CAPTURE}.state"
-  case "$*" in
-    "--state") printf 'running\n' ;;
-    "--get-active-zones") printf 'public\n  interfaces: eth0\n' ;;
-    "--get-default-zone") printf 'public\n' ;;
-    *"--list-rich-rules"*) : ;;
-    *"--query-port="*)
-      [[ -f "$state_file" ]] || return 1
-      grep -Fqx -- "${*//--query-port=/--add-port=}" "$state_file" 2>/dev/null
-      ;;
-    *"--add-port="*)
-      printf '%s\n' "$*" >> "$CAPTURE"
-      printf '%s\n' "$*" >> "$state_file"
-      ;;
-    *) return 1 ;;
-  esac
-}
-nft() { return 2; }
-iptables-save() { :; }
-ip6tables-save() { :; }
-'''
-        )
-
-        self.assertEqual(97, result.returncode)
-        self.assertEqual([], calls)
-        self.assertIn("policy", result.stderr)
 
     def test_ipv6_custom_input_policy_fails_closed(self):
         result, calls = self.run_firewall_function(

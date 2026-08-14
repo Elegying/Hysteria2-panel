@@ -1405,11 +1405,8 @@ firewalld_has_global_conflicts() {
           [[ "${zone_name}" =~ ^[A-Za-z0-9_.-]+$ ]] || return 2
         done
         [[ " ${egress_zones} " == *" HOST "* ]] || continue
-        target="$("${options[@]}" --policy="${policy}" \
+        target="$(firewall-cmd --permanent --policy="${policy}" \
           --get-target 2>/dev/null)" || return 2
-        # firewalld may return an empty runtime value for an inherited policy
-        # target; the documented default for policies is CONTINUE.
-        target="${target:-CONTINUE}"
         case "${target}" in
           DROP|REJECT) return 0 ;;
           CONTINUE|ACCEPT) ;;
