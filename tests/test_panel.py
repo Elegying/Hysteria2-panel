@@ -1788,6 +1788,13 @@ class OperationsTests(unittest.TestCase):
             database.initialize()
             database_path.chmod(0o600)
             user = database.create_proxy_user("alice")
+            # This marker represents the post-stop, disk-consistent phase. Keep
+            # the schema out of WAL so the fixture matches that production state.
+            with sqlite3.connect(database_path) as connection:
+                self.assertEqual(
+                    (0, 0, 0),
+                    tuple(connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()),
+                )
             certificate, private_key = create_test_certificate(root)
             certificate.chmod(0o640)
             private_key.chmod(0o640)

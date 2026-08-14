@@ -96,6 +96,9 @@ firewall-cmd() {{
     fi
     return 0
   fi
+  if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "runtime-default" && "$*" == *"--get-target"* && "$*" != *"--permanent"* ]]; then
+    return 0
+  fi
   if [[ "${{MOCK_FIREWALLD_GLOBAL_MODE:-}}" == "quiet-chain" && "$*" == *"--quiet"* && "$*" == *"--get-all-chains"* ]]; then
     return 0
   fi
@@ -1213,6 +1216,7 @@ ip6tables-save() { :; }
             "safe-policy",
             "disabled-policy",
             "quiet-output",
+            "runtime-default",
         ):
             with self.subTest(mode=mode):
                 result, calls = self.run_firewall_function(
