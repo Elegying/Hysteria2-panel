@@ -473,6 +473,58 @@ class RateLimiterTests(unittest.TestCase):
 
         self.assertLessEqual(len(limiter._attempts), 3)
 
+    def test_concurrent_attempts_from_one_address_cannot_bypass_the_limit(self):
+        limiter = LoginRateLimiter(max_attempts=1, window_seconds=60, clock=lambda: 1000.0)
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_verified = threading.Event()
+        results = []
+
+        def first_verifier():
+            first_started.set()
+            self.assertTrue(release_first.wait(1))
+            return None
+
+        def second_verifier():
+            second_verified.set()
+            return 123
+
+        first = threading.Thread(
+            target=lambda: results.append(
+                limiter.authenticate("192.0.2.1", first_verifier)
+            )
+        )
+        second = threading.Thread(
+            target=lambda: results.append(
+                limiter.authenticate("192.0.2.1", second_verifier)
+            )
+        )
+        first.start()
+        self.assertTrue(first_started.wait(1))
+        second.start()
+        self.assertFalse(second_verified.wait(0.1))
+        release_first.set()
+        first.join(1)
+        second.join(1)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertFalse(second_verified.is_set())
+        self.assertEqual(
+            [(None, 60, True), (None, 60, False)],
+            results,
+        )
+
+    def test_authentication_lock_slot_is_bounded_for_every_address_hash(self):
+        limiter = LoginRateLimiter(max_attempts=1, window_seconds=60)
+        address = "155.103.116.201"
+        self.assertGreaterEqual(
+            hashlib.sha256(address.encode("utf-8")).digest()[0],
+            len(limiter._authentication_locks),
+        )
+
+        self.assertEqual((123, 0, True), limiter.authenticate(address, lambda: 123))
+
 
 class FakeStatsClient:
     def __init__(self):
@@ -1096,7 +1148,7 @@ class OperationsTests(unittest.TestCase):
 
         self.assertEqual(0, result)
         load_settings.assert_called_once_with(os.environ)
-        resume.assert_called_once_with(settings)
+        resume.assert_called_once_with(settings, strict_paths=False)
 
     def test_restore_and_resume_reject_a_symlink_marker_without_starting_services(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1130,7 +1182,7 @@ class OperationsTests(unittest.TestCase):
             result = hysteria2_panel.main(["recover-restore-files"])
 
         self.assertEqual(0, result)
-        recover.assert_called_once_with()
+        recover.assert_called_once_with(strict_paths=False)
         load_settings.assert_not_called()
 
     def test_maintenance_lock_is_exclusive_and_released(self):
@@ -3230,6 +3282,72 @@ class BackupManagerTests(unittest.TestCase):
         inspected = self.manager.validate_archive(archive)
         self.assertEqual(manifest["certificate"]["pinSHA256"], inspected["certificate"]["pinSHA256"])
 
+    def test_archive_limit_can_hold_the_largest_valid_uncompressed_backup(self):
+        self.assertGreaterEqual(
+            hysteria2_panel.MAX_BACKUP_ARCHIVE_BYTES,
+            hysteria2_panel.MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2,
+        )
+
+    def test_restore_rejects_non_blob_proxy_token_seeds_as_validation_errors(self):
+        invalid_database = self.root / "invalid-seed.db"
+        with sqlite3.connect(self.database.path) as source, sqlite3.connect(
+            invalid_database
+        ) as destination:
+            source.backup(destination)
+            destination.execute("PRAGMA journal_mode = DELETE")
+            destination.execute(
+                "UPDATE proxy_users SET token_seed = 'not-a-blob' WHERE name = 'alice'"
+            )
+
+        with tempfile.TemporaryDirectory(dir=self.root) as directory:
+            with self.assertRaisesRegex(BackupValidationError, "用户数据库"):
+                self.manager._validate_database(
+                    invalid_database.read_bytes(), self.hmac_key, directory
+                )
+
+    def test_restore_replacement_fsyncs_owner_and_mode_before_rename(self):
+        destination = self.root / "replace-me"
+        destination.write_bytes(b"old")
+        destination.chmod(0o640)
+        events = []
+        real_fchown = os.fchown
+        real_fchmod = os.fchmod
+        real_fsync = os.fsync
+        real_replace = os.replace
+
+        def track_fchown(descriptor, uid, gid):
+            events.append("fchown")
+            return real_fchown(descriptor, uid, gid)
+
+        def track_fchmod(descriptor, mode):
+            events.append("fchmod")
+            return real_fchmod(descriptor, mode)
+
+        def track_fsync(descriptor):
+            events.append("fsync")
+            return real_fsync(descriptor)
+
+        def track_replace(source, target):
+            events.append("replace")
+            return real_replace(source, target)
+
+        with mock.patch.object(
+            hysteria2_panel.os, "fchown", side_effect=track_fchown
+        ), mock.patch.object(
+            hysteria2_panel.os, "fchmod", side_effect=track_fchmod
+        ), mock.patch.object(
+            hysteria2_panel.os, "fsync", side_effect=track_fsync
+        ), mock.patch.object(
+            hysteria2_panel.os, "replace", side_effect=track_replace
+        ):
+            self.manager._replace_bytes(destination, b"new")
+
+        self.assertEqual(b"new", destination.read_bytes())
+        self.assertEqual(0o640, destination.stat().st_mode & 0o777)
+        self.assertLess(events.index("fchown"), events.index("fchmod"))
+        self.assertLess(events.index("fchmod"), events.index("fsync"))
+        self.assertLess(events.index("fsync"), events.index("replace"))
+
     def test_restore_migrates_backups_created_before_udp_443_support(self):
         current_archive = self.manager.create_archive()
         with zipfile.ZipFile(current_archive) as package:
@@ -4632,7 +4750,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.18.0", body)
+        self.assertIn("v0.18.1", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
@@ -4673,6 +4791,92 @@ class PanelHttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
             self.request("/updates/status", follow_redirects=False)
         self.assertEqual(303, unauthenticated.exception.code)
+
+    def test_update_check_waits_until_an_apply_has_captured_its_target(self):
+        apply_started = threading.Event()
+        release_apply = threading.Event()
+        check_called = threading.Event()
+
+        class BlockingUpdateController(FakeUpdateController):
+            def queue(inner_self, target):
+                apply_started.set()
+                if not release_apply.wait(1):
+                    raise RuntimeError("test did not release update apply")
+                super().queue(target)
+
+        class ObservedUpdateChecker(FakeUpdateChecker):
+            def check(inner_self):
+                check_called.set()
+                return super().check()
+
+        controller = BlockingUpdateController()
+        self.application.update_controller = controller
+        self.application.update_checker = ObservedUpdateChecker()
+        self.application.update_result = FakeUpdateChecker().check()
+        headers, csrf_token = self.authenticated_headers()
+        failures = []
+
+        def apply_update():
+            try:
+                with self.request(
+                    "/updates/apply",
+                    {"csrf": csrf_token},
+                    headers={**headers, "Accept": "application/json"},
+                ):
+                    pass
+            except Exception as exc:
+                failures.append(exc)
+
+        def check_update():
+            try:
+                with self.request(
+                    "/updates/check",
+                    {"csrf": csrf_token},
+                    headers=headers,
+                    follow_redirects=False,
+                ):
+                    pass
+            except urllib.error.HTTPError as exc:
+                if exc.code != 303:
+                    failures.append(exc)
+            except Exception as exc:
+                failures.append(exc)
+
+        apply_thread = threading.Thread(target=apply_update)
+        check_thread = threading.Thread(target=check_update)
+        apply_thread.start()
+        self.assertTrue(apply_started.wait(1))
+        check_thread.start()
+        try:
+            self.assertFalse(check_called.wait(0.1))
+        finally:
+            release_apply.set()
+            apply_thread.join(1)
+            check_thread.join(1)
+
+        self.assertFalse(apply_thread.is_alive())
+        self.assertFalse(check_thread.is_alive())
+        self.assertEqual([], failures)
+        self.assertTrue(check_called.is_set())
+        self.assertEqual("v0.4.0", controller.target)
+
+    def test_deleting_a_user_forgets_transient_connection_state(self):
+        created = self.db.create_proxy_user("transient-user")
+        self.application.usage_manager.pending["transient-user"] = [1000.0]
+        self.application.usage_manager.last_online["transient-user"] = 2
+        headers, csrf_token = self.authenticated_headers()
+
+        with self.assertRaises(urllib.error.HTTPError) as deleted:
+            self.request(
+                "/users/{}/delete".format(created["id"]),
+                {"csrf": csrf_token, "generation": "0"},
+                headers=headers,
+                follow_redirects=False,
+            )
+
+        self.assertEqual(303, deleted.exception.code)
+        self.assertNotIn("transient-user", self.application.usage_manager.pending)
+        self.assertNotIn("transient-user", self.application.usage_manager.last_online)
 
     def test_server_reboot_requires_csrf_and_queues_the_fixed_action(self):
         headers, csrf_token = self.authenticated_headers()
@@ -5028,6 +5232,25 @@ class SettingsTests(unittest.TestCase):
             Settings.from_mapping({**base, "HY2PANEL_NODE_NAME": "bad\nname"})
         with self.assertRaises(ValueError):
             Settings.from_mapping({**base, "HY2PANEL_PANEL_SCHEME": "ftp"})
+
+    def test_internal_auth_listener_must_remain_on_ipv4_loopback(self):
+        base = {
+            "HY2PANEL_HMAC_KEY": "ab" * 32,
+            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_STATS_SECRET": "stats-secret",
+            "HY2PANEL_CERT_PIN": "AA:BB:CC",
+        }
+
+        settings = Settings.from_mapping(
+            {**base, "HY2PANEL_AUTH_HOST": "127.0.0.1"}
+        )
+        self.assertEqual("127.0.0.1", settings.auth_host)
+        for address in ("0.0.0.0", "192.0.2.10", "::1"):
+            with self.subTest(address=address):
+                with self.assertRaisesRegex(ValueError, "AUTH_HOST"):
+                    Settings.from_mapping(
+                        {**base, "HY2PANEL_AUTH_HOST": address}
+                    )
 
     def test_configured_ports_preserve_privileged_endpoints_but_reserve_secondary_443(self):
         base = {

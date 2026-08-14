@@ -50,10 +50,10 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.18.0"
+PANEL_VERSION = "0.18.1"
 BACKUP_FORMAT_VERSION = 1
-MAX_BACKUP_ARCHIVE_BYTES = 64 * 1024**2
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
+MAX_BACKUP_ARCHIVE_BYTES = MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2
 MAX_STATS_RESPONSE_BYTES = 8 * 1024**2
 MAX_PENDING_TRAFFIC_BYTES = 2 * MAX_STATS_RESPONSE_BYTES + 64 * 1024
 MAINTENANCE_LOCK_PATH = Path("/run/hysteria2-panel-maintenance/lock")
@@ -895,6 +895,8 @@ class BackupManager:
             for user_id, seed, expected_fingerprint in users:
                 if seed is None:
                     continue
+                if not isinstance(seed, bytes):
+                    raise BackupValidationError("用户数据库令牌种子格式无效")
                 token = verifier._token_from_seed(bytes(seed))
                 if not hmac.compare_digest(verifier._fingerprint(token), expected_fingerprint):
                     raise BackupValidationError("用户签名密钥与数据库不匹配")
@@ -1020,10 +1022,10 @@ class BackupManager:
             with os.fdopen(descriptor, "wb") as target:
                 target.write(value)
                 target.flush()
+                if hasattr(os, "fchown"):
+                    os.fchown(target.fileno(), existing.st_uid, existing.st_gid)
+                os.fchmod(target.fileno(), stat.S_IMODE(existing.st_mode))
                 os.fsync(target.fileno())
-            os.chmod(temporary, stat.S_IMODE(existing.st_mode))
-            if hasattr(os, "chown"):
-                os.chown(temporary, existing.st_uid, existing.st_gid)
             os.replace(temporary, path)
             _fsync_directory(path.parent)
         finally:
@@ -1962,6 +1964,7 @@ class LoginRateLimiter:
         self.clock = clock
         self._attempts = {}
         self._lock = threading.Lock()
+        self._authentication_locks = tuple(threading.Lock() for _ in range(64))
 
     def _recent(self, address):
         cutoff = self.clock() - self.window_seconds
@@ -2004,6 +2007,21 @@ class LoginRateLimiter:
     def record_success(self, address):
         with self._lock:
             self._attempts.pop(address, None)
+
+    def authenticate(self, address, verifier):
+        address = str(address)
+        slot = hashlib.sha256(address.encode("utf-8")).digest()[0] % len(
+            self._authentication_locks
+        )
+        with self._authentication_locks[slot]:
+            retry_after = self.retry_after(address)
+            if retry_after:
+                return None, retry_after, False
+            result = verifier()
+            if result:
+                self.record_success(address)
+                return result, 0, True
+            return None, self.record_failure(address), True
 
 
 class JsonHandler(BaseHTTPRequestHandler):
@@ -2207,6 +2225,7 @@ class PanelApplication:
         self.backup_manager = backup_manager
         self.restore_controller = restore_controller or RestoreController()
         self.update_result = None
+        self.update_lock = threading.Lock()
         self.node_name = node_name
         self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
@@ -2911,17 +2930,20 @@ class PanelHandler(JsonHandler):
 
     def _handle_login(self, form):
         address = self.client_address[0]
-        retry_after = self.app.rate_limiter.retry_after(address)
-        if retry_after:
+        admin_id, retry_after, attempted = self.app.rate_limiter.authenticate(
+            address,
+            lambda: self.app.database.verify_admin(
+                form.get("username", ""), form.get("password", "")
+            ),
+        )
+        if not attempted:
             self._send_html(
                 429,
                 self._login_page("尝试次数过多，请 {} 秒后再试".format(retry_after)),
                 {"Retry-After": str(retry_after)},
             )
             return
-        admin_id = self.app.database.verify_admin(form.get("username", ""), form.get("password", ""))
         if not admin_id:
-            retry_after = self.app.rate_limiter.record_failure(address)
             self._audit_safely("anonymous", "login_failed", "admin")
             if retry_after:
                 self._audit_safely("anonymous", "login_locked", "admin")
@@ -2933,7 +2955,6 @@ class PanelHandler(JsonHandler):
                 return
             self._send_html(401, self._login_page("账号或密码错误"))
             return
-        self.app.rate_limiter.record_success(address)
         raw_token, _ = self.app.database.create_session(admin_id)
         self._audit_safely(form.get("username", "admin")[:64], "login_succeeded", "admin")
         secure = "; Secure" if self.app.secure_cookies else ""
@@ -3090,6 +3111,7 @@ class PanelHandler(JsonHandler):
                 user = self.app.database.delete_proxy_user(
                     user_id, expected_generation=generation
                 )
+                self.app.usage_manager.forget_user(user["name"])
                 self._kick_safely(user["name"])
                 self._audit_safely(session["username"], "proxy_user_deleted", user["name"])
             self._redirect("/")
@@ -3149,35 +3171,38 @@ class PanelHandler(JsonHandler):
 
     def _handle_update_check(self, session):
         try:
-            self.app.update_result = self.app.update_checker.check()
-            self._audit_safely(session["username"], "panel_update_checked", PANEL_VERSION)
+            with self.app.update_lock:
+                self.app.update_result = self.app.update_checker.check()
+                self._audit_safely(
+                    session["username"], "panel_update_checked", PANEL_VERSION
+                )
             self._redirect("/")
         except Exception:
             LOGGER.exception("update check failed")
             self._error_page(502, "暂时无法检查更新，请稍后重试")
 
     def _handle_update_apply(self, session):
-        if not self.app.update_result or not self.app.update_result.get("update_available"):
-            if "application/json" in self.headers.get("Accept", ""):
-                self.send_json(409, {"error": "请先检查更新并确认存在新版本"})
-            else:
-                self._error_page(409, "请先检查更新并确认存在新版本")
-            return
-        try:
-            target = self.app.update_result["latest"]
-            self.app.update_controller.queue(target)
-            self._audit_safely(
-                session["username"],
-                "panel_update_queued",
-                self.app.update_result["latest"],
-            )
-        except Exception:
-            LOGGER.exception("update queue failed")
-            if "application/json" in self.headers.get("Accept", ""):
-                self.send_json(500, {"error": "在线更新任务启动失败，请检查服务日志"})
-            else:
-                self._error_page(500, "在线更新任务启动失败，请检查服务日志")
-            return
+        with self.app.update_lock:
+            update_result = self.app.update_result
+            if not update_result or not update_result.get("update_available"):
+                if "application/json" in self.headers.get("Accept", ""):
+                    self.send_json(409, {"error": "请先检查更新并确认存在新版本"})
+                else:
+                    self._error_page(409, "请先检查更新并确认存在新版本")
+                return
+            try:
+                target = update_result["latest"]
+                self.app.update_controller.queue(target)
+                self._audit_safely(
+                    session["username"], "panel_update_queued", target
+                )
+            except Exception:
+                LOGGER.exception("update queue failed")
+                if "application/json" in self.headers.get("Accept", ""):
+                    self.send_json(500, {"error": "在线更新任务启动失败，请检查服务日志"})
+                else:
+                    self._error_page(500, "在线更新任务启动失败，请检查服务日志")
+                return
         if "application/json" in self.headers.get("Accept", ""):
             self.send_json(202, self.app.update_controller.status())
             return
@@ -3509,6 +3534,11 @@ class UsageManager:
         with self.lock:
             self._collect_locked()
             return action()
+
+    def forget_user(self, name):
+        with self.lock:
+            self.pending.pop(name, None)
+            self.last_online.pop(name, None)
 
     def authorize(self, name):
         with self.lock:
@@ -4089,6 +4119,9 @@ class Settings:
             raise ValueError("HY2PANEL_STATS_SECRET must contain at least 8 characters")
         if not cert_pin:
             raise ValueError("HY2PANEL_CERT_PIN is required")
+        auth_host = mapping.get("HY2PANEL_AUTH_HOST", "127.0.0.1").strip()
+        if auth_host != "127.0.0.1":
+            raise ValueError("HY2PANEL_AUTH_HOST must be 127.0.0.1")
         hysteria_port = _parse_port(mapping, "HY2PANEL_HYSTERIA_PORT", 19999)
         panel_port = _parse_port(mapping, "HY2PANEL_PANEL_PORT", 19998)
         auth_port = _parse_port(mapping, "HY2PANEL_AUTH_PORT", 19996)
@@ -4112,7 +4145,7 @@ class Settings:
             panel_host=mapping.get("HY2PANEL_PANEL_HOST", "0.0.0.0"),  # nosec B104
             panel_port=panel_port,
             panel_scheme=panel_scheme,
-            auth_host=mapping.get("HY2PANEL_AUTH_HOST", "127.0.0.1"),
+            auth_host=auth_host,
             auth_port=auth_port,
             stats_port=stats_port,
             stats_url="http://127.0.0.1:{}".format(stats_port),
@@ -5235,13 +5268,13 @@ def main(argv=None):
         if args.command == "recover-restore-files":
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("recover-restore-files must run as root")
-            recover_restore_files()
+            recover_restore_files(strict_paths=False)
             return 0
         settings = Settings.from_mapping(os.environ)
         if args.command == "resume-after-restore":
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("resume-after-restore must run as root")
-            resume_after_restore(settings)
+            resume_after_restore(settings, strict_paths=False)
             return 0
         if args.command == "init-admin":
             password = os.environ.get("HY2PANEL_ADMIN_PASSWORD") or getpass.getpass("Admin password: ")
