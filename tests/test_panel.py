@@ -4313,6 +4313,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-label="名称"', body)
         self.assertIn('data-label="操作"', body)
         self.assertIn('@media(max-width:640px)', body)
+        self.assertIn('.user-heading{flex-basis:auto}', body)
         self.assertIn('.user-table tr{display:grid;', body)
         self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', body)
         self.assertIn('.user-table th{position:sticky;', body)
@@ -4795,7 +4796,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.19.0", body)
+        self.assertIn("v0.19.1", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
