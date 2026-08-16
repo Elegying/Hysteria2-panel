@@ -1,2 +1,2 @@
-# Preserve the vendored upstream source byte-for-byte; its blank lines contain tabs.
+# Preserve the vendored upstream formatting; its blank lines contain tabs.
 qrcodegen.py -whitespace

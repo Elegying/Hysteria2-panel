@@ -412,6 +412,12 @@ esac
         )
         self.assertEqual(hashlib.sha256(TCP_PROBE.read_bytes()).hexdigest(), probe_sha)
 
+    def test_vendored_qrcodegen_is_importable_on_supported_python_3_8(self):
+        source = (ROOT / "qrcodegen.py").read_text()
+
+        self.assertIn("class _BitBuffer(list):", source)
+        self.assertNotIn("class _BitBuffer(list[int]):", source)
+
     def test_tag_ci_requires_the_tag_to_match_both_source_versions(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
