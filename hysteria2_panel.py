@@ -39,6 +39,8 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from qrcodegen import DataTooLongError, QrCode
+
 
 SCRYPT_N = 1 << 14
 SCRYPT_R = 8
@@ -50,7 +52,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.18.1"
+PANEL_VERSION = "0.19.0"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
 MAX_BACKUP_ARCHIVE_BYTES = MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2
@@ -85,13 +87,13 @@ h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.m
 .button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer;transition:filter .15s ease,transform .15s ease}button:hover,.button:hover{filter:brightness(1.08);transform:translateY(-1px)}button:active,.button:active{transform:none}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}.system-actions{flex:0 0 auto}.system-actions button{padding:8px 11px}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
-.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:flex;align-items:center;flex-wrap:wrap}.user-heading{flex:1 1 240px}.user-section-head .section-actions{flex:0 0 auto}.user-tools{justify-content:space-between;margin-bottom:14px}.user-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(120px,1fr)) auto;align-items:end;gap:9px;flex:1}.user-filters label{margin-bottom:4px;font-size:12px;color:var(--muted)}.user-filters button{padding:10px 12px}.search-status{margin:0;white-space:nowrap}.filter-empty{margin:0 0 14px;padding:11px 14px;border:1px dashed #3a526b;border-radius:10px;text-align:center}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:360px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
+.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:flex;align-items:center;flex-wrap:wrap}.user-heading{flex:1 1 240px}.user-section-head .section-actions{flex:0 0 auto}.user-tools{justify-content:space-between;margin-bottom:14px}.user-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(120px,1fr)) auto;align-items:end;gap:9px;flex:1}.user-filters label{margin-bottom:4px;font-size:12px;color:var(--muted)}.user-filters button{padding:10px 12px}.search-status{margin:0;white-space:nowrap}.filter-empty{margin:0 0 14px;padding:11px 14px;border:1px dashed #3a526b;border-radius:10px;text-align:center}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:420px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
 .checkbox-field{display:flex;align-items:flex-start;gap:10px;margin:0;padding:12px;border:1px solid #3a4d63;border-radius:10px;background:#101f31}.checkbox-field input{width:auto;margin:4px 0 0;flex:0 0 auto}.checkbox-field span{font-weight:650}.checkbox-field small{display:block;margin-top:3px;font-weight:400}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
-.migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
+.migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.qr-panel{display:grid;justify-items:center;gap:8px;margin:16px 0}.qr-panel[hidden]{display:none}.qr-canvas{display:block;width:min(100%,320px);height:auto;border:10px solid #fff;border-radius:8px;background:#fff;image-rendering:pixelated}.credential-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:14px 0}.credential-actions button{width:100%}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
 @media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
 @media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.user-filters{grid-template-columns:minmax(200px,2fr) repeat(3,minmax(105px,1fr)) auto}}
-@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.system-actions{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.section-actions form{grid-column:1/-1}.user-tools{align-items:stretch;flex-direction:column}.user-filters{grid-template-columns:1fr 1fr;width:100%}.user-filters .user-search{grid-column:1/-1}.user-filters button{width:100%}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
+@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.system-actions{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.section-actions form{grid-column:1/-1}.user-tools{align-items:stretch;flex-direction:column}.user-filters{grid-template-columns:1fr 1fr;width:100%}.user-filters .user-search{grid-column:1/-1}.user-filters button{width:100%}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.qr-canvas{width:min(100%,288px)}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
 @media(max-width:340px){.metrics{grid-template-columns:1fr}.pill{flex-basis:100%}.version-panel{padding-inline:8px}.version-row{align-items:flex-start;flex-direction:column;gap:4px}.bbr-detail strong,.version-row strong{font-size:16px}.compact-button{padding:7px 5px;font-size:11px;white-space:nowrap}.user-table .actions button{padding-inline:1px;font-size:10px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop{backdrop-filter:none}}
 """
@@ -134,6 +136,64 @@ async function submitInlineForm(form) {
   try { payload = await response.json(); } catch (_) { payload = {}; }
   if (!response.ok) throw new Error(payload.error || '操作失败，请刷新页面后重试');
   return payload;
+}
+function clearCredentialsQr() {
+  const panel = document.querySelector('[data-qr-panel]');
+  const canvas = document.getElementById('credentials-qr');
+  const saveButton = document.querySelector('[data-save-qr]');
+  if (panel) panel.hidden = true;
+  if (saveButton) saveButton.hidden = true;
+  if (canvas) {
+    canvas.width = 0;
+    canvas.height = 0;
+    canvas.setAttribute('aria-label', 'Hysteria 2 节点配置二维码');
+  }
+}
+function drawCredentialsQr(rows, name) {
+  const size = Array.isArray(rows) ? rows.length : 0;
+  const valid = size >= 21 && size <= 177 && (size - 21) % 4 === 0 &&
+    rows.every(function(row) {
+      return typeof row === 'string' && row.length === size && /^[01]+$/.test(row);
+    });
+  if (!valid) throw new Error('二维码数据无效，请刷新页面后重试');
+  const canvas = document.getElementById('credentials-qr');
+  const panel = document.querySelector('[data-qr-panel]');
+  const saveButton = document.querySelector('[data-save-qr]');
+  if (!canvas || !panel || !saveButton) throw new Error('二维码组件加载失败');
+  const quiet = 4;
+  const scale = Math.max(3, Math.floor(360 / (size + quiet * 2)));
+  canvas.width = (size + quiet * 2) * scale;
+  canvas.height = canvas.width;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('浏览器无法绘制二维码');
+  context.imageSmoothingEnabled = false;
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = '#000000';
+  rows.forEach(function(row, y) {
+    for (let x = 0; x < size; x += 1) {
+      if (row[x] === '1') context.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
+    }
+  });
+  canvas.setAttribute('aria-label', String(name || '用户') + ' 的 Hysteria 2 节点配置二维码');
+  panel.hidden = false;
+  saveButton.hidden = false;
+}
+function showCredentials(payload, withQr, refreshOnClose) {
+  if (!payload || typeof payload.uri !== 'string' || !payload.uri.startsWith('hysteria2://')) {
+    throw new Error('节点代码响应无效');
+  }
+  const dialog = document.getElementById('credentials-dialog');
+  if (!dialog) throw new Error('节点信息弹窗加载失败');
+  clearCredentialsQr();
+  if (withQr) drawCredentialsQr(payload.qr, payload.name);
+  dialog.querySelector('[data-credentials-title]').textContent = String(payload.name || '用户') + ' 的节点信息';
+  dialog.querySelector('#credentials-uri').value = payload.uri;
+  dialog.querySelector('[data-credentials-notice]').textContent = withQr
+    ? '二维码和节点代码都包含认证凭据，请只保存到受信任的设备。'
+    : '关闭弹窗后会刷新当前用户列表。';
+  dialog.dataset.refreshOnClose = refreshOnClose ? '1' : '0';
+  dialog.showModal();
 }
 function syncEditUserForm() {
   const form = document.querySelector('[data-edit-user-form]');
@@ -207,6 +267,30 @@ document.addEventListener('click', async function(event) {
   button.textContent = copied ? '已复制' : '复制失败，请手动选择';
   notify(copied ? '节点代码已复制' : '自动复制失败，请手动选择节点代码', !copied);
 });
+document.addEventListener('click', function(event) {
+  const button = event.target.closest('[data-save-qr]');
+  if (!button) return;
+  const canvas = document.getElementById('credentials-qr');
+  if (!canvas || !canvas.width) { notify('二维码尚未生成', true); return; }
+  button.disabled = true;
+  canvas.toBlob(function(blob) {
+    if (!blob) {
+      button.disabled = false;
+      notify('二维码保存失败，请重试', true);
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'hysteria2-node-qr.png';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    button.disabled = false;
+    notify('二维码 PNG 已保存', false);
+  }, 'image/png');
+});
 document.addEventListener('submit', function(event) {
   const message = event.target.dataset.confirm;
   if (message && !window.confirm(message)) event.preventDefault();
@@ -230,6 +314,24 @@ document.addEventListener('submit', async function(event) {
   } finally {
     button.disabled = false;
     window.setTimeout(function() { button.textContent = original; }, 2200);
+  }
+});
+document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-qr-form]');
+  if (!form || event.defaultPrevented) return;
+  event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '生成中…';
+  try {
+    const payload = await submitInlineForm(form);
+    showCredentials(payload, true, false);
+  } catch (error) {
+    notify(error.message || '二维码生成失败，请重试', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
   }
 });
 document.addEventListener('submit', async function(event) {
@@ -279,14 +381,10 @@ document.addEventListener('submit', async function(event) {
   button.textContent = '添加中…';
   try {
     const payload = await submitInlineForm(form);
-    const dialog = document.getElementById('credentials-dialog');
-    dialog.querySelector('[data-credentials-title]').textContent = payload.name + ' 的节点信息';
-    dialog.querySelector('#credentials-uri').value = payload.uri;
-    dialog.dataset.refreshOnClose = '1';
     form.reset();
     const createDialog = form.closest('dialog');
     if (createDialog) createDialog.close();
-    dialog.showModal();
+    showCredentials(payload, false, true);
   } catch (error) {
     notify(error.message || '添加用户失败，请重试', true);
   } finally {
@@ -319,7 +417,10 @@ document.addEventListener('submit', async function(event) {
 });
 const credentialsDialog = document.getElementById('credentials-dialog');
 if (credentialsDialog) credentialsDialog.addEventListener('close', function() {
-  if (credentialsDialog.dataset.refreshOnClose === '1') window.location.href = '/';
+  const refresh = credentialsDialog.dataset.refreshOnClose === '1';
+  credentialsDialog.querySelector('#credentials-uri').value = '';
+  clearCredentialsQr();
+  if (refresh) window.location.href = '/';
 });
 const editUserSelect = document.querySelector('[data-edit-user-select]');
 if (editUserSelect) {
@@ -1956,6 +2057,23 @@ def build_connection_uri(host, port, auth, pin_sha256, label):
     )
 
 
+def build_qr_matrix(value):
+    """Return a bounded QR module matrix without a quiet zone."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("二维码内容不能为空")
+    try:
+        code = QrCode.encode_text(value, QrCode.Ecc.MEDIUM)
+    except DataTooLongError as exc:
+        raise ValueError("节点代码过长，无法生成二维码") from exc
+    size = code.get_size()
+    if size < 21 or size > 177:
+        raise ValueError("二维码尺寸无效")
+    return [
+        "".join("1" if code.get_module(x, y) else "0" for x in range(size))
+        for y in range(size)
+    ]
+
+
 class LoginRateLimiter:
     def __init__(self, max_attempts=5, window_seconds=900, max_addresses=4096, clock=time.time):
         self.max_attempts = int(max_attempts)
@@ -2516,6 +2634,7 @@ class PanelHandler(JsonHandler):
 <form class="inline" method="post" action="/users/{id}/rotate" data-confirm="轮换后旧连接地址会立即失效，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="warning" type="submit">轮换密钥</button></form>
 <form class="inline" method="post" action="/users/{id}/delete" data-confirm="确定删除用户 {name} 吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="danger" type="submit">删除</button></form>
 <form class="inline" method="post" action="/users/{id}/share" data-share-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><input type="hidden" name="inline" value="1"><button class="secondary" type="submit">分享</button></form>
+<form class="inline" method="post" action="/users/{id}/share" data-qr-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><input type="hidden" name="inline" value="1"><input type="hidden" name="qr" value="1"><button class="secondary" type="submit">二维码</button></form>
 <form class="inline" method="post" action="/users/{id}/reset" data-confirm="确定重置该用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="ghost" type="submit">重置流量</button></form>
 </div></td></tr>""".format(
                     name=html.escape(name),
@@ -2647,7 +2766,8 @@ class PanelHandler(JsonHandler):
 <div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载完整备份</button></form></article>
 <article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article></div></div></dialog>
 <dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>节点信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点信息弹窗">×</button></div>
-<label for="credentials-uri">Hysteria 2 节点代码</label><textarea id="credentials-uri" rows="5" readonly></textarea><p><button type="button" data-copy-target="credentials-uri">复制节点代码</button></p><p class="notice">关闭弹窗后会刷新当前用户列表。</p></div></dialog>
+<div class="qr-panel" data-qr-panel hidden><canvas id="credentials-qr" class="qr-canvas" role="img" aria-label="Hysteria 2 节点配置二维码"></canvas><p class="muted">可直接扫描导入，或保存 PNG 到受信任的设备。</p></div>
+<label for="credentials-uri">Hysteria 2 节点代码</label><textarea id="credentials-uri" rows="5" readonly></textarea><div class="credential-actions"><button type="button" data-copy-target="credentials-uri">复制节点代码</button><button class="secondary" type="button" data-save-qr hidden>保存二维码 PNG</button></div><p class="notice" data-credentials-notice>关闭弹窗后会刷新当前用户列表。</p></div></dialog>
 <dialog id="create-user-dialog" class="migration-dialog create-dialog" aria-labelledby="create-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="create-user-title">添加用户</h2><p class="muted">设置用户名称、设备数和总流量限制。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭添加用户弹窗">×</button></div>
 <form class="create-grid" method="post" action="/users" data-create-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机" autofocus></div>
 <div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
@@ -3075,6 +3195,8 @@ class PanelHandler(JsonHandler):
                     return
                 if action == "share":
                     user = self.app.database.get_proxy_user(user_id)
+                    if user["generation"] != generation:
+                        raise ConflictError
                     token = self.app.database.recover_proxy_token(user_id)
                     if token is None:
                         if form.get("inline") == "1":
@@ -3091,7 +3213,10 @@ class PanelHandler(JsonHandler):
                     self._audit_safely(session["username"], "proxy_link_shared", user["name"])
                     credentials = {"id": user["id"], "name": user["name"], "token": token}
                     if form.get("inline") == "1":
-                        self.send_json(200, self._connection_payload(credentials))
+                        payload = self._connection_payload(credentials)
+                        if form.get("qr") == "1":
+                            payload["qr"] = build_qr_matrix(payload["uri"])
+                        self.send_json(200, payload)
                         return
                     self._send_html(
                         200,
@@ -3116,11 +3241,20 @@ class PanelHandler(JsonHandler):
                 self._audit_safely(session["username"], "proxy_user_deleted", user["name"])
             self._redirect("/")
         except (TypeError, ValueError):
-            self._error_page(400, "请求版本无效，请刷新页面后重试")
+            if form.get("inline") == "1":
+                self.send_json(400, {"error": "请求无效，请刷新页面后重试"})
+            else:
+                self._error_page(400, "请求版本无效，请刷新页面后重试")
         except ConflictError:
-            self._error_page(409, "用户状态已变化，请刷新页面后重试")
+            if form.get("inline") == "1":
+                self.send_json(409, {"error": "用户状态已变化，请刷新页面后重试"})
+            else:
+                self._error_page(409, "用户状态已变化，请刷新页面后重试")
         except KeyError:
-            self._error_page(404, "用户不存在")
+            if form.get("inline") == "1":
+                self.send_json(404, {"error": "用户不存在"})
+            else:
+                self._error_page(404, "用户不存在")
         except Exception:
             LOGGER.exception("user action failed")
             self._error_page(500, "操作未完成，请检查服务日志")

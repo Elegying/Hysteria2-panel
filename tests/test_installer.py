@@ -373,7 +373,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.18.1"', source)
+        self.assertIn('PANEL_VERSION="0.19.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -384,20 +384,39 @@ esac
             source,
         )
         self.assertRegex(source, r'PANEL_SHA256="[0-9a-f]{64}"')
+        self.assertRegex(source, r'QRCODEGEN_SHA256="[0-9a-f]{64}"')
+        self.assertIn('QRCODEGEN_SOURCE_URL=', source)
         self.assertIn(
             'TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"',
             source,
         )
         self.assertIn('面板源码 SHA-256 校验失败', source)
+        self.assertIn('二维码编码器 SHA-256 校验失败', source)
         self.assertIn('TCP 探测源码 SHA-256 校验失败', source)
+        self.assertIn('"${PYTHON_BIN}" -m py_compile "${TMP_DIR}/qrcodegen.py"', source)
+        self.assertIn(
+            'install -o root -g root -m 0644 "${TMP_DIR}/qrcodegen.py" /opt/hysteria2-panel/qrcodegen.py',
+            source,
+        )
         self.assertIn("sha256sum", source)
         panel_sha = source.split('PANEL_SHA256="', 1)[1].split('"', 1)[0]
+        qrcodegen_sha = source.split('QRCODEGEN_SHA256="', 1)[1].split('"', 1)[0]
         probe_sha = source.split('TCP_PROBE_SHA256="', 1)[1].split('"', 1)[0]
         self.assertEqual(
             hashlib.sha256((ROOT / "hysteria2_panel.py").read_bytes()).hexdigest(),
             panel_sha,
         )
+        self.assertEqual(
+            hashlib.sha256((ROOT / "qrcodegen.py").read_bytes()).hexdigest(),
+            qrcodegen_sha,
+        )
         self.assertEqual(hashlib.sha256(TCP_PROBE.read_bytes()).hexdigest(), probe_sha)
+
+    def test_vendored_qrcodegen_is_importable_on_supported_python_3_8(self):
+        source = (ROOT / "qrcodegen.py").read_text()
+
+        self.assertIn("class _BitBuffer(list):", source)
+        self.assertNotIn("class _BitBuffer(list[int]):", source)
 
     def test_tag_ci_requires_the_tag_to_match_both_source_versions(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()

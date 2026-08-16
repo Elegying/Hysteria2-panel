@@ -49,7 +49,7 @@ TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后
 
 - 创建、编辑、启用、禁用和删除用户，并设置客户端实例数与总流量限制（默认 `3` 个实例、`250 GiB`）；编辑用户可单独开放 UDP `443`，不会修改用户 token 或分享 URI；用户列表可按用户名搜索，并组合筛选启用状态、在线状态和 UDP `443` 授权，筛选后仍可按在线设备数或总流量排序；
 - 在同一页查看全部用户，并通过用户名即时搜索；添加用户使用弹窗，不占用列表空间；
-- 轮换用户认证密钥，一键复制可导入的连接 URI；
+- 轮换用户认证密钥，一键复制可导入的连接 URI；每个用户节点还可按需弹出配置二维码，并保存为 PNG；
 - 查看在线设备数、上传/下载流量、总流量进度和高流量前五用户；
 - 重置单个用户或全部用户的累计流量；
 - 查看服务状态、当前用户数、不活跃用户数、在线设备总数以及总上传/下载流量；
@@ -137,7 +137,7 @@ curl http://127.0.0.1:19998/healthz
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile hysteria2_panel.py tcp_probe.py
+python3 -m py_compile hysteria2_panel.py qrcodegen.py tcp_probe.py
 bash -n install.sh tests/firewall_integration.sh tests/systemd_integration.sh
 shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh
 python3 -m pip install ruff==0.12.11 bandit==1.8.6
@@ -165,4 +165,4 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 
 ## 许可证
 
-[MIT](LICENSE)
+项目主体使用 [MIT](LICENSE)。随版本固定的 `qrcodegen.py` 来自 [Nayuki QR Code generator](https://github.com/nayuki/QR-Code-generator)，并在源码头保留其 MIT 许可证全文。

@@ -4289,7 +4289,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('value="250"', body)
 
     def test_dashboard_uses_dialogs_and_compact_mobile_user_rows(self):
-        self.db.create_proxy_user("alice")
+        created = self.db.create_proxy_user("alice")
         headers, _ = self.authenticated_headers()
 
         with self.request("/", headers=headers) as response:
@@ -4305,11 +4305,16 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-edit-user-form', body)
         self.assertIn('<dialog id="credentials-dialog"', body)
         self.assertIn('data-share-form', body)
+        self.assertIn('data-qr-form', body)
+        self.assertIn('name="qr" value="1"', body)
+        self.assertIn('id="credentials-qr"', body)
+        self.assertIn('data-save-qr', body)
+        self.assertNotIn(created["token"], body)
         self.assertIn('data-label="名称"', body)
         self.assertIn('data-label="操作"', body)
         self.assertIn('@media(max-width:640px)', body)
         self.assertIn('.user-table tr{display:grid;', body)
-        self.assertIn('grid-template-columns:repeat(5,minmax(0,1fr))', body)
+        self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', body)
         self.assertIn('.user-table th{position:sticky;', body)
         self.assertIn('@media(prefers-reduced-motion:reduce)', body)
         self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
@@ -4724,6 +4729,39 @@ class PanelHttpTests(unittest.TestCase):
         user = self.db.get_proxy_user(created["id"])
         self.assertEqual((0, 0), (user["tx_bytes"], user["rx_bytes"]))
 
+    def test_qr_share_is_opt_in_and_returns_a_bounded_binary_matrix(self):
+        created = self.db.create_proxy_user("qr-user")
+        headers, csrf_token = self.authenticated_headers()
+        path = "/users/{}/share".format(created["id"])
+
+        with self.request(
+            path,
+            {"csrf": csrf_token, "generation": "0", "inline": "1"},
+            headers=headers,
+        ) as response:
+            ordinary = json.loads(response.read().decode())
+        self.assertNotIn("qr", ordinary)
+
+        with self.request(
+            path,
+            {
+                "csrf": csrf_token,
+                "generation": "0",
+                "inline": "1",
+                "qr": "1",
+            },
+            headers=headers,
+        ) as response:
+            payload = json.loads(response.read().decode())
+
+        self.assertEqual(ordinary["uri"], payload["uri"])
+        self.assertEqual("qr-user", payload["name"])
+        matrix = payload["qr"]
+        self.assertGreaterEqual(len(matrix), 21)
+        self.assertLessEqual(len(matrix), 177)
+        self.assertTrue(all(len(row) == len(matrix) for row in matrix))
+        self.assertTrue(all(set(row) <= {"0", "1"} for row in matrix))
+
     def test_legacy_user_share_requires_an_explicit_rotation(self):
         legacy = self.db.create_proxy_user("legacy", token="legacy-token")
         headers, csrf_token = self.authenticated_headers()
@@ -4757,7 +4795,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.18.1", body)
+        self.assertIn("v0.19.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
@@ -5281,6 +5319,28 @@ class SettingsTests(unittest.TestCase):
 
 
 class ConnectionUriTests(unittest.TestCase):
+    def test_qr_matrix_has_standard_finder_patterns_and_no_embedded_quiet_zone(self):
+        matrix = hysteria2_panel.build_qr_matrix(
+            "hysteria2://token@example.test:19999/?insecure=1#node"
+        )
+
+        finder = [
+            "1111111",
+            "1000001",
+            "1011101",
+            "1011101",
+            "1011101",
+            "1000001",
+            "1111111",
+        ]
+        self.assertGreaterEqual(len(matrix), 21)
+        self.assertLessEqual(len(matrix), 177)
+        self.assertEqual(finder, [row[:7] for row in matrix[:7]])
+        self.assertEqual(finder, [row[-7:] for row in matrix[:7]])
+        self.assertEqual(finder, [row[:7] for row in matrix[-7:]])
+        self.assertTrue(all(len(row) == len(matrix) for row in matrix))
+        self.assertTrue(all(set(row) <= {"0", "1"} for row in matrix))
+
     def test_connection_uri_encodes_auth_label_and_certificate_pin(self):
         uri = build_connection_uri(
             host="154.9.234.210",

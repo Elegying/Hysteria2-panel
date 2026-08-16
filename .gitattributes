@@ -1,0 +1,2 @@
+# Preserve the vendored upstream formatting; its blank lines contain tabs.
+qrcodegen.py -whitespace
