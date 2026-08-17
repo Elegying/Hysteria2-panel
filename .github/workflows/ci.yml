@@ -26,7 +26,7 @@ jobs:
       - name: Run unit and integration tests
         run: python -m unittest discover -s tests -v
       - name: Compile Python services
-        run: python -m py_compile hysteria2_panel.py qrcodegen.py tcp_probe.py
+        run: python -m py_compile hysteria2_panel.py qrcodegen.py tcp_probe.py hy2panel/*.py
       - name: Verify release tag matches source version
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -37,13 +37,13 @@ jobs:
           import pathlib
           import re
 
-          panel = pathlib.Path("hysteria2_panel.py").read_text()
+          version_source = pathlib.Path("hy2panel/version.py").read_text()
           installer = pathlib.Path("install.sh").read_text()
-          panel_match = re.search(r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$', panel, re.MULTILINE)
+          version_match = re.search(r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$', version_source, re.MULTILINE)
           installer_match = re.search(r'^PANEL_VERSION="([0-9]+\.[0-9]+\.[0-9]+)"$', installer, re.MULTILINE)
-          if not panel_match or not installer_match:
+          if not version_match or not installer_match:
               raise SystemExit("release version metadata is missing")
-          panel_version = panel_match.group(1)
+          panel_version = version_match.group(1)
           installer_version = installer_match.group(1)
           expected_tag = "v{}".format(panel_version)
           if installer_version != panel_version or os.environ["RELEASE_TAG"] != expected_tag:
@@ -68,14 +68,14 @@ jobs:
           import pathlib
           import re
 
-          panel = pathlib.Path("hysteria2_panel.py").read_text()
+          version_source = pathlib.Path("hy2panel/version.py").read_text()
           installer = pathlib.Path("install.sh").read_text()
           changelog = pathlib.Path("CHANGELOG.md").read_text()
           readme = pathlib.Path("README.md").read_text()
 
-          panel_match = re.search(
+          version_match = re.search(
               r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$',
-              panel,
+              version_source,
               re.MULTILINE,
           )
           installer_match = re.search(
@@ -88,18 +88,18 @@ jobs:
               changelog,
               re.MULTILINE,
           )
-          if not panel_match or not installer_match or not changelog_match:
+          if not version_match or not installer_match or not changelog_match:
               raise SystemExit("release version metadata is missing")
 
           versions = {
-              panel_match.group(1),
+              version_match.group(1),
               installer_match.group(1),
               changelog_match.group(1),
           }
           if len(versions) != 1:
               raise SystemExit(
                   "release version mismatch: panel={}, installer={}, changelog={}".format(
-                      panel_match.group(1),
+                      version_match.group(1),
                       installer_match.group(1),
                       changelog_match.group(1),
                   )
@@ -122,7 +122,7 @@ jobs:
           import pathlib
           import re
 
-          source = pathlib.Path("hysteria2_panel.py").read_text()
+          source = pathlib.Path("hy2panel/version.py").read_text()
           match = re.search(
               r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$',
               source,
@@ -139,9 +139,9 @@ jobs:
       - name: Install pinned audit tools
         run: python -m pip install ruff==0.12.11 bandit==1.8.6
       - name: Lint Python
-        run: ruff check hysteria2_panel.py tcp_probe.py tests
+        run: ruff check hysteria2_panel.py tcp_probe.py hy2panel tests
       - name: Audit Python security
-        run: bandit -q -r hysteria2_panel.py tcp_probe.py
+        run: bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel
       - name: Validate installer syntax
         run: bash -n install.sh
       - name: Install ShellCheck

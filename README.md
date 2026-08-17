@@ -53,7 +53,7 @@ TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后
 - 查看在线设备数、上传/下载流量、总流量进度和高流量前五用户；
 - 重置单个用户或全部用户的累计流量；
 - 查看服务状态、当前用户数、不活跃用户数、在线设备总数以及总上传/下载流量；
-- 查看 CPU、内存、磁盘、运行时长、面板版本，并检查和在线安装正式更新；系统资源模块提供带二次确认的整机重启入口；
+- 查看 CPU、内存、磁盘、运行时长、面板版本，并检查和在线安装正式更新；更新安装器会先核验固定 GitHub Actions 身份的 Sigstore 签名，签名缺失或不匹配时不会执行；系统资源模块提供带二次确认的整机重启入口；
 - 在面板内启动、停止或重启项目专用 Hysteria 服务。
 - 使用响应式桌面/手机布局；手机端用户表格会自动转为便于触控的卡片。
 - 从顶部“数据迁移”弹窗一键下载完整备份，或在新服务器上传恢复用户、流量、签名密钥和 TLS 节点身份。
@@ -113,6 +113,8 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-restore hysteria2-panel-restore-recover hysteria2-panel-restore-resume hysteria2-panel-update
 journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-restore -u hysteria2-panel-restore-recover -u hysteria2-panel-restore-resume -u hysteria2-panel-update --since today
 curl http://127.0.0.1:19998/healthz
+curl http://127.0.0.1:19998/readyz
+curl http://127.0.0.1:19998/metrics
 ```
 
 关键路径：
@@ -142,7 +144,7 @@ bash -n install.sh tests/firewall_integration.sh tests/systemd_integration.sh
 shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh
 python3 -m pip install ruff==0.12.11 bandit==1.8.6
 ruff check hysteria2_panel.py tcp_probe.py tests
-bandit -q -r hysteria2_panel.py tcp_probe.py
+bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel
 ```
 
 自动化会验证认证、限额、备份恢复、HTTP 行为、安装器契约和静态安全边界，并在 Linux CI 中执行真实 UFW、firewalld 与 systemd 依赖语义测试。发布后仍应在真实客户端完成：主端口与获准账号 UDP `443` 的 Hysteria 握手、未获准账号的 `443` 拒绝、网页访问、YouTube 连续播放、TCP `19999` 和 TCP `443` 延迟探测、旧分享 URI、双入口流量累计和重启后恢复。ICMP `ping` 不属于 Hysteria 可用性验收。
@@ -161,6 +163,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py
 - [ADR-010：网页策略下允许公网 SSH 运维](docs/decisions/ADR-010-public-ssh-egress.md)
 - [ADR-011：单账号 UDP 443 双入口授权](docs/decisions/ADR-011-per-user-udp-443-entrypoint.md)
 - [ADR-012：受管防火墙端口自动开放](docs/decisions/ADR-012-managed-firewall-port-opening.md)
+- [ADR-013：无密钥签名更新、模块边界与运行时就绪](docs/decisions/ADR-013-keyless-update-modules-readiness.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

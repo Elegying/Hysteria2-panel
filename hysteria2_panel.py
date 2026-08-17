@@ -41,6 +41,18 @@ from pathlib import Path
 
 from qrcodegen import DataTooLongError, QrCode
 
+from hy2panel.health import RuntimeHealth, is_loopback_address
+from hy2panel.operations import (
+    RebootController,
+    RestoreController,
+    ServiceController,
+    SystemMetrics,
+    UpdateController,
+)
+from hy2panel.release import UpdateChecker, UpdateInstaller
+from hy2panel.version import PANEL_VERSION
+from hy2panel.web_assets import FAVICON_SVG, PAGE_SCRIPT, PAGE_STYLE
+
 
 SCRYPT_N = 1 << 14
 SCRYPT_R = 8
@@ -52,7 +64,6 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-PANEL_VERSION = "0.19.1"
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
 MAX_BACKUP_ARCHIVE_BYTES = MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2
@@ -71,427 +82,6 @@ RESTORE_STOP_UNITS = (
     "hysteria2-panel-server.service",
     "hysteria2-panel.service",
 )
-FAVICON_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<title>Hysteria 2 Panel</title><rect x="2" y="2" width="60" height="60" rx="14" fill="#0b1a2c" stroke="#284867" stroke-width="2"/>
-<path fill="#4bc493" d="M9 16h7v12h11V16h7v32h-7V35H16v13H9z"/>
-<path fill="#f3f7ff" d="M37 24c0-7 4-11 11-11s11 4 11 10c0 5-3 8-8 12l-6 6h14v7H37v-8l10-9c4-3 5-5 5-7 0-3-1-4-4-4-3 0-4 2-4 5h-7z"/>
-</svg>"""
-
-PAGE_STYLE = """
-:root{color-scheme:dark;--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;text-rendering:optimizeLegibility}
-main{width:min(1420px,calc(100% - 40px));margin:20px auto 42px}.topbar{display:flex;align-items:center;gap:12px;background:#102846;border:1px solid #284867;border-radius:20px;padding:18px 22px;margin-bottom:16px}.brand{min-width:max-content}.eyebrow{display:inline-block;border:1px solid #405b7c;border-radius:999px;padding:7px 13px;color:#c8d7ef;font-size:12px;letter-spacing:.12em}.topbar h1{font-size:28px;margin:0 4px}.topbar-spacer{flex:1}.pill{border:1px solid #3a526b;border-radius:999px;padding:8px 12px;color:var(--muted);white-space:nowrap}.pill strong{color:var(--text);margin-left:6px}
-h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.muted{color:var(--muted)}.ok{color:var(--success)}.bad{color:var(--danger)}.warning{color:var(--warning)}
-.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}.metric,.card{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:0 8px 28px rgba(0,0,0,.12)}.metric{padding:18px;border-top:3px solid var(--teal)}.metric strong{display:block;font-size:26px;margin:9px 0 3px;font-variant-numeric:tabular-nums}.metric span{color:var(--muted)}
-.operations{display:grid;gap:16px;margin-bottom:16px;align-items:start}.dashboard-trio{align-items:stretch;grid-template-columns:minmax(0,1.45fr) minmax(270px,.85fr) minmax(240px,.72fr)}.dashboard-trio>.card{height:100%;margin-bottom:0}.card{padding:20px;margin-bottom:16px}.section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;border-bottom:1px solid var(--line);padding-bottom:15px;margin-bottom:16px}.dashboard-trio .section-head{padding-bottom:12px;margin-bottom:12px}.service-badge{border-radius:999px;padding:8px 13px;background:#123833;color:var(--success);font-weight:700;white-space:nowrap}.service-badge.off{background:#3a2028;color:#ff9aa4}
-.button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer;transition:filter .15s ease,transform .15s ease}button:hover,.button:hover{filter:brightness(1.08);transform:translateY(-1px)}button:active,.button:active{transform:none}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}.system-actions{flex:0 0 auto}.system-actions button{padding:8px 11px}
-.resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
-.rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
-.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:flex;align-items:center;flex-wrap:wrap}.user-heading{flex:1 1 240px}.user-section-head .section-actions{flex:0 0 auto}.user-tools{justify-content:space-between;margin-bottom:14px}.user-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(120px,1fr)) auto;align-items:end;gap:9px;flex:1}.user-filters label{margin-bottom:4px;font-size:12px;color:var(--muted)}.user-filters button{padding:10px 12px}.search-status{margin:0;white-space:nowrap}.filter-empty{margin:0 0 14px;padding:11px 14px;border:1px dashed #3a526b;border-radius:10px;text-align:center}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:420px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
-.checkbox-field{display:flex;align-items:flex-start;gap:10px;margin:0;padding:12px;border:1px solid #3a4d63;border-radius:10px;background:#101f31}.checkbox-field input{width:auto;margin:4px 0 0;flex:0 0 auto}.checkbox-field span{font-weight:650}.checkbox-field small{display:block;margin-top:3px;font-weight:400}
-.login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
-.migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.qr-panel{display:grid;justify-items:center;gap:8px;margin:16px 0}.qr-panel[hidden]{display:none}.qr-canvas{display:block;width:min(100%,320px);height:auto;border:10px solid #fff;border-radius:8px;background:#fff;image-rendering:pixelated}.credential-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:14px 0}.credential-actions button{width:100%}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
-@media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
-@media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.user-filters{grid-template-columns:minmax(200px,2fr) repeat(3,minmax(105px,1fr)) auto}}
-@media(max-width:640px){main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.create-grid,.migration-grid,.create-dialog .create-grid{grid-template-columns:1fr}.section-head{flex-direction:column;padding-bottom:13px}.user-heading{flex-basis:auto}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.system-actions{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.section-actions form{grid-column:1/-1}.user-tools{align-items:stretch;flex-direction:column}.user-filters{grid-template-columns:1fr 1fr;width:100%}.user-filters .user-search{grid-column:1/-1}.user-filters button{width:100%}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.qr-canvas{width:min(100%,288px)}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
-@media(max-width:340px){.metrics{grid-template-columns:1fr}.pill{flex-basis:100%}.version-panel{padding-inline:8px}.version-row{align-items:flex-start;flex-direction:column;gap:4px}.bbr-detail strong,.version-row strong{font-size:16px}.compact-button{padding:7px 5px;font-size:11px;white-space:nowrap}.user-table .actions button{padding-inline:1px;font-size:10px}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop{backdrop-filter:none}}
-"""
-
-PAGE_SCRIPT = """
-let noticeTimer;
-function notify(message, isError) {
-  const notice = document.querySelector('[data-page-status]');
-  if (!notice) return;
-  notice.textContent = message;
-  notice.classList.toggle('error', Boolean(isError));
-  notice.hidden = false;
-  window.clearTimeout(noticeTimer);
-  noticeTimer = window.setTimeout(function() { notice.hidden = true; }, 3200);
-}
-async function copyText(value) {
-  if (navigator.clipboard && window.isSecureContext) {
-    try { await navigator.clipboard.writeText(value); return true; } catch (_) {}
-  }
-  const buffer = document.createElement('textarea');
-  buffer.value = value;
-  buffer.setAttribute('readonly', '');
-  buffer.style.position = 'fixed';
-  buffer.style.opacity = '0';
-  document.body.appendChild(buffer);
-  buffer.focus();
-  buffer.select();
-  const copied = document.execCommand('copy');
-  buffer.remove();
-  return copied;
-}
-async function submitInlineForm(form) {
-  const response = await fetch(form.action, {
-    method: 'POST',
-    headers: {'Accept': 'application/json'},
-    body: new URLSearchParams(new FormData(form)),
-    credentials: 'same-origin'
-  });
-  let payload;
-  try { payload = await response.json(); } catch (_) { payload = {}; }
-  if (!response.ok) throw new Error(payload.error || '操作失败，请刷新页面后重试');
-  return payload;
-}
-function clearCredentialsQr() {
-  const panel = document.querySelector('[data-qr-panel]');
-  const canvas = document.getElementById('credentials-qr');
-  const saveButton = document.querySelector('[data-save-qr]');
-  if (panel) panel.hidden = true;
-  if (saveButton) saveButton.hidden = true;
-  if (canvas) {
-    canvas.width = 0;
-    canvas.height = 0;
-    canvas.setAttribute('aria-label', 'Hysteria 2 节点配置二维码');
-  }
-}
-function drawCredentialsQr(rows, name) {
-  const size = Array.isArray(rows) ? rows.length : 0;
-  const valid = size >= 21 && size <= 177 && (size - 21) % 4 === 0 &&
-    rows.every(function(row) {
-      return typeof row === 'string' && row.length === size && /^[01]+$/.test(row);
-    });
-  if (!valid) throw new Error('二维码数据无效，请刷新页面后重试');
-  const canvas = document.getElementById('credentials-qr');
-  const panel = document.querySelector('[data-qr-panel]');
-  const saveButton = document.querySelector('[data-save-qr]');
-  if (!canvas || !panel || !saveButton) throw new Error('二维码组件加载失败');
-  const quiet = 4;
-  const scale = Math.max(3, Math.floor(360 / (size + quiet * 2)));
-  canvas.width = (size + quiet * 2) * scale;
-  canvas.height = canvas.width;
-  const context = canvas.getContext('2d');
-  if (!context) throw new Error('浏览器无法绘制二维码');
-  context.imageSmoothingEnabled = false;
-  context.fillStyle = '#ffffff';
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = '#000000';
-  rows.forEach(function(row, y) {
-    for (let x = 0; x < size; x += 1) {
-      if (row[x] === '1') context.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
-    }
-  });
-  canvas.setAttribute('aria-label', String(name || '用户') + ' 的 Hysteria 2 节点配置二维码');
-  panel.hidden = false;
-  saveButton.hidden = false;
-}
-function showCredentials(payload, withQr, refreshOnClose) {
-  if (!payload || typeof payload.uri !== 'string' || !payload.uri.startsWith('hysteria2://')) {
-    throw new Error('节点代码响应无效');
-  }
-  const dialog = document.getElementById('credentials-dialog');
-  if (!dialog) throw new Error('节点信息弹窗加载失败');
-  clearCredentialsQr();
-  if (withQr) drawCredentialsQr(payload.qr, payload.name);
-  dialog.querySelector('[data-credentials-title]').textContent = String(payload.name || '用户') + ' 的节点信息';
-  dialog.querySelector('#credentials-uri').value = payload.uri;
-  dialog.querySelector('[data-credentials-notice]').textContent = withQr
-    ? '二维码和节点代码都包含认证凭据，请只保存到受信任的设备。'
-    : '关闭弹窗后会刷新当前用户列表。';
-  dialog.dataset.refreshOnClose = refreshOnClose ? '1' : '0';
-  dialog.showModal();
-}
-function syncEditUserForm() {
-  const form = document.querySelector('[data-edit-user-form]');
-  if (!form) return;
-  const selector = form.querySelector('[data-edit-user-select]');
-  const option = selector && selector.options[selector.selectedIndex];
-  if (!option || !option.value) return;
-  form.action = '/users/' + encodeURIComponent(option.value) + '/edit';
-  form.querySelector('[name="generation"]').value = option.dataset.generation;
-  form.querySelector('[name="device_limit"]').value = option.dataset.deviceLimit;
-  form.querySelector('[name="traffic_limit_gb"]').value = option.dataset.trafficLimitGb;
-  form.querySelector('[name="allow_udp_443"]').checked = option.dataset.allowUdp443 === '1';
-}
-function renderUpdateStatus(payload) {
-  const status = document.querySelector('[data-update-status]');
-  if (!status) return;
-  status.dataset.state = payload.state || 'idle';
-  status.textContent = payload.message || '正在读取更新状态…';
-}
-async function pollUpdateStatus(button, deadline) {
-  try {
-    const response = await fetch('/updates/status', {
-      headers: {'Accept': 'application/json'},
-      credentials: 'same-origin',
-      cache: 'no-store'
-    });
-    if (!response.ok) throw new Error('状态读取失败');
-    const payload = await response.json();
-    renderUpdateStatus(payload);
-    if (payload.state === 'success') {
-      window.setTimeout(function() { window.location.reload(); }, 900);
-      return;
-    }
-    if (payload.state === 'failed') {
-      button.disabled = false;
-      button.textContent = '重新更新';
-      notify(payload.message || '在线更新失败', true);
-      return;
-    }
-  } catch (_) {
-    renderUpdateStatus({state: 'running', message: '面板正在重启，等待恢复连接…'});
-  }
-  if (Date.now() >= deadline) {
-    button.disabled = false;
-    button.textContent = '检查状态';
-    renderUpdateStatus({state: 'failed', message: '等待更新超时，请刷新页面查看当前版本'});
-    return;
-  }
-  window.setTimeout(function() { pollUpdateStatus(button, deadline); }, 1500);
-}
-document.addEventListener('click', function(event) {
-  const opener = event.target.closest('[data-dialog-open]');
-  if (opener) {
-    if (opener.dataset.dialogOpen === 'edit-user-dialog') syncEditUserForm();
-    const dialog = document.getElementById(opener.dataset.dialogOpen);
-    if (dialog && typeof dialog.showModal === 'function') dialog.showModal();
-    return;
-  }
-  const closer = event.target.closest('[data-dialog-close]');
-  if (closer) {
-    const dialog = closer.closest('dialog');
-    if (dialog) dialog.close();
-  }
-});
-document.addEventListener('click', async function(event) {
-  const button = event.target.closest('[data-copy-target]');
-  if (!button) return;
-  const target = document.getElementById(button.dataset.copyTarget);
-  if (!target) return;
-  const copied = await copyText(target.value);
-  button.textContent = copied ? '已复制' : '复制失败，请手动选择';
-  notify(copied ? '节点代码已复制' : '自动复制失败，请手动选择节点代码', !copied);
-});
-document.addEventListener('click', function(event) {
-  const button = event.target.closest('[data-save-qr]');
-  if (!button) return;
-  const canvas = document.getElementById('credentials-qr');
-  if (!canvas || !canvas.width) { notify('二维码尚未生成', true); return; }
-  button.disabled = true;
-  canvas.toBlob(function(blob) {
-    if (!blob) {
-      button.disabled = false;
-      notify('二维码保存失败，请重试', true);
-      return;
-    }
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'hysteria2-node-qr.png';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
-    button.disabled = false;
-    notify('二维码 PNG 已保存', false);
-  }, 'image/png');
-});
-document.addEventListener('submit', function(event) {
-  const message = event.target.dataset.confirm;
-  if (message && !window.confirm(message)) event.preventDefault();
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-share-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = '复制中…';
-  try {
-    const payload = await submitInlineForm(form);
-    const copied = await copyText(payload.uri);
-    button.textContent = copied ? '已复制' : '复制失败';
-    notify(copied ? payload.name + ' 的节点代码已复制' : '自动复制失败，请重试', !copied);
-  } catch (error) {
-    button.textContent = original;
-    notify(error.message || '分享失败，请重试', true);
-  } finally {
-    button.disabled = false;
-    window.setTimeout(function() { button.textContent = original; }, 2200);
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-qr-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = '生成中…';
-  try {
-    const payload = await submitInlineForm(form);
-    showCredentials(payload, true, false);
-  } catch (error) {
-    notify(error.message || '二维码生成失败，请重试', true);
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-edit-user-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  button.disabled = true;
-  button.textContent = '保存中…';
-  try {
-    const payload = await submitInlineForm(form);
-    notify(payload.name + ' 的用户设置已更新', false);
-    const dialog = form.closest('dialog');
-    if (dialog) dialog.close();
-    window.setTimeout(function() { window.location.reload(); }, 700);
-  } catch (error) {
-    notify(error.message || '用户设置更新失败，请重试', true);
-  } finally {
-    button.disabled = false;
-    button.textContent = '保存修改';
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-update-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  button.disabled = true;
-  button.textContent = '正在排队…';
-  try {
-    const payload = await submitInlineForm(form);
-    renderUpdateStatus(payload);
-    button.textContent = '正在更新…';
-    pollUpdateStatus(button, Date.now() + 180000);
-  } catch (error) {
-    button.disabled = false;
-    button.textContent = '立即更新';
-    notify(error.message || '在线更新任务启动失败', true);
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-create-user-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  button.disabled = true;
-  button.textContent = '添加中…';
-  try {
-    const payload = await submitInlineForm(form);
-    form.reset();
-    const createDialog = form.closest('dialog');
-    if (createDialog) createDialog.close();
-    showCredentials(payload, false, true);
-  } catch (error) {
-    notify(error.message || '添加用户失败，请重试', true);
-  } finally {
-    button.disabled = false;
-    button.textContent = '添加用户';
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-restore-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const file = form.querySelector('input[type="file"]');
-  const status = form.querySelector('[data-restore-status]');
-  if (!file || !file.files.length) { status.textContent = '请选择 ZIP 备份文件'; return; }
-  if (!window.confirm('恢复会替换全部代理用户、签名密钥和证书，并短暂重启服务。确定继续吗？')) return;
-  status.textContent = '正在校验并上传备份…';
-  try {
-    const response = await fetch('/restore', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/zip', 'X-HY2Panel-CSRF': form.dataset.csrf},
-      body: file.files[0],
-      credentials: 'same-origin'
-    });
-    const body = await response.text();
-    if (!response.ok) throw new Error(body.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim());
-    status.textContent = '恢复任务已启动，服务将在数秒后重启；请稍后重新登录。';
-  } catch (error) {
-    status.textContent = error.message || '恢复上传失败，请重试';
-  }
-});
-const credentialsDialog = document.getElementById('credentials-dialog');
-if (credentialsDialog) credentialsDialog.addEventListener('close', function() {
-  const refresh = credentialsDialog.dataset.refreshOnClose === '1';
-  credentialsDialog.querySelector('#credentials-uri').value = '';
-  clearCredentialsQr();
-  if (refresh) window.location.href = '/';
-});
-const editUserSelect = document.querySelector('[data-edit-user-select]');
-if (editUserSelect) {
-  editUserSelect.addEventListener('change', syncEditUserForm);
-  syncEditUserForm();
-}
-const filterForm = document.querySelector('[data-user-filters]');
-if (filterForm) {
-  const userSearch = filterForm.querySelector('[data-user-search]');
-  const statusFilter = filterForm.querySelector('[data-status-filter]');
-  const onlineFilter = filterForm.querySelector('[data-online-filter]');
-  const udp443Filter = filterForm.querySelector('[data-udp443-filter]');
-  const clearFilters = filterForm.querySelector('[data-clear-user-filters]');
-  const userRows = Array.from(document.querySelectorAll('[data-user-name]'));
-  const searchStatus = document.querySelector('[data-search-status]');
-  const filterEmpty = document.querySelector('[data-filter-empty]');
-  let filterFrame = 0;
-  function syncFilterUrl() {
-    const params = new URLSearchParams(new FormData(filterForm));
-    const url = new URL(window.location.href);
-    ['q', 'status', 'online', 'udp443'].forEach(function(name) {
-      const value = params.get(name);
-      if (value) url.searchParams.set(name, value);
-      else url.searchParams.delete(name);
-    });
-    history.replaceState(null, '', url.pathname + url.search);
-    document.querySelectorAll('.sort-link').forEach(function(link) {
-      const sortUrl = new URL(link.href);
-      ['q', 'status', 'online', 'udp443'].forEach(function(name) {
-        const value = params.get(name);
-        if (value) sortUrl.searchParams.set(name, value);
-        else sortUrl.searchParams.delete(name);
-      });
-      link.href = sortUrl.pathname + sortUrl.search;
-    });
-  }
-  function filterUsers() {
-    const query = userSearch.value.trim().toLocaleLowerCase();
-    let visible = 0;
-    userRows.forEach(function(row) {
-      const online = Number(row.dataset.online || '0');
-      const matchesName = row.dataset.userName.toLocaleLowerCase().includes(query);
-      const matchesStatus = !statusFilter.value || row.dataset.enabled === (statusFilter.value === 'enabled' ? '1' : '0');
-      const matchesOnline = !onlineFilter.value || (onlineFilter.value === 'active' ? online > 0 : online === 0);
-      const matchesUdp443 = !udp443Filter.value || row.dataset.allowUdp443 === (udp443Filter.value === 'allowed' ? '1' : '0');
-      const matches = matchesName && matchesStatus && matchesOnline && matchesUdp443;
-      row.hidden = !matches;
-      if (matches) visible += 1;
-    });
-    if (filterEmpty) filterEmpty.hidden = visible !== 0 || userRows.length === 0;
-    if (searchStatus) searchStatus.textContent = visible === userRows.length ? '共 ' + userRows.length + ' 个用户' : '显示 ' + visible + ' / ' + userRows.length + ' 个用户';
-    syncFilterUrl();
-  }
-  function scheduleFilter() {
-    if (filterFrame) window.cancelAnimationFrame(filterFrame);
-    filterFrame = window.requestAnimationFrame(filterUsers);
-  }
-  filterForm.addEventListener('submit', function(event) { event.preventDefault(); filterUsers(); });
-  filterForm.addEventListener('input', scheduleFilter);
-  filterForm.addEventListener('change', scheduleFilter);
-  if (clearFilters) clearFilters.addEventListener('click', function() {
-    userSearch.value = '';
-    statusFilter.value = '';
-    onlineFilter.value = '';
-    udp443Filter.value = '';
-    filterUsers();
-    userSearch.focus();
-  });
-  filterUsers();
-}
-"""
 
 
 class ConflictError(Exception):
@@ -1589,6 +1179,13 @@ class Database:
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
+    def readiness_probe(self):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proxy_users'"
+            ).fetchone()
+        return row is not None
+
     def initialize(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
@@ -2328,13 +1925,20 @@ class PanelApplication:
         reboot_controller=None,
         backup_manager=None,
         restore_controller=None,
+        health_monitor=None,
     ):
         self.database = database
         self.public_host = public_host
         self.hysteria_port = int(hysteria_port)
         self.pin_sha256 = pin_sha256
         self.stats_client = stats_client
-        self.usage_manager = usage_manager or UsageManager(database, stats_client)
+        self.health_monitor = health_monitor or RuntimeHealth(database.readiness_probe)
+        self.usage_manager = usage_manager or UsageManager(
+            database,
+            stats_client,
+            health_monitor=self.health_monitor,
+        )
+        self.usage_manager.set_health_monitor(self.health_monitor)
         self.service_controller = service_controller or ServiceController()
         self.system_metrics = system_metrics or SystemMetrics()
         self.update_checker = update_checker or UpdateChecker()
@@ -2398,6 +2002,17 @@ class PanelHandler(JsonHandler):
     @property
     def app(self):
         return self.server.application
+
+    def _is_loopback_client(self):
+        return is_loopback_address(self.client_address[0])
+
+    def _send_metrics(self):
+        body = self.app.health_monitor.prometheus_metrics().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _csp_nonce(self):
         if not hasattr(self, "_page_nonce"):
@@ -2891,6 +2506,19 @@ class PanelHandler(JsonHandler):
             return
         if path == "/healthz":
             self.send_json(200, {"status": "ok"})
+            return
+        if path == "/readyz":
+            ready, _checks = self.app.health_monitor.readiness()
+            self.send_json(
+                200 if ready else 503,
+                {"status": "ready" if ready else "not-ready"},
+            )
+            return
+        if path == "/metrics":
+            if not self._is_loopback_client():
+                self.send_json(404, {"error": "not found"})
+                return
+            self._send_metrics()
             return
         if path == "/login":
             if self._session():
@@ -3501,7 +3129,14 @@ class CombinedHysteriaStatsClient:
 
 
 class UsageManager:
-    def __init__(self, database, stats_client, pending_ttl=5, clock=time.monotonic):
+    def __init__(
+        self,
+        database,
+        stats_client,
+        pending_ttl=5,
+        clock=time.monotonic,
+        health_monitor=None,
+    ):
         self.database = database
         self.stats_client = stats_client
         self.pending_ttl = max(1, int(pending_ttl))
@@ -3513,6 +3148,16 @@ class UsageManager:
         self.pending_traffic = {}
         self._load_pending_traffic()
         self.last_online = {}
+        self.health_monitor = health_monitor
+
+    def set_health_monitor(self, health_monitor):
+        self.health_monitor = health_monitor
+
+    def _record_health(self, success):
+        if self.health_monitor is None:
+            return
+        self.health_monitor.refresh_database()
+        self.health_monitor.record_stats_sync(success)
 
     def _load_pending_traffic(self):
         try:
@@ -3626,15 +3271,20 @@ class UsageManager:
         self.pending_traffic = {}
 
     def _collect_locked(self):
-        self._flush_pending_traffic_locked()
         try:
-            traffic = self.stats_client.collect_and_clear()
-        except PartialTrafficCollectionError as exc:
-            self._persist_pending_traffic_locked(exc.traffic)
             self._flush_pending_traffic_locked()
+            try:
+                traffic = self.stats_client.collect_and_clear()
+            except PartialTrafficCollectionError as exc:
+                self._persist_pending_traffic_locked(exc.traffic)
+                self._flush_pending_traffic_locked()
+                raise
+            self._persist_pending_traffic_locked(traffic)
+            self._flush_pending_traffic_locked()
+        except Exception:
+            self._record_health(False)
             raise
-        self._persist_pending_traffic_locked(traffic)
-        self._flush_pending_traffic_locked()
+        self._record_health(True)
         return traffic
 
     def _blocked_online_names_locked(self):
@@ -3659,6 +3309,7 @@ class UsageManager:
             try:
                 blocked = self._blocked_online_names_locked()
             except Exception:
+                self._record_health(False)
                 LOGGER.exception("online reconciliation failed during traffic sync")
                 return traffic
             self.stats_client.kick_many(blocked)
@@ -3689,6 +3340,7 @@ class UsageManager:
             try:
                 online = self.stats_client.online()
             except Exception:
+                self._record_health(False)
                 LOGGER.exception("online snapshot failed during authentication")
                 return False
             now = self.clock()
@@ -3747,473 +3399,19 @@ class UsageManager:
             self.database.reset_all_traffic()
 
     def run_collector(self, stop_event, interval=10):
-        while not stop_event.wait(interval):
+        while not stop_event.is_set():
             try:
                 self.collect_once()
             except Exception:
                 LOGGER.exception("background traffic sync failed")
+            if stop_event.wait(interval):
+                break
 
 
-class ServiceController:
-    SERVICE = "hysteria2-panel-server.service"
-    ACTIONS = {"start", "stop", "restart"}
-
-    def __init__(self, runner=subprocess.run):
-        self.runner = runner
-
-    def status(self):
-        result = self.runner(
-            ["/bin/systemctl", "is-active", self.SERVICE],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        value = result.stdout.strip()
-        return value if value else "unknown"
-
-    def action(self, action):
-        if action not in self.ACTIONS:
-            raise ValueError("unsupported service action")
-        result = self.runner(
-            ["/usr/bin/sudo", "-n", "/bin/systemctl", action, self.SERVICE],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError("service control failed")
-        return self.status()
 
 
-class RestoreController:
-    SERVICE = "hysteria2-panel-restore.service"
-
-    def __init__(self, runner=subprocess.run):
-        self.runner = runner
-
-    def queue(self):
-        result = self.runner(
-            [
-                "/usr/bin/sudo",
-                "-n",
-                "/bin/systemctl",
-                "--no-block",
-                "start",
-                self.SERVICE,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError("restore service could not be started")
 
 
-class UpdateController:
-    SERVICE = "hysteria2-panel-update.service"
-    STATUS_PATH = Path("/var/lib/hysteria2-panel/update-status.json")
-    QUEUE_GRACE_SECONDS = 30
-
-    def __init__(
-        self,
-        runner=subprocess.run,
-        status_path=STATUS_PATH,
-        current_version=PANEL_VERSION,
-        clock=time.time,
-    ):
-        self.runner = runner
-        self.status_path = Path(status_path)
-        self.current_version = str(current_version)
-        self.clock = clock
-
-    @staticmethod
-    def _version_tuple(value):
-        match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", str(value))
-        if not match:
-            raise ValueError("update version is invalid")
-        return tuple(int(part) for part in match.groups())
-
-    @staticmethod
-    def _version_label(value):
-        return "v{}".format(str(value).lstrip("v"))
-
-    def _write_status(self, payload):
-        self.status_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-        temporary_name = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=str(self.status_path.parent),
-                prefix=".update-status-",
-                delete=False,
-            ) as temporary:
-                temporary_name = temporary.name
-                json.dump(payload, temporary, ensure_ascii=False, sort_keys=True)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-            os.chmod(temporary_name, 0o600)
-            os.replace(temporary_name, self.status_path)
-        finally:
-            if temporary_name:
-                try:
-                    os.unlink(temporary_name)
-                except FileNotFoundError:
-                    pass
-
-    def _read_status(self):
-        try:
-            with self.status_path.open("rb") as source:
-                raw = source.read(16385)
-        except FileNotFoundError:
-            return None
-        if not raw or len(raw) > 16384:
-            raise ValueError("update status file is invalid")
-        payload = json.loads(raw.decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("update status file is invalid")
-        return payload
-
-    def queue(self, target_version):
-        target = self._version_label(target_version)
-        if self._version_tuple(target) <= self._version_tuple(self.current_version):
-            raise ValueError("update target must be newer than the current version")
-        record = {
-            "state": "queued",
-            "target": target,
-            "queued_at": int(self.clock()),
-            "message": "更新任务已排队",
-        }
-        self._write_status(record)
-        result = self.runner(
-            [
-                "/usr/bin/sudo",
-                "-n",
-                "/bin/systemctl",
-                "--no-block",
-                "start",
-                self.SERVICE,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode != 0:
-            record.update(
-                state="failed",
-                message="更新服务未能启动，请检查系统服务日志",
-            )
-            self._write_status(record)
-            raise RuntimeError("update service could not be started")
-
-    def status(self):
-        current = self._version_label(self.current_version)
-        try:
-            record = self._read_status()
-        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
-            LOGGER.exception("update status could not be read")
-            return {
-                "state": "failed",
-                "target": None,
-                "current": current,
-                "message": "更新状态文件损坏或不可读",
-            }
-        if not record:
-            return {
-                "state": "idle",
-                "target": None,
-                "current": current,
-                "message": "尚未启动更新",
-            }
-        target = record.get("target")
-        try:
-            target_tuple = self._version_tuple(target)
-        except ValueError:
-            return {
-                "state": "failed",
-                "target": None,
-                "current": current,
-                "message": "更新目标版本无效",
-            }
-        result = {
-            "state": str(record.get("state", "queued")),
-            "target": self._version_label(target),
-            "current": current,
-            "message": str(record.get("message", "更新任务已排队")),
-        }
-        if result["state"] == "failed":
-            return result
-        unit = self.runner(
-            [
-                "/bin/systemctl",
-                "show",
-                self.SERVICE,
-                "--property=ActiveState",
-                "--property=SubState",
-                "--property=Result",
-                "--property=ExecMainStatus",
-                "--no-pager",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if unit.returncode != 0:
-            result.update(state="failed", message="无法读取更新服务状态")
-            return result
-        properties = {}
-        for line in unit.stdout.splitlines():
-            key, separator, value = line.partition("=")
-            if separator:
-                properties[key] = value
-        if properties.get("ActiveState") in {"activating", "active", "reloading"}:
-            result.update(state="running", message="正在安装 {}".format(result["target"]))
-            return result
-        service_result = properties.get("Result", "")
-        main_status = properties.get("ExecMainStatus", "0")
-        if service_result not in {"", "success"} or main_status not in {"", "0"}:
-            result.update(state="failed", message="更新任务执行失败，请检查更新服务日志")
-            return result
-        if self._version_tuple(current) >= target_tuple:
-            result.update(state="success", message="更新已完成，当前版本为 {}".format(current))
-            return result
-        try:
-            elapsed = max(0, int(self.clock()) - int(record.get("queued_at", 0)))
-        except (TypeError, ValueError):
-            elapsed = self.QUEUE_GRACE_SECONDS + 1
-        if elapsed <= self.QUEUE_GRACE_SECONDS:
-            result.update(state="queued", message="更新任务已排队，正在等待执行")
-            return result
-        result.update(state="failed", message="更新任务已经结束，但面板版本未改变")
-        return result
-
-
-class RebootController:
-    def __init__(self, runner=subprocess.run):
-        self.runner = runner
-
-    def queue(self):
-        result = self.runner(
-            ["/usr/bin/sudo", "-n", "/bin/systemctl", "--no-block", "reboot"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError("server reboot could not be started")
-
-
-class UpdateChecker:
-    URL = "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest"
-
-    def __init__(self, current_version=PANEL_VERSION, opener=urllib.request.urlopen):
-        self.current_version = current_version
-        self.opener = opener
-
-    @staticmethod
-    def _version_tuple(value):
-        match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", value)
-        if not match:
-            raise ValueError("release version is invalid")
-        return tuple(int(part) for part in match.groups())
-
-    def check(self):
-        request = urllib.request.Request(
-            self.URL,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "Hysteria2-panel"},
-        )
-        with self.opener(request, timeout=3) as response:
-            raw_body = response.read(16385)
-        if len(raw_body) > 16384:
-            raise ValueError("release response is too large")
-        payload = json.loads(raw_body.decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("release response is invalid")
-        if (
-            payload.get("draft", False) is not False
-            or payload.get("prerelease", False) is not False
-        ):
-            raise ValueError("release is not a formal release")
-        latest = payload.get("tag_name")
-        if not isinstance(latest, str):
-            raise ValueError("release response is invalid")
-        latest_tuple = self._version_tuple(latest)
-        return {
-            "current": "v{}".format(self.current_version.lstrip("v")),
-            "latest": "v{}.{}.{}".format(*latest_tuple),
-            "update_available": latest_tuple > self._version_tuple(self.current_version),
-            "url": "https://github.com/Elegying/Hysteria2-panel/releases/latest",
-        }
-
-
-class UpdateInstaller:
-    INSTALLER_URL = (
-        "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/{tag}/install.sh"
-    )
-    MAX_INSTALLER_BYTES = 512 * 1024
-    SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-    def __init__(
-        self,
-        current_version=PANEL_VERSION,
-        opener=urllib.request.urlopen,
-        runner=subprocess.run,
-    ):
-        self.current_version = current_version
-        self.opener = opener
-        self.runner = runner
-
-    def _download_installer(self, tag):
-        request = urllib.request.Request(
-            self.INSTALLER_URL.format(tag=tag),
-            headers={"User-Agent": "Hysteria2-panel"},
-        )
-        with self.opener(request, timeout=10) as response:
-            body = response.read(self.MAX_INSTALLER_BYTES + 1)
-        if len(body) > self.MAX_INSTALLER_BYTES:
-            raise ValueError("release installer is too large")
-        try:
-            source = body.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("release installer is not UTF-8") from exc
-        if not source.startswith(("#!/usr/bin/env bash\n", "#!/bin/bash\n")):
-            raise ValueError("release installer header is invalid")
-        latest = re.search(r'^PANEL_VERSION="(\d+\.\d+\.\d+)"$', source, re.MULTILINE)
-        if not latest:
-            raise ValueError("release installer version is invalid")
-        return body, latest.group(1)
-
-    def apply(self):
-        release = UpdateChecker(self.current_version, opener=self.opener).check()
-        if not release["update_available"]:
-            return {
-                "current": release["current"],
-                "latest": release["latest"],
-                "updated": False,
-            }
-        tag = release["latest"]
-        installer, embedded_version = self._download_installer(tag)
-        if "v{}".format(embedded_version) != tag:
-            raise ValueError("release installer version does not match release tag")
-        with tempfile.TemporaryDirectory(prefix="hysteria2-panel-update.") as directory:
-            installer_path = Path(directory) / "install.sh"
-            installer_path.write_bytes(installer)
-            installer_path.chmod(0o700)
-            syntax = self.runner(
-                ["/bin/bash", "-n", str(installer_path)],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if syntax.returncode != 0:
-                raise ValueError("release installer syntax is invalid")
-            environment = {
-                "PATH": self.SAFE_PATH,
-                "LANG": "C.UTF-8",
-                "HY2PANEL_AUTO_UPDATE": "1",
-                "PANEL_REF": tag,
-            }
-            # The interpreter is fixed; the script passed the release and syntax checks above.
-            result = self.runner(
-                ["/bin/bash", str(installer_path)],
-                env=environment,
-                text=True,
-                check=False,
-            )
-            if result.returncode != 0:
-                raise RuntimeError("online update installer failed")
-        return {
-            "current": release["current"],
-            "latest": release["latest"],
-            "updated": True,
-        }
-
-
-class SystemMetrics:
-    def __init__(
-        self,
-        proc_root=Path("/proc"),
-        disk_usage=shutil.disk_usage,
-        cpu_count=os.cpu_count,
-        loadavg=os.getloadavg,
-    ):
-        self.proc_root = Path(proc_root)
-        self.disk_usage = disk_usage
-        self.cpu_count = cpu_count
-        self.loadavg = loadavg
-        self.previous_cpu = None
-        self.lock = threading.Lock()
-
-    def _cpu_sample(self):
-        parts = (self.proc_root / "stat").read_text().splitlines()[0].split()[1:]
-        values = [int(value) for value in parts]
-        total = sum(values)
-        idle = values[3] + (values[4] if len(values) > 4 else 0)
-        return total, idle
-
-    def _read_optional(self, relative_path):
-        try:
-            return (self.proc_root / relative_path).read_text().strip() or "不可用"
-        except (OSError, UnicodeError):
-            return "不可用"
-
-    @staticmethod
-    def _uptime_label(seconds):
-        days, remainder = divmod(max(0, int(seconds)), 86400)
-        hours = remainder // 3600
-        if days:
-            return "{}天 {}小时".format(days, hours)
-        minutes = (remainder % 3600) // 60
-        return "{}小时 {}分钟".format(hours, minutes)
-
-    def snapshot(self):
-        with self.lock:
-            current_cpu = self._cpu_sample()
-            if self.previous_cpu is None:
-                cpu_percent = min(
-                    100.0,
-                    max(0.0, self.loadavg()[0] * 100.0 / max(1, self.cpu_count() or 1)),
-                )
-            else:
-                total_delta = current_cpu[0] - self.previous_cpu[0]
-                idle_delta = current_cpu[1] - self.previous_cpu[1]
-                cpu_percent = (
-                    max(0.0, min(100.0, 100.0 * (total_delta - idle_delta) / total_delta))
-                    if total_delta > 0
-                    else 0.0
-                )
-            self.previous_cpu = current_cpu
-
-        memory = {}
-        for line in (self.proc_root / "meminfo").read_text().splitlines():
-            key, _, value = line.partition(":")
-            if key in {"MemTotal", "MemAvailable"}:
-                memory[key] = int(value.strip().split()[0]) * 1024
-        memory_total = memory.get("MemTotal", 0)
-        memory_used = max(0, memory_total - memory.get("MemAvailable", 0))
-        disk = self.disk_usage("/")
-        uptime_seconds = float((self.proc_root / "uptime").read_text().split()[0])
-        return {
-            "cpu_percent": round(cpu_percent, 1),
-            "memory_percent": round(100.0 * memory_used / memory_total, 1) if memory_total else 0.0,
-            "memory_used": memory_used,
-            "memory_total": memory_total,
-            "disk_percent": round(100.0 * disk.used / disk.total, 1) if disk.total else 0.0,
-            "disk_used": disk.used,
-            "disk_total": disk.total,
-            "uptime": self._uptime_label(uptime_seconds),
-            "tcp_congestion_control": self._read_optional(
-                "sys/net/ipv4/tcp_congestion_control"
-            ),
-            "default_qdisc": self._read_optional("sys/net/core/default_qdisc"),
-        }
 
 
 def _parse_port(mapping, name, default):
@@ -4479,17 +3677,24 @@ def run_supervised_services(panel_server, auth_server, usage_manager, panel_sche
     failures = queue.Queue()
     previous_termination_handler = None
     termination_requested = [False]
+    application = getattr(panel_server, "application", None)
+    health_monitor = getattr(application, "health_monitor", None)
 
     def request_graceful_shutdown(_signum, _frame):
         termination_requested[0] = True
 
     def worker(name, target):
+        if health_monitor is not None:
+            health_monitor.mark_worker(name, True)
         try:
             target()
         except BaseException as exc:
             failures.put((name, exc))
         else:
             failures.put((name, None))
+        finally:
+            if health_monitor is not None:
+                health_monitor.mark_worker(name, False)
 
     workers = [
         threading.Thread(
@@ -4683,7 +3888,7 @@ def stop_restore_services(runner=subprocess.run):
 
 def _default_restore_health_probe(url, settings):
     allowed_urls = {
-        "{}://127.0.0.1:{}/healthz".format(
+        "{}://127.0.0.1:{}/readyz".format(
             settings.panel_scheme, settings.panel_port
         ),
         "http://127.0.0.1:{}/healthz".format(settings.auth_port),
@@ -4696,7 +3901,8 @@ def _default_restore_health_probe(url, settings):
         context = ssl._create_unverified_context()  # nosec B323
     request = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(request, timeout=2, context=context) as response:  # nosec B310
-        if response.status != 200 or json.load(response) != {"status": "ok"}:
+        expected_status = "ready" if url.endswith("/readyz") else "ok"
+        if response.status != 200 or json.load(response) != {"status": expected_status}:
             raise RuntimeError("restored HTTP health endpoint is unavailable")
 
 
@@ -4744,7 +3950,7 @@ def _probe_restored_services(
     stats_probe,
     tcp_probe,
 ):
-    panel_url = "{}://127.0.0.1:{}/healthz".format(
+    panel_url = "{}://127.0.0.1:{}/readyz".format(
         settings.panel_scheme, settings.panel_port
     )
     auth_url = "http://127.0.0.1:{}/healthz".format(settings.auth_port)

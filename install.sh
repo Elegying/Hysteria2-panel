@@ -4,17 +4,32 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.19.1"
+PANEL_VERSION="0.20.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
-PANEL_SHA256="3d77f7a99346880fb00fab946dff42266bef49fce1202052bdb5d9abf8aeb865"
+HY2PANEL_INIT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/__init__.py"
+HY2PANEL_VERSION_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/version.py"
+HY2PANEL_WEB_ASSETS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/web_assets.py"
+HY2PANEL_OPERATIONS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/operations.py"
+HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/release.py"
+HY2PANEL_HEALTH_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/health.py"
+PANEL_SHA256="57f5cd814c893ab6798fbaea9d482bc7d2b4209f597a237217aa5b52a0e48ea4"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
+HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
+HY2PANEL_VERSION_SHA256="10cc1d8d7c7d5bf1cd4a1e62cb345accbcc352761035e5f51a4e8aa9901b0655"
+HY2PANEL_WEB_ASSETS_SHA256="889291ff92f8db791dfe2e814a7478bac7f15078d0eb979b1995b23a7831e7f6"
+HY2PANEL_OPERATIONS_SHA256="bac05cf8f9948fea66a62ece0362aa2d3e93bff57ab6fb20c8468e16837c22d8"
+HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
+HY2PANEL_HEALTH_SHA256="df80fdfe7e6220cadeb25d402dde3e00ac26189ad50e1c5cc28647bde460382f"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
+COSIGN_VERSION="3.1.3"
+COSIGN_SHA_AMD64="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+COSIGN_SHA_ARM64="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
 DEFAULT_HYSTERIA_PORT=19999
 DEFAULT_PANEL_PORT=19998
 DEFAULT_STATS_PORT=19997
@@ -2078,10 +2093,14 @@ case "$(uname -m)" in
   x86_64|amd64)
     HYSTERIA_ASSET="hysteria-linux-amd64"
     HYSTERIA_SHA256="${HYSTERIA_SHA_AMD64}"
+    COSIGN_ASSET="cosign-linux-amd64"
+    COSIGN_SHA256="${COSIGN_SHA_AMD64}"
     ;;
   aarch64|arm64)
     HYSTERIA_ASSET="hysteria-linux-arm64"
     HYSTERIA_SHA256="${HYSTERIA_SHA_ARM64}"
+    COSIGN_ASSET="cosign-linux-arm64"
+    COSIGN_SHA256="${COSIGN_SHA_ARM64}"
     ;;
   *) fail "仅支持 Linux amd64 和 arm64" ;;
 esac
@@ -2376,18 +2395,44 @@ curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
   -o "${TMP_DIR}/hysteria"
 printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
   || fail "Hysteria SHA-256 校验失败"
+echo "下载并校验 Cosign ${COSIGN_VERSION}…"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
+  "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_ASSET}" \
+  -o "${TMP_DIR}/cosign"
+printf '%s  %s\n' "${COSIGN_SHA256}" "${TMP_DIR}/cosign" | sha256sum --check --status \
+  || fail "Cosign SHA-256 校验失败"
+install -d -m 0755 "${TMP_DIR}/hy2panel"
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${QRCODEGEN_SOURCE_URL}" -o "${TMP_DIR}/qrcodegen.py"
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${TCP_PROBE_SOURCE_URL}" -o "${TMP_DIR}/tcp_probe.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_INIT_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/__init__.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_VERSION_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/version.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_WEB_ASSETS_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/web_assets.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_OPERATIONS_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/operations.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_RELEASE_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/release.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_HEALTH_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/health.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
 printf '%s  %s\n' "${QRCODEGEN_SHA256}" "${TMP_DIR}/qrcodegen.py" | sha256sum --check --status \
   || fail "二维码编码器 SHA-256 校验失败"
 printf '%s  %s\n' "${TCP_PROBE_SHA256}" "${TMP_DIR}/tcp_probe.py" | sha256sum --check --status \
   || fail "TCP 探测源码 SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_INIT_SHA256}" "${TMP_DIR}/hy2panel/__init__.py" | sha256sum --check --status \
+  || fail "hy2panel/__init__.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_VERSION_SHA256}" "${TMP_DIR}/hy2panel/version.py" | sha256sum --check --status \
+  || fail "hy2panel/version.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_WEB_ASSETS_SHA256}" "${TMP_DIR}/hy2panel/web_assets.py" | sha256sum --check --status \
+  || fail "hy2panel/web_assets.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_OPERATIONS_SHA256}" "${TMP_DIR}/hy2panel/operations.py" | sha256sum --check --status \
+  || fail "hy2panel/operations.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_RELEASE_SHA256}" "${TMP_DIR}/hy2panel/release.py" | sha256sum --check --status \
+  || fail "hy2panel/release.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_HEALTH_SHA256}" "${TMP_DIR}/hy2panel/health.py" | sha256sum --check --status \
+  || fail "hy2panel/health.py SHA-256 校验失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hysteria2_panel.py" || fail "面板源码语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/qrcodegen.py" || fail "二维码编码器语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"
+"${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hy2panel/"*.py || fail "面板模块语法检查失败"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="/var/backups/hysteria2-panel/${timestamp}-$(openssl rand -hex 4)"
@@ -2479,9 +2524,12 @@ install -o root -g root -m 0644 "${TMP_DIR}/hysteria2-panel.tmpfiles" "${TMPFILE
 systemd-tmpfiles --create "${TMPFILES_FILE}" \
   || fail "无法持久创建维护锁目录；安装已停止"
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria" /opt/hysteria2-panel/bin/hysteria
+install -o root -g root -m 0755 "${TMP_DIR}/cosign" /opt/hysteria2-panel/bin/cosign
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria2_panel.py" /opt/hysteria2-panel/hysteria2_panel.py
 install -o root -g root -m 0644 "${TMP_DIR}/qrcodegen.py" /opt/hysteria2-panel/qrcodegen.py
 install -o root -g root -m 0755 "${TMP_DIR}/tcp_probe.py" /opt/hysteria2-panel/tcp_probe.py
+install -d -o root -g root -m 0755 /opt/hysteria2-panel/hy2panel
+install -o root -g root -m 0644 "${TMP_DIR}/hy2panel/"*.py /opt/hysteria2-panel/hy2panel/
 CERT_FILE=/etc/hysteria2-panel/server.crt
 KEY_FILE=/etc/hysteria2-panel/server.key
 if [[ ! -s "${CERT_FILE}" || ! -s "${KEY_FILE}" ]]; then
@@ -2963,7 +3011,9 @@ fi
 PANEL_HEALTH_TLS_MODE=strict
 [[ "${PANEL_SCHEME}" != "https" ]] || PANEL_HEALTH_TLS_MODE=insecure
 wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz" "${PANEL_HEALTH_TLS_MODE}" \
-  || fail "面板健康检查失败"
+  || fail "面板存活检查失败"
+wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz" "${PANEL_HEALTH_TLS_MODE}" \
+  || fail "面板就绪检查失败"
 wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
