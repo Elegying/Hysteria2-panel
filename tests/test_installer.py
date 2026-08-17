@@ -373,7 +373,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.19.1"', source)
+        self.assertIn('PANEL_VERSION="0.20.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -417,6 +417,28 @@ esac
 
         self.assertIn("class _BitBuffer(list):", source)
         self.assertNotIn("class _BitBuffer(list[int]):", source)
+
+    def test_installer_pins_and_installs_every_panel_module(self):
+        source = INSTALLER.read_text()
+        modules = {
+            "hy2panel/__init__.py": "HY2PANEL_INIT_SHA256",
+            "hy2panel/version.py": "HY2PANEL_VERSION_SHA256",
+            "hy2panel/web_assets.py": "HY2PANEL_WEB_ASSETS_SHA256",
+            "hy2panel/operations.py": "HY2PANEL_OPERATIONS_SHA256",
+            "hy2panel/release.py": "HY2PANEL_RELEASE_SHA256",
+            "hy2panel/health.py": "HY2PANEL_HEALTH_SHA256",
+        }
+
+        for relative_path, variable in modules.items():
+            self.assertRegex(source, variable + r'="[0-9a-f]{64}"')
+            self.assertIn(relative_path, source)
+            expected = hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()
+            actual = source.split(variable + '="', 1)[1].split('"', 1)[0]
+            self.assertEqual(expected, actual)
+        self.assertIn('"${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hy2panel/"*.py', source)
+        self.assertIn('install -o root -g root -m 0755 "${TMP_DIR}/cosign" /opt/hysteria2-panel/bin/cosign', source)
+        self.assertRegex(source, r'COSIGN_SHA_AMD64="[0-9a-f]{64}"')
+        self.assertRegex(source, r'COSIGN_SHA_ARM64="[0-9a-f]{64}"')
 
     def test_tag_ci_requires_the_tag_to_match_both_source_versions(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
@@ -2297,6 +2319,7 @@ assert_units_unclaimed
         self.assertIn("wait_for_health", source)
         self.assertIn("for _attempt in {1..30}", source)
         self.assertIn('wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz"', source)
+        self.assertIn('wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz"', source)
 
     def test_installer_persists_quic_udp_buffer_optimization(self):
         source = INSTALLER.read_text()

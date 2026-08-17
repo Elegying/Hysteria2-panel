@@ -574,6 +574,52 @@ class UsageManagerTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_usage_collection_updates_cached_runtime_health(self):
+        class FakeHealth:
+            def __init__(self):
+                self.events = []
+                self.database_refreshes = 0
+
+            def refresh_database(self):
+                self.database_refreshes += 1
+
+            def record_stats_sync(self, success):
+                self.events.append(success)
+
+        health = FakeHealth()
+        stats = PolicyStatsClient()
+        manager = UsageManager(self.db, stats, health_monitor=health)
+
+        manager.collect_once()
+        stats.collect_and_clear = lambda: (_ for _ in ()).throw(
+            OSError("stats unavailable")
+        )
+        with self.assertRaises(OSError):
+            manager.collect_once()
+
+        self.assertEqual([True, False], health.events)
+        self.assertEqual(2, health.database_refreshes)
+
+    def test_failed_online_snapshot_marks_runtime_not_ready(self):
+        class FakeHealth:
+            def __init__(self):
+                self.events = []
+
+            def refresh_database(self):
+                pass
+
+            def record_stats_sync(self, success):
+                self.events.append(success)
+
+        health = FakeHealth()
+        stats = PolicyStatsClient()
+        stats.online = lambda: (_ for _ in ()).throw(OSError("stats unavailable"))
+        manager = UsageManager(self.db, stats, health_monitor=health)
+
+        manager.collect_once()
+
+        self.assertEqual([True, False], health.events)
+
     def test_maintenance_sync_can_target_legacy_primary_stats_only(self):
         settings = mock.Mock(
             stats_url="http://127.0.0.1:19997",
@@ -2076,9 +2122,9 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(list(hysteria2_panel.RESTORE_STOP_UNITS) * 2, inspected)
         self.assertEqual(
             [
-                "http://127.0.0.1:19998/healthz",
+                "http://127.0.0.1:19998/readyz",
                 "http://127.0.0.1:19996/healthz",
-                "http://127.0.0.1:19998/healthz",
+                "http://127.0.0.1:19998/readyz",
                 "http://127.0.0.1:19996/healthz",
             ],
             health_checks,
@@ -2959,6 +3005,8 @@ class OperationsTests(unittest.TestCase):
             requests.append((request.full_url, timeout))
             if request.full_url.endswith("/releases/latest"):
                 return Response(json.dumps({"tag_name": "v0.12.0"}).encode())
+            if request.full_url.endswith("/install.sh.sigstore.json"):
+                return Response(b'{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}')
             return Response(b'#!/usr/bin/env bash\nPANEL_VERSION="0.12.0"\n')
 
         def runner(command, **kwargs):
@@ -2973,21 +3021,64 @@ class OperationsTests(unittest.TestCase):
             [
                 "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest",
                 "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.12.0/install.sh",
+                "https://github.com/Elegying/Hysteria2-panel/releases/download/v0.12.0/install.sh.sigstore.json",
             ],
             [url for url, _ in requests],
         )
-        self.assertEqual(["/bin/bash", "-n"], calls[0][0][:2])
-        self.assertEqual(["/bin/bash"], calls[1][0][:1])
+        self.assertEqual(
+            ["/opt/hysteria2-panel/bin/cosign", "verify-blob"],
+            calls[0][0][:2],
+        )
+        self.assertIn(
+            "https://github.com/Elegying/Hysteria2-panel/.github/workflows/release-signature.yml@refs/tags/v0.12.0",
+            calls[0][0],
+        )
+        self.assertIn("https://token.actions.githubusercontent.com", calls[0][0])
+        self.assertEqual(60, calls[0][1]["timeout"])
+        self.assertEqual(["/bin/bash", "-n"], calls[1][0][:2])
+        self.assertEqual(["/bin/bash"], calls[2][0][:1])
         self.assertNotIn("shell", calls[0][1])
         self.assertNotIn("shell", calls[1][1])
-        self.assertEqual("1", calls[1][1]["env"]["HY2PANEL_AUTO_UPDATE"])
-        self.assertEqual("v0.12.0", calls[1][1]["env"]["PANEL_REF"])
-        self.assertNotIn("timeout", calls[1][1])
-        self.assertNotIn("ADMIN_PASSWORD", calls[1][1]["env"])
+        self.assertNotIn("shell", calls[2][1])
+        self.assertEqual("1", calls[2][1]["env"]["HY2PANEL_AUTO_UPDATE"])
+        self.assertEqual("v0.12.0", calls[2][1]["env"]["PANEL_REF"])
+        self.assertNotIn("timeout", calls[2][1])
+        self.assertNotIn("ADMIN_PASSWORD", calls[2][1]["env"])
         self.assertEqual(
             {"current": "v0.11.2", "latest": "v0.12.0", "updated": True},
             result,
         )
+
+    def test_update_installer_rejects_an_invalid_signature_before_bash(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        responses = iter(
+            [
+                Response(json.dumps({"tag_name": "v0.12.0"}).encode()),
+                Response(b'#!/usr/bin/env bash\nPANEL_VERSION="0.12.0"\n'),
+                Response(b"invalid-signature-bundle"),
+            ]
+        )
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            return type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+
+        with self.assertRaisesRegex(ValueError, "signature"):
+            UpdateInstaller(
+                current_version="0.11.2",
+                opener=lambda *_args, **_kwargs: next(responses),
+                runner=runner,
+            ).apply()
+
+        self.assertEqual("/opt/hysteria2-panel/bin/cosign", calls[0][0])
+        self.assertFalse(any(command[0] == "/bin/bash" for command in calls))
 
     def test_update_installer_rejects_mismatched_installer_version(self):
         class Response(io.BytesIO):
@@ -4085,6 +4176,40 @@ class PanelHttpTests(unittest.TestCase):
             self.assertIn("default-src 'none'", response.headers["Content-Security-Policy"])
             self.assertIn("script-src 'nonce-", response.headers["Content-Security-Policy"])
 
+    def test_liveness_readiness_and_loopback_metrics_are_distinct(self):
+        class FakeHealth:
+            ready = False
+
+            def readiness(self):
+                return self.ready, {"database": self.ready}
+
+            def prometheus_metrics(self):
+                return "hy2panel_ready {}\n".format(1 if self.ready else 0)
+
+        health = FakeHealth()
+        self.application.health_monitor = health
+
+        with self.request("/healthz") as response:
+            self.assertEqual(200, response.status)
+        with self.assertRaises(urllib.error.HTTPError) as unavailable:
+            self.request("/readyz")
+        self.assertEqual(503, unavailable.exception.code)
+        self.assertEqual({"status": "not-ready"}, json.load(unavailable.exception))
+
+        health.ready = True
+        with self.request("/readyz") as response:
+            self.assertEqual(200, response.status)
+            self.assertEqual({"status": "ready"}, json.load(response))
+        with self.request("/metrics") as response:
+            metrics = response.read().decode()
+            self.assertEqual("text/plain; version=0.0.4; charset=utf-8", response.headers["Content-Type"])
+            self.assertEqual("hy2panel_ready 1\n", metrics)
+
+        with mock.patch.object(PanelHandler, "_is_loopback_client", return_value=False):
+            with self.assertRaises(urllib.error.HTTPError) as external:
+                self.request("/metrics")
+        self.assertEqual(404, external.exception.code)
+
     def test_large_dashboard_uses_negotiated_gzip_without_caching_sensitive_html(self):
         for index in range(356):
             self.db.create_proxy_user("gzip-{:04d}".format(index))
@@ -4796,7 +4921,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.19.1", body)
+        self.assertIn("v0.20.0", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
