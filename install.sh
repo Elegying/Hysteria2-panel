@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.20.0"
+PANEL_VERSION="0.20.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -15,11 +15,11 @@ HY2PANEL_WEB_ASSETS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyste
 HY2PANEL_OPERATIONS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/operations.py"
 HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/release.py"
 HY2PANEL_HEALTH_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/health.py"
-PANEL_SHA256="57f5cd814c893ab6798fbaea9d482bc7d2b4209f597a237217aa5b52a0e48ea4"
+PANEL_SHA256="b4fdffe57a4e72a93627d762f1188b1abfe4f1b2b8502ae3e56c0fa1a7903298"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="10cc1d8d7c7d5bf1cd4a1e62cb345accbcc352761035e5f51a4e8aa9901b0655"
+HY2PANEL_VERSION_SHA256="57069340fd5d53a75511e03d313952111f5056b6647596c26238dfcd44d99d13"
 HY2PANEL_WEB_ASSETS_SHA256="889291ff92f8db791dfe2e814a7478bac7f15078d0eb979b1995b23a7831e7f6"
 HY2PANEL_OPERATIONS_SHA256="bac05cf8f9948fea66a62ece0362aa2d3e93bff57ab6fb20c8468e16837c22d8"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
