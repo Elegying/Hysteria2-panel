@@ -2596,6 +2596,53 @@ class OperationsTests(unittest.TestCase):
         self.assertFalse(closing.is_alive())
         self.assertFalse(serving.is_alive())
 
+    def test_request_deadline_evicts_a_slow_drip_client_and_frees_the_worker(self):
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), HealthHandler, max_workers=1, request_timeout=1
+        )
+        server.request_deadline = 1
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        slow_client = socket.create_connection(server.server_address, timeout=1)
+        slow_client.sendall(b"G")
+        stop_drip = threading.Event()
+
+        def drip_bytes():
+            while not stop_drip.wait(0.1):
+                try:
+                    slow_client.sendall(b"E")
+                except OSError:
+                    return
+
+        dripping = threading.Thread(target=drip_bytes)
+        dripping.start()
+        try:
+            time.sleep(1.2)
+            with urllib.request.urlopen(
+                "http://127.0.0.1:{}/healthz".format(server.server_address[1]),
+                timeout=1,
+            ) as response:
+                self.assertEqual(204, response.status)
+        finally:
+            stop_drip.set()
+            slow_client.close()
+            dripping.join(1)
+            server.shutdown()
+            server.shutdown_active_requests()
+            server.server_close()
+            serving.join(1)
+
+        self.assertFalse(dripping.is_alive())
+        self.assertFalse(serving.is_alive())
+
     def test_tls_socket_registered_after_shutdown_is_closed_immediately(self):
         with tempfile.TemporaryDirectory() as directory:
             certificate, private_key = create_test_certificate(directory)
@@ -5144,6 +5191,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_panel_server_sets_timeout_and_worker_limit(self):
         self.assertEqual(10, self.server.request_timeout)
+        self.assertEqual(30, self.server.request_deadline)
         self.assertEqual(64, self.server.max_workers)
         self.assertIsNone(self.server.tls_context)
 

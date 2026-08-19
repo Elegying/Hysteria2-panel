@@ -1785,9 +1785,17 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     block_on_close = True
     request_queue_size = 64
 
-    def __init__(self, address, handler, max_workers=64, request_timeout=10):
+    def __init__(
+        self,
+        address,
+        handler,
+        max_workers=64,
+        request_timeout=10,
+        request_deadline=30,
+    ):
         self.max_workers = max(1, int(max_workers))
         self.request_timeout = max(1, int(request_timeout))
+        self.request_deadline = max(1, int(request_deadline))
         self.tls_context = None
         self._worker_slots = threading.BoundedSemaphore(self.max_workers)
         self._active_requests = set()
@@ -1822,6 +1830,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request, client_address):
         tracked_request = request
+        deadline_timer = None
         try:
             try:
                 if self.tls_context is not None:
@@ -1846,11 +1855,27 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                 finally:
                     self.shutdown_request(request)
             else:
+                deadline_timer = threading.Timer(
+                    self.request_deadline,
+                    self._expire_request,
+                    args=(request,),
+                )
+                deadline_timer.daemon = True
+                deadline_timer.start()
                 super().process_request_thread(request, client_address)
         finally:
+            if deadline_timer is not None:
+                deadline_timer.cancel()
             with self._active_requests_lock:
                 self._active_requests.discard(tracked_request)
             self._worker_slots.release()
+
+    @staticmethod
+    def _expire_request(request):
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def shutdown_active_requests(self):
         with self._active_requests_lock:
