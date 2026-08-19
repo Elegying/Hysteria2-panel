@@ -137,6 +137,41 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertIsNone(self.db.get_session(raw_token))
 
+    def test_audit_log_drops_records_older_than_the_retention_window(self):
+        with mock.patch.object(
+            hysteria2_panel, "AUDIT_RETENTION_SECONDS", 100, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "AUDIT_MAX_ROWS", 100, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=100):
+            self.db.audit("anonymous", "old_failure", "admin", "2001:db8::1")
+
+        with mock.patch.object(
+            hysteria2_panel, "AUDIT_RETENTION_SECONDS", 100, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "AUDIT_MAX_ROWS", 100, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=201):
+            self.db.audit("anonymous", "new_failure", "admin", "2001:db8::2")
+
+        with sqlite3.connect(self.db_path) as connection:
+            actions = [row[0] for row in connection.execute("SELECT action FROM audit_log")]
+        self.assertEqual(["new_failure"], actions)
+
+    def test_audit_log_keeps_only_the_configured_maximum_rows(self):
+        with mock.patch.object(
+            hysteria2_panel, "AUDIT_RETENTION_SECONDS", 1000, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "AUDIT_MAX_ROWS", 3, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=500):
+            for suffix in range(4):
+                self.db.audit("anonymous", "failure-{}".format(suffix), "admin", "192.0.2.1")
+
+        with sqlite3.connect(self.db_path) as connection:
+            actions = [
+                row[0]
+                for row in connection.execute("SELECT action FROM audit_log ORDER BY id")
+            ]
+        self.assertEqual(["failure-1", "failure-2", "failure-3"], actions)
+
     def test_updating_admin_password_revokes_existing_sessions(self):
         admin_id = self.db.upsert_admin("Elegy", "old-password")
         raw_token, _ = self.db.create_session(admin_id)
@@ -472,6 +507,15 @@ class RateLimiterTests(unittest.TestCase):
             limiter.record_failure("192.0.2.{}".format(suffix))
 
         self.assertLessEqual(len(limiter._attempts), 3)
+
+    def test_ipv6_addresses_in_the_same_64_share_the_login_limit(self):
+        limiter = LoginRateLimiter(max_attempts=2, window_seconds=60, clock=lambda: 1000.0)
+
+        self.assertEqual(0, limiter.record_failure("2001:db8:1:2::1"))
+        self.assertEqual(60, limiter.record_failure("2001:db8:1:2::ffff"))
+
+        self.assertFalse(limiter.is_allowed("2001:db8:1:2:abcd::1"))
+        self.assertTrue(limiter.is_allowed("2001:db8:1:3::1"))
 
     def test_concurrent_attempts_from_one_address_cannot_bypass_the_limit(self):
         limiter = LoginRateLimiter(max_attempts=1, window_seconds=60, clock=lambda: 1000.0)
