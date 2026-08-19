@@ -17,7 +17,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Verify release tag is current protected main
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          main_commit="$(git rev-parse "origin/main^{commit}")"
+          test "${tag_commit}" = "${main_commit}"
       - name: Verify tag and source version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}

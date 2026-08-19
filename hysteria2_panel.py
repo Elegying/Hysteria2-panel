@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import html
 import http.cookies
+import ipaddress
 import json
 import logging
 import os
@@ -69,6 +70,8 @@ MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
 MAX_BACKUP_ARCHIVE_BYTES = MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2
 MAX_STATS_RESPONSE_BYTES = 8 * 1024**2
 MAX_PENDING_TRAFFIC_BYTES = 2 * MAX_STATS_RESPONSE_BYTES + 64 * 1024
+AUDIT_RETENTION_SECONDS = 90 * 86400
+AUDIT_MAX_ROWS = 10000
 MAINTENANCE_LOCK_PATH = Path("/run/hysteria2-panel-maintenance/lock")
 RESTORE_ACTIVE_MARKER = Path("/etc/hysteria2-panel/.restore-active")
 RESTORE_TRANSACTION_VERSION = 1
@@ -1229,6 +1232,8 @@ class Database:
                     target TEXT NOT NULL,
                     remote_ip TEXT NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS audit_log_created_at_idx
+                    ON audit_log(created_at);
                 CREATE TABLE IF NOT EXISTS applied_traffic_batches (
                     batch_id TEXT PRIMARY KEY,
                     applied_at INTEGER NOT NULL
@@ -1615,10 +1620,22 @@ class Database:
             )
 
     def audit(self, actor, action, target, remote_ip):
+        now = int(time.time())
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO audit_log(created_at, actor, action, target, remote_ip) VALUES (?, ?, ?, ?, ?)",
-                (int(time.time()), actor, action, target, remote_ip),
+                (now, actor, action, target, remote_ip),
+            )
+            connection.execute(
+                "DELETE FROM audit_log WHERE created_at < ?",
+                (now - AUDIT_RETENTION_SECONDS,),
+            )
+            connection.execute(
+                """DELETE FROM audit_log
+                WHERE id <= COALESCE((
+                    SELECT id FROM audit_log ORDER BY id DESC LIMIT 1 OFFSET ?
+                ), 0)""",
+                (AUDIT_MAX_ROWS,),
             )
 
 
@@ -1681,6 +1698,19 @@ class LoginRateLimiter:
         self._lock = threading.Lock()
         self._authentication_locks = tuple(threading.Lock() for _ in range(64))
 
+    @staticmethod
+    def _address_key(address):
+        raw_address = str(address)
+        try:
+            parsed = ipaddress.ip_address(raw_address.split("%", 1)[0])
+        except ValueError:
+            return raw_address
+        if isinstance(parsed, ipaddress.IPv6Address):
+            if parsed.ipv4_mapped is not None:
+                return parsed.ipv4_mapped.compressed
+            return str(ipaddress.ip_network((parsed, 64), strict=False))
+        return parsed.compressed
+
     def _recent(self, address):
         cutoff = self.clock() - self.window_seconds
         recent = [timestamp for timestamp in self._attempts.get(address, []) if timestamp > cutoff]
@@ -1691,6 +1721,7 @@ class LoginRateLimiter:
         return recent
 
     def is_allowed(self, address):
+        address = self._address_key(address)
         with self._lock:
             return len(self._recent(address)) < self.max_attempts
 
@@ -1703,10 +1734,12 @@ class LoginRateLimiter:
         return max(1, whole_seconds + (0 if remaining == whole_seconds else 1))
 
     def retry_after(self, address):
+        address = self._address_key(address)
         with self._lock:
             return self._retry_after(address)
 
     def record_failure(self, address):
+        address = self._address_key(address)
         with self._lock:
             recent = self._recent(address)
             if not recent and len(self._attempts) >= self.max_addresses:
@@ -1720,11 +1753,12 @@ class LoginRateLimiter:
             return self._retry_after(address)
 
     def record_success(self, address):
+        address = self._address_key(address)
         with self._lock:
             self._attempts.pop(address, None)
 
     def authenticate(self, address, verifier):
-        address = str(address)
+        address = self._address_key(address)
         slot = hashlib.sha256(address.encode("utf-8")).digest()[0] % len(
             self._authentication_locks
         )
@@ -1785,9 +1819,17 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     block_on_close = True
     request_queue_size = 64
 
-    def __init__(self, address, handler, max_workers=64, request_timeout=10):
+    def __init__(
+        self,
+        address,
+        handler,
+        max_workers=64,
+        request_timeout=10,
+        request_deadline=30,
+    ):
         self.max_workers = max(1, int(max_workers))
         self.request_timeout = max(1, int(request_timeout))
+        self.request_deadline = max(1, int(request_deadline))
         self.tls_context = None
         self._worker_slots = threading.BoundedSemaphore(self.max_workers)
         self._active_requests = set()
@@ -1822,6 +1864,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request, client_address):
         tracked_request = request
+        deadline_timer = None
         try:
             try:
                 if self.tls_context is not None:
@@ -1846,11 +1889,27 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                 finally:
                     self.shutdown_request(request)
             else:
+                deadline_timer = threading.Timer(
+                    self.request_deadline,
+                    self._expire_request,
+                    args=(request,),
+                )
+                deadline_timer.daemon = True
+                deadline_timer.start()
                 super().process_request_thread(request, client_address)
         finally:
+            if deadline_timer is not None:
+                deadline_timer.cancel()
             with self._active_requests_lock:
                 self._active_requests.discard(tracked_request)
             self._worker_slots.release()
+
+    @staticmethod
+    def _expire_request(request):
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
 
     def shutdown_active_requests(self):
         with self._active_requests_lock:

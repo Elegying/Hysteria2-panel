@@ -137,6 +137,41 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertIsNone(self.db.get_session(raw_token))
 
+    def test_audit_log_drops_records_older_than_the_retention_window(self):
+        with mock.patch.object(
+            hysteria2_panel, "AUDIT_RETENTION_SECONDS", 100, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "AUDIT_MAX_ROWS", 100, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=100):
+            self.db.audit("anonymous", "old_failure", "admin", "2001:db8::1")
+
+        with mock.patch.object(
+            hysteria2_panel, "AUDIT_RETENTION_SECONDS", 100, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "AUDIT_MAX_ROWS", 100, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=201):
+            self.db.audit("anonymous", "new_failure", "admin", "2001:db8::2")
+
+        with sqlite3.connect(self.db_path) as connection:
+            actions = [row[0] for row in connection.execute("SELECT action FROM audit_log")]
+        self.assertEqual(["new_failure"], actions)
+
+    def test_audit_log_keeps_only_the_configured_maximum_rows(self):
+        with mock.patch.object(
+            hysteria2_panel, "AUDIT_RETENTION_SECONDS", 1000, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "AUDIT_MAX_ROWS", 3, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=500):
+            for suffix in range(4):
+                self.db.audit("anonymous", "failure-{}".format(suffix), "admin", "192.0.2.1")
+
+        with sqlite3.connect(self.db_path) as connection:
+            actions = [
+                row[0]
+                for row in connection.execute("SELECT action FROM audit_log ORDER BY id")
+            ]
+        self.assertEqual(["failure-1", "failure-2", "failure-3"], actions)
+
     def test_updating_admin_password_revokes_existing_sessions(self):
         admin_id = self.db.upsert_admin("Elegy", "old-password")
         raw_token, _ = self.db.create_session(admin_id)
@@ -472,6 +507,15 @@ class RateLimiterTests(unittest.TestCase):
             limiter.record_failure("192.0.2.{}".format(suffix))
 
         self.assertLessEqual(len(limiter._attempts), 3)
+
+    def test_ipv6_addresses_in_the_same_64_share_the_login_limit(self):
+        limiter = LoginRateLimiter(max_attempts=2, window_seconds=60, clock=lambda: 1000.0)
+
+        self.assertEqual(0, limiter.record_failure("2001:db8:1:2::1"))
+        self.assertEqual(60, limiter.record_failure("2001:db8:1:2::ffff"))
+
+        self.assertFalse(limiter.is_allowed("2001:db8:1:2:abcd::1"))
+        self.assertTrue(limiter.is_allowed("2001:db8:1:3::1"))
 
     def test_concurrent_attempts_from_one_address_cannot_bypass_the_limit(self):
         limiter = LoginRateLimiter(max_attempts=1, window_seconds=60, clock=lambda: 1000.0)
@@ -2594,6 +2638,53 @@ class OperationsTests(unittest.TestCase):
         client.close()
         serving.join(1)
         self.assertFalse(closing.is_alive())
+        self.assertFalse(serving.is_alive())
+
+    def test_request_deadline_evicts_a_slow_drip_client_and_frees_the_worker(self):
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0), HealthHandler, max_workers=1, request_timeout=1
+        )
+        server.request_deadline = 1
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        slow_client = socket.create_connection(server.server_address, timeout=1)
+        slow_client.sendall(b"G")
+        stop_drip = threading.Event()
+
+        def drip_bytes():
+            while not stop_drip.wait(0.1):
+                try:
+                    slow_client.sendall(b"E")
+                except OSError:
+                    return
+
+        dripping = threading.Thread(target=drip_bytes)
+        dripping.start()
+        try:
+            time.sleep(1.2)
+            with urllib.request.urlopen(
+                "http://127.0.0.1:{}/healthz".format(server.server_address[1]),
+                timeout=1,
+            ) as response:
+                self.assertEqual(204, response.status)
+        finally:
+            stop_drip.set()
+            slow_client.close()
+            dripping.join(1)
+            server.shutdown()
+            server.shutdown_active_requests()
+            server.server_close()
+            serving.join(1)
+
+        self.assertFalse(dripping.is_alive())
         self.assertFalse(serving.is_alive())
 
     def test_tls_socket_registered_after_shutdown_is_closed_immediately(self):
@@ -4921,7 +5012,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.20.0", body)
+        self.assertIn("v0.20.1", body)
 
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
@@ -5144,6 +5235,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_panel_server_sets_timeout_and_worker_limit(self):
         self.assertEqual(10, self.server.request_timeout)
+        self.assertEqual(30, self.server.request_deadline)
         self.assertEqual(64, self.server.max_workers)
         self.assertIsNone(self.server.tls_context)
 

@@ -370,10 +370,32 @@ esac
         self.assertEqual(0, help_result.returncode, help_result.stderr)
         self.assertIn("19999", help_result.stdout)
 
+    def test_repository_enforces_lf_for_scripts_and_hash_fixed_sources(self):
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "*.py", "*.sh", "*.yml", "*.yaml"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        self.assertTrue(tracked)
+
+        attributes = subprocess.run(
+            ["git", "check-attr", "eol", "--", *tracked],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        self.assertEqual(len(tracked), len(attributes))
+        self.assertTrue(all(line.endswith(": eol: lf") for line in attributes))
+        for relative_path in tracked:
+            self.assertNotIn(b"\r\n", (ROOT / relative_path).read_bytes(), relative_path)
+
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.20.0"', source)
+        self.assertIn('PANEL_VERSION="0.20.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',

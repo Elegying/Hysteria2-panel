@@ -24,6 +24,20 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         self.assertNotIn("COSIGN_PRIVATE_KEY", source)
         self.assertNotIn("secrets.", source)
 
+    def test_release_tag_commit_must_equal_protected_main(self):
+        workflow = ROOT / ".github" / "workflows" / "release-signature.yml"
+        source = workflow.read_text()
+
+        self.assertIn("fetch-depth: 0", source)
+        self.assertIn("Verify release tag is current protected main", source)
+        self.assertIn(
+            "git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main",
+            source,
+        )
+        self.assertIn('tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"', source)
+        self.assertIn('main_commit="$(git rev-parse "origin/main^{commit}")"', source)
+        self.assertIn('test "${tag_commit}" = "${main_commit}"', source)
+
 
 if __name__ == "__main__":
     unittest.main()

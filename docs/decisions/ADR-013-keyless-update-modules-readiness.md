@@ -11,7 +11,7 @@
 
 ## 决策
 
-1. 正式 GitHub Release 触发专用工作流，使用 GitHub Actions OIDC 与 Sigstore/Cosign 对 `install.sh` 执行无密钥 blob 签名，并上传 `install.sh.sigstore.json` bundle。
+1. 正式 GitHub Release 触发专用工作流；签名前重新拉取受保护的 `origin/main`，并要求 Release 标签提交与当前主分支提交完全一致，再使用 GitHub Actions OIDC 与 Sigstore/Cosign 对 `install.sh` 执行无密钥 blob 签名并上传 `install.sh.sigstore.json` bundle。
 2. 更新器固定证书身份为本仓库、该工作流和目标标签，并固定 OIDC issuer。验签先于 shell 语法检查和任何执行；bundle 缺失、身份不匹配、内容被修改或 Cosign 不可用均安全停止。
 3. 安装器固定 Cosign 版本与 amd64/arm64 SHA-256，将其作为受管运行时工具安装。发布流程不保存私钥，也不使用仓库 secret 保存签名密钥。
 4. 主程序先拆出低耦合边界：版本、网页静态资源、固定运维控制、发布更新和健康状态。数据库、认证、流量策略与 HTTP 编排暂留主文件，避免一次迁移过大。
