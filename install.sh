@@ -92,7 +92,7 @@ Hysteria2-panel 一键部署
 可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、EGRESS_POLICY、ADMIN_USER、ADMIN_PASSWORD、RESET_ADMIN
 安装程序会交互式询问未提供的值，密码输入不会回显。
 升级默认保留现有管理员；需要重置时设置 RESET_ADMIN=1。
-出站策略默认 web（网页/视频端口白名单）；需要完整代理能力时显式设置 EGRESS_POLICY=full。
+出站策略默认 full（放行公网目标的全部端口）；需要网页/视频端口白名单时设置 EGRESS_POLICY=web。
 EOF
 }
 
@@ -2245,7 +2245,7 @@ if (( EXISTING_INSTALL == 1 )); then
   EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT}"
   EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME}"
-  EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-web}"
+  EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-full}"
   EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT}"
   EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT}"
   EXISTING_STATS_443_PORT="${HY2PANEL_STATS_443_PORT:-${DEFAULT_STATS_443_PORT}}"
@@ -2255,7 +2255,7 @@ else
   EXISTING_HYSTERIA_PORT="${DEFAULT_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${DEFAULT_PANEL_PORT}"
   EXISTING_PANEL_SCHEME="http"
-  EXISTING_EGRESS_POLICY="web"
+  EXISTING_EGRESS_POLICY="full"
   EXISTING_AUTH_PORT="${DEFAULT_AUTH_PORT}"
   EXISTING_STATS_PORT="${DEFAULT_STATS_PORT}"
   EXISTING_STATS_443_PORT="${DEFAULT_STATS_443_PORT}"
@@ -2589,22 +2589,29 @@ trafficStats:
   listen: 127.0.0.1:${STATS_PORT}
   secret: ${STATS_SECRET}
 EOF
-if [[ "${EGRESS_POLICY}" == "web" ]]; then
-  # Hysteria ACL uses the first matching rule. Keep private ranges rejected, then allow the
-  # public SSH and panel ports so administrators can manage public servers through the node.
-  # Source: https://v2.hysteria.network/docs/advanced/ACL/
-  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
+# Hysteria ACL uses the first matching rule. Both policies reject local and private targets
+# before allowing public traffic so proxy users cannot reach services inside the node's network.
+# Source: https://v2.hysteria.network/docs/advanced/ACL/
+cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
 acl:
   inline:
+    - "reject(0.0.0.0/8)"
     - "reject(127.0.0.0/8)"
     - "reject(10.0.0.0/8)"
     - "reject(100.64.0.0/10)"
     - "reject(169.254.0.0/16)"
     - "reject(172.16.0.0/12)"
     - "reject(192.168.0.0/16)"
+    - "reject(224.0.0.0/4)"
+    - "reject(240.0.0.0/4)"
+    - "reject(::/128)"
     - "reject(::1/128)"
     - "reject(fc00::/7)"
     - "reject(fe80::/10)"
+    - "reject(ff00::/8)"
+EOF
+if [[ "${EGRESS_POLICY}" == "web" ]]; then
+  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
     - "direct(all, tcp/22)"
     - "direct(all, tcp/${PANEL_PORT})"
     - "direct(all, tcp/53)"
@@ -2614,6 +2621,10 @@ acl:
     - "direct(all, udp/443)"
     - "direct(all, udp/123)"
     - "reject(all)"
+EOF
+else
+  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
+    - "direct(all)"
 EOF
 fi
 cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
@@ -3045,7 +3056,7 @@ if [[ "${EGRESS_POLICY}" == "web" ]]; then
   echo "运维访问：允许公网 TCP 22 与 ${PANEL_PORT}（私网目标仍拒绝）"
   echo "边界提示：端口 ACL 不是 DPI，无法保证识别伪装在 80/443 上的加密 P2P。"
 else
-  echo "出站策略：full（完整代理能力，未启用 BT/PT 端口防护）"
+  echo "出站策略：full（放行公网全端口，本地/私网/特殊用途目标仍拒绝）"
 fi
 echo "证书指纹：${CERT_PIN}"
 echo "主机防火墙：${FIREWALL_RESULT}"

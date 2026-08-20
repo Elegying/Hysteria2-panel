@@ -2363,28 +2363,58 @@ assert_units_unclaimed
         self.assertIn("ignoreClientBandwidth: true", source)
         self.assertIn("Nice=-5", source)
 
-    def test_installer_defaults_to_a_persisted_web_egress_policy(self):
+    def test_installer_defaults_to_a_persisted_full_egress_policy(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-web}"', source)
-        self.assertIn('EXISTING_EGRESS_POLICY="web"', source)
+        self.assertIn('EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-full}"', source)
+        self.assertIn('EXISTING_EGRESS_POLICY="full"', source)
         self.assertIn('EGRESS_POLICY="${EGRESS_POLICY:-${EXISTING_EGRESS_POLICY}}"', source)
         self.assertIn('HY2PANEL_EGRESS_POLICY=${EGRESS_POLICY}', source)
         self.assertIn('EGRESS_POLICY 只能是 web 或 full', source)
 
-    def test_web_egress_policy_blocks_private_networks_and_allows_public_ssh(self):
+    def test_full_egress_policy_blocks_private_networks_and_allows_all_public_ports(self):
         source = INSTALLER.read_text()
 
         for rule in (
+            "reject(0.0.0.0/8)",
             "reject(127.0.0.0/8)",
             "reject(10.0.0.0/8)",
             "reject(100.64.0.0/10)",
             "reject(169.254.0.0/16)",
             "reject(172.16.0.0/12)",
             "reject(192.168.0.0/16)",
+            "reject(224.0.0.0/4)",
+            "reject(240.0.0.0/4)",
+            "reject(::/128)",
             "reject(::1/128)",
             "reject(fc00::/7)",
             "reject(fe80::/10)",
+            "reject(ff00::/8)",
+            "direct(all)",
+        ):
+            self.assertIn(rule, source)
+        self.assertLess(source.index("reject(127.0.0.0/8)"), source.index("direct(all)"))
+        self.assertLess(source.index("reject(fe80::/10)"), source.index("direct(all)"))
+        self.assertIn('else\n  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF\n    - "direct(all)"', source)
+
+    def test_web_egress_policy_blocks_private_networks_and_allows_public_ssh(self):
+        source = INSTALLER.read_text()
+
+        for rule in (
+            "reject(0.0.0.0/8)",
+            "reject(127.0.0.0/8)",
+            "reject(10.0.0.0/8)",
+            "reject(100.64.0.0/10)",
+            "reject(169.254.0.0/16)",
+            "reject(172.16.0.0/12)",
+            "reject(192.168.0.0/16)",
+            "reject(224.0.0.0/4)",
+            "reject(240.0.0.0/4)",
+            "reject(::/128)",
+            "reject(::1/128)",
+            "reject(fc00::/7)",
+            "reject(fe80::/10)",
+            "reject(ff00::/8)",
             "direct(all, tcp/22)",
             "direct(all, tcp/53)",
             "direct(all, udp/53)",
