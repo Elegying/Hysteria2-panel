@@ -863,6 +863,10 @@ select_python() {
 }
 
 install_system_dependencies() {
+  local command_name
+  local -a coreutils_commands=(cat chmod chown cp date df du id install mktemp mv rm sha256sum sleep sort stat sync uname)
+  local -a rhel_packages
+
   [[ -r /etc/os-release ]] || fail "无法识别 Linux 发行版：缺少 /etc/os-release"
   # shellcheck disable=SC1091
   source /etc/os-release
@@ -870,13 +874,23 @@ install_system_dependencies() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
-      ca-certificates curl openssl iproute2 python3 coreutils findutils gawk grep passwd procps sudo util-linux \
+      ca-certificates curl openssl iproute2 python3 coreutils diffutils findutils gawk grep passwd procps sudo util-linux \
       nftables iptables
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y ca-certificates curl openssl iproute python3 coreutils findutils gawk grep shadow-utils procps-ng sudo util-linux
+    rhel_packages=(ca-certificates openssl iproute python3 diffutils findutils gawk grep shadow-utils procps-ng sed sudo util-linux)
+    command -v curl >/dev/null 2>&1 || rhel_packages+=(curl)
+    for command_name in "${coreutils_commands[@]}"; do
+      command -v "${command_name}" >/dev/null 2>&1 || { rhel_packages+=(coreutils); break; }
+    done
+    dnf install -y "${rhel_packages[@]}"
     dnf install -y nftables iptables-nft || dnf install -y nftables iptables
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y ca-certificates curl openssl iproute python3 coreutils findutils gawk grep shadow-utils procps-ng sudo util-linux
+    rhel_packages=(ca-certificates openssl iproute python3 diffutils findutils gawk grep shadow-utils procps-ng sed sudo util-linux)
+    command -v curl >/dev/null 2>&1 || rhel_packages+=(curl)
+    for command_name in "${coreutils_commands[@]}"; do
+      command -v "${command_name}" >/dev/null 2>&1 || { rhel_packages+=(coreutils); break; }
+    done
+    yum install -y "${rhel_packages[@]}"
     yum install -y nftables iptables-nft || yum install -y nftables iptables
   else
     fail "当前系统没有受支持的包管理器（需要 apt、dnf 或 yum）"
