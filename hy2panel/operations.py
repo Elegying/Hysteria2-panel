@@ -1,5 +1,7 @@
 """Fixed system operations, update status and host metrics."""
 
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -16,6 +18,11 @@ from .version import PANEL_VERSION
 
 
 LOGGER = logging.getLogger("hysteria2-panel")
+EGRESS_STATE_VERSION = 1
+
+
+class EgressPolicyStateError(RuntimeError):
+    """Raised when the effective egress policy cannot be proved consistent."""
 
 
 class ServiceController:
@@ -125,17 +132,83 @@ def _atomic_replace_managed_file(path, payload, metadata):
                 pass
 
 
+def _atomic_write_file(path, payload, mode, uid, gid):
+    path = Path(path)
+    temporary_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(path.parent),
+            prefix=".{}-".format(path.name),
+            delete=False,
+        ) as temporary:
+            temporary_name = temporary.name
+            temporary.write(payload)
+            temporary.flush()
+            os.fchmod(temporary.fileno(), mode)
+            os.fchown(temporary.fileno(), uid, gid)
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, path)
+        temporary_name = None
+        _fsync_directory(path.parent)
+    finally:
+        if temporary_name:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+
+
+def _fsync_directory(path):
+    directory = os.open(str(path), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _durable_unlink(path):
+    path = Path(path)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    _fsync_directory(path.parent)
+
+
+def _sha256(payload):
+    return hashlib.sha256(payload).hexdigest()
+
+
 class EgressPolicyController:
     ENV_PATH = Path("/etc/hysteria2-panel/panel.env")
+    CONFIG_PATHS = (
+        Path("/etc/hysteria2-panel/hysteria.yaml"),
+        Path("/etc/hysteria2-panel/hysteria-443.yaml"),
+    )
+    STATE_PATH = Path("/etc/hysteria2-panel/.egress-state.json")
+    SERVICES = (
+        "hysteria2-panel-server.service",
+        "hysteria2-panel-server-443.service",
+    )
     POLICIES = {"web", "full"}
     UNITS = {
         "web": "hysteria2-panel-egress-web.service",
         "full": "hysteria2-panel-egress-full.service",
     }
 
-    def __init__(self, runner=subprocess.run, env_path=ENV_PATH, expected_uid=0):
+    def __init__(
+        self,
+        runner=subprocess.run,
+        env_path=ENV_PATH,
+        config_paths=CONFIG_PATHS,
+        state_path=STATE_PATH,
+        expected_uid=0,
+    ):
         self.runner = runner
         self.env_path = Path(env_path)
+        self.config_paths = tuple(Path(path) for path in config_paths)
+        self.state_path = Path(state_path)
         self.expected_uid = expected_uid
 
     @staticmethod
@@ -151,36 +224,140 @@ class EgressPolicyController:
             raise RuntimeError("egress policy configuration is invalid")
         return matches[0]
 
-    def status(self):
+    @staticmethod
+    def _panel_port_from_bytes(payload):
         try:
-            payload, _metadata = _read_managed_file(
+            source = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("egress policy configuration is invalid") from exc
+        matches = re.findall(
+            r"^HY2PANEL_PANEL_PORT=([0-9]{1,5})$", source, re.MULTILINE
+        )
+        if len(matches) != 1 or not 1 <= int(matches[0]) <= 65535:
+            raise RuntimeError("egress policy configuration is invalid")
+        return int(matches[0])
+
+    def _paths(self):
+        paths = [self.config_paths[0]]
+        if len(self.config_paths) > 1 and (
+            self.config_paths[1].exists() or self.config_paths[1].is_symlink()
+        ):
+            paths.append(self.config_paths[1])
+        return paths
+
+    def _unit_state_is_valid(self, unit):
+        result = self.runner(
+            [
+                "/bin/systemctl",
+                "show",
+                "--no-pager",
+                "--property=LoadState",
+                "--property=ActiveState",
+                unit,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Hysteria service state could not be verified")
+        values = {}
+        for line in result.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key in values:
+                raise RuntimeError("Hysteria service state is invalid")
+            values[key] = value
+        if set(values) != {"LoadState", "ActiveState"}:
+            raise RuntimeError("Hysteria service state is incomplete")
+        return values["LoadState"] == "loaded" and values["ActiveState"] in {
+            "active",
+            "inactive",
+            "failed",
+        }
+
+    def inspect(self):
+        try:
+            env_payload, _metadata = _read_managed_file(
                 self.env_path, self.expected_uid, max_bytes=65536
             )
-            return self._policy_from_bytes(payload)
-        except RuntimeError:
-            LOGGER.exception("egress policy status could not be read")
-            return "unknown"
+            configured = self._policy_from_bytes(env_payload)
+            panel_port = self._panel_port_from_bytes(env_payload)
+            paths = self._paths()
+            payloads = {self.env_path: env_payload}
+            config_policies = []
+            for path in paths:
+                payload, _metadata = _read_managed_file(path, self.expected_uid)
+                payloads[path] = payload
+                config_policies.append(
+                    EgressPolicyManager._policy_from_config(payload, panel_port)
+                )
+            state_payload, state_metadata = _read_managed_file(
+                self.state_path, self.expected_uid, max_bytes=65536
+            )
+            if stat.S_IMODE(state_metadata.st_mode) != 0o644:
+                raise RuntimeError("egress policy state metadata is invalid")
+            state = json.loads(state_payload.decode("utf-8"))
+            expected_files = {str(path): _sha256(payload) for path, payload in payloads.items()}
+            consistent = (
+                all(policy == configured for policy in config_policies)
+                and isinstance(state, dict)
+                and state.get("version") == EGRESS_STATE_VERSION
+                and state.get("policy") == configured
+                and state.get("files") == expected_files
+                and all(
+                    self._unit_state_is_valid(unit)
+                    for unit in self.SERVICES[: len(paths)]
+                )
+            )
+            return {
+                "state": configured if consistent else "inconsistent",
+                "configured_policy": configured,
+            }
+        except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            LOGGER.exception("egress policy status could not be verified")
+            return {"state": "unknown", "configured_policy": None}
+
+    def status(self):
+        return self.inspect()["state"]
 
     def switch(self, policy):
         if policy not in self.POLICIES:
             raise ValueError("unsupported egress policy")
-        if self.status() == policy:
-            return policy
-        result = self.runner(
-            [
-                "/usr/bin/sudo",
-                "-n",
-                "/bin/systemctl",
-                "start",
-                self.UNITS[policy],
-            ],
-            capture_output=True,
-            text=True,
-            timeout=75,
-            check=False,
-        )
-        if result.returncode != 0 or self.status() != policy:
-            raise RuntimeError("egress policy switch failed")
+        before = self.inspect()
+        try:
+            result = self.runner(
+                [
+                    "/usr/bin/sudo",
+                    "-n",
+                    "/bin/systemctl",
+                    "start",
+                    self.UNITS[policy],
+                ],
+                capture_output=True,
+                text=True,
+                timeout=330,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            if self.status() == policy:
+                return policy
+            raise EgressPolicyStateError(
+                "egress policy switch timed out; state is inconsistent"
+            ) from exc
+        after = self.status()
+        if result.returncode != 0:
+            if before["state"] in self.POLICIES and after == before["state"]:
+                raise RuntimeError(
+                    "egress policy switch failed; previous policy restored"
+                )
+            raise EgressPolicyStateError(
+                "egress policy switch failed; state is inconsistent"
+            )
+        if after != policy:
+            raise EgressPolicyStateError(
+                "egress policy switch completed without a consistent state"
+            )
         return policy
 
 
@@ -192,6 +369,8 @@ class EgressPolicyManager:
     )
     SERVER = "hysteria2-panel-server.service"
     SECONDARY_SERVER = "hysteria2-panel-server-443.service"
+    STATE_PATH = EgressPolicyController.STATE_PATH
+    TRANSACTION_PATH = Path("/etc/hysteria2-panel/.egress-transaction.json")
     COMMON_RULES = (
         "reject(0.0.0.0/8)",
         "reject(127.0.0.0/8)",
@@ -214,11 +393,15 @@ class EgressPolicyManager:
         runner=subprocess.run,
         env_path=ENV_PATH,
         config_paths=CONFIG_PATHS,
+        state_path=STATE_PATH,
+        transaction_path=TRANSACTION_PATH,
         expected_uid=0,
     ):
         self.runner = runner
         self.env_path = Path(env_path)
         self.config_paths = tuple(Path(path) for path in config_paths)
+        self.state_path = Path(state_path)
+        self.transaction_path = Path(transaction_path)
         self.expected_uid = expected_uid
 
     @staticmethod
@@ -287,9 +470,18 @@ class EgressPolicyManager:
             + source[masquerade_matches[0].start() :]
         ).encode("utf-8")
 
-    def _server_is_active(self):
+    @classmethod
+    def _policy_from_config(cls, payload, panel_port):
+        matches = [
+            policy
+            for policy in EgressPolicyController.POLICIES
+            if cls._replace_acl(payload, policy, panel_port) == payload
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _server_is_active(self, unit):
         active = self.runner(
-            ["/bin/systemctl", "is-active", self.SERVER],
+            ["/bin/systemctl", "is-active", unit],
             capture_output=True,
             text=True,
             timeout=10,
@@ -302,33 +494,205 @@ class EgressPolicyManager:
             return False
         raise RuntimeError("Hysteria service state could not be verified")
 
-    def _restart_and_verify(self, has_secondary):
-        restart = self.runner(
-            ["/bin/systemctl", "restart", self.SERVER],
-            capture_output=True,
-            text=True,
-            timeout=45,
-            check=False,
-        )
-        if restart.returncode != 0:
-            raise RuntimeError("Hysteria service restart failed")
+    def _unit_states(self, has_secondary):
         units = [self.SERVER]
         if has_secondary:
             units.append(self.SECONDARY_SERVER)
-        for unit in units:
-            active = self.runner(
-                ["/bin/systemctl", "is-active", unit],
+        return {unit: self._server_is_active(unit) for unit in units}
+
+    def _restart_and_verify(self, states):
+        restart_unit = None
+        if states.get(self.SERVER):
+            restart_unit = self.SERVER
+        elif states.get(self.SECONDARY_SERVER):
+            restart_unit = self.SECONDARY_SERVER
+        if restart_unit is not None:
+            restart = self.runner(
+                ["/bin/systemctl", "restart", restart_unit],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=90,
                 check=False,
             )
-            if active.returncode != 0 or active.stdout.strip() != "active":
-                raise RuntimeError("Hysteria service health check failed")
+            if restart.returncode != 0:
+                raise RuntimeError("Hysteria service restart failed")
+        for unit, expected_active in states.items():
+            actual_active = self._server_is_active(unit)
+            if not expected_active and actual_active:
+                stopped = self.runner(
+                    ["/bin/systemctl", "stop", unit],
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=False,
+                )
+                if stopped.returncode != 0 or self._server_is_active(unit):
+                    raise RuntimeError("Hysteria service state could not be restored")
+                continue
+            if actual_active != expected_active:
+                raise RuntimeError("Hysteria service state changed unexpectedly")
+
+    def _ownership_gid(self):
+        return 0 if self.expected_uid == 0 else os.getegid()
+
+    def _write_json(self, path, value, mode):
+        payload = json.dumps(
+            value, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        _atomic_write_file(
+            path, payload, mode, self.expected_uid, self._ownership_gid()
+        )
+
+    def _write_state(self, policy, payloads):
+        self._write_json(
+            self.state_path,
+            {
+                "version": EGRESS_STATE_VERSION,
+                "policy": policy,
+                "files": {
+                    str(path): _sha256(payload)
+                    for path, payload in payloads.items()
+                },
+            },
+            0o644,
+        )
+
+    def _state_matches(self, policy, hashes):
+        try:
+            payload, metadata = _read_managed_file(
+                self.state_path, self.expected_uid, max_bytes=65536
+            )
+            if stat.S_IMODE(metadata.st_mode) != 0o644:
+                return False
+            state = json.loads(payload.decode("utf-8"))
+            if state != {
+                "version": EGRESS_STATE_VERSION,
+                "policy": policy,
+                "files": hashes,
+            }:
+                return False
+            return all(
+                _sha256(_read_managed_file(path, self.expected_uid)[0]) == digest
+                for path, digest in hashes.items()
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, json.JSONDecodeError):
+            return False
+
+    def _write_transaction(self, original_policy, target_policy, originals, replacements):
+        self._write_json(
+            self.transaction_path,
+            {
+                "version": EGRESS_STATE_VERSION,
+                "originalPolicy": original_policy,
+                "targetPolicy": target_policy,
+                "paths": [str(path) for path in originals],
+                "originalFiles": {
+                    str(path): base64.b64encode(payload).decode("ascii")
+                    for path, (payload, _metadata) in originals.items()
+                },
+                "targetFiles": {
+                    str(path): _sha256(payload)
+                    for path, (payload, _metadata) in replacements.items()
+                },
+            },
+            0o600,
+        )
+
+    def _read_transaction(self):
+        payload, metadata = _read_managed_file(
+            self.transaction_path, self.expected_uid, max_bytes=4 * 1024 * 1024
+        )
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise RuntimeError("egress policy transaction metadata is invalid")
+        try:
+            record = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("egress policy transaction is invalid") from exc
+        if not isinstance(record, dict):
+            raise RuntimeError("egress policy transaction fields are invalid")
+        paths = [self.env_path]
+        for path in self.config_paths:
+            if str(path) in record.get("paths", []):
+                paths.append(path)
+        expected_paths = [str(path) for path in paths]
+        if (
+            set(record) != {
+                "version",
+                "originalPolicy",
+                "targetPolicy",
+                "paths",
+                "originalFiles",
+                "targetFiles",
+            }
+            or record["version"] != EGRESS_STATE_VERSION
+            or record["originalPolicy"] not in EgressPolicyController.POLICIES
+            or record["targetPolicy"] not in EgressPolicyController.POLICIES
+            or record["paths"] != expected_paths
+            or set(record["originalFiles"]) != set(expected_paths)
+            or set(record["targetFiles"]) != set(expected_paths)
+            or any(
+                not re.fullmatch(r"[0-9a-f]{64}", digest or "")
+                for digest in record["targetFiles"].values()
+            )
+        ):
+            raise RuntimeError("egress policy transaction fields are invalid")
+        decoded = {}
+        try:
+            for path in expected_paths:
+                value = base64.b64decode(record["originalFiles"][path], validate=True)
+                if not value or len(value) > 1024 * 1024:
+                    raise ValueError
+                decoded[Path(path)] = value
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("egress policy transaction backup is invalid") from exc
+        record["decodedOriginalFiles"] = decoded
+        return record
+
+    def recover(self):
+        try:
+            self.transaction_path.lstat()
+        except FileNotFoundError:
+            return None
+        record = self._read_transaction()
+        if self._state_matches(record["targetPolicy"], record["targetFiles"]):
+            _durable_unlink(self.transaction_path)
+            return "committed"
+        restored = {}
+        for path in (Path(value) for value in record["paths"]):
+            _current, metadata = _read_managed_file(path, self.expected_uid)
+            payload = record["decodedOriginalFiles"][path]
+            _atomic_replace_managed_file(path, payload, metadata)
+            restored[path] = payload
+        self._write_state(record["originalPolicy"], restored)
+        _durable_unlink(self.transaction_path)
+        return "rolled-back"
+
+    def record_current_state(self, policy, panel_port):
+        if policy not in EgressPolicyController.POLICIES:
+            raise ValueError("unsupported egress policy")
+        env_payload, _metadata = _read_managed_file(
+            self.env_path, self.expected_uid, max_bytes=65536
+        )
+        if EgressPolicyController._policy_from_bytes(env_payload) != policy:
+            raise RuntimeError("egress policy environment is inconsistent")
+        paths = [self.config_paths[0]]
+        if len(self.config_paths) > 1 and (
+            self.config_paths[1].exists() or self.config_paths[1].is_symlink()
+        ):
+            paths.append(self.config_paths[1])
+        payloads = {self.env_path: env_payload}
+        for path in paths:
+            payload, _metadata = _read_managed_file(path, self.expected_uid)
+            if self._policy_from_config(payload, panel_port) != policy:
+                raise RuntimeError("Hysteria egress configuration is inconsistent")
+            payloads[path] = payload
+        self._unit_states(len(paths) > 1)
+        self._write_state(policy, payloads)
 
     def apply(self, policy, panel_port):
         if policy not in EgressPolicyController.POLICIES:
             raise ValueError("unsupported egress policy")
+        self.recover()
         env_payload, env_metadata = _read_managed_file(
             self.env_path, self.expected_uid, max_bytes=65536
         )
@@ -349,21 +713,33 @@ class EgressPolicyManager:
             self._replace_policy(env_payload, policy),
             env_metadata,
         )
-        was_active = self._server_is_active()
+        original_policy = EgressPolicyController._policy_from_bytes(env_payload)
+        states = self._unit_states(len(paths) > 1)
+        self._write_transaction(
+            original_policy, policy, originals, replacements
+        )
         try:
             for path in paths + [self.env_path]:
                 payload, metadata = replacements[path]
                 _atomic_replace_managed_file(path, payload, metadata)
-            if was_active:
-                self._restart_and_verify(len(paths) > 1)
+            self._restart_and_verify(states)
+            self._write_state(
+                policy,
+                {path: replacements[path][0] for path in paths + [self.env_path]},
+            )
+            _durable_unlink(self.transaction_path)
         except Exception as switch_error:
             rollback_error = None
             try:
                 for path in paths + [self.env_path]:
                     payload, metadata = originals[path]
                     _atomic_replace_managed_file(path, payload, metadata)
-                if was_active:
-                    self._restart_and_verify(len(paths) > 1)
+                self._restart_and_verify(states)
+                self._write_state(
+                    original_policy,
+                    {path: originals[path][0] for path in paths + [self.env_path]},
+                )
+                _durable_unlink(self.transaction_path)
             except Exception as exc:
                 rollback_error = exc
             if rollback_error is not None:

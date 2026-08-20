@@ -20,7 +20,10 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         self.assertIn("--certificate-identity", source)
         self.assertIn("--certificate-oidc-issuer https://token.actions.githubusercontent.com", source)
         self.assertIn("tampered-install.sh", source)
-        self.assertIn('gh release upload "${GITHUB_REF_NAME}" install.sh.sigstore.json --clobber', source)
+        self.assertIn(
+            'gh release upload "${GITHUB_REF_NAME}" install.sh install.sh.sigstore.json --clobber',
+            source,
+        )
         self.assertNotIn("COSIGN_PRIVATE_KEY", source)
         self.assertNotIn("secrets.", source)
 
