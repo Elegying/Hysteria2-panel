@@ -502,11 +502,25 @@ verify_recovered_upgrade() {
     || fail "升级恢复复核找不到有效事务；标记已保留"
   verify_backup_manifest "${BACKUP_DIR}" \
     || fail "升级恢复复核发现备份清单漂移；标记已保留"
+  systemctl reset-failed hysteria2-panel.service hysteria2-panel-server.service \
+    >/dev/null 2>&1 || true
+  systemctl restart hysteria2-panel.service hysteria2-panel-server.service \
+    || fail "升级文件已恢复，但旧服务无法重新启动；标记已保留"
   verify_rollback_recovery \
     || fail "升级文件已恢复，但旧服务或监听端口未通过健康复核；标记已保留"
   clear_upgrade_transaction \
     || fail "旧版本已恢复，但升级事务标记未能清除"
   echo "升级中断恢复完成；旧版本服务、端口和节点身份均已复核。"
+}
+
+restore_managed_directory() {
+  local backup_source="$1" target="$2"
+  [[ ! -L "${backup_source}" && -d "${backup_source}" ]] || return 1
+  [[ ! -L "${target}" && -d "${target}" ]] || return 1
+  find "${target}" -mindepth 1 -delete || return 1
+  cp -a "${backup_source}/." "${target}/" || return 1
+  chown --reference="${backup_source}" "${target}" || return 1
+  chmod --reference="${backup_source}" "${target}" || return 1
 }
 
 prune_automatic_backups() {
@@ -700,18 +714,12 @@ rollback_existing_install() {
   fi
 
   if [[ -d "${BACKUP_DIR}/opt" ]]; then
-    if rm -r -- /opt/hysteria2-panel; then
-      cp -a "${BACKUP_DIR}/opt" /opt/hysteria2-panel
-    else
-      echo "警告：无法清理当前程序目录，已跳过程序文件回滚" >&2
-    fi
+    restore_managed_directory "${BACKUP_DIR}/opt" /opt/hysteria2-panel \
+      || { echo "警告：无法恢复升级前程序目录" >&2; return 1; }
   fi
   if [[ -d "${BACKUP_DIR}/etc" ]]; then
-    if rm -r -- /etc/hysteria2-panel; then
-      cp -a "${BACKUP_DIR}/etc" /etc/hysteria2-panel
-    else
-      echo "警告：无法清理当前配置目录，已跳过配置文件回滚" >&2
-    fi
+    restore_managed_directory "${BACKUP_DIR}/etc" /etc/hysteria2-panel \
+      || { echo "警告：无法恢复升级前配置目录" >&2; return 1; }
   fi
   if ! preserve_or_restore_database \
     /var/lib/hysteria2-panel/panel.db "${BACKUP_DIR}/panel.db"; then
@@ -750,6 +758,7 @@ rollback_existing_install() {
   else
     rm -f -- "${TMPFILES_FILE}"
   fi
+  sync
 
   if [[ "${NETWORK_STACK_MUTATED:-0}" == "1" ]]; then
     [[ "${ROLLBACK_RMEM}" =~ ^[1-9][0-9]*$ ]] && sysctl -w "net.core.rmem_max=${ROLLBACK_RMEM}" >/dev/null
@@ -763,12 +772,11 @@ rollback_existing_install() {
     systemctl stop hysteria2-panel-upgrade-verify.timer \
       hysteria2-panel-upgrade-verify.service >/dev/null 2>&1 || true
     systemctl reset-failed hysteria2-panel-upgrade-verify.service >/dev/null 2>&1 || true
-    systemctl --no-block restart hysteria2-panel.service hysteria2-panel-server.service \
-      || return 1
     systemd-run --quiet --collect --unit=hysteria2-panel-upgrade-verify \
-      --on-active=2s /bin/bash "${UPGRADE_RECOVERY_SCRIPT}" --verify-recovered-upgrade \
+      --on-active=2s --timer-property=AccuracySec=1s \
+      /bin/bash "${UPGRADE_RECOVERY_SCRIPT}" --verify-recovered-upgrade \
       || return 1
-    echo "升级文件已恢复；旧服务已排队启动，事务标记将在健康复核后清除。" >&2
+    echo "升级文件已恢复；旧服务启动和健康复核已排队，事务标记将在复核后清除。" >&2
     return 0
   fi
   systemctl restart hysteria2-panel.service hysteria2-panel-server.service

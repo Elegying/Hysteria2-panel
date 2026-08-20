@@ -1887,8 +1887,27 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         self.assertIn('ROLLBACK_REQUIRED=1', source)
         self.assertIn('rollback_existing_install "${status}"', source)
         self.assertIn('(( ${#FIREWALL_APPLIED[@]} > 0 ))', source)
-        self.assertIn('cp -a "${BACKUP_DIR}/opt" /opt/hysteria2-panel', source)
-        self.assertIn('cp -a "${BACKUP_DIR}/etc" /etc/hysteria2-panel', source)
+        self.assertIn("restore_managed_directory()", source)
+        self.assertIn(
+            'restore_managed_directory "${BACKUP_DIR}/opt" /opt/hysteria2-panel',
+            source,
+        )
+        self.assertIn(
+            'restore_managed_directory "${BACKUP_DIR}/etc" /etc/hysteria2-panel',
+            source,
+        )
+        self.assertNotIn("rm -r -- /opt/hysteria2-panel", source)
+        self.assertNotIn("rm -r -- /etc/hysteria2-panel", source)
+        verifier = source[
+            source.index("verify_recovered_upgrade()") : source.index(
+                "\n\nprune_automatic_backups()"
+            )
+        ]
+        self.assertLess(
+            verifier.index("systemctl restart hysteria2-panel.service"),
+            verifier.index("verify_rollback_recovery"),
+        )
+        self.assertIn("--timer-property=AccuracySec=1s", source)
         self.assertIn('preserve_or_restore_database', source)
         self.assertIn('rm -f -- "${database_path}-wal" "${database_path}-shm"', source)
         self.assertIn('sync-traffic', source)
