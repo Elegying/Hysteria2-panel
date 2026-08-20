@@ -344,7 +344,7 @@ require_backup_space() {
 }
 
 assert_upgrade_recovery_paths_owned() {
-  local dropin_entries path
+  local dropin_entries
   if [[ ! -e "${UPGRADE_RECOVERY_SCRIPT}" && ! -L "${UPGRADE_RECOVERY_SCRIPT}" && \
     ! -e "${UPGRADE_RECOVERY_UNIT}" && ! -L "${UPGRADE_RECOVERY_UNIT}" && \
     ! -e "${UPGRADE_RECOVERY_DROPIN_DIR}" && ! -L "${UPGRADE_RECOVERY_DROPIN_DIR}" ]]; then
@@ -371,10 +371,14 @@ assert_upgrade_recovery_paths_owned() {
     || fail "无法核验升级恢复 drop-in；安装已停止"
   [[ "${dropin_entries}" == "${UPGRADE_RECOVERY_DROPIN}" ]] \
     || fail "面板 unit 存在非安装器管理的 drop-in；安装已停止"
-  for path in "${UPGRADE_RECOVERY_UNIT}" "${UPGRADE_RECOVERY_DROPIN}"; do
-    grep -q 'hysteria2-panel-upgrade-recover.service' "${path}" \
-      || fail "升级恢复 systemd 配置身份无效；安装已停止"
-  done
+  grep -Fqx "ConditionPathExists=${UPGRADE_ACTIVE_MARKER}" "${UPGRADE_RECOVERY_UNIT}" \
+    || fail "升级恢复 unit 条件无效；安装已停止"
+  grep -Fqx "ExecStart=/bin/bash ${UPGRADE_RECOVERY_SCRIPT} --recover-upgrade" \
+    "${UPGRADE_RECOVERY_UNIT}" \
+    || fail "升级恢复 unit 命令无效；安装已停止"
+  grep -Fqx 'Requires=hysteria2-panel-upgrade-recover.service' \
+    "${UPGRADE_RECOVERY_DROPIN}" \
+    || fail "升级恢复 drop-in 身份无效；安装已停止"
 }
 
 install_upgrade_recovery_infrastructure() {
