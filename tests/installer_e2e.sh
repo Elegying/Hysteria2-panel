@@ -5,7 +5,9 @@ if (( EUID != 0 )); then
   echo "installer E2E must run as root" >&2
   exit 1
 fi
-if [[ "$(ps -p 1 -o comm= | tr -d '[:space:]')" != "systemd" ]]; then
+pid1_comm=""
+IFS= read -r pid1_comm < /proc/1/comm || true
+if [[ "${pid1_comm}" != "systemd" ]]; then
   echo "installer E2E requires systemd as PID 1" >&2
   exit 1
 fi
