@@ -63,6 +63,7 @@
 | `POST` | `/users/{id}/reset` | 携带当前 `generation`，重置该用户流量并断开旧连接 |
 | `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
+| `POST` | `/egress/{web,full}` | 切换整台节点的出站策略；通过固定 root oneshot 同步更新两份 Hysteria 配置和持久状态，重启失败时恢复旧策略 |
 | `POST` | `/system/reboot` | 二次确认后通过固定 sudoers 白名单排队重启整台服务器，成功返回 HTTP 202 |
 | `POST` | `/updates/check` | 从固定 GitHub Release API 检查面板版本；有新正式版本时显示在线更新入口 |
 | `POST` | `/updates/apply` | 不接收版本或地址参数；排队启动固定的一次性 root 更新服务，成功返回 HTTP 202 |
@@ -87,5 +88,7 @@ root 进程不信任 Web 预检，会以 `O_NOFOLLOW` 和固定所有权/权限�
 `POST /updates/apply` 只有在当前会话刚检查到新版本时可用，但 root 任务不会信任这份页面状态，而会重新访问固定仓库的 GitHub `releases/latest`。响应 tag 必须是比当前版本新的 `vX.Y.Z`，安装器只能从该 tag 对应的固定 `raw.githubusercontent.com/Elegying/Hysteria2-panel/` 路径下载。执行前还会限制响应大小、验证 UTF-8、bash 解释器头、内嵌版本与 tag 一致并通过 `bash -n`。更新进程使用固定环境变量进入安装器的现有受管安装模式，网页请求无法指定命令、仓库、版本、节点参数或管理员凭据。排队状态以 `0600` 原子文件保存在面板数据目录；`GET /updates/status` 再读取固定 systemd 单元状态，且只有更新单元已成功结束并且当前版本达到目标版本才返回 `success`。浏览器短暂失联时继续轮询，任务失败、退出码非零或任务结束但版本未变化时返回明确失败提示。
 
 `POST /system/reboot` 不接收命令、主机或延时参数。后端只执行固定的 `/usr/bin/sudo -n /bin/systemctl --no-block reboot`，并在排队前尽力落盘最新流量及写入审计记录。接口返回 202 只表示重启已排队，不表示系统已重新上线。
+
+`POST /egress/{web,full}` 不接收 ACL、命令、文件路径或端口参数，且作用于节点上的全部代理账号。面板只把严格匹配的目标映射到 `hysteria2-panel-egress-web.service` 或 `hysteria2-panel-egress-full.service`；两个 root oneshot 使用安装、更新和恢复共用的维护锁，拒绝并发维护。任务只读取 root 所有且不可组写/全局写的普通受管文件，用同目录临时文件、`fsync` 和原子替换同时更新主入口、UDP `443` 入口及 `HY2PANEL_EGRESS_POLICY`，随后重启并复核业务服务。写入或重启失败时恢复原内容并再次启动旧策略；面板显示持久化的当前状态，切换前明确提醒全部现有连接会短暂中断以及 `full` 的滥用风险。
 
 Hysteria 流量统计客户端只接受带明确端口、无路径的 `http://127.0.0.1` 或 `http://[::1]`，单次响应最多 8 MiB，避免配置错误把面板变成外部请求入口或让异常统计响应无限占用内存。

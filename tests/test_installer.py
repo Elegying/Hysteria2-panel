@@ -395,7 +395,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.20.1"', source)
+        self.assertIn('PANEL_VERSION="0.21.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -2477,6 +2477,8 @@ assert_units_unclaimed
             "hysteria2-panel-server-443.service",
             "hysteria2-panel-tcp-probe.service",
             "hysteria2-panel-tcp-probe-443.service",
+            "hysteria2-panel-egress-full.service",
+            "hysteria2-panel-egress-web.service",
             "hysteria2-panel-restore.service",
             "hysteria2-panel-restore-recover.service",
             "hysteria2-panel-restore-resume.service",
@@ -2494,6 +2496,40 @@ assert_units_unclaimed
                 "LockPersonality=true",
             ):
                 self.assertIn(sandbox_option, unit_source, unit)
+
+    def test_installer_adds_fixed_root_only_egress_policy_switch_services(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn(
+            "/bin/systemctl start hysteria2-panel-egress-full.service",
+            source,
+        )
+        self.assertIn(
+            "/bin/systemctl start hysteria2-panel-egress-web.service",
+            source,
+        )
+        full_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-egress-full.service <<EOF",
+            1,
+        )[1].split("EOF", 1)[0]
+        web_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-egress-web.service <<EOF",
+            1,
+        )[1].split("EOF", 1)[0]
+        self.assertIn(
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy full",
+            full_unit,
+        )
+        self.assertIn(
+            "ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy web",
+            web_unit,
+        )
+        for unit in (full_unit, web_unit):
+            self.assertIn("NoNewPrivileges=true", unit)
+            self.assertIn("ProtectSystem=strict", unit)
+            self.assertIn("ReadWritePaths=/etc/hysteria2-panel", unit)
+            self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
+            self.assertNotIn("User=hy2panel", unit)
 
     def test_installer_adds_a_root_only_one_shot_restore_service(self):
         source = INSTALLER.read_text()

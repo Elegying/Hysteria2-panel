@@ -88,7 +88,9 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 
 默认 `EGRESS_POLICY=full` 使用 Hysteria 官方 ACL：先拒绝未指定、环回、私网、链路本地、CGNAT、IPv6 ULA、组播和保留目标，然后放行所有公网目标及端口。这保留完整的公网代理能力，同时阻断通过环回或内网地址访问节点及其内网服务。`full` 会允许 BT/PT、SMTP、游戏和非标准端口，也会增加扫描、爆破、垃圾邮件和版权投诉风险；管理员需要配置用户限额，并通过审计和禁用及时处置滥用。ACL 规则按官方的从上到下首条匹配语义执行：[Hysteria ACL 文档](https://v2.hysteria.network/docs/advanced/ACL/)。
 
-如果需要限制为网页/视频用途，可设置 `EGRESS_POLICY=web` 后重新运行安装器。`web` 会在相同的本地/私网拒绝规则之后，仅允许公网目标的 SSH TCP `22`、管理面板 TCP 端口、TCP `80/443`、UDP `443`、TCP/UDP `53` 和 UDP `123`，最后拒绝其他目标与端口。
+如果需要限制为网页/视频用途，可在面板“服务控制”的服务端口卡片关闭 `FULL`，也可在部署时设置 `EGRESS_POLICY=web`。`web` 会在相同的本地/私网拒绝规则之后，仅允许公网目标的 SSH TCP `22`、管理面板 TCP 端口、TCP `80/443`、UDP `443`、TCP/UDP `53` 和 UDP `123`，最后拒绝其他目标与端口。面板开关是整台节点的全局策略，不是单账号设置；运行中切换会短暂重启两个 Hysteria 入口并中断现有连接，已停止的节点只更新配置并保持停止。
+
+面板只允许管理员通过会话和 CSRF 保护的固定 `web/full` 路由启动两个参数固定的 root systemd 任务。root 任务在共用维护锁内同步更新 `panel.env`、主端口和 UDP `443` 配置；运行中的节点重启后复核服务，已停止的节点保持停止。任一步失败都会恢复三份旧文件和切换前服务状态。浏览器请求不能提供命令、文件路径、端口或任意 ACL 内容。
 
 这是端口和目标地址策略，不是 DPI。BitTorrent 可以加密，也可以伪装到 `web` 允许的 `80/443` 或经外部中继传输，所以任何仅靠 Hysteria ACL 的方案都不能诚实保证 100% 识别所有 BT/PT。切换策略不会改变用户链接、认证密钥、证书或证书指纹。
 
@@ -168,6 +170,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel
 - [ADR-011：单账号 UDP 443 双入口授权](docs/decisions/ADR-011-per-user-udp-443-entrypoint.md)
 - [ADR-012：受管防火墙端口自动开放](docs/decisions/ADR-012-managed-firewall-port-opening.md)
 - [ADR-013：无密钥签名更新、模块边界与运行时就绪](docs/decisions/ADR-013-keyless-update-modules-readiness.md)
+- [ADR-014：面板内受限切换节点全局出站策略](docs/decisions/ADR-014-runtime-egress-policy-switch.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证
