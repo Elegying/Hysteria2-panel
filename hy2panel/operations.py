@@ -608,14 +608,15 @@ class EgressPolicyManager:
             record = json.loads(payload.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise RuntimeError("egress policy transaction is invalid") from exc
+        if not isinstance(record, dict):
+            raise RuntimeError("egress policy transaction fields are invalid")
         paths = [self.env_path]
         for path in self.config_paths:
             if str(path) in record.get("paths", []):
                 paths.append(path)
         expected_paths = [str(path) for path in paths]
         if (
-            not isinstance(record, dict)
-            or set(record) != {
+            set(record) != {
                 "version",
                 "originalPolicy",
                 "targetPolicy",

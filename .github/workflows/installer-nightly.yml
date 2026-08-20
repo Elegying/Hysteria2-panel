@@ -1,0 +1,65 @@
+name: Installer platform E2E
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-installer-matrix:
+    name: ${{ matrix.platform }} / ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-24.04
+            architecture: amd64
+            runner: ubuntu-24.04
+            base_image: ubuntu:24.04
+          - platform: ubuntu-24.04
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            base_image: ubuntu:24.04
+          - platform: rocky-9
+            architecture: amd64
+            runner: ubuntu-24.04
+            base_image: rockylinux:9
+          - platform: rocky-9
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            base_image: rockylinux:9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build a clean systemd host
+        run: |
+          docker build -f tests/installer_e2e.Dockerfile \
+            --build-arg BASE_IMAGE="${{ matrix.base_image }}" \
+            -t hysteria2-panel-installer-e2e .
+      - name: Run the platform installer contract
+        shell: bash
+        env:
+          PANEL_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          container="hysteria2-panel-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "${container}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --privileged --cgroupns=host \
+            --name "${container}" \
+            --tmpfs /run --tmpfs /run/lock \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            hysteria2-panel-installer-e2e
+          for _attempt in $(seq 1 60); do
+            docker exec "${container}" systemctl is-system-running --wait >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker cp . "${container}:/workspace"
+          docker exec --env PANEL_REF="${PANEL_REF}" "${container}" \
+            bash /workspace/tests/installer_e2e.sh

@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.21.0"
+PANEL_VERSION="0.21.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -15,13 +15,13 @@ HY2PANEL_WEB_ASSETS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyste
 HY2PANEL_OPERATIONS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/operations.py"
 HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/release.py"
 HY2PANEL_HEALTH_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/health.py"
-PANEL_SHA256="28c01be01f11a00f7e3e67cdef38bdc956f105826a8a06df3a57dbb02fa3b2dd"
+PANEL_SHA256="6ce11e8a8bb13d033740843333b37556894dd0babc95abc7c3746c2d53dfe03d"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="c282bd68338f0c7d4956ffb966160c9ead7af315fefd50e4d73880d815063f90"
+HY2PANEL_VERSION_SHA256="f54a4979887a10ed54f31bee77e05e68d5421d61a101214b99b06b12a1014c12"
 HY2PANEL_WEB_ASSETS_SHA256="77bcc20e8296320d0af69fe82402f85e058933c28da40f6d558cc50448674ca8"
-HY2PANEL_OPERATIONS_SHA256="4cf1edac75204bc852554653b41fba9993848a176f9d689d7f918f1cdaaac004"
+HY2PANEL_OPERATIONS_SHA256="2660f871020b95ed648df0b0d72ea7d6ca5f9a05f82634639a4183c97dbe9f39"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="df80fdfe7e6220cadeb25d402dde3e00ac26189ad50e1c5cc28647bde460382f"
 HYSTERIA_VERSION="2.12.1"
@@ -46,6 +46,14 @@ RESTORE_ACTIVE_MARKER=/etc/hysteria2-panel/.restore-active
 RESTORE_CAPTURED_ARCHIVE=/etc/hysteria2-panel/.restore-active.archive
 RESTORE_PENDING_ARCHIVE=/var/lib/hysteria2-panel/backup-restore/pending-restore.zip
 EGRESS_TRANSACTION_MARKER=/etc/hysteria2-panel/.egress-transaction.json
+UPGRADE_ACTIVE_MARKER=/var/backups/hysteria2-panel/.upgrade-active
+UPGRADE_RECOVERY_SCRIPT=/var/backups/hysteria2-panel/.upgrade-recover.sh
+UPGRADE_RECOVERY_UNIT=/etc/systemd/system/hysteria2-panel-upgrade-recover.service
+UPGRADE_RECOVERY_DROPIN_DIR=/etc/systemd/system/hysteria2-panel.service.d
+UPGRADE_RECOVERY_DROPIN=${UPGRADE_RECOVERY_DROPIN_DIR}/10-hysteria2-panel-upgrade-recovery.conf
+BACKUP_RETENTION_DAYS=90
+BACKUP_MAX_COUNT=10
+BACKUP_MIN_HEADROOM_KIB=65536
 UFW_RULES_PATH=/etc/ufw
 UFW_TEMPLATE_PATH=/usr/share/ufw/iptables
 ROLLBACK_REQUIRED=0
@@ -72,6 +80,8 @@ LEGACY_RESTORE_GUARD_DIR=/run/systemd/system/${LEGACY_RESTORE_UNIT}.d
 LEGACY_RESTORE_GUARD_DROPIN=${LEGACY_RESTORE_GUARD_DIR}/50-hysteria2-panel-install-guard.conf
 LEGACY_RESTORE_GUARD_OWNED=0
 TMP_DIR=""
+RECOVER_UPGRADE=0
+VERIFY_RECOVERED_UPGRADE=0
 
 usage() {
   cat <<'EOF'
@@ -165,6 +175,357 @@ select_traffic_sync_options() {
   return 1
 }
 
+write_backup_manifest() {
+  local backup_dir="$1"
+  "${PYTHON_BIN}" - "${backup_dir}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / "backup-manifest.json"
+
+
+def record(path):
+    relative = path.relative_to(root).as_posix()
+    metadata = path.lstat()
+    item = {
+        "path": relative,
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "uid": metadata.st_uid,
+        "gid": metadata.st_gid,
+    }
+    if path.is_symlink():
+        item.update(type="symlink", target=os.readlink(path))
+    elif path.is_dir():
+        item["type"] = "directory"
+    elif path.is_file():
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        item.update(type="file", sha256=digest.hexdigest(), size=metadata.st_size)
+    else:
+        raise SystemExit("unsupported backup entry: {}".format(relative))
+    return item
+
+
+entries = []
+for directory, names, files in os.walk(str(root), followlinks=False):
+    directory_path = pathlib.Path(directory)
+    names.sort()
+    files.sort()
+    for name in names + files:
+        path = directory_path / name
+        if path == manifest_path:
+            continue
+        entries.append(record(path))
+entries.sort(key=lambda item: item["path"])
+payload = json.dumps(
+    {"format": 1, "entries": entries},
+    ensure_ascii=True,
+    separators=(",", ":"),
+).encode("utf-8") + b"\n"
+descriptor, staged_name = tempfile.mkstemp(prefix=".backup-manifest-", dir=str(root))
+try:
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(staged_name, manifest_path)
+    directory_descriptor = os.open(str(root), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
+finally:
+    try:
+        os.unlink(staged_name)
+    except FileNotFoundError:
+        pass
+PY
+}
+
+verify_backup_manifest() {
+  local backup_dir="$1"
+  "${PYTHON_BIN}" - "${backup_dir}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / "backup-manifest.json"
+try:
+    manifest_metadata = manifest_path.lstat()
+except OSError:
+    raise SystemExit(1)
+if (
+    not stat.S_ISREG(manifest_metadata.st_mode)
+    or manifest_metadata.st_uid != 0
+    or manifest_metadata.st_gid != 0
+    or stat.S_IMODE(manifest_metadata.st_mode) != 0o600
+    or manifest_metadata.st_nlink != 1
+):
+    raise SystemExit(1)
+try:
+    expected = json.loads(manifest_path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit(1)
+if not isinstance(expected, dict) or expected.get("format") != 1:
+    raise SystemExit(1)
+expected_entries = expected.get("entries")
+if not isinstance(expected_entries, list):
+    raise SystemExit(1)
+
+
+def record(path):
+    relative = path.relative_to(root).as_posix()
+    metadata = path.lstat()
+    item = {
+        "path": relative,
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "uid": metadata.st_uid,
+        "gid": metadata.st_gid,
+    }
+    if path.is_symlink():
+        item.update(type="symlink", target=os.readlink(path))
+    elif path.is_dir():
+        item["type"] = "directory"
+    elif path.is_file():
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        item.update(type="file", sha256=digest.hexdigest(), size=metadata.st_size)
+    else:
+        raise SystemExit(1)
+    return item
+
+
+actual_entries = []
+for directory, names, files in os.walk(str(root), followlinks=False):
+    directory_path = pathlib.Path(directory)
+    names.sort()
+    files.sort()
+    for name in names + files:
+        path = directory_path / name
+        if path == manifest_path:
+            continue
+        actual_entries.append(record(path))
+actual_entries.sort(key=lambda item: item["path"])
+if actual_entries != expected_entries:
+    raise SystemExit(1)
+PY
+}
+
+require_backup_space() {
+  local available_kib estimate_kib=0 path size_kib
+  for path in /opt/hysteria2-panel /etc/hysteria2-panel /var/lib/hysteria2-panel/panel.db; do
+    [[ ! -e "${path}" && ! -L "${path}" ]] || {
+      size_kib="$(du -sk -- "${path}" | awk '{print $1}')" \
+        || fail "无法估算升级备份大小；安装已停止"
+      [[ "${size_kib}" =~ ^[0-9]+$ ]] || fail "升级备份大小无效；安装已停止"
+      estimate_kib=$((estimate_kib + size_kib))
+    }
+  done
+  available_kib="$(df -Pk /var/backups | awk 'NR == 2 {print $4}')" \
+    || fail "无法读取备份分区可用空间；安装已停止"
+  [[ "${available_kib}" =~ ^[0-9]+$ ]] || fail "备份分区可用空间无效；安装已停止"
+  (( available_kib >= estimate_kib + BACKUP_MIN_HEADROOM_KIB )) \
+    || fail "备份空间不足：至少需要 $((estimate_kib + BACKUP_MIN_HEADROOM_KIB)) KiB，当前仅 ${available_kib} KiB"
+}
+
+assert_upgrade_recovery_paths_owned() {
+  local dropin_entries path
+  if [[ ! -e "${UPGRADE_RECOVERY_SCRIPT}" && ! -L "${UPGRADE_RECOVERY_SCRIPT}" && \
+    ! -e "${UPGRADE_RECOVERY_UNIT}" && ! -L "${UPGRADE_RECOVERY_UNIT}" && \
+    ! -e "${UPGRADE_RECOVERY_DROPIN_DIR}" && ! -L "${UPGRADE_RECOVERY_DROPIN_DIR}" ]]; then
+    return 0
+  fi
+  [[ ! -L "${UPGRADE_RECOVERY_SCRIPT}" && -f "${UPGRADE_RECOVERY_SCRIPT}" && \
+    "$(stat -c '%u:%g:%a:%h' "${UPGRADE_RECOVERY_SCRIPT}")" == "0:0:700:1" ]] \
+    || fail "升级恢复脚本不是安装器管理的普通文件；安装已停止"
+  grep -q '^#!/usr/bin/env bash$' "${UPGRADE_RECOVERY_SCRIPT}" \
+    || fail "升级恢复脚本身份无效；安装已停止"
+  grep -q '^PANEL_VERSION="[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*"$' \
+    "${UPGRADE_RECOVERY_SCRIPT}" \
+    || fail "升级恢复脚本版本无效；安装已停止"
+  [[ ! -L "${UPGRADE_RECOVERY_UNIT}" && -f "${UPGRADE_RECOVERY_UNIT}" && \
+    "$(stat -c '%u:%g:%a:%h' "${UPGRADE_RECOVERY_UNIT}")" == "0:0:644:1" ]] \
+    || fail "升级恢复 unit 不是安装器管理的普通文件；安装已停止"
+  [[ ! -L "${UPGRADE_RECOVERY_DROPIN_DIR}" && -d "${UPGRADE_RECOVERY_DROPIN_DIR}" && \
+    "$(stat -c '%u:%g:%a' "${UPGRADE_RECOVERY_DROPIN_DIR}")" == "0:0:755" ]] \
+    || fail "升级恢复 drop-in 目录无效；安装已停止"
+  [[ ! -L "${UPGRADE_RECOVERY_DROPIN}" && -f "${UPGRADE_RECOVERY_DROPIN}" && \
+    "$(stat -c '%u:%g:%a:%h' "${UPGRADE_RECOVERY_DROPIN}")" == "0:0:644:1" ]] \
+    || fail "升级恢复 drop-in 不是安装器管理的普通文件；安装已停止"
+  dropin_entries="$(find "${UPGRADE_RECOVERY_DROPIN_DIR}" -mindepth 1 -maxdepth 1 -print)" \
+    || fail "无法核验升级恢复 drop-in；安装已停止"
+  [[ "${dropin_entries}" == "${UPGRADE_RECOVERY_DROPIN}" ]] \
+    || fail "面板 unit 存在非安装器管理的 drop-in；安装已停止"
+  for path in "${UPGRADE_RECOVERY_UNIT}" "${UPGRADE_RECOVERY_DROPIN}"; do
+    grep -q 'hysteria2-panel-upgrade-recover.service' "${path}" \
+      || fail "升级恢复 systemd 配置身份无效；安装已停止"
+  done
+}
+
+install_upgrade_recovery_infrastructure() {
+  local script_stage unit_stage dropin_stage
+  assert_upgrade_recovery_paths_owned
+  script_stage="${UPGRADE_RECOVERY_SCRIPT}.new"
+  unit_stage="${UPGRADE_RECOVERY_UNIT}.new"
+  dropin_stage="${UPGRADE_RECOVERY_DROPIN}.new"
+  install -d -o root -g root -m 0700 /var/backups/hysteria2-panel
+  install -o root -g root -m 0700 "$0" "${script_stage}"
+  mv -f -- "${script_stage}" "${UPGRADE_RECOVERY_SCRIPT}"
+  cat > "${TMP_DIR}/hysteria2-panel-upgrade-recover.service" <<EOF
+[Unit]
+Description=Recover an interrupted Hysteria 2 panel upgrade before startup
+After=local-fs.target systemd-tmpfiles-setup.service network-online.target
+Wants=network-online.target
+Before=hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service
+ConditionPathExists=${UPGRADE_ACTIVE_MARKER}
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${UPGRADE_RECOVERY_SCRIPT} --recover-upgrade
+TimeoutStartSec=25min
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ReadWritePaths=/opt/hysteria2-panel /etc/hysteria2-panel /etc/systemd/system /etc/sudoers.d /etc/sysctl.d /etc/tmpfiles.d /var/lib/hysteria2-panel /var/backups/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
+TasksMax=128
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-upgrade-recover.service" "${unit_stage}"
+  mv -f -- "${unit_stage}" "${UPGRADE_RECOVERY_UNIT}"
+  install -d -o root -g root -m 0755 "${UPGRADE_RECOVERY_DROPIN_DIR}"
+  cat > "${TMP_DIR}/hysteria2-panel-upgrade-recovery.conf" <<'EOF'
+[Unit]
+Requires=hysteria2-panel-upgrade-recover.service
+After=hysteria2-panel-upgrade-recover.service
+EOF
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-upgrade-recovery.conf" "${dropin_stage}"
+  mv -f -- "${dropin_stage}" "${UPGRADE_RECOVERY_DROPIN}"
+  sync -f "${UPGRADE_RECOVERY_SCRIPT}"
+  sync -f "${UPGRADE_RECOVERY_UNIT}"
+  sync -f "${UPGRADE_RECOVERY_DROPIN}"
+  systemctl daemon-reload
+  systemctl enable hysteria2-panel-upgrade-recover.service
+  sync -f /etc/systemd/system
+  sync -f "${UPGRADE_RECOVERY_DROPIN_DIR}"
+  sync -f /etc/systemd/system/multi-user.target.wants
+  sync -f /var/backups/hysteria2-panel
+}
+
+arm_upgrade_transaction() {
+  local marker_stage="${UPGRADE_ACTIVE_MARKER}.new"
+  verify_backup_manifest "${BACKUP_DIR}" \
+    || fail "升级备份清单复核失败；尚未覆盖程序文件"
+  install_upgrade_recovery_infrastructure
+  printf '%s\n' "${BACKUP_DIR}" > "${marker_stage}"
+  chown root:root "${marker_stage}"
+  chmod 0600 "${marker_stage}"
+  sync -f "${marker_stage}"
+  mv -f -- "${marker_stage}" "${UPGRADE_ACTIVE_MARKER}"
+  sync -f /var/backups/hysteria2-panel
+}
+
+clear_upgrade_transaction() {
+  sync -f /opt/hysteria2-panel /etc/hysteria2-panel \
+    /var/lib/hysteria2-panel /etc/systemd/system || return 1
+  rm -f -- "${UPGRADE_ACTIVE_MARKER}" || return 1
+  sync -f /var/backups/hysteria2-panel
+}
+
+read_upgrade_backup_path() {
+  local marker_metadata marker_value root_metadata
+  [[ ! -L /var/backups/hysteria2-panel && -d /var/backups/hysteria2-panel ]] || return 1
+  root_metadata="$(stat -c '%u:%g:%a' /var/backups/hysteria2-panel)" || return 1
+  [[ "${root_metadata}" == "0:0:700" ]] || return 1
+  [[ ! -L "${UPGRADE_ACTIVE_MARKER}" && -f "${UPGRADE_ACTIVE_MARKER}" ]] || return 1
+  marker_metadata="$(stat -c '%u:%g:%a:%h' "${UPGRADE_ACTIVE_MARKER}")" || return 1
+  [[ "${marker_metadata}" == "0:0:600:1" ]] || return 1
+  marker_value="$(cat "${UPGRADE_ACTIVE_MARKER}")" || return 1
+  [[ "${marker_value}" =~ ^/var/backups/hysteria2-panel/[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]] \
+    || return 1
+  [[ ! -L "${marker_value}" && -d "${marker_value}" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "${marker_value}")" == "0:0:700" ]] || return 1
+  printf '%s\n' "${marker_value}"
+}
+
+recover_interrupted_upgrade() {
+  [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]] || return 0
+  BACKUP_DIR="$(read_upgrade_backup_path)" \
+    || fail "升级事务标记或备份目录无效；拒绝自动覆盖文件"
+  verify_backup_manifest "${BACKUP_DIR}" \
+    || fail "升级备份清单不匹配；拒绝自动覆盖文件"
+  EXISTING_INSTALL=1
+  ROLLBACK_REQUIRED=1
+  echo "检测到未完成的升级，正在从已验证备份恢复…"
+  rollback_existing_install 75 \
+    || fail "升级自动恢复未通过健康检查；事务标记已保留"
+}
+
+verify_recovered_upgrade() {
+  BACKUP_DIR="$(read_upgrade_backup_path)" \
+    || fail "升级恢复复核找不到有效事务；标记已保留"
+  verify_backup_manifest "${BACKUP_DIR}" \
+    || fail "升级恢复复核发现备份清单漂移；标记已保留"
+  verify_rollback_recovery \
+    || fail "升级文件已恢复，但旧服务或监听端口未通过健康复核；标记已保留"
+  clear_upgrade_transaction \
+    || fail "旧版本已恢复，但升级事务标记未能清除"
+  echo "升级中断恢复完成；旧版本服务、端口和节点身份均已复核。"
+}
+
+prune_automatic_backups() {
+  local backup_root=/var/backups/hysteria2-panel count=0 directory metadata name
+  local automatic_backups=()
+  [[ ! -L "${backup_root}" && -d "${backup_root}" ]] || return 1
+  [[ "$(stat -c '%u:%g:%a' "${backup_root}")" == "0:0:700" ]] || return 1
+  while IFS= read -r directory; do
+    name="${directory##*/}"
+    [[ "${name}" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]] || continue
+    [[ ! -L "${directory}" && -d "${directory}" ]] || continue
+    metadata="$(stat -c '%u:%g:%a' "${directory}")" || return 1
+    [[ "${metadata}" == "0:0:700" ]] || continue
+    automatic_backups+=("${directory}")
+  done < <(find "${backup_root}" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort -r)
+  for directory in "${automatic_backups[@]}"; do
+    count=$((count + 1))
+    [[ "${directory}" != "${BACKUP_DIR}" ]] || continue
+    if (( count > BACKUP_MAX_COUNT )) || \
+      find "${directory}" -maxdepth 0 -mtime "+${BACKUP_RETENTION_DAYS}" -print -quit | grep -q .; then
+      rm -r -- "${directory}" || return 1
+    fi
+  done
+}
+
 rollback_firewall_after_service_recovery() {
   if declare -F rollback_firewall_changes >/dev/null 2>&1 && \
     (( ${#FIREWALL_APPLIED[@]} > 0 )); then
@@ -220,6 +581,7 @@ rollback_existing_install() {
     set +e
     echo "首次部署失败（退出码 ${status}），正在清理本次创建的项目文件…" >&2
     if ! stop_loaded_units \
+      hysteria2-panel-upgrade-recover.service \
       hysteria2-panel-restore.service \
       hysteria2-panel-update.service \
       hysteria2-panel-egress-full.service \
@@ -235,7 +597,8 @@ rollback_existing_install() {
       echo "警告：无法确认首次部署创建的进程均已停止；为避免删除运行中文件，已停止自动清理。" >&2
       return 1
     fi
-    systemctl disable hysteria2-panel-server.service hysteria2-panel.service >/dev/null 2>&1 || true
+    systemctl disable hysteria2-panel-upgrade-recover.service \
+      hysteria2-panel-server.service hysteria2-panel.service >/dev/null 2>&1 || true
     rollback_firewall_after_service_recovery || true
     rm -f -- \
       /etc/systemd/system/hysteria2-panel.service \
@@ -250,10 +613,14 @@ rollback_existing_install() {
       /etc/systemd/system/hysteria2-panel-egress-full.service \
       /etc/systemd/system/hysteria2-panel-egress-web.service \
       /etc/systemd/system/hysteria2-panel-egress-recover.service \
+      "${UPGRADE_RECOVERY_UNIT}" \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
+      /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
       /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
+    rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
+    rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
     rm -rf -- \
       /opt/hysteria2-panel \
       /etc/hysteria2-panel \
@@ -278,6 +645,13 @@ rollback_existing_install() {
   if [[ "${ROLLBACK_REQUIRED:-0}" != "1" || "${EXISTING_INSTALL:-0}" != "1" || \
     "${BACKUP_DIR:-}" != /var/backups/hysteria2-panel/* || ! -d "${BACKUP_DIR}" ]]; then
     return 0
+  fi
+  if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" || \
+    -e "${BACKUP_DIR}/backup-manifest.json" ]]; then
+    if ! verify_backup_manifest "${BACKUP_DIR}"; then
+      echo "警告：升级备份清单不匹配；拒绝自动覆盖文件。备份：${BACKUP_DIR}" >&2
+      return 1
+    fi
   fi
 
   ROLLBACK_REQUIRED=0
@@ -379,12 +753,30 @@ rollback_existing_install() {
   fi
 
   systemctl daemon-reload
+  if (( RECOVER_UPGRADE == 1 )); then
+    systemctl stop hysteria2-panel-upgrade-verify.timer \
+      hysteria2-panel-upgrade-verify.service >/dev/null 2>&1 || true
+    systemctl reset-failed hysteria2-panel-upgrade-verify.service >/dev/null 2>&1 || true
+    systemctl --no-block restart hysteria2-panel.service hysteria2-panel-server.service \
+      || return 1
+    systemd-run --quiet --collect --unit=hysteria2-panel-upgrade-verify \
+      --on-active=2s /bin/bash "${UPGRADE_RECOVERY_SCRIPT}" --verify-recovered-upgrade \
+      || return 1
+    echo "升级文件已恢复；旧服务已排队启动，事务标记将在健康复核后清除。" >&2
+    return 0
+  fi
   systemctl restart hysteria2-panel.service hysteria2-panel-server.service
   if ! verify_rollback_recovery; then
     echo "警告：文件已回滚，但旧服务或监听端口未完全恢复；已保留本次防火墙规则，请使用备份目录人工恢复：${BACKUP_DIR}" >&2
     return 1
   fi
   rollback_firewall_after_service_recovery || true
+  if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
+    clear_upgrade_transaction || {
+      echo "警告：旧版本已恢复，但升级事务标记未能清除：${UPGRADE_ACTIVE_MARKER}" >&2
+      return 1
+    }
+  fi
   echo "已恢复升级前版本；节点身份、用户数据库和全部入口均已复核。备份：${BACKUP_DIR}" >&2
 }
 
@@ -546,6 +938,47 @@ assert_no_pending_egress_state() {
   if [[ -e "${EGRESS_TRANSACTION_MARKER}" || -L "${EGRESS_TRANSACTION_MARKER}" ]]; then
     fail "检测到未完成的出站策略事务；请先重启服务器触发 hysteria2-panel-egress-recover.service，确认面板恢复后再部署"
   fi
+}
+
+assert_no_pending_upgrade_state() {
+  if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
+    fail "检测到未完成的升级事务；请先运行 systemctl start hysteria2-panel-upgrade-recover.service，确认旧版本恢复后再部署"
+  fi
+}
+
+assert_no_unmanaged_install_paths() {
+  local path
+  [[ -e "${MANAGED_MARKER}" || -L "${MANAGED_MARKER}" ]] && return 0
+  [[ -e "${FRESH_IN_PROGRESS_MARKER}" || -L "${FRESH_IN_PROGRESS_MARKER}" ]] && return 0
+  for path in \
+    /opt/hysteria2-panel \
+    /etc/hysteria2-panel \
+    /var/lib/hysteria2-panel \
+    /var/backups/hysteria2-panel \
+    /etc/sudoers.d/hysteria2-panel \
+    "${SYSCTL_FILE}" \
+    "${TMPFILES_FILE}" \
+    /etc/systemd/system/hysteria2-panel.service \
+    /etc/systemd/system/hysteria2-panel-server.service \
+    /etc/systemd/system/hysteria2-panel-server-443.service \
+    /etc/systemd/system/hysteria2-panel-tcp-probe.service \
+    /etc/systemd/system/hysteria2-panel-tcp-probe-443.service \
+    /etc/systemd/system/hysteria2-panel-restore.service \
+    /etc/systemd/system/hysteria2-panel-restore-recover.service \
+    /etc/systemd/system/hysteria2-panel-restore-resume.service \
+    /etc/systemd/system/hysteria2-panel-egress-full.service \
+    /etc/systemd/system/hysteria2-panel-egress-web.service \
+    /etc/systemd/system/hysteria2-panel-egress-recover.service \
+    /etc/systemd/system/hysteria2-panel-update.service \
+    "${UPGRADE_RECOVERY_UNIT}" \
+    "${UPGRADE_RECOVERY_DROPIN_DIR}" \
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service; do
+    [[ ! -e "${path}" && ! -L "${path}" ]] \
+      || fail "发现非本安装器管理的同名路径或服务：${path}；为避免覆盖，安装已停止"
+  done
 }
 
 legacy_restore_unit_is_quiescent() {
@@ -721,6 +1154,7 @@ recover_interrupted_fresh_install() {
     || fail "首次安装事务标记不属于当前安装器；安装已停止"
   echo "检测到上次未完成的首次部署，正在安全清理后重试…"
   stop_loaded_units \
+    hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-restore.service \
     hysteria2-panel-update.service \
     hysteria2-panel-egress-full.service \
@@ -734,7 +1168,8 @@ recover_interrupted_fresh_install() {
     hysteria2-panel-restore-recover.service \
     hysteria2-panel.service \
     || fail "上次部署遗留进程无法全部停止；请人工检查后重试"
-  systemctl disable hysteria2-panel-server.service hysteria2-panel.service \
+  systemctl disable hysteria2-panel-upgrade-recover.service \
+    hysteria2-panel-server.service hysteria2-panel.service \
     >/dev/null 2>&1 || true
   rm -f -- \
     /etc/systemd/system/hysteria2-panel.service \
@@ -749,10 +1184,14 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-egress-full.service \
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
+    "${UPGRADE_RECOVERY_UNIT}" \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
     /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
+  rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
+  rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
   rm -rf -- \
     /opt/hysteria2-panel \
     /etc/hysteria2-panel \
@@ -808,6 +1247,7 @@ assert_units_unclaimed() {
   local active_state drop_in_paths fragment_path key load_state output unit_file value
   local seen_active seen_dropins seen_fragment seen_load
   for unit_file in \
+    hysteria2-panel-upgrade-recover.service \
     hysteria2-panel.service \
     hysteria2-panel-server.service \
     hysteria2-panel-server-443.service \
@@ -846,9 +1286,10 @@ assert_units_unclaimed() {
 }
 
 assert_units_claimed_by_installer() {
-  local drop_in_paths expected_path fragment_path key load_state output unit_file value
+  local drop_in_paths expected_dropins expected_path fragment_path key load_state output unit_file value
   local seen_dropins seen_fragment seen_load
   for unit_file in \
+    hysteria2-panel-upgrade-recover.service \
     hysteria2-panel.service \
     hysteria2-panel-server.service \
     hysteria2-panel-server-443.service \
@@ -880,8 +1321,12 @@ assert_units_claimed_by_installer() {
     (( seen_load == 1 && seen_fragment == 1 && seen_dropins == 1 )) \
       || fail "systemd 未返回完整的 unit 所有权信息；安装已停止"
     if [[ -f "${expected_path}" ]]; then
+      expected_dropins=""
+      if [[ "${unit_file}" == "hysteria2-panel.service" ]]; then
+        expected_dropins="${UPGRADE_RECOVERY_DROPIN}"
+      fi
       [[ "${load_state}" == "loaded" && "${fragment_path}" == "${expected_path}" && \
-        -z "${drop_in_paths}" ]] \
+        "${drop_in_paths}" == "${expected_dropins}" ]] \
         || fail "${unit_file} 被其他 systemd fragment 或 drop-in 覆盖；安装已停止"
     else
       [[ "${load_state}" == "not-found" && -z "${fragment_path}" && -z "${drop_in_paths}" ]] \
@@ -2071,6 +2516,13 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0
 fi
+if [[ "${1:-}" == "--recover-upgrade" ]]; then
+  RECOVER_UPGRADE=1
+  shift
+elif [[ "${1:-}" == "--verify-recovered-upgrade" ]]; then
+  VERIFY_RECOVERED_UPGRADE=1
+  shift
+fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
@@ -2086,8 +2538,23 @@ for command_name in awk flock id install mkdir rm rmdir stat systemctl; do
     || fail "缺少基础维护锁命令 ${command_name}；未修改系统，请先安装 util-linux 和 coreutils"
 done
 acquire_maintenance_lock
+if (( RECOVER_UPGRADE == 1 || VERIFY_RECOVERED_UPGRADE == 1 )); then
+  for command_name in cat chmod chown cp find grep rm sha256sum ss stat sync systemctl systemd-run; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "升级恢复缺少命令 ${command_name}；事务标记已保留"
+  done
+  select_python || fail "升级恢复需要 Python 3.8 或更高版本；事务标记已保留"
+  if (( RECOVER_UPGRADE == 1 )); then
+    recover_interrupted_upgrade
+  else
+    verify_recovered_upgrade
+  fi
+  INSTALL_COMMITTED=1
+  exit 0
+fi
 assert_no_pending_restore_state
 assert_no_pending_egress_state
+assert_no_pending_upgrade_state
 if [[ -e "${MANAGED_MARKER}" || -L "${MANAGED_MARKER}" ]]; then
   [[ ! -L "${MANAGED_MARKER}" && -f "${MANAGED_MARKER}" ]] \
     || fail "受管安装标记不是普通文件；为避免接管未知路径，安装已停止"
@@ -2099,8 +2566,9 @@ fi
 guard_legacy_restore_admission \
   || fail "旧版恢复任务正在运行、排队或无法安全阻断；本次部署未修改节点，请等待恢复完成后重试"
 assert_no_pending_restore_state
+assert_no_unmanaged_install_paths
 
-required_commands=(awk busctl cat chmod chown cmp cp curl date find flock getent grep groupadd groupdel id install ip ip6tables-save iptables-save mktemp nft openssl rm sed sha256sum sleep ss stat sudo sysctl systemctl systemd-tmpfiles uname useradd userdel usermod visudo)
+required_commands=(awk busctl cat chmod chown cmp cp curl date df du find flock getent grep groupadd groupdel id install ip ip6tables-save iptables-save mktemp mv nft openssl rm sed sha256sum sleep sort ss stat sudo sync sysctl systemctl systemd-run systemd-tmpfiles uname useradd userdel usermod visudo)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
@@ -2132,35 +2600,6 @@ case "$(uname -m)" in
 esac
 
 recover_interrupted_fresh_install
-if [[ ! -e "${MANAGED_MARKER}" ]] && {
-  [[ -e /opt/hysteria2-panel || -L /opt/hysteria2-panel ]] ||
-    [[ -e /etc/hysteria2-panel || -L /etc/hysteria2-panel ]] ||
-    [[ -e /var/lib/hysteria2-panel || -L /var/lib/hysteria2-panel ]] ||
-    [[ -e /var/backups/hysteria2-panel || -L /var/backups/hysteria2-panel ]] ||
-    [[ -e /etc/sudoers.d/hysteria2-panel || -L /etc/sudoers.d/hysteria2-panel ]] ||
-    [[ -e "${SYSCTL_FILE}" || -L "${SYSCTL_FILE}" ]] ||
-    [[ -e "${TMPFILES_FILE}" || -L "${TMPFILES_FILE}" ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel.service || -L /etc/systemd/system/hysteria2-panel.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-server.service || -L /etc/systemd/system/hysteria2-panel-server.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-server-443.service || -L /etc/systemd/system/hysteria2-panel-server-443.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe.service || -L /etc/systemd/system/hysteria2-panel-tcp-probe.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-tcp-probe-443.service || -L /etc/systemd/system/hysteria2-panel-tcp-probe-443.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-restore.service || -L /etc/systemd/system/hysteria2-panel-restore.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-restore-recover.service || -L /etc/systemd/system/hysteria2-panel-restore-recover.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-restore-resume.service || -L /etc/systemd/system/hysteria2-panel-restore-resume.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-egress-full.service || -L /etc/systemd/system/hysteria2-panel-egress-full.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-egress-web.service || -L /etc/systemd/system/hysteria2-panel-egress-web.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-egress-recover.service || -L /etc/systemd/system/hysteria2-panel-egress-recover.service ]] ||
-    [[ -e /etc/systemd/system/hysteria2-panel-update.service || -L /etc/systemd/system/hysteria2-panel-update.service ]] ||
-    [[ -e /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] ||
-    [[ -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] ||
-    [[ -e /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service ]] ||
-    [[ -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service ]] ||
-    [[ -e /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service ]] ||
-    [[ -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service ]]
-}; then
-  fail "发现非本安装器管理的同名路径或服务；为避免覆盖，安装已停止"
-fi
 
 EXISTING_INSTALL=0
 if [[ -e "${MANAGED_MARKER}" && ! -s /etc/hysteria2-panel/panel.env ]]; then
@@ -2466,6 +2905,9 @@ printf '%s  %s\n' "${HY2PANEL_HEALTH_SHA256}" "${TMP_DIR}/hy2panel/health.py" | 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="/var/backups/hysteria2-panel/${timestamp}-$(openssl rand -hex 4)"
 if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria2-panel/panel.db ]]; then
+  if (( EXISTING_INSTALL == 1 )); then
+    require_backup_space
+  fi
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
@@ -2512,7 +2954,14 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
     create_database_snapshot /var/lib/hysteria2-panel/panel.db "${BACKUP_DIR}/panel.db" \
       || fail "无法创建一致的用户数据库快照；安装已停止"
   fi
+  write_backup_manifest "${BACKUP_DIR}" \
+    || fail "无法生成升级备份完整性清单；安装已停止"
+  sync -f "${BACKUP_DIR}" || fail "无法持久化升级备份；安装已停止"
   echo "升级前备份：${BACKUP_DIR}"
+fi
+
+if (( EXISTING_INSTALL == 1 )); then
+  arm_upgrade_transaction
 fi
 
 if (( EXISTING_INSTALL == 0 )); then
@@ -2537,6 +2986,9 @@ usermod -a -G hy2tls hy2panel
 install -d -o root -g hy2tls -m 0750 /etc/hysteria2-panel
 install -d -o hy2panel -g hy2panel -m 0750 /var/lib/hysteria2-panel
 install -d -o root -g root -m 0700 /var/backups/hysteria2-panel
+if (( EXISTING_INSTALL == 0 )); then
+  install_upgrade_recovery_infrastructure
+fi
 install -d -o root -g root -m 0755 /opt/hysteria2-panel
 install -d -o root -g root -m 0755 /opt/hysteria2-panel/bin
 cat > "${TMP_DIR}/hysteria2-panel.tmpfiles" <<EOF
@@ -2693,8 +3145,8 @@ fi
 cat > /etc/systemd/system/hysteria2-panel.service <<EOF
 [Unit]
 Description=Hysteria 2 multi-user panel
-Requires=hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
-After=network-online.target hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
+Requires=hysteria2-panel-upgrade-recover.service hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
+After=network-online.target hysteria2-panel-upgrade-recover.service hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
 Wants=network-online.target
 Before=hysteria2-panel-server.service hysteria2-panel-server-443.service
 
@@ -3158,12 +3610,20 @@ ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
   || fail "无法记录可验证的出站策略状态"
 configure_firewall
 install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"
+if (( EXISTING_INSTALL == 1 )); then
+  clear_upgrade_transaction \
+    || fail "部署已通过健康检查，但无法清除升级事务标记；正在恢复旧版本"
+fi
 INSTALL_COMMITTED=1
 rm -f -- "${FRESH_IN_PROGRESS_MARKER}" \
   || echo "警告：未能移除首次安装事务标记；已提交的安装不会回滚" >&2
 ROLLBACK_REQUIRED=0
 FRESH_INSTALL_MUTATED=0
 FIREWALL_APPLIED=()
+if (( EXISTING_INSTALL == 1 )); then
+  prune_automatic_backups \
+    || echo "警告：自动备份保留策略执行失败；当前部署不受影响" >&2
+fi
 
 echo
 echo "部署完成"

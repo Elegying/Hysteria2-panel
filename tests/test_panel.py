@@ -1600,6 +1600,22 @@ class OperationsTests(unittest.TestCase):
                 {path: path.read_bytes() for path in (env_path, primary, secondary)},
             )
 
+    def test_egress_policy_manager_rejects_a_non_object_transaction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            transaction_path = Path(directory) / "egress-transaction.json"
+            transaction_path.write_text("[]")
+            transaction_path.chmod(0o600)
+            manager = panel_operations.EgressPolicyManager(
+                env_path=env_path,
+                config_paths=(primary, secondary),
+                transaction_path=transaction_path,
+                expected_uid=os.geteuid(),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "fields are invalid"):
+                manager.recover()
+
     def test_egress_policy_manager_rejects_symlinked_managed_config(self):
         with tempfile.TemporaryDirectory() as directory:
             env_path, primary, secondary = self.write_egress_fixture(directory)
@@ -5493,7 +5509,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.21.0", body)
+        self.assertIn("v0.21.1", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

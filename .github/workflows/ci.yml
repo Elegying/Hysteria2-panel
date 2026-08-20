@@ -110,8 +110,19 @@ jobs:
               "https://raw.githubusercontent.com/"
               "Elegying/Hysteria2-panel/main/install.sh"
           )
-          if versionless_url not in readme:
-              raise SystemExit("README versionless main installer URL is missing")
+          if versionless_url in readme:
+              raise SystemExit("README must not execute an unsigned main-branch installer")
+          required_bootstrap_markers = (
+              "releases/download/v",
+              "install.sh.sigstore.json",
+              "verify-blob",
+              "--certificate-identity",
+              "--certificate-oidc-issuer",
+              "bash -n",
+          )
+          missing = [marker for marker in required_bootstrap_markers if marker not in readme]
+          if missing:
+              raise SystemExit("README signed bootstrap is incomplete: {}".format(missing))
           PY
       - name: Require the version tag to point at a main push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -147,7 +158,7 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint installer
-        run: shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh
+        run: shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh tests/installer_e2e.sh
       - name: Reject whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 
@@ -186,6 +197,37 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify dependency-preserving panel shutdown
         run: sudo bash tests/systemd_integration.sh
+
+  full-installer-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PANEL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build a clean systemd host
+        run: docker build -f tests/installer_e2e.Dockerfile -t hysteria2-panel-installer-e2e .
+      - name: Run a full install, upgrade and SIGKILL recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="hysteria2-panel-e2e-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "${container}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --privileged --cgroupns=host \
+            --name "${container}" \
+            --tmpfs /run --tmpfs /run/lock \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            hysteria2-panel-installer-e2e
+          for _attempt in $(seq 1 60); do
+            docker exec "${container}" systemctl is-system-running --wait >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker cp . "${container}:/workspace"
+          docker exec --env PANEL_REF="${PANEL_REF}" "${container}" \
+            bash /workspace/tests/installer_e2e.sh
 
   rhel-firewall-package-contract:
     runs-on: ubuntu-latest

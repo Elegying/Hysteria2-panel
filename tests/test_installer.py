@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALLER = ROOT / "install.sh"
+README = ROOT / "README.md"
 TCP_PROBE = ROOT / "tcp_probe.py"
 
 
@@ -370,6 +371,77 @@ esac
         self.assertEqual(0, help_result.returncode, help_result.stderr)
         self.assertIn("19999", help_result.stdout)
 
+    def test_readme_bootstrap_verifies_the_signed_release_before_root_bash(self):
+        source = README.read_text()
+
+        self.assertNotIn(
+            "bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)",
+            source,
+        )
+        self.assertIn("releases/download/v", source)
+        self.assertIn("install.sh.sigstore.json", source)
+        self.assertIn("verify-blob", source)
+        self.assertIn("--certificate-identity", source)
+        self.assertIn("--certificate-oidc-issuer", source)
+        self.assertIn("bash -n", source)
+        self.assertLess(source.index("verify-blob"), source.index("sudo bash"))
+
+    def test_upgrade_is_armed_for_boot_recovery_before_payload_overwrite(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn(
+            "UPGRADE_ACTIVE_MARKER=/var/backups/hysteria2-panel/.upgrade-active",
+            source,
+        )
+        self.assertIn("recover_interrupted_upgrade()", source)
+        self.assertIn("--recover-upgrade", source)
+        self.assertIn("hysteria2-panel-upgrade-recover.service", source)
+        self.assertIn("ConditionPathExists=${UPGRADE_ACTIVE_MARKER}", source)
+        self.assertIn("Before=hysteria2-panel-restore-recover.service", source)
+        self.assertIn("systemctl enable hysteria2-panel-upgrade-recover.service", source)
+        self.assertIn(
+            "/etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service",
+            source,
+        )
+        self.assertIn("verify_backup_manifest", source)
+        arm = source.index("arm_upgrade_transaction")
+        first_payload = source.index(
+            'install -o root -g root -m 0755 "${TMP_DIR}/hysteria"', arm
+        )
+        self.assertLess(arm, first_payload)
+        clear = source.index("clear_upgrade_transaction", first_payload)
+        committed = source.index("INSTALL_COMMITTED=1", first_payload)
+        self.assertLess(first_payload, clear)
+        self.assertLess(clear, committed)
+
+    def test_upgrade_checks_backup_space_and_prunes_only_automatic_backups(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("require_backup_space()", source)
+        self.assertIn("prune_automatic_backups()", source)
+        self.assertIn("BACKUP_RETENTION_DAYS=90", source)
+        self.assertIn("BACKUP_MAX_COUNT=10", source)
+        preflight = source.index("require_backup_space", source.index('timestamp="$(date'))
+        create_backup = source.index('install -d -m 0700 "${BACKUP_DIR}"', preflight)
+        self.assertLess(preflight, create_backup)
+        commit = source.rindex("INSTALL_COMMITTED=1")
+        prune = source.index("prune_automatic_backups", commit)
+        self.assertLess(commit, prune)
+        helper = source[
+            source.index("prune_automatic_backups()") : source.index(
+                "\n\nrollback_firewall_after_service_recovery()"
+            )
+        ]
+        self.assertIn("[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}", helper)
+        self.assertNotIn("restore-", helper)
+
+    def test_unmanaged_path_collision_is_checked_before_package_installation(self):
+        source = INSTALLER.read_text()
+        main = source.split('if [[ "${1:-}" == "--help"', 1)[1]
+        collision = main.index("assert_no_unmanaged_install_paths")
+        dependencies = main.index("install_system_dependencies")
+        self.assertLess(collision, dependencies)
+
     def test_repository_enforces_lf_for_scripts_and_hash_fixed_sources(self):
         tracked = subprocess.run(
             ["git", "ls-files", "--", "*.py", "*.sh", "*.yml", "*.yaml"],
@@ -395,7 +467,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.21.0"', source)
+        self.assertIn('PANEL_VERSION="0.21.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -1830,18 +1902,18 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         self.assertIn('hysteria2-panel-restore-resume.wants', source)
         self.assertIn('systemctl disable hysteria2-panel-restore-resume.service', source)
         self.assertIn('/etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service', source)
-        self.assertIn(
-            'configure_firewall\n'
-            'install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"\n'
-            'INSTALL_COMMITTED=1\n'
-            'rm -f -- "${FRESH_IN_PROGRESS_MARKER}" \\\n'
-            '  || echo "警告：未能移除首次安装事务标记；已提交的安装不会回滚" >&2\n'
-            'ROLLBACK_REQUIRED=0\n'
-            'FRESH_INSTALL_MUTATED=0\n'
-            'FIREWALL_APPLIED=()\n\n'
-            'echo',
-            source,
+        configure = source.rindex("\nconfigure_firewall\n")
+        marker = source.index(
+            'install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"',
+            configure,
         )
+        clear = source.index("clear_upgrade_transaction", marker)
+        committed = source.index("INSTALL_COMMITTED=1", clear)
+        rollback_disabled = source.index("ROLLBACK_REQUIRED=0", committed)
+        self.assertLess(configure, marker)
+        self.assertLess(marker, clear)
+        self.assertLess(clear, committed)
+        self.assertLess(committed, rollback_disabled)
         self.assertLess(source.index('ROLLBACK_REQUIRED=1'), source.rindex('\noptimize_network_stack\n'))
         self.assertLess(source.index('面板端口未监听'), source.rindex('ROLLBACK_REQUIRED=0'))
 
@@ -2545,7 +2617,9 @@ assert_units_unclaimed
         )
         self.assertIn("Before=hysteria2-panel.service", recover_unit)
         self.assertIn("recover-egress-policy", recover_unit)
-        self.assertIn("Requires=hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service", panel_unit)
+        self.assertIn("Requires=hysteria2-panel-upgrade-recover.service", panel_unit)
+        self.assertIn("hysteria2-panel-restore-recover.service", panel_unit)
+        self.assertIn("hysteria2-panel-egress-recover.service", panel_unit)
         self.assertIn(
             'record-egress-policy-state "${EGRESS_POLICY}"', source
         )
@@ -2587,8 +2661,10 @@ assert_units_unclaimed
         self.assertNotIn("EnvironmentFile=", recover_unit)
         self.assertIn("Before=hysteria2-panel.service", recover_unit)
         self.assertIn("ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py recover-restore-files", recover_unit)
-        self.assertIn("Requires=hysteria2-panel-restore-recover.service", panel_unit)
-        self.assertIn("After=network-online.target hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service", panel_unit)
+        self.assertIn("hysteria2-panel-restore-recover.service", panel_unit)
+        self.assertIn("After=network-online.target hysteria2-panel-upgrade-recover.service", panel_unit)
+        self.assertIn("hysteria2-panel-restore-recover.service", panel_unit)
+        self.assertIn("hysteria2-panel-egress-recover.service", panel_unit)
         self.assertIn("ConditionPathExists=/etc/hysteria2-panel/.restore-active", resume_unit)
         self.assertIn("After=network-online.target hysteria2-panel.service hysteria2-panel-server.service", resume_unit)
         self.assertIn("Wants=network-online.target hysteria2-panel.service hysteria2-panel-server.service", resume_unit)
