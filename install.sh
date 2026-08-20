@@ -82,6 +82,8 @@ LEGACY_RESTORE_GUARD_OWNED=0
 TMP_DIR=""
 RECOVER_UPGRADE=0
 VERIFY_RECOVERED_UPGRADE=0
+MAINTENANCE_LOCK_HELD=0
+ORIGINAL_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -882,7 +884,7 @@ install_system_dependencies() {
 }
 
 acquire_maintenance_lock() {
-  local hy2panel_gid="" lock_metadata runtime_metadata
+  local hy2panel_gid="" lock_metadata lock_status runtime_metadata
   if id -u hy2panel >/dev/null 2>&1; then
     hy2panel_gid="$(id -g hy2panel)" || fail "无法核验面板维护锁组；安装已停止"
   fi
@@ -908,8 +910,21 @@ acquire_maintenance_lock() {
   else
     install -o root -g root -m 0600 /dev/null "${MAINTENANCE_LOCK_FILE}"
   fi
-  exec 9<>"${MAINTENANCE_LOCK_FILE}" || fail "无法打开维护锁；安装已停止"
-  flock -n 9 || fail "另一个安装、更新或恢复任务正在运行；本次操作未执行"
+  if (( MAINTENANCE_LOCK_HELD == 1 )); then
+    return 0
+  fi
+  # Let flock supervise the installer and close its lock descriptor in the
+  # child.  A SIGKILL can then never strand the lock in an inherited process.
+  if flock -n -E 75 --close "${MAINTENANCE_LOCK_FILE}" \
+    /bin/bash "$0" --maintenance-lock-held "${ORIGINAL_ARGS[@]}"; then
+    lock_status=0
+  else
+    lock_status=$?
+  fi
+  if (( lock_status == 75 )); then
+    fail "另一个安装、更新或恢复任务正在运行；本次操作未执行"
+  fi
+  exit "${lock_status}"
 }
 
 reset_maintenance_lock_permissions() {
@@ -2516,6 +2531,11 @@ EOF
   install -o root -g root -m 0644 "${sysctl_stage}" "${SYSCTL_FILE}"
 }
 
+if [[ "${1:-}" == "--maintenance-lock-held" ]]; then
+  MAINTENANCE_LOCK_HELD=1
+  shift
+fi
+ORIGINAL_ARGS=("$@")
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0

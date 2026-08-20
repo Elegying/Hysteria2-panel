@@ -2755,6 +2755,20 @@ assert_units_unclaimed
             source,
         )
 
+    def test_maintenance_lock_is_held_by_a_non_inheritable_supervisor(self):
+        source = INSTALLER.read_text()
+        helper = source[
+            source.index("acquire_maintenance_lock()") : source.index(
+                "\n\nreset_maintenance_lock_permissions()"
+            )
+        ]
+
+        self.assertIn('flock -n -E 75 --close "${MAINTENANCE_LOCK_FILE}"', helper)
+        self.assertIn('/bin/bash "$0" --maintenance-lock-held', helper)
+        self.assertIn('"${ORIGINAL_ARGS[@]}"', helper)
+        self.assertNotIn('exec 9<>"${MAINTENANCE_LOCK_FILE}"', helper)
+        self.assertNotIn("flock -n 9", helper)
+
     def test_legacy_restore_admission_is_guarded_until_the_old_panel_stops(self):
         source = INSTALLER.read_text()
         helper = source[
