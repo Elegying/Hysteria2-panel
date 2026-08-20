@@ -15,7 +15,7 @@
 bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)
 ```
 
-安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `web`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
+安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `full`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
 重复运行安装器会先暂停面板写入而保持旧 Hysteria 统计端点运行，结算流量并截断 SQLite WAL 后建立一致性备份；最终切换前会在认证入口已停止时，于有界窗口内持续为在线身份设置 Hysteria 断开标记，再执行最后一次流量结算并停止旧 Hysteria。`/kick` 只在客户端下一次产生流量时生效，因此完全空闲的会话可能仍显示在 `/online`，并由服务停止统一关闭；统计查询或踢线失败仍会安全回滚。恢复、手工安装和在线更新共用维护锁，不允许两项维护交叉写入。随后自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、systemd 单元、sudoers 和网络参数；数据库优先保留升级窗口内通过完整性校验的最新状态，仅在损坏时清除 WAL/SHM 后恢复升级前快照。只有全部服务和端口通过检查后才解除回滚保护。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
 
@@ -86,9 +86,13 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 
 ### BT/PT 与出站防滥用
 
-默认 `EGRESS_POLICY=web` 使用 Hysteria 官方 ACL：先拒绝环回、私网、链路本地、CGNAT 和 IPv6 ULA，再允许公网目标的 SSH TCP `22`、管理面板 TCP 端口、TCP `80/443`、UDP `443`、TCP/UDP `53` 和 UDP `123`，最后拒绝其他目标与端口。放行公网 TCP `22` 后，连接节点时可以用 SSH 管理任意公网服务器；私网和本机 SSH 仍被前置拒绝。该策略仍会阻断常规 BT/PT peer、DHT、uTP、SMTP 和多数非网页流量，但代理账号也可能被滥用于公网 SSH 扫描或爆破，管理员需要通过用户限额、审计和禁用及时处置。ACL 规则按官方的从上到下首条匹配语义执行：[Hysteria ACL 文档](https://v2.hysteria.network/docs/advanced/ACL/)。
+默认 `EGRESS_POLICY=full` 使用 Hysteria 官方 ACL：先拒绝未指定、环回、私网、链路本地、CGNAT、IPv6 ULA、组播和保留目标，然后放行所有公网目标及端口。这保留完整的公网代理能力，同时阻断通过环回或内网地址访问节点及其内网服务。`full` 会允许 BT/PT、SMTP、游戏和非标准端口，也会增加扫描、爆破、垃圾邮件和版权投诉风险；管理员需要配置用户限额，并通过审计和禁用及时处置滥用。ACL 规则按官方的从上到下首条匹配语义执行：[Hysteria ACL 文档](https://v2.hysteria.network/docs/advanced/ACL/)。
 
-这是端口和目标地址策略，不是 DPI。BitTorrent 可以加密，也可以伪装到允许的 `80/443` 或经外部中继传输，所以任何仅靠 Hysteria ACL 的方案都不能诚实保证 100% 识别所有 BT/PT。`web` 模式还会阻止游戏、邮件、非标准 SSH 端口、非标准端口 API 和部分语音应用；确实需要完整代理能力时，可由管理员明确设置 `EGRESS_POLICY=full` 后重新运行安装器。切换策略不会改变用户链接、认证密钥、证书或证书指纹。
+如果需要限制为网页/视频用途，可在面板“服务控制”的服务端口卡片关闭 `FULL`，也可在部署时设置 `EGRESS_POLICY=web`。`web` 会在相同的本地/私网拒绝规则之后，仅允许公网目标的 SSH TCP `22`、管理面板 TCP 端口、TCP `80/443`、UDP `443`、TCP/UDP `53` 和 UDP `123`，最后拒绝其他目标与端口。面板开关是整台节点的全局策略，不是单账号设置；运行中切换会短暂重启两个 Hysteria 入口并中断现有连接，已停止的节点只更新配置并保持停止。
+
+面板只允许管理员通过会话和 CSRF 保护的固定 `web/full` 路由启动两个参数固定的 root systemd 任务。root 任务在共用维护锁内同步更新 `panel.env`、主端口和 UDP `443` 配置；运行中的节点重启后复核服务，已停止的节点保持停止。任一步失败都会恢复三份旧文件和切换前服务状态。浏览器请求不能提供命令、文件路径、端口或任意 ACL 内容。
+
+这是端口和目标地址策略，不是 DPI。BitTorrent 可以加密，也可以伪装到 `web` 允许的 `80/443` 或经外部中继传输，所以任何仅靠 Hysteria ACL 的方案都不能诚实保证 100% 识别所有 BT/PT。切换策略不会改变用户链接、认证密钥、证书或证书指纹。
 
 ## 跨服务器备份与恢复
 
@@ -166,6 +170,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel
 - [ADR-011：单账号 UDP 443 双入口授权](docs/decisions/ADR-011-per-user-udp-443-entrypoint.md)
 - [ADR-012：受管防火墙端口自动开放](docs/decisions/ADR-012-managed-firewall-port-opening.md)
 - [ADR-013：无密钥签名更新、模块边界与运行时就绪](docs/decisions/ADR-013-keyless-update-modules-readiness.md)
+- [ADR-014：面板内受限切换节点全局出站策略](docs/decisions/ADR-014-runtime-egress-policy-switch.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

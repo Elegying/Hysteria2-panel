@@ -44,6 +44,8 @@ from qrcodegen import DataTooLongError, QrCode
 
 from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.operations import (
+    EgressPolicyController,
+    EgressPolicyManager,
     RebootController,
     RestoreController,
     ServiceController,
@@ -1978,6 +1980,7 @@ class PanelApplication:
         rate_limiter=None,
         usage_manager=None,
         service_controller=None,
+        egress_policy_controller=None,
         system_metrics=None,
         update_checker=None,
         update_controller=None,
@@ -1999,6 +2002,9 @@ class PanelApplication:
         )
         self.usage_manager.set_health_monitor(self.health_monitor)
         self.service_controller = service_controller or ServiceController()
+        self.egress_policy_controller = (
+            egress_policy_controller or EgressPolicyController()
+        )
         self.system_metrics = system_metrics or SystemMetrics()
         self.update_checker = update_checker or UpdateChecker()
         self.update_controller = update_controller or UpdateController()
@@ -2270,6 +2276,11 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("service status failed")
             service_status = "unknown"
         try:
+            egress_policy = self.app.egress_policy_controller.status()
+        except Exception:
+            LOGGER.exception("egress policy status failed")
+            egress_policy = "unknown"
+        try:
             resources = self.app.system_metrics.snapshot()
         except Exception:
             LOGGER.exception("system metrics failed")
@@ -2375,6 +2386,26 @@ class PanelHandler(JsonHandler):
         service_running = service_status == "active"
         service_label = "Hysteria 运行中" if service_running else "Hysteria 已停止"
         service_class = "" if service_running else " off"
+        full_enabled = egress_policy == "full"
+        if full_enabled:
+            egress_state = "FULL 已开启"
+            egress_state_class = " on"
+            egress_target = "web"
+            egress_action = "关闭"
+            egress_confirm = (
+                "关闭 FULL 会切换为 WEB 端口白名单，并短暂重启全部 Hysteria 连接，确定继续吗？"
+            )
+        else:
+            egress_state = (
+                "FULL 已关闭" if egress_policy == "web" else "FULL 状态未知"
+            )
+            egress_state_class = "" if egress_policy == "web" else " unknown"
+            egress_target = "full"
+            egress_action = "开启"
+            egress_confirm = (
+                "开启 FULL 会允许代理访问公网全部端口（包括 BT/PT 和邮件端口），"
+                "并短暂重启全部 Hysteria 连接，确定继续吗？"
+            )
         top_users = sorted(
             all_users,
             key=lambda item: item["tx_bytes"] + item["rx_bytes"],
@@ -2428,7 +2459,7 @@ class PanelHandler(JsonHandler):
 <div class="button-row"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动 Hysteria</button></form>
 <form method="post" action="/service/restart" data-confirm="确定重启 Hysteria 服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启 Hysteria</button></form>
 <form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止 Hysteria</button></form><a class="button secondary" href="/">刷新状态</a></div>
-<div class="service-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail"><span class="muted">服务端口</span><strong>UDP {port}</strong></div></div>
+<div class="service-details primary-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail port-detail"><div><span class="muted">服务端口</span><strong>UDP {port}</strong></div><form class="egress-control" method="post" action="/egress/{egress_target}" data-egress-form data-confirm="{egress_confirm}"><input type="hidden" name="csrf" value="{csrf}"><span class="egress-state{egress_state_class}" data-egress-state>{egress_state}</span><button class="egress-switch{egress_state_class}" type="submit" aria-pressed="{egress_checked}" aria-label="{egress_action} FULL 出口策略"><span class="egress-switch-track" aria-hidden="true"><span></span></span><span class="egress-switch-action">{egress_action}</span></button></form></div></div>
 <div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
 <div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu:.1f}%</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory:.1f}%</strong><small class="muted">{memory_used} / {memory_total}</small></div>
@@ -2480,6 +2511,12 @@ class PanelHandler(JsonHandler):
             update_action=update_action,
             update_state=update_state,
             update_status_text=update_status_text,
+            egress_target=egress_target,
+            egress_confirm=html.escape(egress_confirm, quote=True),
+            egress_state=egress_state,
+            egress_state_class=egress_state_class,
+            egress_checked="true" if full_enabled else "false",
+            egress_action=egress_action,
             cpu=resources["cpu_percent"],
             memory=resources["memory_percent"],
             memory_used=_human_bytes(resources["memory_used"]),
@@ -2655,6 +2692,10 @@ class PanelHandler(JsonHandler):
         service_match = re.fullmatch(r"/service/(start|stop|restart)", path)
         if service_match:
             self._handle_service_action(session, service_match.group(1))
+            return
+        egress_match = re.fullmatch(r"/egress/(web|full)", path)
+        if egress_match:
+            self._handle_egress_policy(session, egress_match.group(1))
             return
         if path == "/updates/check":
             self._handle_update_check(session)
@@ -2971,6 +3012,23 @@ class PanelHandler(JsonHandler):
         except (RuntimeError, ValueError):
             LOGGER.exception("service action failed")
             self._error_page(500, "服务控制失败，请检查服务日志")
+
+    def _handle_egress_policy(self, session, policy):
+        try:
+            try:
+                self.app.usage_manager.collect_once()
+            except Exception:
+                LOGGER.exception("traffic sync before egress policy switch failed")
+            state = self.app.egress_policy_controller.switch(policy)
+            self._audit_safely(
+                session["username"], "egress_policy_changed", state
+            )
+            self._redirect("/")
+        except ValueError:
+            self._error_page(400, "出站策略无效")
+        except RuntimeError:
+            LOGGER.exception("egress policy switch failed")
+            self._error_page(500, "出站策略切换失败，旧策略已恢复；请检查服务日志")
 
     def _handle_reboot(self, session):
         try:
@@ -4662,6 +4720,10 @@ def main(argv=None):
     subcommands.add_parser("recover-restore-files", help=argparse.SUPPRESS)
     subcommands.add_parser("resume-after-restore", help=argparse.SUPPRESS)
     subcommands.add_parser("apply-update", help="install the latest formal release as root")
+    egress_parser = subcommands.add_parser(
+        "apply-egress-policy", help="apply a fixed egress policy as root"
+    )
+    egress_parser.add_argument("policy", choices=("web", "full"))
     args = parser.parse_args(argv)
     try:
         if args.command == "recover-restore-files":
@@ -4701,6 +4763,13 @@ def main(argv=None):
                 raise RuntimeError("apply-update must run as root")
             result = UpdateInstaller().apply()
             print(json.dumps(result, separators=(",", ":")))
+            return 0
+        if args.command == "apply-egress-policy":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("apply-egress-policy must run as root")
+            with exclusive_maintenance_lock(blocking=False), defer_termination_signals():
+                EgressPolicyManager().apply(args.policy, settings.panel_port)
+            print(json.dumps({"status": "ok", "policy": args.policy}, separators=(",", ":")))
             return 0
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         run_service(settings)

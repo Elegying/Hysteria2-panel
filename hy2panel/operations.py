@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess  # nosec B404 - fixed executables and argv only
 import tempfile
 import threading
@@ -48,6 +49,328 @@ class ServiceController:
         if result.returncode != 0:
             raise RuntimeError("service control failed")
         return self.status()
+
+
+def _read_managed_file(path, expected_uid, max_bytes=1024 * 1024):
+    path = Path(path)
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise RuntimeError("managed configuration could not be inspected") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != expected_uid
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+        or metadata.st_size <= 0
+        or metadata.st_size > max_bytes
+    ):
+        raise RuntimeError("managed configuration metadata is invalid")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise RuntimeError("managed configuration could not be opened") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise RuntimeError("managed configuration changed while opening")
+        payload = bytearray()
+        while len(payload) <= max_bytes:
+            chunk = os.read(descriptor, min(65536, max_bytes + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if not payload or len(payload) > max_bytes:
+            raise RuntimeError("managed configuration size is invalid")
+        return bytes(payload), opened
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_replace_managed_file(path, payload, metadata):
+    path = Path(path)
+    temporary_name = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=str(path.parent),
+            prefix=".{}-".format(path.name),
+            delete=False,
+        ) as temporary:
+            temporary_name = temporary.name
+            temporary.write(payload)
+            temporary.flush()
+            os.fchmod(temporary.fileno(), stat.S_IMODE(metadata.st_mode))
+            os.fchown(temporary.fileno(), metadata.st_uid, metadata.st_gid)
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, path)
+        temporary_name = None
+        directory = os.open(
+            str(path.parent), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if temporary_name:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+
+
+class EgressPolicyController:
+    ENV_PATH = Path("/etc/hysteria2-panel/panel.env")
+    POLICIES = {"web", "full"}
+    UNITS = {
+        "web": "hysteria2-panel-egress-web.service",
+        "full": "hysteria2-panel-egress-full.service",
+    }
+
+    def __init__(self, runner=subprocess.run, env_path=ENV_PATH, expected_uid=0):
+        self.runner = runner
+        self.env_path = Path(env_path)
+        self.expected_uid = expected_uid
+
+    @staticmethod
+    def _policy_from_bytes(payload):
+        try:
+            source = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("egress policy configuration is invalid") from exc
+        matches = re.findall(
+            r"^HY2PANEL_EGRESS_POLICY=(web|full)$", source, re.MULTILINE
+        )
+        if len(matches) != 1:
+            raise RuntimeError("egress policy configuration is invalid")
+        return matches[0]
+
+    def status(self):
+        try:
+            payload, _metadata = _read_managed_file(
+                self.env_path, self.expected_uid, max_bytes=65536
+            )
+            return self._policy_from_bytes(payload)
+        except RuntimeError:
+            LOGGER.exception("egress policy status could not be read")
+            return "unknown"
+
+    def switch(self, policy):
+        if policy not in self.POLICIES:
+            raise ValueError("unsupported egress policy")
+        if self.status() == policy:
+            return policy
+        result = self.runner(
+            [
+                "/usr/bin/sudo",
+                "-n",
+                "/bin/systemctl",
+                "start",
+                self.UNITS[policy],
+            ],
+            capture_output=True,
+            text=True,
+            timeout=75,
+            check=False,
+        )
+        if result.returncode != 0 or self.status() != policy:
+            raise RuntimeError("egress policy switch failed")
+        return policy
+
+
+class EgressPolicyManager:
+    ENV_PATH = EgressPolicyController.ENV_PATH
+    CONFIG_PATHS = (
+        Path("/etc/hysteria2-panel/hysteria.yaml"),
+        Path("/etc/hysteria2-panel/hysteria-443.yaml"),
+    )
+    SERVER = "hysteria2-panel-server.service"
+    SECONDARY_SERVER = "hysteria2-panel-server-443.service"
+    COMMON_RULES = (
+        "reject(0.0.0.0/8)",
+        "reject(127.0.0.0/8)",
+        "reject(10.0.0.0/8)",
+        "reject(100.64.0.0/10)",
+        "reject(169.254.0.0/16)",
+        "reject(172.16.0.0/12)",
+        "reject(192.168.0.0/16)",
+        "reject(224.0.0.0/4)",
+        "reject(240.0.0.0/4)",
+        "reject(::/128)",
+        "reject(::1/128)",
+        "reject(fc00::/7)",
+        "reject(fe80::/10)",
+        "reject(ff00::/8)",
+    )
+
+    def __init__(
+        self,
+        runner=subprocess.run,
+        env_path=ENV_PATH,
+        config_paths=CONFIG_PATHS,
+        expected_uid=0,
+    ):
+        self.runner = runner
+        self.env_path = Path(env_path)
+        self.config_paths = tuple(Path(path) for path in config_paths)
+        self.expected_uid = expected_uid
+
+    @staticmethod
+    def _replace_policy(payload, policy):
+        try:
+            source = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("egress policy configuration is invalid") from exc
+        pattern = re.compile(r"^HY2PANEL_EGRESS_POLICY=(?:web|full)$", re.MULTILINE)
+        if len(pattern.findall(source)) != 1:
+            raise RuntimeError("egress policy configuration is invalid")
+        return pattern.sub("HY2PANEL_EGRESS_POLICY={}".format(policy), source).encode(
+            "utf-8"
+        )
+
+    @classmethod
+    def _acl_block(cls, policy, panel_port):
+        if policy not in EgressPolicyController.POLICIES:
+            raise ValueError("unsupported egress policy")
+        try:
+            panel_port = int(panel_port)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("panel port is invalid") from exc
+        if not 1 <= panel_port <= 65535:
+            raise ValueError("panel port is invalid")
+        rules = list(cls.COMMON_RULES)
+        if policy == "web":
+            rules.extend(
+                (
+                    "direct(all, tcp/22)",
+                    "direct(all, tcp/{})".format(panel_port),
+                    "direct(all, tcp/53)",
+                    "direct(all, udp/53)",
+                    "direct(all, tcp/80)",
+                    "direct(all, tcp/443)",
+                    "direct(all, udp/443)",
+                    "direct(all, udp/123)",
+                    "reject(all)",
+                )
+            )
+        else:
+            rules.append("direct(all)")
+        return "acl:\n  inline:\n{}".format(
+            "".join('    - "{}"\n'.format(rule) for rule in rules)
+        )
+
+    @classmethod
+    def _replace_acl(cls, payload, policy, panel_port):
+        try:
+            source = payload.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("Hysteria configuration is invalid") from exc
+        acl_matches = list(re.finditer(r"^acl:\n", source, re.MULTILINE))
+        masquerade_matches = list(
+            re.finditer(r"^masquerade:\n", source, re.MULTILINE)
+        )
+        if (
+            len(acl_matches) != 1
+            or len(masquerade_matches) != 1
+            or acl_matches[0].start() >= masquerade_matches[0].start()
+        ):
+            raise RuntimeError("Hysteria ACL layout is invalid")
+        return (
+            source[: acl_matches[0].start()]
+            + cls._acl_block(policy, panel_port)
+            + source[masquerade_matches[0].start() :]
+        ).encode("utf-8")
+
+    def _server_is_active(self):
+        active = self.runner(
+            ["/bin/systemctl", "is-active", self.SERVER],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        state = active.stdout.strip()
+        if active.returncode == 0 and state == "active":
+            return True
+        if state in {"inactive", "failed"}:
+            return False
+        raise RuntimeError("Hysteria service state could not be verified")
+
+    def _restart_and_verify(self, has_secondary):
+        restart = self.runner(
+            ["/bin/systemctl", "restart", self.SERVER],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        if restart.returncode != 0:
+            raise RuntimeError("Hysteria service restart failed")
+        units = [self.SERVER]
+        if has_secondary:
+            units.append(self.SECONDARY_SERVER)
+        for unit in units:
+            active = self.runner(
+                ["/bin/systemctl", "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if active.returncode != 0 or active.stdout.strip() != "active":
+                raise RuntimeError("Hysteria service health check failed")
+
+    def apply(self, policy, panel_port):
+        if policy not in EgressPolicyController.POLICIES:
+            raise ValueError("unsupported egress policy")
+        env_payload, env_metadata = _read_managed_file(
+            self.env_path, self.expected_uid, max_bytes=65536
+        )
+        paths = [self.config_paths[0]]
+        if len(self.config_paths) > 1 and (
+            self.config_paths[1].exists() or self.config_paths[1].is_symlink()
+        ):
+            paths.append(self.config_paths[1])
+        originals = {self.env_path: (env_payload, env_metadata)}
+        for path in paths:
+            originals[path] = _read_managed_file(path, self.expected_uid)
+        replacements = {
+            path: (self._replace_acl(payload, policy, panel_port), metadata)
+            for path, (payload, metadata) in originals.items()
+            if path != self.env_path
+        }
+        replacements[self.env_path] = (
+            self._replace_policy(env_payload, policy),
+            env_metadata,
+        )
+        was_active = self._server_is_active()
+        try:
+            for path in paths + [self.env_path]:
+                payload, metadata = replacements[path]
+                _atomic_replace_managed_file(path, payload, metadata)
+            if was_active:
+                self._restart_and_verify(len(paths) > 1)
+        except Exception as switch_error:
+            rollback_error = None
+            try:
+                for path in paths + [self.env_path]:
+                    payload, metadata = originals[path]
+                    _atomic_replace_managed_file(path, payload, metadata)
+                if was_active:
+                    self._restart_and_verify(len(paths) > 1)
+            except Exception as exc:
+                rollback_error = exc
+            if rollback_error is not None:
+                raise RuntimeError(
+                    "egress policy switch and rollback failed"
+                ) from rollback_error
+            raise RuntimeError("egress policy switch failed; previous policy restored") from switch_error
 
 
 class RestoreController:

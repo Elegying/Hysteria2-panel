@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.20.1"
+PANEL_VERSION="0.21.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -15,13 +15,13 @@ HY2PANEL_WEB_ASSETS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyste
 HY2PANEL_OPERATIONS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/operations.py"
 HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/release.py"
 HY2PANEL_HEALTH_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/health.py"
-PANEL_SHA256="b4fdffe57a4e72a93627d762f1188b1abfe4f1b2b8502ae3e56c0fa1a7903298"
+PANEL_SHA256="28c01be01f11a00f7e3e67cdef38bdc956f105826a8a06df3a57dbb02fa3b2dd"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="57069340fd5d53a75511e03d313952111f5056b6647596c26238dfcd44d99d13"
-HY2PANEL_WEB_ASSETS_SHA256="889291ff92f8db791dfe2e814a7478bac7f15078d0eb979b1995b23a7831e7f6"
-HY2PANEL_OPERATIONS_SHA256="bac05cf8f9948fea66a62ece0362aa2d3e93bff57ab6fb20c8468e16837c22d8"
+HY2PANEL_VERSION_SHA256="c282bd68338f0c7d4956ffb966160c9ead7af315fefd50e4d73880d815063f90"
+HY2PANEL_WEB_ASSETS_SHA256="77bcc20e8296320d0af69fe82402f85e058933c28da40f6d558cc50448674ca8"
+HY2PANEL_OPERATIONS_SHA256="4cf1edac75204bc852554653b41fba9993848a176f9d689d7f918f1cdaaac004"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="df80fdfe7e6220cadeb25d402dde3e00ac26189ad50e1c5cc28647bde460382f"
 HYSTERIA_VERSION="2.12.1"
@@ -92,7 +92,7 @@ Hysteria2-panel 一键部署
 可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、EGRESS_POLICY、ADMIN_USER、ADMIN_PASSWORD、RESET_ADMIN
 安装程序会交互式询问未提供的值，密码输入不会回显。
 升级默认保留现有管理员；需要重置时设置 RESET_ADMIN=1。
-出站策略默认 web（网页/视频端口白名单）；需要完整代理能力时显式设置 EGRESS_POLICY=full。
+出站策略默认 full（放行公网目标的全部端口）；需要网页/视频端口白名单时设置 EGRESS_POLICY=web。
 EOF
 }
 
@@ -221,6 +221,8 @@ rollback_existing_install() {
     if ! stop_loaded_units \
       hysteria2-panel-restore.service \
       hysteria2-panel-update.service \
+      hysteria2-panel-egress-full.service \
+      hysteria2-panel-egress-web.service \
       hysteria2-panel-tcp-probe-443.service \
       hysteria2-panel-server-443.service \
       hysteria2-panel-tcp-probe.service \
@@ -243,6 +245,8 @@ rollback_existing_install() {
       /etc/systemd/system/hysteria2-panel-restore-resume.service \
       /etc/systemd/system/hysteria2-panel-restore-recover.service \
       /etc/systemd/system/hysteria2-panel-update.service \
+      /etc/systemd/system/hysteria2-panel-egress-full.service \
+      /etc/systemd/system/hysteria2-panel-egress-web.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
@@ -334,7 +338,7 @@ rollback_existing_install() {
   chmod 0750 /var/lib/hysteria2-panel
   find /var/lib/hysteria2-panel -type f -exec chmod 0600 {} +
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -710,6 +714,8 @@ recover_interrupted_fresh_install() {
   stop_loaded_units \
     hysteria2-panel-restore.service \
     hysteria2-panel-update.service \
+    hysteria2-panel-egress-full.service \
+    hysteria2-panel-egress-web.service \
     hysteria2-panel-tcp-probe-443.service \
     hysteria2-panel-server-443.service \
     hysteria2-panel-tcp-probe.service \
@@ -730,6 +736,8 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/hysteria2-panel-restore-recover.service \
     /etc/systemd/system/hysteria2-panel-update.service \
+    /etc/systemd/system/hysteria2-panel-egress-full.service \
+    /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
@@ -797,6 +805,8 @@ assert_units_unclaimed() {
     hysteria2-panel-restore.service \
     hysteria2-panel-restore-recover.service \
     hysteria2-panel-restore-resume.service \
+    hysteria2-panel-egress-full.service \
+    hysteria2-panel-egress-web.service \
     hysteria2-panel-update.service; do
     output="$(systemctl show --no-pager \
       --property=LoadState --property=ActiveState \
@@ -835,6 +845,8 @@ assert_units_claimed_by_installer() {
     hysteria2-panel-restore.service \
     hysteria2-panel-restore-recover.service \
     hysteria2-panel-restore-resume.service \
+    hysteria2-panel-egress-full.service \
+    hysteria2-panel-egress-web.service \
     hysteria2-panel-update.service; do
     expected_path="/etc/systemd/system/${unit_file}"
     output="$(systemctl show --no-pager \
@@ -2122,6 +2134,8 @@ if [[ ! -e "${MANAGED_MARKER}" ]] && {
     [[ -e /etc/systemd/system/hysteria2-panel-restore.service || -L /etc/systemd/system/hysteria2-panel-restore.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-restore-recover.service || -L /etc/systemd/system/hysteria2-panel-restore-recover.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-restore-resume.service || -L /etc/systemd/system/hysteria2-panel-restore-resume.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-egress-full.service || -L /etc/systemd/system/hysteria2-panel-egress-full.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-egress-web.service || -L /etc/systemd/system/hysteria2-panel-egress-web.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-update.service || -L /etc/systemd/system/hysteria2-panel-update.service ]] ||
     [[ -e /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] ||
     [[ -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] ||
@@ -2245,7 +2259,7 @@ if (( EXISTING_INSTALL == 1 )); then
   EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT}"
   EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME}"
-  EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-web}"
+  EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-full}"
   EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT}"
   EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT}"
   EXISTING_STATS_443_PORT="${HY2PANEL_STATS_443_PORT:-${DEFAULT_STATS_443_PORT}}"
@@ -2255,7 +2269,7 @@ else
   EXISTING_HYSTERIA_PORT="${DEFAULT_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${DEFAULT_PANEL_PORT}"
   EXISTING_PANEL_SCHEME="http"
-  EXISTING_EGRESS_POLICY="web"
+  EXISTING_EGRESS_POLICY="full"
   EXISTING_AUTH_PORT="${DEFAULT_AUTH_PORT}"
   EXISTING_STATS_PORT="${DEFAULT_STATS_PORT}"
   EXISTING_STATS_443_PORT="${DEFAULT_STATS_443_PORT}"
@@ -2440,7 +2454,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] \
@@ -2589,22 +2603,29 @@ trafficStats:
   listen: 127.0.0.1:${STATS_PORT}
   secret: ${STATS_SECRET}
 EOF
-if [[ "${EGRESS_POLICY}" == "web" ]]; then
-  # Hysteria ACL uses the first matching rule. Keep private ranges rejected, then allow the
-  # public SSH and panel ports so administrators can manage public servers through the node.
-  # Source: https://v2.hysteria.network/docs/advanced/ACL/
-  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
+# Hysteria ACL uses the first matching rule. Both policies reject local and private targets
+# before allowing public traffic so proxy users cannot reach services inside the node's network.
+# Source: https://v2.hysteria.network/docs/advanced/ACL/
+cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
 acl:
   inline:
+    - "reject(0.0.0.0/8)"
     - "reject(127.0.0.0/8)"
     - "reject(10.0.0.0/8)"
     - "reject(100.64.0.0/10)"
     - "reject(169.254.0.0/16)"
     - "reject(172.16.0.0/12)"
     - "reject(192.168.0.0/16)"
+    - "reject(224.0.0.0/4)"
+    - "reject(240.0.0.0/4)"
+    - "reject(::/128)"
     - "reject(::1/128)"
     - "reject(fc00::/7)"
     - "reject(fe80::/10)"
+    - "reject(ff00::/8)"
+EOF
+if [[ "${EGRESS_POLICY}" == "web" ]]; then
+  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
     - "direct(all, tcp/22)"
     - "direct(all, tcp/${PANEL_PORT})"
     - "direct(all, tcp/53)"
@@ -2614,6 +2635,10 @@ acl:
     - "direct(all, udp/443)"
     - "direct(all, udp/123)"
     - "reject(all)"
+EOF
+else
+  cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
+    - "direct(all)"
 EOF
 fi
 cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
@@ -2640,7 +2665,7 @@ else
 fi
 
 cat > "${TMP_DIR}/hysteria2-panel.sudoers" <<'EOF'
-hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service, /bin/systemctl --no-block start hysteria2-panel-restore.service, /bin/systemctl --no-block start hysteria2-panel-update.service, /bin/systemctl --no-block reboot
+hy2panel ALL=(root) NOPASSWD: /bin/systemctl start hysteria2-panel-server.service, /bin/systemctl stop hysteria2-panel-server.service, /bin/systemctl restart hysteria2-panel-server.service, /bin/systemctl start hysteria2-panel-egress-full.service, /bin/systemctl start hysteria2-panel-egress-web.service, /bin/systemctl --no-block start hysteria2-panel-restore.service, /bin/systemctl --no-block start hysteria2-panel-update.service, /bin/systemctl --no-block reboot
 EOF
 chmod 0440 "${TMP_DIR}/hysteria2-panel.sudoers"
 visudo -cf "${TMP_DIR}/hysteria2-panel.sudoers" >/dev/null || fail "服务控制权限配置无效"
@@ -2926,6 +2951,66 @@ MemoryMax=384M
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/hysteria2-panel-egress-full.service <<EOF
+[Unit]
+Description=Switch Hysteria 2 to safe full egress
+After=hysteria2-panel.service
+Requires=hysteria2-panel.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy full
+TimeoutStartSec=90s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/etc/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
+TasksMax=32
+MemoryMax=192M
+EOF
+
+cat > /etc/systemd/system/hysteria2-panel-egress-web.service <<EOF
+[Unit]
+Description=Switch Hysteria 2 to web-only egress
+After=hysteria2-panel.service
+Requires=hysteria2-panel.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy web
+TimeoutStartSec=90s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/etc/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
+TasksMax=32
+MemoryMax=192M
+EOF
+
 cat > /etc/systemd/system/hysteria2-panel-update.service <<EOF
 [Unit]
 Description=Install the latest formal Hysteria 2 panel release
@@ -3045,7 +3130,7 @@ if [[ "${EGRESS_POLICY}" == "web" ]]; then
   echo "运维访问：允许公网 TCP 22 与 ${PANEL_PORT}（私网目标仍拒绝）"
   echo "边界提示：端口 ACL 不是 DPI，无法保证识别伪装在 80/443 上的加密 P2P。"
 else
-  echo "出站策略：full（完整代理能力，未启用 BT/PT 端口防护）"
+  echo "出站策略：full（放行公网全端口，本地/私网/特殊用途目标仍拒绝）"
 fi
 echo "证书指纹：${CERT_PIN}"
 echo "主机防火墙：${FIREWALL_RESULT}"
