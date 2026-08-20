@@ -630,6 +630,19 @@ esac
         ):
             self.assertIn(command, required_commands.split())
 
+    def test_rhel_dependencies_preserve_minimal_package_variants(self):
+        source = INSTALLER.read_text()
+        function = source.split("install_system_dependencies() {", 1)[1].split(
+            "\n}\n\nacquire_maintenance_lock()", 1
+        )[0]
+
+        self.assertIn("diffutils", function)
+        self.assertIn('command -v curl >/dev/null 2>&1 || rhel_packages+=(curl)', function)
+        self.assertIn('rhel_packages+=(coreutils)', function)
+        self.assertNotIn("dnf install -y ca-certificates curl", function)
+        self.assertNotIn("yum install -y ca-certificates curl", function)
+        self.assertNotIn("python3 coreutils findutils", function)
+
     def test_installer_is_namespaced_and_separates_service_identities(self):
         source = INSTALLER.read_text()
 
