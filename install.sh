@@ -2497,6 +2497,20 @@ configure_firewall() {
   fi
 }
 
+ensure_sysctl_directory() {
+  local sysctl_directory="${SYSCTL_FILE%/*}"
+  [[ ! -L "${sysctl_directory}" ]] \
+    || fail "系统 sysctl 配置目录不能是符号链接；安装已停止"
+  if [[ -e "${sysctl_directory}" ]]; then
+    [[ -d "${sysctl_directory}" ]] \
+      || fail "系统 sysctl 配置路径不是目录；安装已停止"
+    return 0
+  fi
+  install -d -o root -g root -m 0755 "${sysctl_directory}"
+  sync -f "${sysctl_directory}" \
+    || fail "无法持久创建系统 sysctl 配置目录；安装已停止"
+}
+
 optimize_network_stack() {
   local current_rmem current_wmem target_rmem target_wmem available_cc
   local original_qdisc original_cc sysctl_stage
@@ -2632,6 +2646,7 @@ for command_name in "${required_commands[@]}"; do
 done
 select_python || fail "需要 Python 3.8 或更高版本；请升级系统 Python 后重试"
 echo "运行环境：$(${PYTHON_BIN} -c 'import platform; print(platform.python_version())') / ${PYTHON_BIN}"
+ensure_sysctl_directory
 
 case "$(uname -m)" in
   x86_64|amd64)
