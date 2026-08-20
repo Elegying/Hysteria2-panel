@@ -46,6 +46,7 @@ from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.operations import (
     EgressPolicyController,
     EgressPolicyManager,
+    EgressPolicyStateError,
     RebootController,
     RestoreController,
     ServiceController,
@@ -2276,10 +2277,17 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("service status failed")
             service_status = "unknown"
         try:
-            egress_policy = self.app.egress_policy_controller.status()
+            if hasattr(self.app.egress_policy_controller, "inspect"):
+                egress_details = self.app.egress_policy_controller.inspect()
+                egress_policy = egress_details["state"]
+                configured_egress_policy = egress_details.get("configured_policy")
+            else:
+                egress_policy = self.app.egress_policy_controller.status()
+                configured_egress_policy = egress_policy
         except Exception:
             LOGGER.exception("egress policy status failed")
             egress_policy = "unknown"
+            configured_egress_policy = None
         try:
             resources = self.app.system_metrics.snapshot()
         except Exception:
@@ -2395,16 +2403,34 @@ class PanelHandler(JsonHandler):
             egress_confirm = (
                 "关闭 FULL 会切换为 WEB 端口白名单，并短暂重启全部 Hysteria 连接，确定继续吗？"
             )
-        else:
-            egress_state = (
-                "FULL 已关闭" if egress_policy == "web" else "FULL 状态未知"
-            )
-            egress_state_class = "" if egress_policy == "web" else " unknown"
+        elif egress_policy == "web":
+            egress_state = "FULL 已关闭"
+            egress_state_class = ""
             egress_target = "full"
             egress_action = "开启"
             egress_confirm = (
                 "开启 FULL 会允许代理访问公网全部端口（包括 BT/PT 和邮件端口），"
                 "并短暂重启全部 Hysteria 连接，确定继续吗？"
+            )
+        elif egress_policy == "inconsistent":
+            egress_state = "FULL 状态不一致"
+            egress_state_class = " unknown"
+            egress_target = (
+                configured_egress_policy
+                if configured_egress_policy in {"web", "full"}
+                else "web"
+            )
+            egress_action = "修复"
+            egress_confirm = (
+                "当前环境、ACL 或运行状态不一致；修复会重新应用已配置策略并短暂重启运行中的 Hysteria 连接，确定继续吗？"
+            )
+        else:
+            egress_state = "FULL 状态未知"
+            egress_state_class = " unknown"
+            egress_target = "web"
+            egress_action = "修复"
+            egress_confirm = (
+                "当前无法证明出站策略；修复会应用安全的 WEB 策略并短暂重启运行中的 Hysteria 连接，确定继续吗？"
             )
         top_users = sorted(
             all_users,
@@ -3000,11 +3026,11 @@ class PanelHandler(JsonHandler):
     def _handle_service_action(self, session, action):
         try:
             if action in {"stop", "restart"}:
-                try:
-                    self.app.usage_manager.collect_once()
-                except Exception:
-                    LOGGER.exception("traffic sync before service action failed")
-            state = self.app.service_controller.action(action)
+                state = self.app.usage_manager.run_after_collect(
+                    lambda: self.app.service_controller.action(action)
+                )
+            else:
+                state = self.app.service_controller.action(action)
             self._audit_safely(
                 session["username"], "hysteria_service_{}".format(action), state
             )
@@ -3015,29 +3041,31 @@ class PanelHandler(JsonHandler):
 
     def _handle_egress_policy(self, session, policy):
         try:
-            try:
-                self.app.usage_manager.collect_once()
-            except Exception:
-                LOGGER.exception("traffic sync before egress policy switch failed")
-            state = self.app.egress_policy_controller.switch(policy)
+            state = self.app.usage_manager.run_after_collect(
+                lambda: self.app.egress_policy_controller.switch(policy)
+            )
             self._audit_safely(
                 session["username"], "egress_policy_changed", state
             )
             self._redirect("/")
         except ValueError:
             self._error_page(400, "出站策略无效")
+        except EgressPolicyStateError:
+            LOGGER.exception("egress policy state is inconsistent")
+            self._error_page(500, "出站策略切换未完成，当前状态不一致；请重启服务器触发安全恢复")
         except RuntimeError:
             LOGGER.exception("egress policy switch failed")
-            self._error_page(500, "出站策略切换失败，旧策略已恢复；请检查服务日志")
+            self._error_page(500, "出站策略切换失败；未执行切换或旧策略已恢复，请刷新状态并检查服务日志")
 
     def _handle_reboot(self, session):
         try:
-            try:
-                self.app.usage_manager.collect_once()
-            except Exception:
-                LOGGER.exception("traffic sync before server reboot failed")
-            self._audit_safely(session["username"], "server_reboot_queued", "system")
-            self.app.reboot_controller.queue()
+            def queue_reboot():
+                self._audit_safely(
+                    session["username"], "server_reboot_queued", "system"
+                )
+                return self.app.reboot_controller.queue()
+
+            self.app.usage_manager.run_after_collect(queue_reboot)
         except RuntimeError:
             LOGGER.exception("server reboot queue failed")
             self._error_page(500, "服务器重启任务启动失败，请检查服务日志")
@@ -4719,6 +4747,11 @@ def main(argv=None):
     subcommands.add_parser("restore-pending", help="apply the staged backup as root")
     subcommands.add_parser("recover-restore-files", help=argparse.SUPPRESS)
     subcommands.add_parser("resume-after-restore", help=argparse.SUPPRESS)
+    subcommands.add_parser("recover-egress-policy", help=argparse.SUPPRESS)
+    record_egress_parser = subcommands.add_parser(
+        "record-egress-policy-state", help=argparse.SUPPRESS
+    )
+    record_egress_parser.add_argument("policy", choices=("web", "full"))
     subcommands.add_parser("apply-update", help="install the latest formal release as root")
     egress_parser = subcommands.add_parser(
         "apply-egress-policy", help="apply a fixed egress policy as root"
@@ -4731,7 +4764,18 @@ def main(argv=None):
                 raise RuntimeError("recover-restore-files must run as root")
             recover_restore_files(strict_paths=False)
             return 0
+        if args.command == "recover-egress-policy":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("recover-egress-policy must run as root")
+            with exclusive_maintenance_lock(blocking=True), defer_termination_signals():
+                EgressPolicyManager().recover()
+            return 0
         settings = Settings.from_mapping(os.environ)
+        if args.command == "record-egress-policy-state":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("record-egress-policy-state must run as root")
+            EgressPolicyManager().record_current_state(args.policy, settings.panel_port)
+            return 0
         if args.command == "resume-after-restore":
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("resume-after-restore must run as root")
@@ -4745,6 +4789,8 @@ def main(argv=None):
         if args.command == "restore-pending":
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("restore-pending must run as root")
+            if EgressPolicyManager.TRANSACTION_PATH.exists():
+                raise RuntimeError("egress policy recovery must complete before restore")
             restore_pending(settings)
             return 0
         if args.command == "sync-traffic":
@@ -4761,6 +4807,8 @@ def main(argv=None):
         if args.command == "apply-update":
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("apply-update must run as root")
+            if EgressPolicyManager.TRANSACTION_PATH.exists():
+                raise RuntimeError("egress policy recovery must complete before update")
             result = UpdateInstaller().apply()
             print(json.dumps(result, separators=(",", ":")))
             return 0

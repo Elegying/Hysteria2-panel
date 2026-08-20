@@ -1237,37 +1237,67 @@ class OperationsTests(unittest.TestCase):
             "HY2PANEL_PANEL_PORT=19998\nHY2PANEL_EGRESS_POLICY={}\n".format(policy)
         )
         config = """listen: :19999
-acl:
-  inline:
-    - \"reject(127.0.0.0/8)\"
-    - \"reject(all)\"
-masquerade:
+{}masquerade:
   type: string
-"""
+""".format(panel_operations.EgressPolicyManager._acl_block(policy, 19998))
         primary.write_text(config)
         secondary.write_text(config.replace("listen: :19999", "listen: :443"))
         for path in (env_path, primary, secondary):
             path.chmod(0o640)
         return env_path, primary, secondary
 
+    @staticmethod
+    def write_egress_state(state_path, policy, paths):
+        state_path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "policy": policy,
+                    "files": {
+                        str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+                        for path in paths
+                    },
+                }
+            )
+        )
+        state_path.chmod(0o644)
+
     def test_egress_policy_controller_reads_state_and_starts_only_fixed_units(self):
         with tempfile.TemporaryDirectory() as directory:
-            env_path, _primary, _secondary = self.write_egress_fixture(directory)
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            state_path = Path(directory) / "egress-state.json"
+            self.write_egress_state(
+                state_path, "web", (env_path, primary, secondary)
+            )
             calls = []
 
             def runner(command, **kwargs):
                 calls.append((command, kwargs))
-                env_path.write_text(
-                    env_path.read_text().replace(
-                        "HY2PANEL_EGRESS_POLICY=web",
-                        "HY2PANEL_EGRESS_POLICY=full",
+                if command[:2] == ["/bin/systemctl", "show"]:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="LoadState=loaded\nActiveState=active\n",
+                        stderr="",
                     )
+                env_path.write_text(
+                    env_path.read_text().replace("=web", "=full")
+                )
+                for path in (primary, secondary):
+                    path.write_bytes(
+                        panel_operations.EgressPolicyManager._replace_acl(
+                            path.read_bytes(), "full", 19998
+                        )
+                    )
+                self.write_egress_state(
+                    state_path, "full", (env_path, primary, secondary)
                 )
                 return mock.Mock(returncode=0, stdout="", stderr="")
 
             controller = panel_operations.EgressPolicyController(
                 runner=runner,
                 env_path=env_path,
+                config_paths=(primary, secondary),
+                state_path=state_path,
                 expected_uid=os.geteuid(),
             )
 
@@ -1283,9 +1313,66 @@ masquerade:
                     "start",
                     "hysteria2-panel-egress-full.service",
                 ]],
-                [command for command, _kwargs in calls],
+                [
+                    command
+                    for command, _kwargs in calls
+                    if command[:2] == ["/usr/bin/sudo", "-n"]
+                ],
             )
             self.assertTrue(all("shell" not in kwargs for _command, kwargs in calls))
+
+    def test_egress_policy_controller_reports_drift_and_reconciles_same_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            state_path = Path(directory) / "egress-state.json"
+            self.write_egress_state(
+                state_path, "web", (env_path, primary, secondary)
+            )
+            primary.write_bytes(
+                panel_operations.EgressPolicyManager._replace_acl(
+                    primary.read_bytes(), "full", 19998
+                )
+            )
+            calls = []
+
+            def runner(command, **kwargs):
+                calls.append((command, kwargs))
+                if command[:2] == ["/bin/systemctl", "show"]:
+                    return mock.Mock(
+                        returncode=0,
+                        stdout="LoadState=loaded\nActiveState=active\n",
+                        stderr="",
+                    )
+                primary.write_bytes(
+                    panel_operations.EgressPolicyManager._replace_acl(
+                        primary.read_bytes(), "web", 19998
+                    )
+                )
+                self.write_egress_state(
+                    state_path, "web", (env_path, primary, secondary)
+                )
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            controller = panel_operations.EgressPolicyController(
+                runner=runner,
+                env_path=env_path,
+                config_paths=(primary, secondary),
+                state_path=state_path,
+                expected_uid=os.geteuid(),
+            )
+
+            self.assertEqual("inconsistent", controller.status())
+            self.assertEqual("web", controller.switch("web"))
+            self.assertIn(
+                [
+                    "/usr/bin/sudo",
+                    "-n",
+                    "/bin/systemctl",
+                    "start",
+                    "hysteria2-panel-egress-web.service",
+                ],
+                [command for command, _kwargs in calls],
+            )
 
     def test_egress_policy_manager_switches_both_configs_and_persists_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1300,6 +1387,8 @@ masquerade:
                 runner=runner,
                 env_path=env_path,
                 config_paths=(primary, secondary),
+                state_path=Path(directory) / "egress-state.json",
+                transaction_path=Path(directory) / "egress-transaction.json",
                 expected_uid=os.geteuid(),
             )
             manager.apply("full", panel_port=19998)
@@ -1348,6 +1437,8 @@ masquerade:
                 runner=runner,
                 env_path=env_path,
                 config_paths=(primary, secondary),
+                state_path=Path(directory) / "egress-state.json",
+                transaction_path=Path(directory) / "egress-transaction.json",
                 expected_uid=os.geteuid(),
             )
 
@@ -1379,6 +1470,8 @@ masquerade:
                 runner=runner,
                 env_path=env_path,
                 config_paths=(primary, secondary),
+                state_path=Path(directory) / "egress-state.json",
+                transaction_path=Path(directory) / "egress-transaction.json",
                 expected_uid=os.geteuid(),
             )
 
@@ -1389,6 +1482,122 @@ masquerade:
             self.assertNotIn(
                 ["/bin/systemctl", "restart", "hysteria2-panel-server.service"],
                 commands,
+            )
+
+    def test_egress_policy_manager_restarts_an_active_secondary_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            calls = []
+
+            def runner(command, **kwargs):
+                calls.append((command, kwargs))
+                if command[:3] == ["/bin/systemctl", "is-active", "hysteria2-panel-server.service"]:
+                    return mock.Mock(returncode=3, stdout="inactive\n", stderr="")
+                return mock.Mock(returncode=0, stdout="active\n", stderr="")
+
+            manager = panel_operations.EgressPolicyManager(
+                runner=runner,
+                env_path=env_path,
+                config_paths=(primary, secondary),
+                state_path=Path(directory) / "egress-state.json",
+                transaction_path=Path(directory) / "egress-transaction.json",
+                expected_uid=os.geteuid(),
+            )
+
+            manager.apply("full", panel_port=19998)
+
+            restart_commands = [
+                command for command, _kwargs in calls
+                if command[:2] == ["/bin/systemctl", "restart"]
+            ]
+            self.assertEqual(
+                [["/bin/systemctl", "restart", "hysteria2-panel-server-443.service"]],
+                restart_commands,
+            )
+
+    def test_egress_policy_manager_preserves_an_inactive_secondary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            active = {
+                "hysteria2-panel-server.service": True,
+                "hysteria2-panel-server-443.service": False,
+            }
+
+            def runner(command, **_kwargs):
+                if command[:2] == ["/bin/systemctl", "restart"]:
+                    active["hysteria2-panel-server.service"] = True
+                    active["hysteria2-panel-server-443.service"] = True
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if command[:2] == ["/bin/systemctl", "stop"]:
+                    active[command[2]] = False
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                if command[:2] == ["/bin/systemctl", "is-active"]:
+                    state = active[command[2]]
+                    return mock.Mock(
+                        returncode=0 if state else 3,
+                        stdout="active\n" if state else "inactive\n",
+                        stderr="",
+                    )
+                raise AssertionError(command)
+
+            manager = panel_operations.EgressPolicyManager(
+                runner=runner,
+                env_path=env_path,
+                config_paths=(primary, secondary),
+                state_path=Path(directory) / "egress-state.json",
+                transaction_path=Path(directory) / "egress-transaction.json",
+                expected_uid=os.geteuid(),
+            )
+
+            manager.apply("full", panel_port=19998)
+
+            self.assertTrue(active["hysteria2-panel-server.service"])
+            self.assertFalse(active["hysteria2-panel-server-443.service"])
+
+    def test_egress_policy_manager_recovers_a_power_loss_before_env_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            originals = {
+                path: path.read_bytes() for path in (env_path, primary, secondary)
+            }
+            state_path = Path(directory) / "egress-state.json"
+            transaction_path = Path(directory) / "egress-transaction.json"
+            self.write_egress_state(
+                state_path, "web", (env_path, primary, secondary)
+            )
+            manager = panel_operations.EgressPolicyManager(
+                runner=lambda _command, **_kwargs: mock.Mock(
+                    returncode=0, stdout="active\n", stderr=""
+                ),
+                env_path=env_path,
+                config_paths=(primary, secondary),
+                state_path=state_path,
+                transaction_path=transaction_path,
+                expected_uid=os.geteuid(),
+            )
+            real_replace = panel_operations._atomic_replace_managed_file
+            replacements = 0
+
+            def interrupted_replace(path, payload, metadata):
+                nonlocal replacements
+                real_replace(path, payload, metadata)
+                replacements += 1
+                if replacements == 2:
+                    raise BaseException("simulated power loss")
+
+            with mock.patch.object(
+                panel_operations,
+                "_atomic_replace_managed_file",
+                side_effect=interrupted_replace,
+            ), self.assertRaises(BaseException):
+                manager.apply("full", panel_port=19998)
+
+            self.assertTrue(transaction_path.exists())
+            manager.recover()
+            self.assertFalse(transaction_path.exists())
+            self.assertEqual(
+                originals,
+                {path: path.read_bytes() for path in (env_path, primary, secondary)},
             )
 
     def test_egress_policy_manager_rejects_symlinked_managed_config(self):
@@ -1438,6 +1647,48 @@ masquerade:
         ), mock.patch("builtins.print"):
             self.assertEqual(1, hysteria2_panel.main(["apply-egress-policy", "web"]))
         manager_type.assert_not_called()
+
+    def test_egress_recovery_cli_runs_before_environment_loading(self):
+        manager = mock.Mock()
+        with mock.patch.object(
+            hysteria2_panel, "EgressPolicyManager", return_value=manager
+        ), mock.patch.object(
+            hysteria2_panel.os, "geteuid", return_value=0
+        ), mock.patch.object(
+            hysteria2_panel.Settings, "from_mapping"
+        ) as load_settings, mock.patch.object(
+            hysteria2_panel,
+            "exclusive_maintenance_lock",
+            return_value=contextlib.nullcontext(),
+        ) as maintenance_lock, mock.patch.object(
+            hysteria2_panel,
+            "defer_termination_signals",
+            return_value=contextlib.nullcontext(),
+        ):
+            self.assertEqual(0, hysteria2_panel.main(["recover-egress-policy"]))
+
+        load_settings.assert_not_called()
+        maintenance_lock.assert_called_once_with(blocking=True)
+        manager.recover.assert_called_once_with()
+
+    def test_installer_can_record_the_verified_current_egress_state(self):
+        settings = mock.Mock(panel_port=19998)
+        manager = mock.Mock()
+        with mock.patch.object(
+            hysteria2_panel.Settings, "from_mapping", return_value=settings
+        ), mock.patch.object(
+            hysteria2_panel, "EgressPolicyManager", return_value=manager
+        ), mock.patch.object(
+            hysteria2_panel.os, "geteuid", return_value=0
+        ):
+            self.assertEqual(
+                0,
+                hysteria2_panel.main(
+                    ["record-egress-policy-state", "full"]
+                ),
+            )
+
+        manager.record_current_state.assert_called_once_with("full", 19998)
 
     def test_resume_after_restore_cli_loads_and_passes_environment_settings(self):
         settings = mock.Mock()
@@ -5243,6 +5494,21 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
         self.assertIn("v0.21.0", body)
+
+    def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
+        headers, csrf_token = self.authenticated_headers()
+        self.application.usage_manager.run_after_collect = mock.Mock(
+            side_effect=RuntimeError("stats unavailable")
+        )
+
+        for path in ("/service/restart", "/egress/full", "/system/reboot"):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                self.request(path, {"csrf": csrf_token}, headers=headers)
+            self.assertEqual(500, raised.exception.code)
+
+        self.assertEqual([], self.service_controller.actions)
+        self.assertEqual([], self.egress_policy_controller.actions)
+        self.assertEqual(0, self.reboot_controller.queued)
 
     def test_dashboard_shows_full_state_and_node_wide_switch_in_service_port_card(self):
         headers, _csrf_token = self.authenticated_headers()

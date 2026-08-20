@@ -2479,6 +2479,7 @@ assert_units_unclaimed
             "hysteria2-panel-tcp-probe-443.service",
             "hysteria2-panel-egress-full.service",
             "hysteria2-panel-egress-web.service",
+            "hysteria2-panel-egress-recover.service",
             "hysteria2-panel-restore.service",
             "hysteria2-panel-restore-recover.service",
             "hysteria2-panel-restore-resume.service",
@@ -2529,7 +2530,25 @@ assert_units_unclaimed
             self.assertIn("ProtectSystem=strict", unit)
             self.assertIn("ReadWritePaths=/etc/hysteria2-panel", unit)
             self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
+            self.assertIn("TimeoutStartSec=5min", unit)
             self.assertNotIn("User=hy2panel", unit)
+
+        recover_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-egress-recover.service <<EOF",
+            1,
+        )[1].split("EOF", 1)[0]
+        panel_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel.service <<EOF", 1
+        )[1].split("EOF", 1)[0]
+        self.assertIn(
+            "ConditionPathExists=${EGRESS_TRANSACTION_MARKER}", recover_unit
+        )
+        self.assertIn("Before=hysteria2-panel.service", recover_unit)
+        self.assertIn("recover-egress-policy", recover_unit)
+        self.assertIn("Requires=hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service", panel_unit)
+        self.assertIn(
+            'record-egress-policy-state "${EGRESS_POLICY}"', source
+        )
 
     def test_installer_adds_a_root_only_one_shot_restore_service(self):
         source = INSTALLER.read_text()
@@ -2569,7 +2588,7 @@ assert_units_unclaimed
         self.assertIn("Before=hysteria2-panel.service", recover_unit)
         self.assertIn("ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py recover-restore-files", recover_unit)
         self.assertIn("Requires=hysteria2-panel-restore-recover.service", panel_unit)
-        self.assertIn("After=network-online.target hysteria2-panel-restore-recover.service", panel_unit)
+        self.assertIn("After=network-online.target hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service", panel_unit)
         self.assertIn("ConditionPathExists=/etc/hysteria2-panel/.restore-active", resume_unit)
         self.assertIn("After=network-online.target hysteria2-panel.service hysteria2-panel-server.service", resume_unit)
         self.assertIn("Wants=network-online.target hysteria2-panel.service hysteria2-panel-server.service", resume_unit)
@@ -2618,6 +2637,25 @@ assert_units_unclaimed
         self.assertLess(guard, second_gate)
         self.assertLess(second_gate, dependency_install)
         self.assertLess(second_gate, main.index('TMP_DIR="$(TMPDIR=/tmp mktemp', second_gate))
+
+    def test_installer_refuses_to_mutate_an_unfinished_egress_transaction(self):
+        source = INSTALLER.read_text()
+        self.assertIn(
+            "EGRESS_TRANSACTION_MARKER=/etc/hysteria2-panel/.egress-transaction.json",
+            source,
+        )
+        helper = source[
+            source.index("assert_no_pending_egress_state()") : source.index(
+                "\n\nlegacy_restore_unit_is_quiescent()"
+            )
+        ]
+        self.assertIn('[[ -e "${EGRESS_TRANSACTION_MARKER}"', helper)
+        main = source.split('if [[ "${1:-}" == "--help"', 1)[1]
+        lock_index = main.index("acquire_maintenance_lock")
+        egress_gate = main.index("assert_no_pending_egress_state", lock_index)
+        dependency_install = main.index("install_system_dependencies", egress_gate)
+        self.assertLess(lock_index, egress_gate)
+        self.assertLess(egress_gate, dependency_install)
 
     def test_maintenance_lock_allows_only_read_only_panel_upload_gating(self):
         source = INSTALLER.read_text()

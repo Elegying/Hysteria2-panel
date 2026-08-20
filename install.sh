@@ -45,6 +45,7 @@ FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer
 RESTORE_ACTIVE_MARKER=/etc/hysteria2-panel/.restore-active
 RESTORE_CAPTURED_ARCHIVE=/etc/hysteria2-panel/.restore-active.archive
 RESTORE_PENDING_ARCHIVE=/var/lib/hysteria2-panel/backup-restore/pending-restore.zip
+EGRESS_TRANSACTION_MARKER=/etc/hysteria2-panel/.egress-transaction.json
 UFW_RULES_PATH=/etc/ufw
 UFW_TEMPLATE_PATH=/usr/share/ufw/iptables
 ROLLBACK_REQUIRED=0
@@ -223,6 +224,7 @@ rollback_existing_install() {
       hysteria2-panel-update.service \
       hysteria2-panel-egress-full.service \
       hysteria2-panel-egress-web.service \
+      hysteria2-panel-egress-recover.service \
       hysteria2-panel-tcp-probe-443.service \
       hysteria2-panel-server-443.service \
       hysteria2-panel-tcp-probe.service \
@@ -247,6 +249,7 @@ rollback_existing_install() {
       /etc/systemd/system/hysteria2-panel-update.service \
       /etc/systemd/system/hysteria2-panel-egress-full.service \
       /etc/systemd/system/hysteria2-panel-egress-web.service \
+      /etc/systemd/system/hysteria2-panel-egress-recover.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
       /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
@@ -338,7 +341,7 @@ rollback_existing_install() {
   chmod 0750 /var/lib/hysteria2-panel
   find /var/lib/hysteria2-panel -type f -exec chmod 0600 {} +
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -539,6 +542,12 @@ assert_no_pending_restore_state() {
   fi
 }
 
+assert_no_pending_egress_state() {
+  if [[ -e "${EGRESS_TRANSACTION_MARKER}" || -L "${EGRESS_TRANSACTION_MARKER}" ]]; then
+    fail "检测到未完成的出站策略事务；请先重启服务器触发 hysteria2-panel-egress-recover.service，确认面板恢复后再部署"
+  fi
+}
+
 legacy_restore_unit_is_quiescent() {
   local active_state jobs
   active_state="$(systemctl show --no-pager --property=ActiveState --value \
@@ -716,6 +725,7 @@ recover_interrupted_fresh_install() {
     hysteria2-panel-update.service \
     hysteria2-panel-egress-full.service \
     hysteria2-panel-egress-web.service \
+    hysteria2-panel-egress-recover.service \
     hysteria2-panel-tcp-probe-443.service \
     hysteria2-panel-server-443.service \
     hysteria2-panel-tcp-probe.service \
@@ -738,6 +748,7 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-update.service \
     /etc/systemd/system/hysteria2-panel-egress-full.service \
     /etc/systemd/system/hysteria2-panel-egress-web.service \
+    /etc/systemd/system/hysteria2-panel-egress-recover.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
@@ -807,6 +818,7 @@ assert_units_unclaimed() {
     hysteria2-panel-restore-resume.service \
     hysteria2-panel-egress-full.service \
     hysteria2-panel-egress-web.service \
+    hysteria2-panel-egress-recover.service \
     hysteria2-panel-update.service; do
     output="$(systemctl show --no-pager \
       --property=LoadState --property=ActiveState \
@@ -847,6 +859,7 @@ assert_units_claimed_by_installer() {
     hysteria2-panel-restore-resume.service \
     hysteria2-panel-egress-full.service \
     hysteria2-panel-egress-web.service \
+    hysteria2-panel-egress-recover.service \
     hysteria2-panel-update.service; do
     expected_path="/etc/systemd/system/${unit_file}"
     output="$(systemctl show --no-pager \
@@ -2074,6 +2087,7 @@ for command_name in awk flock id install mkdir rm rmdir stat systemctl; do
 done
 acquire_maintenance_lock
 assert_no_pending_restore_state
+assert_no_pending_egress_state
 if [[ -e "${MANAGED_MARKER}" || -L "${MANAGED_MARKER}" ]]; then
   [[ ! -L "${MANAGED_MARKER}" && -f "${MANAGED_MARKER}" ]] \
     || fail "受管安装标记不是普通文件；为避免接管未知路径，安装已停止"
@@ -2136,6 +2150,7 @@ if [[ ! -e "${MANAGED_MARKER}" ]] && {
     [[ -e /etc/systemd/system/hysteria2-panel-restore-resume.service || -L /etc/systemd/system/hysteria2-panel-restore-resume.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-egress-full.service || -L /etc/systemd/system/hysteria2-panel-egress-full.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-egress-web.service || -L /etc/systemd/system/hysteria2-panel-egress-web.service ]] ||
+    [[ -e /etc/systemd/system/hysteria2-panel-egress-recover.service || -L /etc/systemd/system/hysteria2-panel-egress-recover.service ]] ||
     [[ -e /etc/systemd/system/hysteria2-panel-update.service || -L /etc/systemd/system/hysteria2-panel-update.service ]] ||
     [[ -e /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] ||
     [[ -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] ||
@@ -2454,7 +2469,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] \
@@ -2678,8 +2693,8 @@ fi
 cat > /etc/systemd/system/hysteria2-panel.service <<EOF
 [Unit]
 Description=Hysteria 2 multi-user panel
-Requires=hysteria2-panel-restore-recover.service
-After=network-online.target hysteria2-panel-restore-recover.service
+Requires=hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
+After=network-online.target hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
 Wants=network-online.target
 Before=hysteria2-panel-server.service hysteria2-panel-server-443.service
 
@@ -2961,7 +2976,7 @@ Requires=hysteria2-panel.service
 Type=oneshot
 EnvironmentFile=/etc/hysteria2-panel/panel.env
 ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy full
-TimeoutStartSec=90s
+TimeoutStartSec=5min
 TimeoutStopSec=15s
 KillSignal=SIGTERM
 UMask=0077
@@ -2991,8 +3006,38 @@ Requires=hysteria2-panel.service
 Type=oneshot
 EnvironmentFile=/etc/hysteria2-panel/panel.env
 ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy web
-TimeoutStartSec=90s
+TimeoutStartSec=5min
 TimeoutStopSec=15s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/etc/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
+TasksMax=32
+MemoryMax=192M
+EOF
+
+cat > /etc/systemd/system/hysteria2-panel-egress-recover.service <<EOF
+[Unit]
+Description=Recover an interrupted Hysteria 2 egress policy transaction
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service
+ConditionPathExists=${EGRESS_TRANSACTION_MARKER}
+
+[Service]
+Type=oneshot
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py recover-egress-policy
+TimeoutStartSec=5min
+TimeoutStopSec=30s
 KillSignal=SIGTERM
 UMask=0077
 NoNewPrivileges=true
@@ -3108,6 +3153,9 @@ if (( UDP_443_ENABLED == 1 )); then
 fi
 ss -H -ltn "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria TCP 探测端口未监听"
 ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
+"${PYTHON_BIN}" /opt/hysteria2-panel/hysteria2_panel.py \
+  record-egress-policy-state "${EGRESS_POLICY}" \
+  || fail "无法记录可验证的出站策略状态"
 configure_firewall
 install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"
 INSTALL_COMMITTED=1
