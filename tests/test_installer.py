@@ -2451,6 +2451,14 @@ assert_units_unclaimed
         source = INSTALLER.read_text()
 
         self.assertIn("/etc/sysctl.d/99-hysteria2-panel.conf", source)
+        self.assertIn("ensure_sysctl_directory()", source)
+        ensure_call = source.split(
+            'if [[ "${1:-}" == "--maintenance-lock-held"', 1
+        )[1].index("ensure_sysctl_directory")
+        arm_transaction = source.split(
+            'if [[ "${1:-}" == "--maintenance-lock-held"', 1
+        )[1].index("arm_upgrade_transaction")
+        self.assertLess(ensure_call, arm_transaction)
         self.assertIn("net.core.rmem_max", source)
         self.assertIn("net.core.wmem_max", source)
         self.assertIn("16777216", source)
