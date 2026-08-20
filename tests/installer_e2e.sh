@@ -67,10 +67,11 @@ awk '
   }
 ' /workspace/install.sh > /workspace/install-crash.sh
 chmod 0755 /workspace/install-crash.sh
-set +e
-HY2PANEL_AUTO_UPDATE=1 bash /workspace/install-crash.sh
-crash_status=$?
-set -e
+if HY2PANEL_AUTO_UPDATE=1 bash /workspace/install-crash.sh; then
+  crash_status=0
+else
+  crash_status=$?
+fi
 [[ "${crash_status}" == "137" ]]
 test -f /var/backups/hysteria2-panel/.upgrade-active
 [[ "$(sha256sum /opt/hysteria2-panel/bin/hysteria | awk '{print $1}')" != "${old_hysteria_sha}" ]]
