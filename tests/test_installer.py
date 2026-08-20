@@ -2766,6 +2766,10 @@ assert_units_unclaimed
         self.assertIn('flock -n -E 75 --close "${MAINTENANCE_LOCK_FILE}"', helper)
         self.assertIn('/bin/bash "$0" --maintenance-lock-held', helper)
         self.assertIn('"${ORIGINAL_ARGS[@]}"', helper)
+        self.assertIn(
+            "lock_status == 75 && RECOVER_UPGRADE == 1", helper
+        )
+        self.assertIn("升级事务仍由安装器持锁", helper)
         self.assertNotIn('exec 9<>"${MAINTENANCE_LOCK_FILE}"', helper)
         self.assertNotIn("flock -n 9", helper)
 

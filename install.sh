@@ -921,6 +921,10 @@ acquire_maintenance_lock() {
   else
     lock_status=$?
   fi
+  if (( lock_status == 75 && RECOVER_UPGRADE == 1 )); then
+    echo "升级事务仍由安装器持锁；恢复服务本次安全跳过。"
+    exit 0
+  fi
   if (( lock_status == 75 )); then
     fail "另一个安装、更新或恢复任务正在运行；本次操作未执行"
   fi
