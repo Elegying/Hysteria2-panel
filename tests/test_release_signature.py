@@ -58,6 +58,15 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
 
         self.assertIn("  full-installer-e2e:\n", ci_source)
 
+    def test_main_push_does_not_require_the_future_release_tag(self):
+        ci_source = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+        self.assertNotIn("Require the version tag to point at a main push", ci_source)
+        self.assertNotIn(
+            'git fetch --force origin "refs/tags/v${version}:refs/tags/v${version}"',
+            ci_source,
+        )
+
     def test_release_stays_draft_until_signed_assets_are_reverified(self):
         source = self.release
 
@@ -72,6 +81,11 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
             source,
         )
         self.assertIn("gh release download", source)
+        self.assertIn(
+            'expected = {"install.sh", "install.sh.sigstore.json"}',
+            source,
+        )
+        self.assertIn("draft release has unexpected asset set", source)
         self.assertIn("cmp --silent install.sh", source)
         self.assertIn("cosign sign-blob --yes --bundle install.sh.sigstore.json install.sh", source)
         self.assertIn("cosign verify-blob install.sh", source)
@@ -128,6 +142,11 @@ class DistributionSyntheticWorkflowTests(unittest.TestCase):
             source,
         )
         self.assertIn("install.sh.sigstore.json", source)
+        self.assertIn(
+            'expected = {"install.sh", "install.sh.sigstore.json"}',
+            source,
+        )
+        self.assertIn("latest release has unexpected asset set", source)
         self.assertIn("cmp --silent", source)
         self.assertIn("cosign verify-blob", source)
         self.assertIn("@refs/tags/${RELEASE_TAG}", source)
@@ -150,7 +169,7 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn("待首次绿灯", readme)
         self.assertIn("尽力支持", readme)
 
-    def test_release_runbook_documents_draft_promotion_and_remote_ruleset_gap(self):
+    def test_release_runbook_documents_draft_promotion_and_remote_ruleset_gate(self):
         deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text()
 
         self.assertIn("gh release create", deployment)
@@ -158,7 +177,8 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn("gh workflow run release-signature.yml", deployment)
         self.assertIn("--ref", deployment)
         self.assertIn("full-installer-e2e", deployment)
-        self.assertIn("推送后", deployment)
+        self.assertIn("Protect main", deployment)
+        self.assertIn("七项 required status checks", deployment)
         self.assertIn("ruleset", deployment.lower())
 
 

@@ -39,11 +39,9 @@ jobs:
           if release.get("draft") or release.get("prerelease"):
               raise SystemExit("latest endpoint returned a non-formal release")
           names = [asset.get("name") for asset in release.get("assets", [])]
-          required = {"install.sh", "install.sh.sigstore.json"}
-          if not required.issubset(names):
-              raise SystemExit("latest release is missing signed installer assets")
-          if any(names.count(name) != 1 for name in required):
-              raise SystemExit("latest release has duplicate installer assets")
+          expected = {"install.sh", "install.sh.sigstore.json"}
+          if len(names) != len(expected) or set(names) != expected:
+              raise SystemExit("latest release has unexpected asset set")
           print("tag={}".format(tag))
           PY
 

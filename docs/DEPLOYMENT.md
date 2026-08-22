@@ -26,7 +26,7 @@ gh workflow run release-signature.yml --ref "${tag}" -f tag="${tag}"
 
 不要从 `main` 引用调度签名：更新器固定的 Sigstore identity 以 `@refs/tags/<版本>` 结尾，工作流也会拒绝 `GITHUB_REF` 与输入标签不一致。若同名 Release 已公开或被标为 prerelease，工作流安全停止，不会覆盖后再签名。
 
-本地契约测试会确认 `full-installer-e2e` 是发布工作流的硬门禁，但本地文件不能伪造 GitHub 远端分支规则。**推送后**，仓库管理员仍须在 `Protect main` ruleset 的 required status checks 中加入 `full-installer-e2e`，并以 GitHub UI/API 回读结果为准；在远端回读前该设置状态为待完成。发布门禁本身还会逐项查询 GitHub Actions check-runs，因此远端 ruleset 漏配时也不会公开 Release。
+本地契约测试会确认 `full-installer-e2e` 是发布工作流的硬门禁，但本地文件不能伪造 GitHub 远端分支规则。`Protect main` ruleset 已于 2026-08-22 通过 GitHub API 回读确认七项 required status checks，其中包含 `full-installer-e2e`；每次发布仍应重新回读远端规则。发布门禁本身还会逐项查询 GitHub Actions check-runs，因此远端 ruleset 后续漂移时也不会公开 Release。
 
 `Anonymous release distribution synthetic` 每日以无凭据请求 latest API、两个 Release 资产和标签 raw 文件，比较安装器并复核 Sigstore 身份；它只拥有 `contents: read`，失败会留下 Actions error 并令 job 变红。仓库由私有恢复为公开后，仍需手工运行一次该 workflow 并取得绿灯，再把匿名分发恢复判定为闭环；同时应为该 workflow 开启 GitHub Actions 失败通知。
 

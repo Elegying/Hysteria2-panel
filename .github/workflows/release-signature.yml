@@ -197,6 +197,17 @@ jobs:
             exit 1
           fi
 
+          gh release view "${RELEASE_TAG}" --json assets --jq '[.assets[].name]' |
+            python -c '
+          import json
+          import sys
+
+          names = json.load(sys.stdin)
+          expected = {"install.sh", "install.sh.sigstore.json"}
+          if len(names) != len(expected) or set(names) != expected:
+              raise SystemExit("draft release has unexpected asset set")
+          '
+
           asset_dir="${RUNNER_TEMP}/verified-release-assets"
           mkdir -p "${asset_dir}"
           gh release download "${RELEASE_TAG}" --dir "${asset_dir}" \
