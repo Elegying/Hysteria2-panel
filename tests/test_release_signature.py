@@ -317,7 +317,7 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn("Ubuntu 24.04 LTS", readme)
         self.assertIn("Rocky Linux 9", readme)
         self.assertIn("Debian stable", readme)
-        self.assertIn("待首次绿灯", readme)
+        self.assertNotIn("待首次绿灯", readme)
         self.assertIn("尽力支持", readme)
 
     def test_release_runbook_documents_draft_promotion_and_remote_ruleset_gate(self):

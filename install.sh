@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.22.0"
+PANEL_VERSION="0.22.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -21,7 +21,7 @@ PANEL_SHA256="6d10f41a1327999a7dda81ab407404b005ae36e3ccc3d8cb1f5c489c3058fb5c"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="8289233ab70566bd5ec42e09c4a37722194c409fa972d30b89972b7b4c0026ba"
+HY2PANEL_VERSION_SHA256="12b95c69b9d8e922d6ad244fc4f4469039c7777dcd7e02059114c291527674e2"
 HY2PANEL_WEB_ASSETS_SHA256="77bcc20e8296320d0af69fe82402f85e058933c28da40f6d558cc50448674ca8"
 HY2PANEL_OPERATIONS_SHA256="2660f871020b95ed648df0b0d72ea7d6ca5f9a05f82634639a4183c97dbe9f39"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
@@ -150,6 +150,28 @@ durable_remove_file() {
     rm -f -- "${destination}" || return 1
     sync -f "${destination_directory}" || return 1
   fi
+}
+
+sync_existing_directories() {
+  local path
+  for path in "$@"; do
+    if [[ -d "${path}" ]]; then
+      sync -f "${path}" || return 1
+    fi
+  done
+}
+
+download_file() {
+  local url="$1" destination="$2" attempt
+  for attempt in 1 2 3 4; do
+    if curl -q -fL --connect-timeout 10 --max-time 300 \
+      "${url}" -o "${destination}"; then
+      return 0
+    fi
+    rm -f -- "${destination}" || return 1
+    (( attempt >= 4 )) || sleep "${attempt}" || return 1
+  done
+  return 1
 }
 
 flush_install_payload_for_commit() {
@@ -1438,6 +1460,16 @@ flush_fresh_cleanup_before_disarm() {
     "${SYSCTL_FILE}"
     "${TMPFILES_FILE}"
   )
+  local -a cleanup_sync_dirs=(
+    /opt
+    /etc
+    /var/lib
+    /var/backups
+    /etc/systemd/system
+    /etc/sudoers.d
+    /etc/sysctl.d
+    /etc/tmpfiles.d
+  )
   for path in "${removed_paths[@]}"; do
     [[ ! -e "${path}" && ! -L "${path}" ]] || return 1
   done
@@ -1457,15 +1489,7 @@ flush_fresh_cleanup_before_disarm() {
     current_value="$(sysctl -n net.ipv4.tcp_congestion_control)" || return 1
     [[ "${current_value}" == "${FRESH_ORIGINAL_CC}" ]] || return 1
   fi
-  sync -f \
-    /opt \
-    /etc \
-    /var/lib \
-    /var/backups \
-    /etc/systemd/system \
-    /etc/sudoers.d \
-    /etc/sysctl.d \
-    /etc/tmpfiles.d
+  sync_existing_directories "${cleanup_sync_dirs[@]}"
 }
 
 arm_fresh_install_transaction() {
@@ -3834,9 +3858,9 @@ if stage_verified_installed_binary \
   /opt/hysteria2-panel/bin/hysteria "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria"; then
   echo "复用已安装且哈希匹配的 root-owned Hysteria ${HYSTERIA_VERSION}"
 else
-  curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
+  download_file \
     "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" \
-    -o "${TMP_DIR}/hysteria"
+    "${TMP_DIR}/hysteria"
   printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
     || fail "Hysteria SHA-256 校验失败"
 fi
@@ -3845,24 +3869,24 @@ if stage_verified_installed_binary \
   /opt/hysteria2-panel/bin/cosign "${COSIGN_SHA256}" "${TMP_DIR}/cosign"; then
   echo "复用已安装且哈希匹配的 root-owned Cosign ${COSIGN_VERSION}"
 else
-  curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
+  download_file \
     "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_ASSET}" \
-    -o "${TMP_DIR}/cosign"
+    "${TMP_DIR}/cosign"
   printf '%s  %s\n' "${COSIGN_SHA256}" "${TMP_DIR}/cosign" | sha256sum --check --status \
     || fail "Cosign SHA-256 校验失败"
 fi
 install -d -m 0755 "${TMP_DIR}/hy2panel"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${QRCODEGEN_SOURCE_URL}" -o "${TMP_DIR}/qrcodegen.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${TCP_PROBE_SOURCE_URL}" -o "${TMP_DIR}/tcp_probe.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_INIT_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/__init__.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_VERSION_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/version.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_WEB_ASSETS_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/web_assets.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_OPERATIONS_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/operations.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_RELEASE_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/release.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_HEALTH_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/health.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_CERTIFICATE_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/certificate.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_SYSTEMD_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/systemd.py"
+download_file "${PANEL_SOURCE_URL}" "${TMP_DIR}/hysteria2_panel.py"
+download_file "${QRCODEGEN_SOURCE_URL}" "${TMP_DIR}/qrcodegen.py"
+download_file "${TCP_PROBE_SOURCE_URL}" "${TMP_DIR}/tcp_probe.py"
+download_file "${HY2PANEL_INIT_SOURCE_URL}" "${TMP_DIR}/hy2panel/__init__.py"
+download_file "${HY2PANEL_VERSION_SOURCE_URL}" "${TMP_DIR}/hy2panel/version.py"
+download_file "${HY2PANEL_WEB_ASSETS_SOURCE_URL}" "${TMP_DIR}/hy2panel/web_assets.py"
+download_file "${HY2PANEL_OPERATIONS_SOURCE_URL}" "${TMP_DIR}/hy2panel/operations.py"
+download_file "${HY2PANEL_RELEASE_SOURCE_URL}" "${TMP_DIR}/hy2panel/release.py"
+download_file "${HY2PANEL_HEALTH_SOURCE_URL}" "${TMP_DIR}/hy2panel/health.py"
+download_file "${HY2PANEL_CERTIFICATE_SOURCE_URL}" "${TMP_DIR}/hy2panel/certificate.py"
+download_file "${HY2PANEL_SYSTEMD_SOURCE_URL}" "${TMP_DIR}/hy2panel/systemd.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
 printf '%s  %s\n' "${QRCODEGEN_SHA256}" "${TMP_DIR}/qrcodegen.py" | sha256sum --check --status \

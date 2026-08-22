@@ -11,13 +11,12 @@
 
 部署目标需要 systemd、root 权限、Python 3.8 或更高版本，以及 `apt`、`dnf` 或 `yum` 中至少一个受支持的软件包管理器。当前兼容性按自动化证据分层：
 
-- **定期完整 E2E**：Ubuntu 24.04 LTS 与 Rocky Linux 9 的 amd64/arm64；nightly 会在干净的 systemd 容器中执行完整安装、升级和异常中断恢复；
-- **已纳入矩阵、待首次绿灯**：Debian stable 的 amd64/arm64；本变更推送后必须等待两项 nightly 首次通过，绿灯前按 canary 支持处理；
+- **定期完整 E2E**：Ubuntu 24.04 LTS、Debian stable 与 Rocky Linux 9 的 amd64/arm64；nightly 会在干净的 systemd 容器中执行完整安装、升级和异常中断恢复；
 - **尽力支持**：其他 Debian/Ubuntu 版本，以及 AlmaLinux、CentOS Stream、Fedora 等兼容 `apt`/`dnf`/`yum` 的 systemd 发行版。它们共享安装器路径但没有逐版本、逐架构的完整 E2E 证明，生产部署前必须先在同版本 canary 验证；SELinux enforcing 主机还需单独验证策略和日志。
 
 ```bash
 set -euo pipefail
-version=0.22.0
+version=0.22.1
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
