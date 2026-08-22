@@ -15,7 +15,9 @@ HY2PANEL_WEB_ASSETS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyste
 HY2PANEL_OPERATIONS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/operations.py"
 HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/release.py"
 HY2PANEL_HEALTH_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/health.py"
-PANEL_SHA256="6ce11e8a8bb13d033740843333b37556894dd0babc95abc7c3746c2d53dfe03d"
+HY2PANEL_CERTIFICATE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/certificate.py"
+HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/systemd.py"
+PANEL_SHA256="6d10f41a1327999a7dda81ab407404b005ae36e3ccc3d8cb1f5c489c3058fb5c"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
@@ -23,7 +25,9 @@ HY2PANEL_VERSION_SHA256="f54a4979887a10ed54f31bee77e05e68d5421d61a101214b99b06b1
 HY2PANEL_WEB_ASSETS_SHA256="77bcc20e8296320d0af69fe82402f85e058933c28da40f6d558cc50448674ca8"
 HY2PANEL_OPERATIONS_SHA256="2660f871020b95ed648df0b0d72ea7d6ca5f9a05f82634639a4183c97dbe9f39"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
-HY2PANEL_HEALTH_SHA256="df80fdfe7e6220cadeb25d402dde3e00ac26189ad50e1c5cc28647bde460382f"
+HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
+HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
+HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
@@ -41,7 +45,14 @@ TMPFILES_FILE=/etc/tmpfiles.d/hysteria2-panel.conf
 MAINTENANCE_RUNTIME_DIR=/run/hysteria2-panel-maintenance
 MAINTENANCE_LOCK_FILE=${MAINTENANCE_RUNTIME_DIR}/lock
 MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
-FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer
+FRESH_IN_PROGRESS_MARKER=/etc/.hysteria2-panel-installing-by-installer
+LEGACY_FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer
+FRESH_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FRESH_TRANSACTION_V1
+FRESH_RECOVERY_SCRIPT=/var/backups/hysteria2-panel/.install-recover.sh
+FRESH_RECOVERY_UNIT=/etc/systemd/system/hysteria2-panel-install-recover.service
+FRESH_RECOVERY_DROPIN=/etc/systemd/system/hysteria2-panel.service.d/05-fresh-install-recovery.conf
+FRESH_RECOVERY_SERVER_DROPIN=/etc/systemd/system/hysteria2-panel-server.service.d/05-fresh-install-recovery.conf
+FRESH_RECOVERY_SERVER_443_DROPIN=/etc/systemd/system/hysteria2-panel-server-443.service.d/05-fresh-install-recovery.conf
 RESTORE_ACTIVE_MARKER=/etc/hysteria2-panel/.restore-active
 RESTORE_CAPTURED_ARCHIVE=/etc/hysteria2-panel/.restore-active.archive
 RESTORE_PENDING_ARCHIVE=/var/lib/hysteria2-panel/backup-restore/pending-restore.zip
@@ -56,6 +67,9 @@ BACKUP_MAX_COUNT=10
 BACKUP_MIN_HEADROOM_KIB=65536
 UFW_RULES_PATH=/etc/ufw
 UFW_TEMPLATE_PATH=/usr/share/ufw/iptables
+MANAGED_FIREWALL_STATE_FILE=/etc/hysteria2-panel/managed-firewall.rules
+FIREWALL_TRANSACTION_FILE=/etc/hysteria2-panel/.firewall-transaction
+FIREWALL_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FIREWALL_TRANSACTION_V1
 ROLLBACK_REQUIRED=0
 FRESH_INSTALL_MUTATED=0
 BACKUP_DIR=""
@@ -71,6 +85,9 @@ FIREWALL_RULES=()
 FIREWALL_ZONES=()
 FIREWALL_PENDING=()
 FIREWALL_APPLIED=()
+FIREWALL_OWNED=()
+FIREWALL_TRANSACTION_LINES=()
+FIREWALL_NEWLY_OWNED=()
 UFW_ADDED_RULES=""
 INSTALL_COMMITTED=0
 INSTALL_FINALIZING=0
@@ -82,6 +99,7 @@ LEGACY_RESTORE_GUARD_OWNED=0
 TMP_DIR=""
 RECOVER_UPGRADE=0
 VERIFY_RECOVERED_UPGRADE=0
+RECOVER_FRESH=0
 MAINTENANCE_LOCK_HELD=0
 ORIGINAL_ARGS=()
 
@@ -107,6 +125,42 @@ Hysteria2-panel 一键部署
 升级默认保留现有管理员；需要重置时设置 RESET_ADMIN=1。
 出站策略默认 full（放行公网目标的全部端口）；需要网页/视频端口白名单时设置 EGRESS_POLICY=web。
 EOF
+}
+
+durable_replace_file() {
+  local source_file="$1" destination="$2" mode="$3"
+  local destination_directory="${destination%/*}"
+  local destination_name="${destination##*/}"
+  local staged_file
+  [[ ! -L "${destination_directory}" && -d "${destination_directory}" ]] || return 1
+  staged_file="$(mktemp "${destination_directory}/.${destination_name}.XXXXXXXX")" || return 1
+  if ! install -o root -g root -m "${mode}" "${source_file}" "${staged_file}" ||
+    ! sync -f "${staged_file}" ||
+    ! mv -fT -- "${staged_file}" "${destination}" ||
+    ! sync -f "${destination_directory}"; then
+    rm -f -- "${staged_file}" >/dev/null 2>&1 || true
+    return 1
+  fi
+}
+
+durable_remove_file() {
+  local destination="$1"
+  local destination_directory="${destination%/*}"
+  if [[ -e "${destination}" || -L "${destination}" ]]; then
+    rm -f -- "${destination}" || return 1
+    sync -f "${destination_directory}" || return 1
+  fi
+}
+
+flush_install_payload_for_commit() {
+  sync -f \
+    /opt/hysteria2-panel \
+    /etc/hysteria2-panel \
+    /var/lib/hysteria2-panel \
+    /etc/systemd/system \
+    /etc/sudoers.d \
+    /etc/sysctl.d \
+    /etc/tmpfiles.d
 }
 
 stop_loaded_units() {
@@ -548,7 +602,8 @@ prune_automatic_backups() {
 
 rollback_firewall_after_service_recovery() {
   if declare -F rollback_firewall_changes >/dev/null 2>&1 && \
-    (( ${#FIREWALL_APPLIED[@]} > 0 )); then
+    { (( ${#FIREWALL_APPLIED[@]} > 0 )) || \
+      [[ -e "${FIREWALL_TRANSACTION_FILE}" || -L "${FIREWALL_TRANSACTION_FILE}" ]]; }; then
     if ! rollback_firewall_changes; then
       echo "警告：本次新增的防火墙规则未能全部自动撤销，请立即人工检查" >&2
       return 1
@@ -600,67 +655,12 @@ rollback_existing_install() {
     trap - ERR
     set +e
     echo "首次部署失败（退出码 ${status}），正在清理本次创建的项目文件…" >&2
-    if ! stop_loaded_units \
-      hysteria2-panel-upgrade-recover.service \
-      hysteria2-panel-restore.service \
-      hysteria2-panel-update.service \
-      hysteria2-panel-egress-full.service \
-      hysteria2-panel-egress-web.service \
-      hysteria2-panel-egress-recover.service \
-      hysteria2-panel-tcp-probe-443.service \
-      hysteria2-panel-server-443.service \
-      hysteria2-panel-tcp-probe.service \
-      hysteria2-panel-server.service \
-      hysteria2-panel-restore-resume.service \
-      hysteria2-panel-restore-recover.service \
-      hysteria2-panel.service; then
-      echo "警告：无法确认首次部署创建的进程均已停止；为避免删除运行中文件，已停止自动清理。" >&2
-      return 1
+    if ( set -e; recover_interrupted_fresh_install ); then
+      echo "已清理未完成的首次部署；可以直接重新运行安装器。" >&2
+      return 0
     fi
-    systemctl disable hysteria2-panel-upgrade-recover.service \
-      hysteria2-panel-server.service hysteria2-panel.service >/dev/null 2>&1 || true
-    rollback_firewall_after_service_recovery || true
-    rm -f -- \
-      /etc/systemd/system/hysteria2-panel.service \
-      /etc/systemd/system/hysteria2-panel-server.service \
-      /etc/systemd/system/hysteria2-panel-server-443.service \
-      /etc/systemd/system/hysteria2-panel-tcp-probe.service \
-      /etc/systemd/system/hysteria2-panel-tcp-probe-443.service \
-      /etc/systemd/system/hysteria2-panel-restore.service \
-      /etc/systemd/system/hysteria2-panel-restore-resume.service \
-      /etc/systemd/system/hysteria2-panel-restore-recover.service \
-      /etc/systemd/system/hysteria2-panel-update.service \
-      /etc/systemd/system/hysteria2-panel-egress-full.service \
-      /etc/systemd/system/hysteria2-panel-egress-web.service \
-      /etc/systemd/system/hysteria2-panel-egress-recover.service \
-      "${UPGRADE_RECOVERY_UNIT}" \
-      /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
-      /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
-      /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
-      /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
-      /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
-    rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
-    rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
-    rm -rf -- \
-      /opt/hysteria2-panel \
-      /etc/hysteria2-panel \
-      /var/lib/hysteria2-panel \
-      /var/backups/hysteria2-panel
-    reset_maintenance_lock_permissions \
-      || echo "警告：未能收紧维护锁权限；请在重试前检查 ${MAINTENANCE_RUNTIME_DIR}" >&2
-    userdel --remove hy2panel >/dev/null 2>&1
-    userdel hy2server >/dev/null 2>&1
-    groupdel hy2panel >/dev/null 2>&1
-    groupdel hy2tls >/dev/null 2>&1
-    systemctl daemon-reload
-    [[ "${NETWORK_STACK_MUTATED:-0}" != "1" ]] || {
-      [[ "${ROLLBACK_RMEM}" =~ ^[1-9][0-9]*$ ]] && sysctl -w "net.core.rmem_max=${ROLLBACK_RMEM}" >/dev/null
-      [[ "${ROLLBACK_WMEM}" =~ ^[1-9][0-9]*$ ]] && sysctl -w "net.core.wmem_max=${ROLLBACK_WMEM}" >/dev/null
-      [[ -z "${ROLLBACK_QDISC}" ]] || sysctl -w "net.core.default_qdisc=${ROLLBACK_QDISC}" >/dev/null
-      [[ -z "${ROLLBACK_CC}" ]] || sysctl -w "net.ipv4.tcp_congestion_control=${ROLLBACK_CC}" >/dev/null
-    }
-    echo "已清理未完成的首次部署；可以直接重新运行安装器。" >&2
-    return 0
+    echo "警告：首次部署未能完整回滚；事务标记与开机恢复已保留，重启或重新运行安装器会继续清场。" >&2
+    return 1
   fi
   if [[ "${ROLLBACK_REQUIRED:-0}" != "1" || "${EXISTING_INSTALL:-0}" != "1" || \
     "${BACKUP_DIR:-}" != /var/backups/hysteria2-panel/* || ! -d "${BACKUP_DIR}" ]]; then
@@ -712,6 +712,8 @@ rollback_existing_install() {
     echo "警告：无法确认所有项目服务均已停止；为避免覆盖运行中的文件，已停止自动文件回滚。备份：${BACKUP_DIR}" >&2
     return 1
   fi
+  rollback_firewall_after_service_recovery \
+    || { echo "警告：无法恢复升级前防火墙规则；已停止文件回滚。备份：${BACKUP_DIR}" >&2; return 1; }
 
   if [[ -d "${BACKUP_DIR}/opt" ]]; then
     restore_managed_directory "${BACKUP_DIR}/opt" /opt/hysteria2-panel \
@@ -943,8 +945,8 @@ acquire_maintenance_lock() {
   else
     lock_status=$?
   fi
-  if (( lock_status == 75 && RECOVER_UPGRADE == 1 )); then
-    echo "升级事务仍由安装器持锁；恢复服务本次安全跳过。"
+  if (( lock_status == 75 && (RECOVER_UPGRADE == 1 || RECOVER_FRESH == 1) )); then
+    echo "安装事务仍由安装器持锁；恢复服务本次安全跳过。"
     exit 0
   fi
   if (( lock_status == 75 )); then
@@ -995,6 +997,7 @@ assert_no_unmanaged_install_paths() {
   local path
   [[ -e "${MANAGED_MARKER}" || -L "${MANAGED_MARKER}" ]] && return 0
   [[ -e "${FRESH_IN_PROGRESS_MARKER}" || -L "${FRESH_IN_PROGRESS_MARKER}" ]] && return 0
+  [[ -e "${LEGACY_FRESH_IN_PROGRESS_MARKER}" || -L "${LEGACY_FRESH_IN_PROGRESS_MARKER}" ]] && return 0
   for path in \
     /opt/hysteria2-panel \
     /etc/hysteria2-panel \
@@ -1015,8 +1018,11 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
     /etc/systemd/system/hysteria2-panel-update.service \
+    "${FRESH_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_DROPIN_DIR}" \
+    /etc/systemd/system/hysteria2-panel-server.service.d \
+    /etc/systemd/system/hysteria2-panel-server-443.service.d \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
@@ -1184,19 +1190,424 @@ release_legacy_restore_guard() {
     -z "${dropin_paths}" && "${refuse_manual_start}" == "no" ]]
 }
 
+cleanup_orphaned_fresh_recovery_infrastructure() {
+  local artifact_found=0 backup_root=/var/backups/hysteria2-panel entry gate metadata
+  local script_contents unit_contents wants_link
+  local -a artifact_stages=() gates=(
+    "${FRESH_RECOVERY_DROPIN}"
+    "${FRESH_RECOVERY_SERVER_DROPIN}"
+    "${FRESH_RECOVERY_SERVER_443_DROPIN}"
+  )
+  local -a recovery_artifacts=(
+    "${FRESH_RECOVERY_SCRIPT}"
+    "${FRESH_RECOVERY_UNIT}"
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-install-recover.service
+    "${FRESH_RECOVERY_DROPIN}"
+    "${FRESH_RECOVERY_SERVER_DROPIN}"
+    "${FRESH_RECOVERY_SERVER_443_DROPIN}"
+  )
+  [[ ! -e "${FRESH_IN_PROGRESS_MARKER}" && ! -L "${FRESH_IN_PROGRESS_MARKER}" && \
+    ! -e "${LEGACY_FRESH_IN_PROGRESS_MARKER}" && \
+    ! -L "${LEGACY_FRESH_IN_PROGRESS_MARKER}" ]] || return 0
+  wants_link=/etc/systemd/system/multi-user.target.wants/hysteria2-panel-install-recover.service
+  shopt -s nullglob
+  artifact_stages=(
+    /var/backups/hysteria2-panel/..install-recover.sh.*
+    /etc/systemd/system/.hysteria2-panel-install-recover.service.*
+    /etc/systemd/system/hysteria2-panel.service.d/.05-fresh-install-recovery.conf.*
+    /etc/systemd/system/hysteria2-panel-server.service.d/.05-fresh-install-recovery.conf.*
+    /etc/systemd/system/hysteria2-panel-server-443.service.d/.05-fresh-install-recovery.conf.*
+  )
+  shopt -u nullglob
+  for entry in "${recovery_artifacts[@]}"; do
+    [[ ! -e "${entry}" && ! -L "${entry}" ]] || artifact_found=1
+  done
+  (( ${#artifact_stages[@]} == 0 )) || artifact_found=1
+  if (( artifact_found == 0 )); then
+    rmdir -- /etc/systemd/system/hysteria2-panel-server.service.d \
+      /etc/systemd/system/hysteria2-panel-server-443.service.d \
+      "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
+    if [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" && \
+      ! -L "${backup_root}" && -d "${backup_root}" && \
+      "$(stat -c '%u:%g:%a:%h' "${backup_root}")" == "0:0:700:2" ]]; then
+      rmdir -- "${backup_root}" >/dev/null 2>&1 || true
+    fi
+    sync -f /etc/systemd/system \
+      || fail "无法持久清除首次安装空恢复目录；安装已停止"
+    if [[ -d /var/backups ]]; then
+      sync -f /var/backups \
+        || fail "无法持久清除首次安装空恢复目录；安装已停止"
+    fi
+    return 0
+  fi
+  if [[ -e "${FRESH_RECOVERY_SCRIPT}" || -L "${FRESH_RECOVERY_SCRIPT}" || \
+    ${#artifact_stages[@]} -gt 0 ]]; then
+    [[ ! -L "${backup_root}" && -d "${backup_root}" && \
+      "$(stat -c '%u:%g:%a' "${backup_root}")" == "0:0:700" ]] \
+      || fail "发现无法认证的首次安装恢复目录；安装已停止"
+  fi
+  if [[ -e "${FRESH_RECOVERY_SCRIPT}" || -L "${FRESH_RECOVERY_SCRIPT}" ]]; then
+    [[ ! -L "${FRESH_RECOVERY_SCRIPT}" && -f "${FRESH_RECOVERY_SCRIPT}" && \
+      "$(stat -c '%u:%g:%a:%h' "${FRESH_RECOVERY_SCRIPT}")" == "0:0:700:1" ]] \
+      || fail "首次安装恢复脚本权限无效；安装已停止"
+    script_contents="$(<"${FRESH_RECOVERY_SCRIPT}")" \
+      || fail "无法读取首次安装恢复脚本；安装已停止"
+    [[ "${script_contents}" == '#!/usr/bin/env bash'* && \
+      "${script_contents}" == *"FRESH_TRANSACTION_MAGIC=${FRESH_TRANSACTION_MAGIC}"* && \
+      "${script_contents}" == *'--recover-fresh'* ]] \
+      || fail "首次安装恢复脚本身份无效；安装已停止"
+  fi
+  if [[ -e "${FRESH_RECOVERY_UNIT}" || -L "${FRESH_RECOVERY_UNIT}" ]]; then
+    [[ ! -L "${FRESH_RECOVERY_UNIT}" && -f "${FRESH_RECOVERY_UNIT}" && \
+      "$(stat -c '%u:%g:%a:%h' "${FRESH_RECOVERY_UNIT}")" == "0:0:644:1" ]] \
+      || fail "首次安装恢复 unit 身份无效；安装已停止"
+    unit_contents="$(<"${FRESH_RECOVERY_UNIT}")" \
+      || fail "无法读取首次安装恢复 unit；安装已停止"
+    [[ "${unit_contents}" == *"ConditionPathExists=${FRESH_IN_PROGRESS_MARKER}"* && \
+      "${unit_contents}" == *"ExecStart=/bin/bash ${FRESH_RECOVERY_SCRIPT} --recover-fresh"* ]] \
+      || fail "首次安装恢复 unit 内容无效；安装已停止"
+  fi
+  if (( ${#artifact_stages[@]} > 0 )); then
+    for entry in "${artifact_stages[@]}"; do
+      [[ ! -L "${entry}" && -f "${entry}" ]] \
+        || fail "首次安装恢复暂存路径无效；安装已停止"
+      metadata="$(stat -c '%u:%g:%a:%h' "${entry}")" \
+        || fail "无法核验首次安装恢复暂存文件；安装已停止"
+      [[ "${metadata}" == "0:0:600:1" || "${metadata}" == "0:0:644:1" ]] \
+        || [[ "${metadata}" == "0:0:700:1" ]] \
+        || fail "首次安装恢复暂存文件权限无效；安装已停止"
+    done
+  fi
+  if [[ -e "${wants_link}" || -L "${wants_link}" ]]; then
+    [[ -L "${wants_link}" && -f "${FRESH_RECOVERY_UNIT}" && \
+      "${wants_link}" -ef "${FRESH_RECOVERY_UNIT}" ]] \
+      || fail "首次安装恢复启用链接无效；安装已停止"
+  fi
+  for gate in "${gates[@]}"; do
+    [[ ! -e "${gate}" && ! -L "${gate}" ]] && continue
+    [[ ! -L "${gate}" && -f "${gate}" && \
+      "$(stat -c '%u:%g:%a:%h' "${gate}")" == "0:0:644:1" && \
+      "$(<"${gate}")" == $'[Unit]\nRequires=hysteria2-panel-install-recover.service\nAfter=hysteria2-panel-install-recover.service' ]] \
+      || fail "首次安装启动门禁身份无效；安装已停止"
+  done
+  systemctl disable hysteria2-panel-install-recover.service >/dev/null 2>&1 || true
+  rm -f -- "${wants_link}" "${FRESH_RECOVERY_UNIT}" "${FRESH_RECOVERY_SCRIPT}" \
+    "${FRESH_RECOVERY_DROPIN}" "${FRESH_RECOVERY_SERVER_DROPIN}" \
+    "${FRESH_RECOVERY_SERVER_443_DROPIN}"
+  (( ${#artifact_stages[@]} == 0 )) || rm -f -- "${artifact_stages[@]}"
+  rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" \
+    /etc/systemd/system/hysteria2-panel-server.service.d \
+    /etc/systemd/system/hysteria2-panel-server-443.service.d \
+    "${backup_root}" >/dev/null 2>&1 || true
+  sync -f /etc/systemd/system /etc/systemd/system/multi-user.target.wants /var/backups \
+    || fail "无法持久清除首次安装恢复残留；安装已停止"
+  systemctl daemon-reload \
+    || fail "无法刷新首次安装恢复残留的 systemd 状态；安装已停止"
+  echo "已清理上次在事务标记前中断的首次安装恢复基础设施。"
+}
+
+read_fresh_install_transaction() {
+  local marker_path="$1" marker_hardlinks marker_line marker_metadata marker_magic
+  local -a transaction_lines=()
+  FRESH_ORIGINAL_RMEM=""
+  FRESH_ORIGINAL_WMEM=""
+  FRESH_ORIGINAL_QDISC=""
+  FRESH_ORIGINAL_CC=""
+  [[ ! -L "${marker_path}" && -f "${marker_path}" ]] || return 1
+  marker_metadata="$(stat -c '%u:%g:%a' "${marker_path}")" || return 1
+  marker_hardlinks="$(stat -c '%h' "${marker_path}")" || return 1
+  [[ "${marker_metadata}" == "0:0:600" && "${marker_hardlinks}" == "1" ]] || return 1
+  while IFS= read -r marker_line || [[ -n "${marker_line}" ]]; do
+    transaction_lines+=("${marker_line}")
+  done < "${marker_path}"
+  if [[ "${marker_path}" == "${LEGACY_FRESH_IN_PROGRESS_MARKER}" ]]; then
+    [[ ${#transaction_lines[@]} -eq 1 && \
+      "${transaction_lines[0]}" =~ ^Hysteria2-panel\ installer\ [0-9]+\.[0-9]+\.[0-9]+$ ]] \
+      || return 1
+    return 0
+  fi
+  [[ ${#transaction_lines[@]} -eq 5 ]] || return 1
+  marker_magic="${transaction_lines[0]}"
+  [[ "${marker_magic}" == "${FRESH_TRANSACTION_MAGIC}" ]] || return 1
+  [[ "${transaction_lines[1]}" =~ ^rmem=([0-9]+)$ ]] || return 1
+  FRESH_ORIGINAL_RMEM="${BASH_REMATCH[1]}"
+  [[ "${transaction_lines[2]}" =~ ^wmem=([0-9]+)$ ]] || return 1
+  FRESH_ORIGINAL_WMEM="${BASH_REMATCH[1]}"
+  [[ "${transaction_lines[3]}" =~ ^qdisc=([A-Za-z0-9_.+-]+)$ ]] || return 1
+  FRESH_ORIGINAL_QDISC="${BASH_REMATCH[1]}"
+  [[ "${transaction_lines[4]}" =~ ^cc=([A-Za-z0-9_.+-]+)$ ]] || return 1
+  FRESH_ORIGINAL_CC="${BASH_REMATCH[1]}"
+}
+
+restore_fresh_install_sysctls() {
+  [[ -z "${FRESH_ORIGINAL_RMEM}" ]] || \
+    sysctl -w "net.core.rmem_max=${FRESH_ORIGINAL_RMEM}" >/dev/null || return 1
+  [[ -z "${FRESH_ORIGINAL_WMEM}" ]] || \
+    sysctl -w "net.core.wmem_max=${FRESH_ORIGINAL_WMEM}" >/dev/null || return 1
+  [[ -z "${FRESH_ORIGINAL_QDISC}" ]] || \
+    sysctl -w "net.core.default_qdisc=${FRESH_ORIGINAL_QDISC}" >/dev/null || return 1
+  [[ -z "${FRESH_ORIGINAL_CC}" ]] || \
+    sysctl -w "net.ipv4.tcp_congestion_control=${FRESH_ORIGINAL_CC}" >/dev/null || return 1
+}
+
+remove_fresh_install_principals() {
+  local principal principal_group
+  for principal in hy2panel hy2server; do
+    if id -u "${principal}" >/dev/null 2>&1; then
+      if [[ "${principal}" == "hy2panel" ]]; then
+        userdel --remove "${principal}" >/dev/null 2>&1 || return 1
+      else
+        userdel "${principal}" >/dev/null 2>&1 || return 1
+      fi
+    fi
+    ! id -u "${principal}" >/dev/null 2>&1 || return 1
+  done
+  for principal_group in hy2panel hy2tls; do
+    if getent group "${principal_group}" >/dev/null 2>&1; then
+      groupdel "${principal_group}" >/dev/null 2>&1 || return 1
+    fi
+    ! getent group "${principal_group}" >/dev/null 2>&1 || return 1
+  done
+}
+
+verify_fresh_install_commit_payload() {
+  local expected_metadata path require_nonempty
+  local -a required_files=(
+    '/opt/hysteria2-panel/bin/hysteria|root:root:755:1|1'
+    '/opt/hysteria2-panel/bin/cosign|root:root:755:1|1'
+    '/opt/hysteria2-panel/hysteria2_panel.py|root:root:755:1|1'
+    '/opt/hysteria2-panel/qrcodegen.py|root:root:644:1|1'
+    '/opt/hysteria2-panel/tcp_probe.py|root:root:755:1|1'
+    '/opt/hysteria2-panel/hy2panel/systemd.py|root:root:644:1|1'
+    '/etc/hysteria2-panel/panel.env|root:hy2panel:640:1|1'
+    '/etc/hysteria2-panel/hysteria.yaml|root:hy2tls:640:1|1'
+    '/etc/hysteria2-panel/server.crt|root:hy2tls:640:1|1'
+    '/etc/hysteria2-panel/server.key|root:hy2tls:640:1|1'
+    '/var/lib/hysteria2-panel/panel.db|hy2panel:hy2panel:600:1|1'
+    '/etc/systemd/system/hysteria2-panel.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-server.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-upgrade-recover.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel.service.d/10-hysteria2-panel-upgrade-recovery.conf|root:root:644:1|1'
+    '/etc/sudoers.d/hysteria2-panel|root:root:440:1|1'
+    "${SYSCTL_FILE}|root:root:644:1|1"
+    "${TMPFILES_FILE}|root:root:644:1|1"
+  )
+  for path in "${required_files[@]}"; do
+    IFS='|' read -r path expected_metadata require_nonempty <<< "${path}"
+    [[ ! -L "${path}" && -f "${path}" ]] || return 1
+    [[ "$(stat -c '%U:%G:%a:%h' "${path}")" == "${expected_metadata}" ]] || return 1
+    [[ "${require_nonempty}" != "1" || -s "${path}" ]] || return 1
+  done
+}
+
+flush_fresh_cleanup_before_disarm() {
+  local current_value path
+  local -a removed_paths=(
+    /opt/hysteria2-panel
+    /etc/hysteria2-panel
+    /var/lib/hysteria2-panel
+    /etc/systemd/system/hysteria2-panel.service
+    /etc/systemd/system/hysteria2-panel-server.service
+    /etc/systemd/system/hysteria2-panel-server-443.service
+    /etc/systemd/system/hysteria2-panel-tcp-probe.service
+    /etc/systemd/system/hysteria2-panel-tcp-probe-443.service
+    /etc/systemd/system/hysteria2-panel-restore.service
+    /etc/systemd/system/hysteria2-panel-restore-resume.service
+    /etc/systemd/system/hysteria2-panel-restore-recover.service
+    /etc/systemd/system/hysteria2-panel-update.service
+    /etc/systemd/system/hysteria2-panel-egress-full.service
+    /etc/systemd/system/hysteria2-panel-egress-web.service
+    /etc/systemd/system/hysteria2-panel-egress-recover.service
+    "${UPGRADE_RECOVERY_SCRIPT}"
+    "${UPGRADE_RECOVERY_UNIT}"
+    "${UPGRADE_RECOVERY_DROPIN}"
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service
+    /etc/sudoers.d/hysteria2-panel
+    "${SYSCTL_FILE}"
+    "${TMPFILES_FILE}"
+  )
+  for path in "${removed_paths[@]}"; do
+    [[ ! -e "${path}" && ! -L "${path}" ]] || return 1
+  done
+  if [[ -n "${FRESH_ORIGINAL_RMEM}" ]]; then
+    current_value="$(sysctl -n net.core.rmem_max)" || return 1
+    [[ "${current_value}" == "${FRESH_ORIGINAL_RMEM}" ]] || return 1
+  fi
+  if [[ -n "${FRESH_ORIGINAL_WMEM}" ]]; then
+    current_value="$(sysctl -n net.core.wmem_max)" || return 1
+    [[ "${current_value}" == "${FRESH_ORIGINAL_WMEM}" ]] || return 1
+  fi
+  if [[ -n "${FRESH_ORIGINAL_QDISC}" ]]; then
+    current_value="$(sysctl -n net.core.default_qdisc)" || return 1
+    [[ "${current_value}" == "${FRESH_ORIGINAL_QDISC}" ]] || return 1
+  fi
+  if [[ -n "${FRESH_ORIGINAL_CC}" ]]; then
+    current_value="$(sysctl -n net.ipv4.tcp_congestion_control)" || return 1
+    [[ "${current_value}" == "${FRESH_ORIGINAL_CC}" ]] || return 1
+  fi
+  sync -f \
+    /opt \
+    /etc \
+    /var/lib \
+    /var/backups \
+    /etc/systemd/system \
+    /etc/sudoers.d \
+    /etc/sysctl.d \
+    /etc/tmpfiles.d
+}
+
+arm_fresh_install_transaction() {
+  local original_cc original_qdisc original_rmem original_wmem transaction_stage
+  [[ ! -e "${FRESH_IN_PROGRESS_MARKER}" && ! -L "${FRESH_IN_PROGRESS_MARKER}" ]] \
+    || fail "首次安装事务标记已存在；安装已停止"
+  original_rmem="$(sysctl -n net.core.rmem_max)" \
+    || fail "无法读取当前 UDP 接收缓冲；安装已停止"
+  original_wmem="$(sysctl -n net.core.wmem_max)" \
+    || fail "无法读取当前 UDP 发送缓冲；安装已停止"
+  original_qdisc="$(sysctl -n net.core.default_qdisc)" \
+    || fail "无法读取当前队列算法；安装已停止"
+  original_cc="$(sysctl -n net.ipv4.tcp_congestion_control)" \
+    || fail "无法读取当前拥塞控制算法；安装已停止"
+  [[ "${original_rmem}" =~ ^[0-9]+$ && "${original_wmem}" =~ ^[0-9]+$ && \
+    "${original_qdisc}" =~ ^[A-Za-z0-9_.+-]+$ && \
+    "${original_cc}" =~ ^[A-Za-z0-9_.+-]+$ ]] \
+    || fail "当前网络参数无法安全写入首次安装事务；安装已停止"
+  transaction_stage="${TMP_DIR}/fresh-install-transaction"
+  printf '%s\nrmem=%s\nwmem=%s\nqdisc=%s\ncc=%s\n' \
+    "${FRESH_TRANSACTION_MAGIC}" "${original_rmem}" "${original_wmem}" \
+    "${original_qdisc}" "${original_cc}" > "${transaction_stage}"
+  FRESH_INSTALL_MUTATED=1
+  durable_replace_file "${transaction_stage}" "${FRESH_IN_PROGRESS_MARKER}" 0600 \
+    || fail "无法持久化首次安装事务；安装已停止"
+}
+
+install_fresh_recovery_infrastructure() {
+  local recovery_unit_stage="${TMP_DIR}/hysteria2-panel-install-recover.service"
+  install -d -o root -g root -m 0700 /var/backups/hysteria2-panel
+  sync -f /var/backups /var/backups/hysteria2-panel \
+    || fail "无法持久化首次安装恢复目录；安装已停止"
+  durable_replace_file "$0" "${FRESH_RECOVERY_SCRIPT}" 0700 \
+    || fail "无法持久化首次安装恢复脚本；安装已停止"
+  cat > "${recovery_unit_stage}" <<EOF
+[Unit]
+Description=Recover an interrupted Hysteria 2 panel fresh install before startup
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service
+ConditionPathExists=${FRESH_IN_PROGRESS_MARKER}
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash ${FRESH_RECOVERY_SCRIPT} --recover-fresh
+TimeoutStartSec=15min
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+PrivateTmp=true
+ProtectHome=true
+RestrictSUIDSGID=true
+LockPersonality=true
+TasksMax=128
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  durable_replace_file "${recovery_unit_stage}" "${FRESH_RECOVERY_UNIT}" 0644 \
+    || fail "无法持久化首次安装恢复 unit；安装已停止"
+  systemctl daemon-reload || fail "无法加载首次安装恢复 unit；安装已停止"
+  systemctl enable hysteria2-panel-install-recover.service \
+    || fail "无法启用首次安装开机恢复；安装已停止"
+  sync -f /etc/systemd/system \
+    /etc/systemd/system/multi-user.target.wants \
+    || fail "无法持久化首次安装开机恢复；安装已停止"
+}
+
+install_fresh_recovery_gate() {
+  local dropin dropin_directory
+  local gate_stage="${TMP_DIR}/05-fresh-install-recovery.conf"
+  local -a dropins=(
+    "${FRESH_RECOVERY_DROPIN}"
+    "${FRESH_RECOVERY_SERVER_DROPIN}"
+  )
+  (( UDP_443_ENABLED == 0 )) || dropins+=("${FRESH_RECOVERY_SERVER_443_DROPIN}")
+  cat > "${gate_stage}" <<'EOF'
+[Unit]
+Requires=hysteria2-panel-install-recover.service
+After=hysteria2-panel-install-recover.service
+EOF
+  for dropin in "${dropins[@]}"; do
+    dropin_directory="${dropin%/*}"
+    install -d -o root -g root -m 0755 "${dropin_directory}"
+    sync -f /etc/systemd/system "${dropin_directory}" \
+      || fail "无法持久化首次安装启动门禁目录；安装已停止"
+    durable_replace_file "${gate_stage}" "${dropin}" 0644 \
+      || fail "无法持久化首次安装启动门禁；安装已停止"
+  done
+  systemctl daemon-reload || fail "无法加载首次安装启动门禁；安装已停止"
+}
+
+disarm_fresh_install_transaction() {
+  durable_remove_file "${FRESH_IN_PROGRESS_MARKER}" || return 1
+  rm -f -- "${FRESH_RECOVERY_DROPIN}" \
+    "${FRESH_RECOVERY_SERVER_DROPIN}" \
+    "${FRESH_RECOVERY_SERVER_443_DROPIN}" || return 1
+  rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
+  rmdir -- /etc/systemd/system/hysteria2-panel-server.service.d \
+    /etc/systemd/system/hysteria2-panel-server-443.service.d \
+    >/dev/null 2>&1 || true
+  sync -f /etc/systemd/system || return 1
+  systemctl daemon-reload || return 1
+  systemctl disable hysteria2-panel-install-recover.service >/dev/null 2>&1 || true
+  rm -f -- \
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-install-recover.service \
+    "${FRESH_RECOVERY_UNIT}" "${FRESH_RECOVERY_SCRIPT}" || return 1
+  rmdir -- /var/backups/hysteria2-panel >/dev/null 2>&1 || true
+  sync -f /etc/systemd/system /etc/systemd/system/multi-user.target.wants \
+    /var/backups || return 1
+  systemctl daemon-reload || return 1
+}
+
 recover_interrupted_fresh_install() {
-  local marker_metadata marker_value
-  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] || return 0
-  [[ -e "${FRESH_IN_PROGRESS_MARKER}" || -L "${FRESH_IN_PROGRESS_MARKER}" ]] || return 0
-  [[ ! -L "${FRESH_IN_PROGRESS_MARKER}" && -f "${FRESH_IN_PROGRESS_MARKER}" ]] \
+  local active_marker="" marker_metadata
+  if [[ -e "${FRESH_IN_PROGRESS_MARKER}" || -L "${FRESH_IN_PROGRESS_MARKER}" ]]; then
+    active_marker="${FRESH_IN_PROGRESS_MARKER}"
+  elif [[ -e "${LEGACY_FRESH_IN_PROGRESS_MARKER}" || \
+    -L "${LEGACY_FRESH_IN_PROGRESS_MARKER}" ]]; then
+    active_marker="${LEGACY_FRESH_IN_PROGRESS_MARKER}"
+  else
+    return 0
+  fi
+  [[ ! -L "${active_marker}" && -f "${active_marker}" ]] \
     || fail "发现无效的首次安装事务标记；为避免接管未知文件，安装已停止"
-  marker_metadata="$(stat -c '%u:%g:%a' "${FRESH_IN_PROGRESS_MARKER}")" \
+  marker_metadata="$(stat -c '%u:%g:%a' "${active_marker}")" \
     || fail "无法核验首次安装事务标记；安装已停止"
-  marker_value="$(cat "${FRESH_IN_PROGRESS_MARKER}")" \
-    || fail "无法读取首次安装事务标记；安装已停止"
-  [[ "${marker_metadata}" == "0:0:600" && \
-    "${marker_value}" == "Hysteria2-panel installer ${PANEL_VERSION}" ]] \
+  [[ "${marker_metadata}" == "0:0:600" ]] \
+    || fail "首次安装事务标记权限无效；安装已停止"
+  read_fresh_install_transaction "${active_marker}" \
     || fail "首次安装事务标记不属于当前安装器；安装已停止"
+  if [[ -e "${MANAGED_MARKER}" || -L "${MANAGED_MARKER}" ]]; then
+    [[ ! -L "${MANAGED_MARKER}" && -f "${MANAGED_MARKER}" && ! -s "${MANAGED_MARKER}" && \
+      "$(stat -c '%u:%g:%a:%h' "${MANAGED_MARKER}")" == "0:0:644:1" ]] \
+      || fail "首次安装提交标记无效；安装已停止"
+    verify_fresh_install_commit_payload \
+      || fail "首次安装提交文件不完整；恢复门禁已保留，安装已停止"
+    if declare -F finalize_firewall_transaction >/dev/null 2>&1; then
+      finalize_firewall_transaction \
+        || fail "无法收口已提交的防火墙事务；安装已停止"
+    fi
+    if [[ "${active_marker}" == "${FRESH_IN_PROGRESS_MARKER}" ]]; then
+      disarm_fresh_install_transaction \
+        || fail "无法清除已提交的首次安装恢复基础设施；安装已停止"
+    else
+      durable_remove_file "${active_marker}" \
+        || fail "无法清除已提交的首次安装事务；安装已停止"
+    fi
+    echo "检测到已完成但未收口的首次部署，事务已安全提交。"
+    return 0
+  fi
   echo "检测到上次未完成的首次部署，正在安全清理后重试…"
   stop_loaded_units \
     hysteria2-panel-upgrade-recover.service \
@@ -1216,6 +1627,10 @@ recover_interrupted_fresh_install() {
   systemctl disable hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-server.service hysteria2-panel.service \
     >/dev/null 2>&1 || true
+  if declare -F rollback_persisted_firewall_transaction >/dev/null 2>&1; then
+    rollback_persisted_firewall_transaction \
+      || fail "无法撤销上次首次部署创建的防火墙规则；安装已停止"
+  fi
   rm -f -- \
     /etc/systemd/system/hysteria2-panel.service \
     /etc/systemd/system/hysteria2-panel-server.service \
@@ -1229,6 +1644,7 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-egress-full.service \
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
+    "${UPGRADE_RECOVERY_SCRIPT}" \
     "${UPGRADE_RECOVERY_UNIT}" \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
@@ -1237,17 +1653,27 @@ recover_interrupted_fresh_install() {
     /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
   rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
   rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
+  remove_fresh_install_principals \
+    || fail "无法删除首次部署创建的系统账号或组；安装已停止"
   rm -rf -- \
     /opt/hysteria2-panel \
     /etc/hysteria2-panel \
-    /var/lib/hysteria2-panel \
-    /var/backups/hysteria2-panel
+    /var/lib/hysteria2-panel
+  restore_fresh_install_sysctls \
+    || fail "无法恢复首次部署前的内核网络参数；安装已停止"
   reset_maintenance_lock_permissions \
     || fail "无法收紧维护锁权限；为避免遗留未知共享权限，安装已停止"
-  userdel --remove hy2panel >/dev/null 2>&1 || true
-  userdel hy2server >/dev/null 2>&1 || true
-  groupdel hy2panel >/dev/null 2>&1 || true
-  groupdel hy2tls >/dev/null 2>&1 || true
+  flush_fresh_cleanup_before_disarm \
+    || fail "无法验证并持久化首次部署清场；恢复门禁已保留，安装已停止"
+  if [[ "${active_marker}" == "${FRESH_IN_PROGRESS_MARKER}" ]]; then
+    disarm_fresh_install_transaction \
+      || fail "无法持久清除首次安装恢复基础设施；安装已安全清场但需人工检查残留"
+  else
+    durable_remove_file "${active_marker}" \
+      || fail "无法持久清除首次安装事务标记；安装已停止"
+  fi
+  rm -rf -- /var/backups/hysteria2-panel
+  sync
   systemctl daemon-reload || fail "无法刷新上次部署的 systemd 状态；安装已停止"
 }
 
@@ -1370,6 +1796,20 @@ assert_units_claimed_by_installer() {
       if [[ "${unit_file}" == "hysteria2-panel.service" ]]; then
         expected_dropins="${UPGRADE_RECOVERY_DROPIN}"
       fi
+      if (( EXISTING_INSTALL == 0 )) && \
+        [[ -e "${FRESH_IN_PROGRESS_MARKER}" && ! -L "${FRESH_IN_PROGRESS_MARKER}" ]]; then
+        case "${unit_file}" in
+          hysteria2-panel.service)
+            expected_dropins="${FRESH_RECOVERY_DROPIN} ${UPGRADE_RECOVERY_DROPIN}"
+            ;;
+          hysteria2-panel-server.service)
+            expected_dropins="${FRESH_RECOVERY_SERVER_DROPIN}"
+            ;;
+          hysteria2-panel-server-443.service)
+            expected_dropins="${FRESH_RECOVERY_SERVER_443_DROPIN}"
+            ;;
+        esac
+      fi
       [[ "${load_state}" == "loaded" && "${fragment_path}" == "${expected_path}" && \
         "${drop_in_paths}" == "${expected_dropins}" ]] \
         || fail "${unit_file} 被其他 systemd fragment 或 drop-in 覆盖；安装已停止"
@@ -1420,6 +1860,21 @@ preserve_or_restore_database() {
   rm -f -- "${database_path}-wal" "${database_path}-shm"
   cp -a "${snapshot_path}" "${database_path}" || return 1
   checkpoint_database "${database_path}"
+}
+
+stage_verified_installed_binary() {
+  local installed_path="$1" expected_sha256="$2" destination="$3"
+  local metadata
+  [[ "${expected_sha256}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ ! -L "${installed_path}" && -f "${installed_path}" ]] || return 1
+  metadata="$(stat -c '%u:%g:%a:%h' "${installed_path}")" || return 1
+  [[ "${metadata}" =~ ^0:0:([0-7]{3,4}):1$ ]] || return 1
+  (( (8#${BASH_REMATCH[1]} & 022) == 0 )) || return 1
+  printf '%s  %s\n' "${expected_sha256}" "${installed_path}" \
+    | sha256sum --check --status || return 1
+  install -o root -g root -m 0755 "${installed_path}" "${destination}" || return 1
+  printf '%s  %s\n' "${expected_sha256}" "${destination}" \
+    | sha256sum --check --status
 }
 
 ufw_rule_is_recorded() {
@@ -2264,8 +2719,382 @@ prepare_firewall() {
   FIREWALL_MANAGER="none"
 }
 
+firewall_entry_is_valid() {
+  local entry="$1" manager rule zone
+  IFS='|' read -r manager zone rule <<< "${entry}"
+  [[ "${rule}" =~ ^([1-9][0-9]{0,4})/(tcp|udp)$ ]] || return 1
+  (( BASH_REMATCH[1] <= 65535 )) || return 1
+  case "${manager}" in
+    ufw) [[ -z "${zone}" ]] ;;
+    runtime|permanent) [[ "${zone}" =~ ^[A-Za-z0-9_.-]+$ ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+firewall_array_contains() {
+  local wanted="$1" entry
+  shift
+  for entry in "$@"; do
+    [[ "${entry}" != "${wanted}" ]] || return 0
+  done
+  return 1
+}
+
+write_firewall_lines_durably() {
+  local destination="$1" stage
+  shift
+  stage="$(mktemp)" || return 1
+  if (( $# > 0 )); then
+    printf '%s\n' "$@" > "${stage}" || { rm -f -- "${stage}"; return 1; }
+  else
+    : > "${stage}"
+  fi
+  if ! durable_replace_file "${stage}" "${destination}" 0600; then
+    rm -f -- "${stage}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  rm -f -- "${stage}"
+}
+
+load_managed_firewall_state() {
+  local entry hardlinks metadata
+  FIREWALL_OWNED=()
+  [[ -e "${MANAGED_FIREWALL_STATE_FILE}" || -L "${MANAGED_FIREWALL_STATE_FILE}" ]] \
+    || return 0
+  [[ ! -L "${MANAGED_FIREWALL_STATE_FILE}" && -f "${MANAGED_FIREWALL_STATE_FILE}" ]] \
+    || return 1
+  if (( EUID == 0 )); then
+    metadata="$(stat -c '%u:%g:%a' "${MANAGED_FIREWALL_STATE_FILE}")" || return 1
+    hardlinks="$(stat -c '%h' "${MANAGED_FIREWALL_STATE_FILE}")" || return 1
+    [[ "${metadata}" == "0:0:600" && "${hardlinks}" == "1" ]] || return 1
+  fi
+  while IFS= read -r entry || [[ -n "${entry}" ]]; do
+    [[ -n "${entry}" ]] || return 1
+    firewall_entry_is_valid "${entry}" || return 1
+    if (( ${#FIREWALL_OWNED[@]} > 0 )) && \
+      firewall_array_contains "${entry}" "${FIREWALL_OWNED[@]}"; then
+      return 1
+    fi
+    FIREWALL_OWNED+=("${entry}")
+  done < "${MANAGED_FIREWALL_STATE_FILE}"
+}
+
+persist_firewall_transaction() {
+  write_firewall_lines_durably \
+    "${FIREWALL_TRANSACTION_FILE}" "${FIREWALL_TRANSACTION_LINES[@]}"
+}
+
+begin_firewall_transaction() {
+  local entry
+  # The project maintenance lock serializes installer/panel changes. Root operators
+  # must pause independent UFW/firewalld automation while this transaction runs.
+  load_managed_firewall_state \
+    || fail "项目防火墙所有权记录无效；为避免删除未知规则，安装已停止"
+  FIREWALL_TRANSACTION_LINES=("${FIREWALL_TRANSACTION_MAGIC}")
+  FIREWALL_NEWLY_OWNED=()
+  if (( ${#FIREWALL_OWNED[@]} > 0 )); then
+    for entry in "${FIREWALL_OWNED[@]}"; do
+      FIREWALL_TRANSACTION_LINES+=("old|${entry}")
+    done
+  fi
+  persist_firewall_transaction \
+    || fail "无法持久化防火墙事务；未修改规则"
+}
+
+record_firewall_transaction_operation() {
+  local operation="$1" entry="$2"
+  [[ "${operation}" == "add" || "${operation}" == "remove" ]] || return 1
+  firewall_entry_is_valid "${entry}" || return 1
+  FIREWALL_TRANSACTION_LINES+=("${operation}|${entry}")
+  persist_firewall_transaction
+}
+
+add_managed_firewall_entry() {
+  local entry="$1" manager query_status rule zone
+  IFS='|' read -r manager zone rule <<< "${entry}"
+  case "${manager}" in
+    ufw)
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      ufw_rule_is_recorded "${rule}" && return 0
+      ufw allow "${rule}" >/dev/null || return 1
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      ufw_rule_is_recorded "${rule}"
+      ;;
+    runtime)
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        return 0
+      else
+        query_status=$?
+        (( query_status == 1 )) || return 1
+      fi
+      firewall-cmd --quiet --zone="${zone}" --add-port="${rule}" || return 1
+      firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"
+      ;;
+    permanent)
+      if firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"; then
+        return 0
+      else
+        query_status=$?
+        (( query_status == 1 )) || return 1
+      fi
+      firewall-cmd --quiet --permanent --zone="${zone}" --add-port="${rule}" || return 1
+      firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"
+      ;;
+  esac
+}
+
+remove_managed_firewall_entry() {
+  local entry="$1" manager query_status rule zone
+  IFS='|' read -r manager zone rule <<< "${entry}"
+  case "${manager}" in
+    ufw)
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      ufw_rule_is_recorded "${rule}" || return 0
+      ufw --force delete allow "${rule}" >/dev/null || return 1
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      ! ufw_rule_is_recorded "${rule}"
+      ;;
+    runtime)
+      if ! firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        query_status=$?
+        (( query_status == 1 )) && return 0
+        return 1
+      fi
+      firewall-cmd --quiet --zone="${zone}" --remove-port="${rule}" || return 1
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        return 1
+      else
+        query_status=$?
+        (( query_status == 1 ))
+      fi
+      ;;
+    permanent)
+      if ! firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"; then
+        query_status=$?
+        (( query_status == 1 )) && return 0
+        return 1
+      fi
+      firewall-cmd --quiet --permanent --zone="${zone}" --remove-port="${rule}" || return 1
+      if firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"; then
+        return 1
+      else
+        query_status=$?
+        (( query_status == 1 ))
+      fi
+      ;;
+  esac
+}
+
+force_remove_managed_firewall_entry() {
+  local entry="$1" manager query_status rule zone
+  IFS='|' read -r manager zone rule <<< "${entry}"
+  case "${manager}" in
+    ufw)
+      ufw --force delete allow "${rule}" >/dev/null 2>&1 || true
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      ! ufw_rule_is_recorded "${rule}"
+      ;;
+    runtime)
+      firewall-cmd --quiet --zone="${zone}" --remove-port="${rule}" \
+        >/dev/null 2>&1 || true
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        return 1
+      else
+        query_status=$?
+        (( query_status == 1 ))
+      fi
+      ;;
+    permanent)
+      firewall-cmd --quiet --permanent --zone="${zone}" --remove-port="${rule}" \
+        >/dev/null 2>&1 || true
+      if firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"; then
+        return 1
+      else
+        query_status=$?
+        (( query_status == 1 ))
+      fi
+      ;;
+  esac
+}
+
+force_add_managed_firewall_entry() {
+  local entry="$1" manager rule zone
+  IFS='|' read -r manager zone rule <<< "${entry}"
+  case "${manager}" in
+    ufw)
+      ufw allow "${rule}" >/dev/null 2>&1 || true
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      ufw_rule_is_recorded "${rule}"
+      ;;
+    runtime)
+      firewall-cmd --quiet --zone="${zone}" --add-port="${rule}" \
+        >/dev/null 2>&1 || true
+      firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"
+      ;;
+    permanent)
+      firewall-cmd --quiet --permanent --zone="${zone}" --add-port="${rule}" \
+        >/dev/null 2>&1 || true
+      firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"
+      ;;
+  esac
+}
+
+read_firewall_transaction() {
+  local hardlinks line metadata operation payload
+  local -a lines=()
+  [[ ! -L "${FIREWALL_TRANSACTION_FILE}" && -f "${FIREWALL_TRANSACTION_FILE}" ]] \
+    || return 1
+  if (( EUID == 0 )); then
+    metadata="$(stat -c '%u:%g:%a' "${FIREWALL_TRANSACTION_FILE}")" || return 1
+    hardlinks="$(stat -c '%h' "${FIREWALL_TRANSACTION_FILE}")" || return 1
+    [[ "${metadata}" == "0:0:600" && "${hardlinks}" == "1" ]] || return 1
+  fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    lines+=("${line}")
+  done < "${FIREWALL_TRANSACTION_FILE}"
+  [[ ${#lines[@]} -ge 1 && "${lines[0]}" == "${FIREWALL_TRANSACTION_MAGIC}" ]] \
+    || return 1
+  for line in "${lines[@]:1}"; do
+    operation="${line%%|*}"
+    payload="${line#*|}"
+    [[ "${operation}" == "old" || "${operation}" == "add" || \
+      "${operation}" == "remove" ]] || return 1
+    firewall_entry_is_valid "${payload}" || return 1
+  done
+  FIREWALL_TRANSACTION_LINES=("${lines[@]}")
+}
+
+rollback_persisted_firewall_transaction() {
+  local entry index line operation rollback_failed=0
+  local -a old_state=()
+  [[ -e "${FIREWALL_TRANSACTION_FILE}" || -L "${FIREWALL_TRANSACTION_FILE}" ]] \
+    || return 0
+  read_firewall_transaction || return 1
+  for line in "${FIREWALL_TRANSACTION_LINES[@]:1}"; do
+    operation="${line%%|*}"
+    entry="${line#*|}"
+    [[ "${operation}" != "old" ]] || old_state+=("${entry}")
+  done
+  for (( index=${#FIREWALL_TRANSACTION_LINES[@]}-1; index>=1; index-- )); do
+    line="${FIREWALL_TRANSACTION_LINES[index]}"
+    operation="${line%%|*}"
+    entry="${line#*|}"
+    case "${operation}" in
+      add) force_remove_managed_firewall_entry "${entry}" || rollback_failed=1 ;;
+      remove) force_add_managed_firewall_entry "${entry}" || rollback_failed=1 ;;
+    esac
+  done
+  (( rollback_failed == 0 )) || return 1
+  if (( ${#old_state[@]} > 0 )); then
+    write_firewall_lines_durably "${MANAGED_FIREWALL_STATE_FILE}" "${old_state[@]}" \
+      || return 1
+  else
+    durable_remove_file "${MANAGED_FIREWALL_STATE_FILE}" || return 1
+  fi
+  durable_remove_file "${FIREWALL_TRANSACTION_FILE}" || return 1
+  FIREWALL_TRANSACTION_LINES=()
+  if (( ${#old_state[@]} > 0 )); then
+    FIREWALL_OWNED=("${old_state[@]}")
+  else
+    FIREWALL_OWNED=()
+  fi
+  FIREWALL_APPLIED=()
+}
+
+desired_managed_firewall_entries() {
+  local rule zone
+  case "${FIREWALL_MANAGER}" in
+    ufw)
+      for rule in "${FIREWALL_RULES[@]}"; do printf 'ufw||%s\n' "${rule}"; done
+      ;;
+    firewalld)
+      for zone in "${FIREWALL_ZONES[@]}"; do
+        for rule in "${FIREWALL_RULES[@]}"; do
+          printf 'runtime|%s|%s\npermanent|%s|%s\n' "${zone}" "${rule}" "${zone}" "${rule}"
+        done
+      done
+      ;;
+  esac
+}
+
+remove_obsolete_managed_firewall_rules() {
+  local entry
+  local -a desired_entries=() next_state=()
+  while IFS= read -r entry || [[ -n "${entry}" ]]; do
+    [[ -n "${entry}" ]] || continue
+    desired_entries+=("${entry}")
+  done < <(desired_managed_firewall_entries)
+  if (( ${#FIREWALL_OWNED[@]} > 0 )); then
+    for entry in "${FIREWALL_OWNED[@]}"; do
+      if firewall_array_contains "${entry}" "${desired_entries[@]}"; then
+        next_state+=("${entry}")
+        continue
+      fi
+      record_firewall_transaction_operation remove "${entry}" \
+        || firewall_change_failed "无法持久记录待删除的项目防火墙规则"
+      remove_managed_firewall_entry "${entry}" \
+        || firewall_change_failed "无法删除项目拥有的旧防火墙规则 ${entry}"
+    done
+  fi
+  if (( ${#FIREWALL_NEWLY_OWNED[@]} > 0 )); then
+    for entry in "${FIREWALL_NEWLY_OWNED[@]}"; do
+      if (( ${#next_state[@]} == 0 )) || \
+        ! firewall_array_contains "${entry}" "${next_state[@]}"; then
+        next_state+=("${entry}")
+      fi
+    done
+  fi
+  if (( ${#next_state[@]} > 0 )); then
+    write_firewall_lines_durably "${MANAGED_FIREWALL_STATE_FILE}" "${next_state[@]}" \
+      || firewall_change_failed "无法持久化项目防火墙所有权"
+  else
+    durable_remove_file "${MANAGED_FIREWALL_STATE_FILE}" \
+      || firewall_change_failed "无法清除空的项目防火墙所有权记录"
+  fi
+  if (( ${#next_state[@]} > 0 )); then
+    FIREWALL_OWNED=("${next_state[@]}")
+  else
+    FIREWALL_OWNED=()
+  fi
+}
+
+finalize_firewall_transaction() {
+  [[ -e "${FIREWALL_TRANSACTION_FILE}" || -L "${FIREWALL_TRANSACTION_FILE}" ]] \
+    || return 0
+  read_firewall_transaction || return 1
+  durable_remove_file "${FIREWALL_TRANSACTION_FILE}" || return 1
+  FIREWALL_TRANSACTION_LINES=()
+  FIREWALL_APPLIED=()
+}
+
+settle_committed_firewall_transaction() {
+  [[ -e "${FIREWALL_TRANSACTION_FILE}" || -L "${FIREWALL_TRANSACTION_FILE}" ]] \
+    || return 0
+  if [[ -e "${FRESH_IN_PROGRESS_MARKER}" || -L "${FRESH_IN_PROGRESS_MARKER}" || \
+    -e "${LEGACY_FRESH_IN_PROGRESS_MARKER}" || -L "${LEGACY_FRESH_IN_PROGRESS_MARKER}" || \
+    -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
+    return 0
+  fi
+  [[ ! -L "${MANAGED_MARKER}" && -f "${MANAGED_MARKER}" && ! -s "${MANAGED_MARKER}" && \
+    "$(stat -c '%u:%g:%a:%h' "${MANAGED_MARKER}")" == "0:0:644:1" ]] \
+    || fail "发现没有已提交安装标记的防火墙事务；为避免误删规则，安装已停止"
+  finalize_firewall_transaction \
+    || fail "无法收口已提交的防火墙事务；安装已停止"
+}
+
 rollback_firewall_changes() {
   local entry index manager query_status rule rollback_failed=0 zone
+  if [[ ! -e "${FIREWALL_TRANSACTION_FILE}" && \
+    ! -L "${FIREWALL_TRANSACTION_FILE}" && \
+    ${#FIREWALL_TRANSACTION_LINES[@]} -gt 0 ]]; then
+    [[ "${FIREWALL_TRANSACTION_LINES[0]}" == "${FIREWALL_TRANSACTION_MAGIC}" ]] \
+      || return 1
+    persist_firewall_transaction || return 1
+  fi
+  if [[ -e "${FIREWALL_TRANSACTION_FILE}" || -L "${FIREWALL_TRANSACTION_FILE}" ]]; then
+    rollback_persisted_firewall_transaction
+    return $?
+  fi
   for (( index=${#FIREWALL_APPLIED[@]}-1; index>=0; index-- )); do
     entry="${FIREWALL_APPLIED[index]}"
     IFS='|' read -r manager zone rule <<< "${entry}"
@@ -2313,7 +3142,7 @@ firewall_change_failed() {
 }
 
 configure_firewall() {
-  local entry final_zones preflight_manager query_status rule scope status
+  local entry final_zones owned_manager preflight_manager query_status rule scope status
   local ufw_listening_report zone
   preflight_manager="${FIREWALL_MANAGER}"
   prepare_firewall
@@ -2321,6 +3150,18 @@ configure_firewall() {
     "${preflight_manager}" != "${FIREWALL_MANAGER}" ]]; then
     fail "防火墙管理器在安装期间发生变化；未修改规则，请重试"
   fi
+  load_managed_firewall_state \
+    || fail "项目防火墙所有权记录无效；为避免删除未知规则，安装已停止"
+  if (( ${#FIREWALL_OWNED[@]} > 0 )); then
+    for entry in "${FIREWALL_OWNED[@]}"; do
+      owned_manager="${entry%%|*}"
+      if [[ "${owned_manager}" == "ufw" && "${FIREWALL_MANAGER}" != "ufw" ]] || \
+        [[ "${owned_manager}" != "ufw" && "${FIREWALL_MANAGER}" != "firewalld" ]]; then
+        fail "防火墙管理器与项目所有权记录不一致；未修改规则"
+      fi
+    done
+  fi
+  [[ "${FIREWALL_MANAGER}" == "none" ]] || begin_firewall_transaction
   case "${FIREWALL_MANAGER}" in
     none)
       if has_unmanaged_firewall_restrictions; then
@@ -2360,7 +3201,10 @@ configure_firewall() {
             || firewall_change_failed "无法解析 UFW 已配置规则"
         fi
         ufw_rule_is_recorded "${rule}" && continue
+        record_firewall_transaction_operation add "ufw||${rule}" \
+          || firewall_change_failed "无法持久记录待添加的 UFW 规则"
         FIREWALL_APPLIED+=("ufw||${rule}")
+        FIREWALL_NEWLY_OWNED+=("ufw||${rule}")
         if ! ufw allow "${rule}" >/dev/null; then
           firewall_change_failed "UFW 无法开放 ${rule}"
         fi
@@ -2434,7 +3278,10 @@ configure_firewall() {
             (( query_status == 1 )) \
               || firewall_change_failed "无法复查 firewalld ${zone} 区域的永久规则"
           fi
+          record_firewall_transaction_operation add "permanent|${zone}|${rule}" \
+            || firewall_change_failed "无法持久记录待添加的 firewalld 永久规则"
           FIREWALL_APPLIED+=("permanent|${zone}|${rule}")
+          FIREWALL_NEWLY_OWNED+=("permanent|${zone}|${rule}")
           if ! firewall-cmd --quiet --permanent --zone="${zone}" --add-port="${rule}"; then
             firewall_change_failed "firewalld 无法永久开放 ${zone} 区域的 ${rule}"
           fi
@@ -2449,7 +3296,10 @@ configure_firewall() {
             (( query_status == 1 )) \
               || firewall_change_failed "无法复查 firewalld ${zone} 区域的即时规则"
           fi
+          record_firewall_transaction_operation add "runtime|${zone}|${rule}" \
+            || firewall_change_failed "无法持久记录待添加的 firewalld 即时规则"
           FIREWALL_APPLIED+=("runtime|${zone}|${rule}")
+          FIREWALL_NEWLY_OWNED+=("runtime|${zone}|${rule}")
           if ! firewall-cmd --quiet --zone="${zone}" --add-port="${rule}"; then
             firewall_change_failed "firewalld 无法立即开放 ${zone} 区域的 ${rule}"
           fi
@@ -2492,6 +3342,7 @@ configure_firewall() {
       ;;
   esac
   if [[ "${FIREWALL_MANAGER}" != "none" ]]; then
+    remove_obsolete_managed_firewall_rules
     FIREWALL_RESULT="已自动开放 ${HYSTERIA_PORT}/tcp、${HYSTERIA_PORT}/udp、${PANEL_PORT}/tcp"
     (( UDP_443_ENABLED == 0 )) || FIREWALL_RESULT+=", 443/tcp、443/udp"
   fi
@@ -2586,6 +3437,9 @@ if [[ "${1:-}" == "--recover-upgrade" ]]; then
 elif [[ "${1:-}" == "--verify-recovered-upgrade" ]]; then
   VERIFY_RECOVERED_UPGRADE=1
   shift
+elif [[ "${1:-}" == "--recover-fresh" ]]; then
+  RECOVER_FRESH=1
+  shift
 fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
@@ -2597,11 +3451,21 @@ AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"
 
 # Package installation is itself a host mutation. Require the tiny set of
 # baseline tools needed to serialize maintenance before installing anything.
-for command_name in awk flock id install mkdir rm rmdir stat systemctl; do
+for command_name in awk flock id install mkdir mktemp mv rm rmdir stat sync systemctl; do
   command -v "${command_name}" >/dev/null 2>&1 \
     || fail "缺少基础维护锁命令 ${command_name}；未修改系统，请先安装 util-linux 和 coreutils"
 done
 acquire_maintenance_lock
+if (( RECOVER_FRESH == 1 )); then
+  for command_name in cat chmod chown getent groupdel rm stat sync sysctl systemctl userdel; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "首次安装恢复缺少命令 ${command_name}；事务标记已保留"
+  done
+  EXISTING_INSTALL=0
+  recover_interrupted_fresh_install
+  INSTALL_COMMITTED=1
+  exit 0
+fi
 if (( RECOVER_UPGRADE == 1 || VERIFY_RECOVERED_UPGRADE == 1 )); then
   for command_name in cat chmod chown cp find grep rm sha256sum ss stat sync systemctl systemd-run; do
     command -v "${command_name}" >/dev/null 2>&1 \
@@ -2616,6 +3480,8 @@ if (( RECOVER_UPGRADE == 1 || VERIFY_RECOVERED_UPGRADE == 1 )); then
   INSTALL_COMMITTED=1
   exit 0
 fi
+cleanup_orphaned_fresh_recovery_infrastructure
+settle_committed_firewall_transaction
 assert_no_pending_restore_state
 assert_no_pending_egress_state
 assert_no_pending_upgrade_state
@@ -2646,7 +3512,6 @@ for command_name in "${required_commands[@]}"; do
 done
 select_python || fail "需要 Python 3.8 或更高版本；请升级系统 Python 后重试"
 echo "运行环境：$(${PYTHON_BIN} -c 'import platform; print(platform.python_version())') / ${PYTHON_BIN}"
-ensure_sysctl_directory
 
 case "$(uname -m)" in
   x86_64|amd64)
@@ -2922,18 +3787,35 @@ fi
 
 TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
 
+if (( EXISTING_INSTALL == 0 )); then
+  install_fresh_recovery_infrastructure
+  arm_fresh_install_transaction
+  install_upgrade_recovery_infrastructure
+  install_fresh_recovery_gate
+fi
+
 echo "下载并校验 Hysteria ${HYSTERIA_VERSION}…"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
-  "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" \
-  -o "${TMP_DIR}/hysteria"
-printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
-  || fail "Hysteria SHA-256 校验失败"
+if stage_verified_installed_binary \
+  /opt/hysteria2-panel/bin/hysteria "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria"; then
+  echo "复用已安装且哈希匹配的 root-owned Hysteria ${HYSTERIA_VERSION}"
+else
+  curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
+    "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" \
+    -o "${TMP_DIR}/hysteria"
+  printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
+    || fail "Hysteria SHA-256 校验失败"
+fi
 echo "下载并校验 Cosign ${COSIGN_VERSION}…"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
-  "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_ASSET}" \
-  -o "${TMP_DIR}/cosign"
-printf '%s  %s\n' "${COSIGN_SHA256}" "${TMP_DIR}/cosign" | sha256sum --check --status \
-  || fail "Cosign SHA-256 校验失败"
+if stage_verified_installed_binary \
+  /opt/hysteria2-panel/bin/cosign "${COSIGN_SHA256}" "${TMP_DIR}/cosign"; then
+  echo "复用已安装且哈希匹配的 root-owned Cosign ${COSIGN_VERSION}"
+else
+  curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
+    "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_ASSET}" \
+    -o "${TMP_DIR}/cosign"
+  printf '%s  %s\n' "${COSIGN_SHA256}" "${TMP_DIR}/cosign" | sha256sum --check --status \
+    || fail "Cosign SHA-256 校验失败"
+fi
 install -d -m 0755 "${TMP_DIR}/hy2panel"
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${QRCODEGEN_SOURCE_URL}" -o "${TMP_DIR}/qrcodegen.py"
@@ -2944,6 +3826,8 @@ curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_WEB_ASSETS_SO
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_OPERATIONS_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/operations.py"
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_RELEASE_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/release.py"
 curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_HEALTH_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/health.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_CERTIFICATE_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/certificate.py"
+curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_SYSTEMD_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/systemd.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
 printf '%s  %s\n' "${QRCODEGEN_SHA256}" "${TMP_DIR}/qrcodegen.py" | sha256sum --check --status \
@@ -2962,6 +3846,10 @@ printf '%s  %s\n' "${HY2PANEL_RELEASE_SHA256}" "${TMP_DIR}/hy2panel/release.py" 
   || fail "hy2panel/release.py SHA-256 校验失败"
 printf '%s  %s\n' "${HY2PANEL_HEALTH_SHA256}" "${TMP_DIR}/hy2panel/health.py" | sha256sum --check --status \
   || fail "hy2panel/health.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_CERTIFICATE_SHA256}" "${TMP_DIR}/hy2panel/certificate.py" | sha256sum --check --status \
+  || fail "hy2panel/certificate.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_SYSTEMD_SHA256}" "${TMP_DIR}/hy2panel/systemd.py" | sha256sum --check --status \
+  || fail "hy2panel/systemd.py SHA-256 校验失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hysteria2_panel.py" || fail "面板源码语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/qrcodegen.py" || fail "二维码编码器语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"
@@ -3030,12 +3918,9 @@ if (( EXISTING_INSTALL == 1 )); then
 fi
 
 if (( EXISTING_INSTALL == 0 )); then
-  printf 'Hysteria2-panel installer %s\n' "${PANEL_VERSION}" > "${TMP_DIR}/fresh-install-marker"
-  FRESH_INSTALL_MUTATED=1
   install -d -o root -g root -m 0700 /etc/hysteria2-panel
-  install -o root -g root -m 0600 \
-    "${TMP_DIR}/fresh-install-marker" "${FRESH_IN_PROGRESS_MARKER}"
 fi
+ensure_sysctl_directory
 if ! getent group hy2tls >/dev/null 2>&1; then
   groupadd --system hy2tls
 fi
@@ -3051,9 +3936,6 @@ usermod -a -G hy2tls hy2panel
 install -d -o root -g hy2tls -m 0750 /etc/hysteria2-panel
 install -d -o hy2panel -g hy2panel -m 0750 /var/lib/hysteria2-panel
 install -d -o root -g root -m 0700 /var/backups/hysteria2-panel
-if (( EXISTING_INSTALL == 0 )); then
-  install_upgrade_recovery_infrastructure
-fi
 install -d -o root -g root -m 0755 /opt/hysteria2-panel
 install -d -o root -g root -m 0755 /opt/hysteria2-panel/bin
 cat > "${TMP_DIR}/hysteria2-panel.tmpfiles" <<EOF
@@ -3216,7 +4098,10 @@ Wants=network-online.target
 Before=hysteria2-panel-server.service hysteria2-panel-server-443.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=60s
+WatchdogSec=30s
 User=hy2panel
 Group=hy2panel
 EnvironmentFile=/etc/hysteria2-panel/panel.env
@@ -3250,9 +4135,10 @@ fi
 cat > /etc/systemd/system/hysteria2-panel-server.service <<EOF
 [Unit]
 Description=Hysteria 2 server
-After=network-online.target hysteria2-panel.service
+After=network-online.target hysteria2-panel.service hysteria2-panel-upgrade-recover.service hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
 Wants=network-online.target
-Requires=hysteria2-panel.service
+Wants=hysteria2-panel.service
+Requires=hysteria2-panel-upgrade-recover.service hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
 Wants=hysteria2-panel-tcp-probe.service
 ${SECONDARY_SERVER_WANTS}
 
@@ -3289,8 +4175,10 @@ if (( UDP_443_ENABLED == 1 )); then
   cat > /etc/systemd/system/hysteria2-panel-server-443.service <<'EOF'
 [Unit]
 Description=Hysteria 2 per-user UDP 443 server
-After=network-online.target hysteria2-panel.service
-Requires=hysteria2-panel.service
+After=network-online.target hysteria2-panel.service hysteria2-panel-upgrade-recover.service hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
+Wants=network-online.target
+Wants=hysteria2-panel.service
+Requires=hysteria2-panel-upgrade-recover.service hysteria2-panel-restore-recover.service hysteria2-panel-egress-recover.service
 PartOf=hysteria2-panel-server.service
 Wants=hysteria2-panel-tcp-probe-443.service
 
@@ -3674,14 +4562,20 @@ ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
   record-egress-policy-state "${EGRESS_POLICY}" \
   || fail "无法记录可验证的出站策略状态"
 configure_firewall
-install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"
+flush_install_payload_for_commit \
+  || fail "无法在提交前持久化首次部署文件；正在恢复部署前状态"
+durable_replace_file /dev/null "${MANAGED_MARKER}" 0644 \
+  || fail "无法持久化受管安装标记；正在恢复部署前状态"
 if (( EXISTING_INSTALL == 1 )); then
   clear_upgrade_transaction \
     || fail "部署已通过健康检查，但无法清除升级事务标记；正在恢复旧版本"
 fi
+if (( EXISTING_INSTALL == 0 )); then
+  disarm_fresh_install_transaction \
+    || fail "部署已通过健康检查，但无法安全结束首次安装事务"
+fi
+finalize_firewall_transaction
 INSTALL_COMMITTED=1
-rm -f -- "${FRESH_IN_PROGRESS_MARKER}" \
-  || echo "警告：未能移除首次安装事务标记；已提交的安装不会回滚" >&2
 ROLLBACK_REQUIRED=0
 FRESH_INSTALL_MUTATED=0
 FIREWALL_APPLIED=()
