@@ -1,36 +1,68 @@
-name: Release installer signature
+name: Sign and publish installer release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to verify, sign and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
   id-token: write
+  checks: read
+
+concurrency:
+  group: installer-release-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
-  sign-installer:
-    if: github.event.release.draft == false && github.event.release.prerelease == false
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  sign-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
     steps:
+      - name: Validate release request
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tag must be strict vX.Y.Z" >&2
+            exit 1
+          fi
+          test "${GITHUB_REF}" = "refs/tags/${RELEASE_TAG}"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ inputs.tag }}
           fetch-depth: 0
           persist-credentials: false
+
       - name: Verify release tag is current protected main
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        id: source
+        shell: bash
         run: |
+          set -euo pipefail
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git fetch --force --no-tags origin \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
           tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
           main_commit="$(git rev-parse "origin/main^{commit}")"
           test "${tag_commit}" = "${main_commit}"
+          test "$(git rev-parse HEAD)" = "${tag_commit}"
+          printf 'tag_commit=%s\n' "${tag_commit}" >>"${GITHUB_OUTPUT}"
+
       - name: Verify tag and source version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        shell: bash
         run: |
+          set -euo pipefail
+          test -f install.sh
+          test ! -L install.sh
+          test "$(wc -c <install.sh)" -gt 0
+          test "$(wc -c <install.sh)" -le 1048576
+          bash -n install.sh
           python - <<'PY'
           import os
           import pathlib
@@ -46,22 +78,90 @@ jobs:
           if installer_match.group(1) != version_match.group(1) or os.environ["RELEASE_TAG"] != expected:
               raise SystemExit("release tag does not match source version")
           PY
+
+      - name: Verify required CI checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_COMMIT: ${{ steps.source.outputs.tag_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_checks=(
+            "test (3.8)"
+            "test (3.12)"
+            "static-analysis"
+            "managed-firewall-integration"
+            "systemd-service-semantics"
+            "full-installer-e2e"
+            "rhel-firewall-package-contract"
+          )
+          for required in "${required_checks[@]}"; do
+            payload="$(gh api --method GET \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/commits/${TAG_COMMIT}/check-runs" \
+              -f check_name="${required}" -f filter=latest -f per_page=100)"
+            conclusion="$(python -c '
+          import json
+          import sys
+
+          runs = [
+              run for run in json.load(sys.stdin).get("check_runs", [])
+              if run.get("app", {}).get("slug") == "github-actions"
+          ]
+          if not runs:
+              print("missing")
+          else:
+              latest = max(runs, key=lambda run: run.get("id", 0))
+              print(latest.get("conclusion") or latest.get("status") or "unknown")
+          ' <<<"${payload}")"
+            if [[ "${conclusion}" != "success" ]]; then
+              printf 'required check %s is %s for %s\n' \
+                "${required}" "${conclusion}" "${TAG_COMMIT}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Create or verify draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --json id >/dev/null 2>&1; then
+            draft="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
+            prerelease="$(gh release view "${RELEASE_TAG}" --json isPrerelease --jq .isPrerelease)"
+            if [[ "${draft}" != "true" ]]; then
+              echo "release is not a draft" >&2
+              exit 1
+            fi
+            if [[ "${prerelease}" != "false" ]]; then
+              echo "release is marked as a prerelease" >&2
+              exit 1
+            fi
+          else
+            gh release create "${RELEASE_TAG}" --verify-tag --draft \
+              --title "${RELEASE_TAG}" --generate-notes
+          fi
+
       - name: Install pinned Cosign
         uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
         with:
           cosign-release: v3.1.3
+
       - name: Sign installer with the GitHub OIDC identity
         run: cosign sign-blob --yes --bundle install.sh.sigstore.json install.sh
+
       - name: Verify identity and reject a modified installer
         shell: bash
         run: |
-          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-signature.yml@${GITHUB_REF}"
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-signature.yml@refs/tags/${RELEASE_TAG}"
           cosign verify-blob install.sh \
             --bundle install.sh.sigstore.json \
             --certificate-identity "${identity}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           cp install.sh "${RUNNER_TEMP}/tampered-install.sh"
-          printf '\n# tampered\n' >> "${RUNNER_TEMP}/tampered-install.sh"
+          printf '\n# tampered\n' >>"${RUNNER_TEMP}/tampered-install.sh"
           if cosign verify-blob "${RUNNER_TEMP}/tampered-install.sh" \
             --bundle install.sh.sigstore.json \
             --certificate-identity "${identity}" \
@@ -69,7 +169,49 @@ jobs:
             echo "tampered installer unexpectedly verified" >&2
             exit 1
           fi
-      - name: Attach the installer and signature bundle to the formal release
+
+      - name: Upload signed assets to the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" install.sh install.sh.sigstore.json --clobber
+        run: gh release upload "${RELEASE_TAG}" install.sh install.sh.sigstore.json --clobber
+
+      - name: Reverify signed draft and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          main_commit="$(git rev-parse "origin/main^{commit}")"
+          test "${tag_commit}" = "${main_commit}"
+
+          draft="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
+          prerelease="$(gh release view "${RELEASE_TAG}" --json isPrerelease --jq .isPrerelease)"
+          if [[ "${draft}" != "true" ]]; then
+            echo "release is not a draft" >&2
+            exit 1
+          fi
+          if [[ "${prerelease}" != "false" ]]; then
+            echo "release is marked as a prerelease" >&2
+            exit 1
+          fi
+
+          asset_dir="${RUNNER_TEMP}/verified-release-assets"
+          mkdir -p "${asset_dir}"
+          gh release download "${RELEASE_TAG}" --dir "${asset_dir}" \
+            --pattern install.sh --pattern install.sh.sigstore.json
+          test "$(wc -c <"${asset_dir}/install.sh")" -gt 0
+          test "$(wc -c <"${asset_dir}/install.sh")" -le 1048576
+          test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -gt 0
+          test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -le 5242880
+          cmp --silent install.sh "${asset_dir}/install.sh"
+          cmp --silent install.sh.sigstore.json "${asset_dir}/install.sh.sigstore.json"
+
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-signature.yml@refs/tags/${RELEASE_TAG}"
+          cosign verify-blob "${asset_dir}/install.sh" \
+            --bundle "${asset_dir}/install.sh.sigstore.json" \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+          gh release edit "${RELEASE_TAG}" --draft=false --prerelease=false --latest

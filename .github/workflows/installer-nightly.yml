@@ -25,6 +25,14 @@ jobs:
             architecture: arm64
             runner: ubuntu-24.04-arm
             base_image: ubuntu:24.04
+          - platform: debian-stable
+            architecture: amd64
+            runner: ubuntu-24.04
+            base_image: debian:stable
+          - platform: debian-stable
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            base_image: debian:stable
           - platform: rocky-9
             architecture: amd64
             runner: ubuntu-24.04
