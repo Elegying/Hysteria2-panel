@@ -25,12 +25,20 @@ report_error() {
     hysteria2-panel-install-recover.service \
     hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-upgrade-verify.service \
-    hysteria2-panel.service hysteria2-panel-server.service >&2
+    hysteria2-panel.service \
+    hysteria2-panel-server.service \
+    hysteria2-panel-tcp-probe.service \
+    hysteria2-panel-server-443.service \
+    hysteria2-panel-tcp-probe-443.service >&2
   journalctl --no-pager -n 200 \
     -u hysteria2-panel-install-recover.service \
     -u hysteria2-panel-upgrade-recover.service \
     -u hysteria2-panel-upgrade-verify.service \
-    -u hysteria2-panel.service -u hysteria2-panel-server.service >&2
+    -u hysteria2-panel.service \
+    -u hysteria2-panel-server.service \
+    -u hysteria2-panel-tcp-probe.service \
+    -u hysteria2-panel-server-443.service \
+    -u hysteria2-panel-tcp-probe-443.service >&2
   exit "${status}"
 }
 trap 'report_error "$?" "$LINENO"' ERR
@@ -251,6 +259,16 @@ test ! -e /var/backups/hysteria2-panel/.upgrade-active
 systemctl is-active --quiet hysteria2-panel.service
 systemctl is-active --quiet hysteria2-panel-server.service
 systemctl is-active --quiet hysteria2-panel-tcp-probe.service
+if [[ -n "${secondary_pid_before}" ]]; then
+  systemctl is-active --quiet hysteria2-panel-server-443.service
+  systemctl is-active --quiet hysteria2-panel-tcp-probe-443.service
+  listener_output="$(ss -H -lun "sport = :443")"
+  [[ -n "${listener_output}" ]]
+  listener_output="$(ss -H -ltn "sport = :443")"
+  [[ -n "${listener_output}" ]]
+  listener_output="$(ss -H -ltn "sport = :${STATS_443_PORT}")"
+  [[ -n "${listener_output}" ]]
+fi
 curl -fsS "http://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null
 curl -fsS "http://127.0.0.1:${PANEL_PORT}/readyz" >/dev/null
 [[ "$(sha256sum /opt/hysteria2-panel/bin/hysteria | awk '{print $1}')" == "${old_hysteria_sha}" ]]

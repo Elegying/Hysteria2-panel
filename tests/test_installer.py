@@ -2106,6 +2106,69 @@ rollback_firewall_changes
             verifier.index("systemctl restart hysteria2-panel.service"),
             verifier.index("verify_rollback_recovery"),
         )
+        recovery_health = source[
+            source.index("verify_rollback_recovery()") : source.index(
+                "\n\nrollback_existing_install()"
+            )
+        ]
+        self.assertIn(
+            '"${HY2PANEL_PANEL_SCHEME}://127.0.0.1:${HY2PANEL_PANEL_PORT}/healthz"',
+            recovery_health,
+        )
+        self.assertNotIn("/readyz", recovery_health)
+        self.assertIn(
+            'wait_for_listener udp "${HY2PANEL_HYSTERIA_PORT}"', recovery_health
+        )
+        self.assertIn(
+            'wait_for_listener tcp "${HY2PANEL_HYSTERIA_PORT}"', recovery_health
+        )
+        self.assertIn('wait_for_listener udp 443', recovery_health)
+        self.assertIn('wait_for_listener tcp 443', recovery_health)
+        self.assertEqual(
+            2, recovery_health.count("verify_backed_up_runtime_units_active")
+        )
+        self.assertLess(
+            recovery_health.rindex("wait_for_listener"),
+            recovery_health.rindex("verify_backed_up_runtime_units_active"),
+        )
+        unit_check = source[
+            source.index("verify_backed_up_runtime_units_active()") : source.index(
+                "\n\nverify_rollback_recovery()"
+            )
+        ]
+        for unit in (
+            "hysteria2-panel.service",
+            "hysteria2-panel-server.service",
+            "hysteria2-panel-tcp-probe.service",
+            "hysteria2-panel-server-443.service",
+            "hysteria2-panel-tcp-probe-443.service",
+        ):
+            with self.subTest(unit=unit):
+                self.assertIn(unit, unit_check)
+        listener_wait = source[
+            source.index("wait_for_listener()") : source.index(
+                "\n\nwait_for_health()"
+            )
+        ]
+        self.assertIn("for _attempt in {1..30}", listener_wait)
+        self.assertIn(
+            'listener_output="$(ss "${socket_options[@]}" "sport = :${port_number}")"',
+            listener_wait,
+        )
+        listener_result = subprocess.run(
+            ["bash"],
+            input=(
+                "set -euo pipefail\n"
+                + listener_wait
+                + "\nss() { [[ \"$*\" == *\"sport = :443\"* ]] || return 3; "
+                + "awk 'BEGIN { for (i = 0; i < 100000; i++) print \"listener\" }'; }\n"
+                + "sleep() { :; }\n"
+                + "wait_for_listener tcp 0443\n"
+            ),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, listener_result.returncode, listener_result.stderr)
         self.assertIn("--timer-property=AccuracySec=1s", source)
         self.assertIn('preserve_or_restore_database', source)
         self.assertIn('rm -f -- "${database_path}-wal" "${database_path}-shm"', source)

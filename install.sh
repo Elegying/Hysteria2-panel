@@ -611,13 +611,8 @@ rollback_firewall_after_service_recovery() {
   fi
 }
 
-verify_rollback_recovery() {
-  local health_tls_mode=strict required_unit
-  set -a
-  # The backup was created from the root-owned managed configuration.
-  # shellcheck disable=SC1091
-  source "${BACKUP_DIR}/etc/panel.env" || return 1
-  set +a
+verify_backed_up_runtime_units_active() {
+  local required_unit
   for required_unit in hysteria2-panel.service hysteria2-panel-server.service; do
     systemctl is-active --quiet "${required_unit}" || return 1
   done
@@ -629,22 +624,33 @@ verify_rollback_recovery() {
       || systemctl is-active --quiet "${required_unit}" \
       || return 1
   done
+}
+
+verify_rollback_recovery() {
+  local health_tls_mode=strict
+  set -a
+  # The backup was created from the root-owned managed configuration.
+  # shellcheck disable=SC1091
+  source "${BACKUP_DIR}/etc/panel.env" || return 1
+  set +a
+  verify_backed_up_runtime_units_active || return 1
   [[ "${HY2PANEL_PANEL_SCHEME}" != "https" ]] || health_tls_mode=insecure
   wait_for_health \
     "${HY2PANEL_PANEL_SCHEME}://127.0.0.1:${HY2PANEL_PANEL_PORT}/healthz" \
     "${health_tls_mode}" \
     || return 1
   wait_for_health "http://127.0.0.1:${HY2PANEL_AUTH_PORT}/healthz" strict || return 1
-  ss -H -lun "sport = :${HY2PANEL_HYSTERIA_PORT}" | grep -q . || return 1
+  wait_for_listener udp "${HY2PANEL_HYSTERIA_PORT}" || return 1
   [[ ! -f "${BACKUP_DIR}/hysteria2-panel-tcp-probe.service" ]] \
-    || ss -H -ltn "sport = :${HY2PANEL_HYSTERIA_PORT}" | grep -q . \
+    || wait_for_listener tcp "${HY2PANEL_HYSTERIA_PORT}" \
     || return 1
   if [[ -f "${BACKUP_DIR}/hysteria2-panel-server-443.service" ]]; then
-    ss -H -lun "sport = :443" | grep -q . || return 1
+    wait_for_listener udp 443 || return 1
   fi
   if [[ -f "${BACKUP_DIR}/hysteria2-panel-tcp-probe-443.service" ]]; then
-    ss -H -ltn "sport = :443" | grep -q . || return 1
+    wait_for_listener tcp 443 || return 1
   fi
+  verify_backed_up_runtime_units_active
 }
 
 rollback_existing_install() {
@@ -1682,6 +1688,28 @@ recover_interrupted_fresh_install() {
   rm -rf -- /var/backups/hysteria2-panel
   sync
   systemctl daemon-reload || fail "无法刷新上次部署的 systemd 状态；安装已停止"
+}
+
+wait_for_listener() {
+  local protocol="$1" port="$2"
+  local listener_output port_number
+  local -a socket_options
+  [[ "${port}" =~ ^0*[0-9]{1,5}$ ]] || return 2
+  port_number=$((10#${port}))
+  (( port_number >= 1 && port_number <= 65535 )) || return 2
+  case "${protocol}" in
+    udp) socket_options=(-H -lun) ;;
+    tcp) socket_options=(-H -ltn) ;;
+    *) return 2 ;;
+  esac
+  for _attempt in {1..30}; do
+    if listener_output="$(ss "${socket_options[@]}" "sport = :${port_number}")" \
+      && [[ -n "${listener_output}" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 wait_for_health() {
