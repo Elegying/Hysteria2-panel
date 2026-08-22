@@ -2950,6 +2950,19 @@ assert_units_unclaimed
             e2e,
         )
 
+    def test_installer_e2e_waits_for_readiness_after_recovery_commit(self):
+        e2e = (ROOT / "tests" / "installer_e2e.sh").read_text()
+        recovery_checks = e2e[e2e.rindex(
+            "test ! -e /var/backups/hysteria2-panel/.upgrade-active"
+        ) :]
+
+        self.assertIn("recovery_ready=0", recovery_checks)
+        self.assertIn("recovery_deadline=$((SECONDS + 30))", recovery_checks)
+        self.assertIn("while (( SECONDS < recovery_deadline )); do", recovery_checks)
+        self.assertIn('--connect-timeout 1 --max-time "${recovery_remaining}"', recovery_checks)
+        self.assertIn("recovery_ready=1", recovery_checks)
+        self.assertIn("(( recovery_ready == 1 ))", recovery_checks)
+
     def test_installer_persists_quic_udp_buffer_optimization(self):
         source = INSTALLER.read_text()
 

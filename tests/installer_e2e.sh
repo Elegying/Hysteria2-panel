@@ -270,7 +270,18 @@ if [[ -n "${secondary_pid_before}" ]]; then
   [[ -n "${listener_output}" ]]
 fi
 curl -fsS "http://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null
-curl -fsS "http://127.0.0.1:${PANEL_PORT}/readyz" >/dev/null
+recovery_ready=0
+recovery_deadline=$((SECONDS + 30))
+while (( SECONDS < recovery_deadline )); do
+  recovery_remaining=$((recovery_deadline - SECONDS))
+  if curl -fsS --connect-timeout 1 --max-time "${recovery_remaining}" \
+    "http://127.0.0.1:${PANEL_PORT}/readyz" >/dev/null 2>&1; then
+    recovery_ready=1
+    break
+  fi
+  (( SECONDS >= recovery_deadline )) || sleep 1
+done
+(( recovery_ready == 1 ))
 [[ "$(sha256sum /opt/hysteria2-panel/bin/hysteria | awk '{print $1}')" == "${old_hysteria_sha}" ]]
 grep -Fxq 'HY2PANEL_EGRESS_POLICY=full' /etc/hysteria2-panel/panel.env
 find /var/backups/hysteria2-panel -mindepth 2 -maxdepth 2 \
