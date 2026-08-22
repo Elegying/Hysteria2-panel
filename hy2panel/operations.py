@@ -19,6 +19,18 @@ from .version import PANEL_VERSION
 
 LOGGER = logging.getLogger("hysteria2-panel")
 EGRESS_STATE_VERSION = 1
+_SYSTEMD_NOTIFICATION_ENVIRONMENT = (
+    "NOTIFY_SOCKET",
+    "WATCHDOG_PID",
+    "WATCHDOG_USEC",
+)
+
+
+def _systemctl_environment():
+    environment = os.environ.copy()
+    for name in _SYSTEMD_NOTIFICATION_ENVIRONMENT:
+        environment.pop(name, None)
+    return environment
 
 
 class EgressPolicyStateError(RuntimeError):
@@ -39,6 +51,7 @@ class ServiceController:
             text=True,
             timeout=5,
             check=False,
+            env=_systemctl_environment(),
         )
         value = result.stdout.strip()
         return value if value else "unknown"
@@ -52,6 +65,7 @@ class ServiceController:
             text=True,
             timeout=15,
             check=False,
+            env=_systemctl_environment(),
         )
         if result.returncode != 0:
             raise RuntimeError("service control failed")
@@ -259,6 +273,7 @@ class EgressPolicyController:
             text=True,
             timeout=10,
             check=False,
+            env=_systemctl_environment(),
         )
         if result.returncode != 0:
             raise RuntimeError("Hysteria service state could not be verified")
@@ -338,6 +353,7 @@ class EgressPolicyController:
                 text=True,
                 timeout=330,
                 check=False,
+                env=_systemctl_environment(),
             )
         except subprocess.TimeoutExpired as exc:
             if self.status() == policy:
@@ -486,6 +502,7 @@ class EgressPolicyManager:
             text=True,
             timeout=10,
             check=False,
+            env=_systemctl_environment(),
         )
         state = active.stdout.strip()
         if active.returncode == 0 and state == "active":
@@ -513,6 +530,7 @@ class EgressPolicyManager:
                 text=True,
                 timeout=90,
                 check=False,
+                env=_systemctl_environment(),
             )
             if restart.returncode != 0:
                 raise RuntimeError("Hysteria service restart failed")
@@ -525,6 +543,7 @@ class EgressPolicyManager:
                     text=True,
                     timeout=45,
                     check=False,
+                    env=_systemctl_environment(),
                 )
                 if stopped.returncode != 0 or self._server_is_active(unit):
                     raise RuntimeError("Hysteria service state could not be restored")
@@ -769,6 +788,7 @@ class RestoreController:
             text=True,
             timeout=10,
             check=False,
+            env=_systemctl_environment(),
         )
         if result.returncode != 0:
             raise RuntimeError("restore service could not be started")
@@ -863,6 +883,7 @@ class UpdateController:
             text=True,
             timeout=10,
             check=False,
+            env=_systemctl_environment(),
         )
         if result.returncode != 0:
             record.update(
@@ -924,6 +945,7 @@ class UpdateController:
             text=True,
             timeout=5,
             check=False,
+            env=_systemctl_environment(),
         )
         if unit.returncode != 0:
             result.update(state="failed", message="无法读取更新服务状态")
@@ -966,6 +988,7 @@ class RebootController:
             text=True,
             timeout=10,
             check=False,
+            env=_systemctl_environment(),
         )
         if result.returncode != 0:
             raise RuntimeError("server reboot could not be started")

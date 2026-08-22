@@ -4708,6 +4708,17 @@ def run_supervised_services(
             if started_workers:
                 try:
                     usage_manager.collect_once()
+                except PartialTrafficCollectionError as exc:
+                    if termination_requested[0] and primary_error is None:
+                        LOGGER.warning(
+                            "final traffic sync was partial during graceful shutdown"
+                        )
+                    elif cleanup_error is None and primary_error is None:
+                        cleanup_error = exc
+                    else:
+                        LOGGER.exception(
+                            "final traffic sync failed during service shutdown"
+                        )
                 except BaseException as exc:
                     if primary_error is None and cleanup_error is None:
                         cleanup_error = exc
