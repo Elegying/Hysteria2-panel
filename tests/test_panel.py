@@ -5918,7 +5918,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.22.1", body)
+        self.assertIn("v0.22.2", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
@@ -5972,6 +5972,17 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             warning_body = response.read().decode()
 
+        self.assertIn('class="resource certificate-resource"', warning_body)
+        self.assertIn(
+            ".certificate-resource{grid-column:1/-1;display:grid;"
+            "grid-template-columns:auto minmax(0,1fr) auto;",
+            warning_body,
+        )
+        self.assertIn(
+            "@media(max-width:640px){.certificate-resource{"
+            "grid-template-columns:auto minmax(0,1fr)}",
+            warning_body,
+        )
         self.assertIn('class="bad">警告 · 剩余 90 天</strong>', warning_body)
 
         health.certificate_status.return_value.update(
