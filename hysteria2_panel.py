@@ -11,8 +11,10 @@ import functools
 import getpass
 import gzip
 import hashlib
+import heapq
 import hmac
 import html
+import http.client
 import http.cookies
 import ipaddress
 import json
@@ -42,6 +44,9 @@ from pathlib import Path
 
 from qrcodegen import DataTooLongError, QrCode
 
+from hy2panel.certificate import (
+    certificate_validity_timestamps,
+)
 from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.operations import (
     EgressPolicyController,
@@ -54,6 +59,7 @@ from hy2panel.operations import (
     UpdateController,
 )
 from hy2panel.release import UpdateChecker, UpdateInstaller
+from hy2panel.systemd import SystemdNotifier
 from hy2panel.version import PANEL_VERSION
 from hy2panel.web_assets import FAVICON_SVG, PAGE_SCRIPT, PAGE_STYLE
 
@@ -71,10 +77,28 @@ MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
 BACKUP_FORMAT_VERSION = 1
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
 MAX_BACKUP_ARCHIVE_BYTES = MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2
+BACKUP_IO_CHUNK_BYTES = 1024 * 1024
+RESTORE_DISK_SAFETY_BYTES = 16 * 1024**2
+RESTORE_CERTIFICATE_MIN_VALIDITY_SECONDS = 15 * 60
+RESTORE_BACKUP_RETENTION_SECONDS = 30 * 86400
+RESTORE_BACKUP_MAX_ENTRIES = 10
+FAILED_RESTORE_RETENTION_SECONDS = 7 * 86400
+FAILED_RESTORE_MAX_ENTRIES = 10
+RESTORE_BACKUP_NAME_PATTERN = re.compile(
+    r"restore-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}"
+)
+FAILED_RESTORE_NAME_PATTERN = re.compile(
+    r"failed-restore-(?:"
+    r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}"
+    r"|orphan-(?:pending|captured)-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}"
+    r")\.zip"
+)
 MAX_STATS_RESPONSE_BYTES = 8 * 1024**2
 MAX_PENDING_TRAFFIC_BYTES = 2 * MAX_STATS_RESPONSE_BYTES + 64 * 1024
 AUDIT_RETENTION_SECONDS = 90 * 86400
 AUDIT_MAX_ROWS = 10000
+TRAFFIC_BATCH_RETENTION_SECONDS = 30 * 86400
+TRAFFIC_BATCH_MAX_ROWS = 100000
 MAINTENANCE_LOCK_PATH = Path("/run/hysteria2-panel-maintenance/lock")
 RESTORE_ACTIVE_MARKER = Path("/etc/hysteria2-panel/.restore-active")
 RESTORE_TRANSACTION_VERSION = 1
@@ -235,6 +259,152 @@ def _read_secure_regular(path, maximum, allowed_uids=None, required_mode=None):
         os.close(descriptor)
 
 
+def _secure_regular_details(path, maximum, allowed_uids=None, required_mode=None):
+    path = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(str(path), flags)
+    except OSError as exc:
+        raise RuntimeError("unsafe restore file: {}".format(path)) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+            or (allowed_uids is not None and metadata.st_uid not in allowed_uids)
+            or (
+                required_mode is not None
+                and stat.S_IMODE(metadata.st_mode) != required_mode
+            )
+            or metadata.st_size < 0
+            or metadata.st_size > maximum
+        ):
+            raise RuntimeError("unsafe restore file: {}".format(path))
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(descriptor, BACKUP_IO_CHUNK_BYTES)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > maximum:
+                raise RuntimeError("restore file is too large: {}".format(path))
+            digest.update(chunk)
+        if size != metadata.st_size:
+            raise RuntimeError("restore file changed while it was verified: {}".format(path))
+        return {
+            "sha256": digest.hexdigest(),
+            "size": size,
+            "metadata": metadata,
+        }
+    finally:
+        os.close(descriptor)
+
+
+def _same_inode(left, right):
+    try:
+        left_metadata = os.lstat(left)
+        right_metadata = os.lstat(right)
+    except FileNotFoundError:
+        return False
+    return (left_metadata.st_dev, left_metadata.st_ino) == (
+        right_metadata.st_dev,
+        right_metadata.st_ino,
+    )
+
+
+def _remove_safe_restore_temp(path, allowed_uids, directory=False, linked_path=None):
+    path = Path(path)
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    if metadata.st_uid not in allowed_uids:
+        return False
+    if directory:
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o700:
+            return False
+        shutil.rmtree(path)
+    else:
+        linked_temp = (
+            metadata.st_nlink == 2
+            and linked_path is not None
+            and _same_inode(path, linked_path)
+        )
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or (metadata.st_nlink != 1 and not linked_temp)
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            return False
+        path.unlink()
+    _fsync_directory(path.parent)
+    return True
+
+
+def _cleanup_restore_temporary_files(
+    work_dir,
+    pending_path,
+    captured_path,
+    target_paths=(),
+    expected_uid=0,
+    pending_uid=None,
+):
+    work_dir = Path(work_dir)
+    try:
+        work_metadata = os.lstat(work_dir)
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISDIR(work_metadata.st_mode)
+        or stat.S_IMODE(work_metadata.st_mode) != 0o700
+    ):
+        raise RuntimeError("restore work directory is unsafe")
+    allowed_work_uids = {
+        work_metadata.st_uid,
+        expected_uid,
+        work_metadata.st_uid if pending_uid is None else pending_uid,
+    }
+    for path in tuple(work_dir.iterdir()):
+        if re.fullmatch(r"\.(?:upload|backup)-[A-Za-z0-9_]{8}\.zip", path.name):
+            _remove_safe_restore_temp(
+                path,
+                allowed_work_uids,
+                linked_path=pending_path if path.name.startswith(".upload-") else None,
+            )
+        elif re.fullmatch(r"\.consumed-restore-[0-9a-f]{16}\.zip", path.name):
+            _remove_safe_restore_temp(path, allowed_work_uids)
+        elif re.fullmatch(
+            r"\.(?:restore-orphan|restore-move)\.[A-Za-z0-9_]{8}", path.name
+        ):
+            _remove_safe_restore_temp(path, allowed_work_uids)
+        elif re.fullmatch(r"\.consumed-orphan-[0-9a-f]{16}", path.name):
+            _remove_safe_restore_temp(path, allowed_work_uids)
+        elif re.fullmatch(r"tmp[A-Za-z0-9_]{8}", path.name):
+            _remove_safe_restore_temp(path, allowed_work_uids, directory=True)
+
+    captured_parent = Path(captured_path).parent
+    if captured_parent.exists():
+        for path in tuple(captured_parent.iterdir()):
+            if re.fullmatch(
+                r"\.(?:restore-capture|restore-transaction)\.[A-Za-z0-9_]{8}",
+                path.name,
+            ) or re.fullmatch(r"\.consumed-orphan-[0-9a-f]{16}", path.name):
+                _remove_safe_restore_temp(path, {expected_uid})
+
+    target_directories = {Path(path).parent for path in target_paths}
+    for directory in target_directories:
+        try:
+            directory_owner = os.lstat(directory).st_uid
+        except FileNotFoundError:
+            continue
+        for path in tuple(directory.iterdir()):
+            if re.fullmatch(r"\.restore-[A-Za-z0-9_]{8}", path.name):
+                _remove_safe_restore_temp(
+                    path, {expected_uid, directory_owner}
+                )
+
+
 def _write_all(descriptor, value):
     view = memoryview(value)
     offset = 0
@@ -302,6 +472,17 @@ def _quarantine_secure_orphan(source, destination, maximum, owner_uid):
 
 
 class BackupManager:
+    CREATED_AT_PATTERN = re.compile(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+        r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z"
+    )
+    PANEL_VERSION_PATTERN = re.compile(
+        r"(?:0|[1-9][0-9]*)\."
+        r"(?:0|[1-9][0-9]*)\."
+        r"(?:0|[1-9][0-9]*)"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    )
     FILE_LIMITS = {
         "manifest.json": 64 * 1024,
         "data/panel.db": MAX_BACKUP_CONTENT_BYTES,
@@ -374,6 +555,23 @@ class BackupManager:
     def _sha256(value):
         return hashlib.sha256(value).hexdigest()
 
+    @classmethod
+    def _validate_manifest_metadata(cls, manifest):
+        created_at = manifest.get("createdAt")
+        panel_version = manifest.get("panelVersion")
+        if (
+            not isinstance(created_at, str)
+            or cls.CREATED_AT_PATTERN.fullmatch(created_at) is None
+            or not isinstance(panel_version, str)
+            or not 1 <= len(panel_version) <= 64
+            or cls.PANEL_VERSION_PATTERN.fullmatch(panel_version) is None
+        ):
+            raise BackupValidationError("备份清单元数据无效")
+        try:
+            datetime.datetime.fromisoformat(created_at[:-1] + "+00:00")
+        except ValueError as exc:
+            raise BackupValidationError("备份清单元数据无效") from exc
+
     @staticmethod
     def _certificate_pin(certificate):
         try:
@@ -402,27 +600,48 @@ class BackupManager:
             or not hmac.compare_digest(certificate_public_key.stdout, private_public_key.stdout)
         ):
             raise BackupValidationError("证书与私钥不匹配")
-        expiry = self.runner(
-            ["/usr/bin/openssl", "x509", "-in", str(certificate_path), "-enddate", "-noout"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        if expiry.returncode != 0 or not expiry.stdout.startswith("notAfter="):
-            raise BackupValidationError("无法读取证书有效期")
-        raw_expiry = expiry.stdout.strip().split("=", 1)[1]
         try:
-            expires_at = datetime.datetime.strptime(
-                raw_expiry, "%b %d %H:%M:%S %Y %Z"
-            ).replace(tzinfo=datetime.timezone.utc)
+            not_before_timestamp, expires_at_timestamp = certificate_validity_timestamps(
+                certificate_path, runner=self.runner
+            )
         except ValueError as exc:
-            raise BackupValidationError("证书有效期格式无效") from exc
+            raise BackupValidationError("无法读取证书有效期") from exc
+        now = time.time()
+        if not_before_timestamp > now:
+            raise BackupValidationError("证书尚未生效")
+        if expires_at_timestamp <= now + RESTORE_CERTIFICATE_MIN_VALIDITY_SECONDS:
+            raise BackupValidationError("证书已过期或剩余有效期不足")
+        expires_at = datetime.datetime.fromtimestamp(
+            expires_at_timestamp,
+            tz=datetime.timezone.utc,
+        )
         return expires_at.isoformat().replace("+00:00", "Z")
 
     @staticmethod
-    def _copy_database(source_path, destination_path):
+    def _database_logical_size(path):
+        try:
+            with sqlite3.connect(str(path), timeout=10) as connection:
+                page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
+                page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+        except (OSError, sqlite3.DatabaseError, TypeError, ValueError) as exc:
+            raise BackupValidationError("无法估算数据库备份空间") from exc
+        size = page_count * page_size
+        if size <= 0 or size > MAX_BACKUP_CONTENT_BYTES:
+            raise BackupValidationError("数据库大小超过备份上限")
+        return size
+
+    @staticmethod
+    def _copy_database(source_path, destination_path, preflight=None):
         with sqlite3.connect(str(source_path), timeout=10) as source:
+            source.execute("BEGIN")
+            logical_size = (
+                int(source.execute("PRAGMA page_count").fetchone()[0])
+                * int(source.execute("PRAGMA page_size").fetchone()[0])
+            )
+            if logical_size <= 0 or logical_size > MAX_BACKUP_CONTENT_BYTES:
+                raise BackupValidationError("数据库大小超过备份上限")
+            if preflight is not None:
+                preflight(logical_size)
             with sqlite3.connect(str(destination_path), timeout=10) as destination:
                 source.backup(destination)
         descriptor = os.open(str(destination_path), os.O_RDONLY)
@@ -430,6 +649,7 @@ class BackupManager:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+        return logical_size
 
     @staticmethod
     def _read_bounded(path, maximum):
@@ -439,74 +659,235 @@ class BackupManager:
             raise BackupValidationError("备份内容超过允许大小")
         return value
 
+    @staticmethod
+    def _file_details(path, maximum=None):
+        digest = hashlib.sha256()
+        size = 0
+        with Path(path).open("rb") as source:
+            while True:
+                chunk = source.read(BACKUP_IO_CHUNK_BYTES)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if maximum is not None and size > maximum:
+                    raise BackupValidationError("备份内容超过允许大小")
+                digest.update(chunk)
+        return {"sha256": digest.hexdigest(), "size": size}
+
+    @staticmethod
+    def _replace_file(path, source_path):
+        path = Path(path)
+        source_path = Path(source_path)
+        existing = path.stat()
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".restore-", dir=str(path.parent)
+        )
+        try:
+            with source_path.open("rb") as source, os.fdopen(descriptor, "wb") as target:
+                descriptor = None
+                shutil.copyfileobj(source, target, length=BACKUP_IO_CHUNK_BYTES)
+                target.flush()
+                if hasattr(os, "fchown"):
+                    os.fchown(target.fileno(), existing.st_uid, existing.st_gid)
+                os.fchmod(target.fileno(), stat.S_IMODE(existing.st_mode))
+                os.fsync(target.fileno())
+            os.replace(temporary, path)
+            temporary = None
+            _fsync_directory(path.parent)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+
+    @staticmethod
+    def _require_free_space(path, required_bytes):
+        try:
+            free = shutil.disk_usage(Path(path)).free
+        except OSError as exc:
+            raise BackupValidationError("无法检查恢复所需磁盘空间") from exc
+        if free < max(0, int(required_bytes)):
+            raise BackupValidationError("磁盘可用空间不足，无法安全恢复")
+
+    def _require_space_allocations(self, allocations):
+        requirements = {}
+        for path, required_bytes in allocations:
+            path = Path(path)
+            try:
+                device = path.stat().st_dev
+            except OSError as exc:
+                raise BackupValidationError("无法检查恢复目录所在文件系统") from exc
+            if device not in requirements:
+                requirements[device] = [path, 0]
+            requirements[device][1] += max(0, int(required_bytes))
+        for path, required_bytes in requirements.values():
+            self._require_free_space(
+                path, required_bytes + RESTORE_DISK_SAFETY_BYTES
+            )
+
+    @staticmethod
+    def _prune_entries(root, name_pattern, retention_seconds, maximum, keep=()):
+        root = Path(root)
+        if not root.exists():
+            return
+        resolved_root = root.resolve()
+        keep = {Path(path).resolve() for path in keep}
+        kept_count = sum(
+            1
+            for path in keep
+            if path.parent == resolved_root
+            and name_pattern.fullmatch(path.name)
+            and path.exists()
+        )
+        available_slots = max(0, int(maximum) - kept_count)
+        now = time.time()
+        candidates = []
+        for path in root.iterdir():
+            if not name_pattern.fullmatch(path.name) or path.resolve() in keep:
+                continue
+            try:
+                modified = path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            candidates.append((modified, path))
+        candidates.sort(reverse=True)
+        removed = False
+        for index, (modified, path) in enumerate(candidates):
+            if index < available_slots and now - modified <= retention_seconds:
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+            removed = True
+        if removed:
+            _fsync_directory(root)
+
     def create_archive(self):
+        with maintenance_upload_slot(
+            self.maintenance_lock_path,
+            expected_uid=self.maintenance_lock_owner,
+            expected_gid=self.maintenance_lock_group,
+            expected_mode=self.maintenance_lock_mode,
+        ):
+            return self._create_archive_locked()
+
+    def _create_archive_locked(self):
         self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         archive_path = self.work_dir / "hysteria2-panel-backup-{}-{}.zip".format(
             timestamp, secrets.token_hex(4)
         )
-        with tempfile.TemporaryDirectory(dir=str(self.work_dir)) as temporary:
-            temporary_path = Path(temporary)
-            database_path = temporary_path / "panel.db"
-            self._copy_database(self.database.path, database_path)
-            with sqlite3.connect(str(database_path)) as connection:
-                connection.execute("PRAGMA journal_mode = DELETE")
-                connection.execute("PRAGMA foreign_keys = ON")
-                connection.execute("DELETE FROM sessions")
-                connection.execute("DELETE FROM admins")
-                connection.execute("DELETE FROM audit_log")
-            certificate = self._read_bounded(self.tls_cert, self.FILE_LIMITS["tls/server.crt"])
-            private_key = self._read_bounded(self.tls_key, self.FILE_LIMITS["tls/server.key"])
-            temp_certificate = temporary_path / "server.crt"
-            temp_private_key = temporary_path / "server.key"
-            temp_certificate.write_bytes(certificate)
-            temp_private_key.write_bytes(private_key)
-            expires_at = self._certificate_details(temp_certificate, temp_private_key)
-            payloads = {
-                "data/panel.db": self._read_bounded(
-                    database_path, self.FILE_LIMITS["data/panel.db"]
-                ),
-                "secrets/hmac-key.hex": self.hmac_key.hex().encode("ascii") + b"\n",
-                "tls/server.crt": certificate,
-                "tls/server.key": private_key,
-            }
-            with sqlite3.connect(str(database_path)) as connection:
-                user_count = connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
-            manifest = {
-                "formatVersion": BACKUP_FORMAT_VERSION,
-                "createdAt": datetime.datetime.now(datetime.timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z"),
-                "panelVersion": PANEL_VERSION,
-                "proxyUserCount": int(user_count),
-                "source": {
-                    "publicHost": self.public_host,
-                    "hysteriaPort": self.hysteria_port,
-                    "nodeName": self.node_name,
-                },
-                "certificate": {
-                    "pinSHA256": self._certificate_pin(certificate),
-                    "notAfter": expires_at,
-                },
-                "files": {
-                    name: {"sha256": self._sha256(value), "size": len(value)}
-                    for name, value in sorted(payloads.items())
-                },
-            }
-            manifest_bytes = json.dumps(
-                manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8")
-            with zipfile.ZipFile(
-                archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
-            ) as package:
-                package.writestr("manifest.json", manifest_bytes)
-                for name, value in payloads.items():
-                    package.writestr(name, value)
-        os.chmod(archive_path, 0o600)
-        return archive_path
+        descriptor, temporary_archive = tempfile.mkstemp(
+            prefix=".backup-", suffix=".zip", dir=str(self.work_dir)
+        )
+        os.close(descriptor)
+        try:
+            with tempfile.TemporaryDirectory(dir=str(self.work_dir)) as temporary:
+                temporary_path = Path(temporary)
+                database_path = temporary_path / "panel.db"
+                extra_payload_bytes = (
+                    self.tls_cert.stat().st_size
+                    + self.tls_key.stat().st_size
+                    + self.FILE_LIMITS["secrets/hmac-key.hex"]
+                    + self.FILE_LIMITS["manifest.json"]
+                )
+                self._copy_database(
+                    self.database.path,
+                    database_path,
+                    preflight=lambda logical_size: self._require_free_space(
+                        self.work_dir,
+                        3 * logical_size
+                        + 2 * extra_payload_bytes
+                        + RESTORE_DISK_SAFETY_BYTES,
+                    ),
+                )
+                with sqlite3.connect(str(database_path)) as connection:
+                    connection.execute("PRAGMA journal_mode = DELETE")
+                    connection.execute("PRAGMA foreign_keys = ON")
+                    connection.execute("DELETE FROM sessions")
+                    connection.execute("DELETE FROM admins")
+                    connection.execute("DELETE FROM audit_log")
+                    connection.execute("DELETE FROM applied_traffic_batches")
+                    user_count = connection.execute(
+                        "SELECT COUNT(*) FROM proxy_users"
+                    ).fetchone()[0]
+                certificate = self._read_bounded(
+                    self.tls_cert, self.FILE_LIMITS["tls/server.crt"]
+                )
+                private_key = self._read_bounded(
+                    self.tls_key, self.FILE_LIMITS["tls/server.key"]
+                )
+                payload_paths = {
+                    "data/panel.db": database_path,
+                    "secrets/hmac-key.hex": temporary_path / "hmac-key.hex",
+                    "tls/server.crt": temporary_path / "server.crt",
+                    "tls/server.key": temporary_path / "server.key",
+                }
+                payload_paths["secrets/hmac-key.hex"].write_bytes(
+                    self.hmac_key.hex().encode("ascii") + b"\n"
+                )
+                payload_paths["tls/server.crt"].write_bytes(certificate)
+                payload_paths["tls/server.key"].write_bytes(private_key)
+                expires_at = self._certificate_details(
+                    payload_paths["tls/server.crt"], payload_paths["tls/server.key"]
+                )
+                manifest = {
+                    "formatVersion": BACKUP_FORMAT_VERSION,
+                    "createdAt": datetime.datetime.now(datetime.timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "panelVersion": PANEL_VERSION,
+                    "proxyUserCount": int(user_count),
+                    "source": {
+                        "publicHost": self.public_host,
+                        "hysteriaPort": self.hysteria_port,
+                        "nodeName": self.node_name,
+                    },
+                    "certificate": {
+                        "pinSHA256": self._certificate_pin(certificate),
+                        "notAfter": expires_at,
+                    },
+                    "files": {
+                        name: self._file_details(path, self.FILE_LIMITS[name])
+                        for name, path in sorted(payload_paths.items())
+                    },
+                }
+                manifest_bytes = json.dumps(
+                    manifest,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                with zipfile.ZipFile(
+                    temporary_archive,
+                    "w",
+                    compression=zipfile.ZIP_DEFLATED,
+                    compresslevel=6,
+                ) as package:
+                    package.writestr("manifest.json", manifest_bytes)
+                    for name, path in payload_paths.items():
+                        package.write(path, arcname=name)
+            os.chmod(temporary_archive, 0o600)
+            _fsync_file(temporary_archive)
+            self.validate_archive(temporary_archive)
+            os.replace(temporary_archive, archive_path)
+            temporary_archive = None
+            _fsync_directory(self.work_dir)
+            return archive_path
+        finally:
+            if temporary_archive is not None:
+                try:
+                    os.unlink(temporary_archive)
+                except FileNotFoundError:
+                    pass
 
-    def _read_archive(self, archive_path):
+    def _extract_archive(self, archive_path, destination):
         archive_path = Path(archive_path)
+        destination = Path(destination)
         try:
             archive_size = archive_path.stat().st_size
         except OSError as exc:
@@ -520,7 +901,8 @@ class BackupManager:
                 if len(names) != len(set(names)) or set(names) != set(self.FILE_LIMITS):
                     raise BackupValidationError("备份文件结构无效")
                 total_size = 0
-                payloads = {}
+                payload_paths = {}
+                payload_details = {}
                 for entry in entries:
                     mode = (entry.external_attr >> 16) & 0o170000
                     if (
@@ -535,38 +917,63 @@ class BackupManager:
                     total_size += entry.file_size
                     if total_size > MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2:
                         raise BackupValidationError("备份解压内容过大")
-                    with package.open(entry) as source:
-                        value = source.read(self.FILE_LIMITS[entry.filename] + 1)
-                    if len(value) != entry.file_size or len(value) > self.FILE_LIMITS[entry.filename]:
+                self._require_free_space(
+                    destination.parent,
+                    total_size + RESTORE_DISK_SAFETY_BYTES,
+                )
+                for entry in entries:
+                    target = destination / entry.filename
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    digest = hashlib.sha256()
+                    extracted_size = 0
+                    with package.open(entry) as source, target.open("xb") as output:
+                        while True:
+                            chunk = source.read(BACKUP_IO_CHUNK_BYTES)
+                            if not chunk:
+                                break
+                            extracted_size += len(chunk)
+                            if extracted_size > self.FILE_LIMITS[entry.filename]:
+                                raise BackupValidationError("备份内容大小无效")
+                            output.write(chunk)
+                            digest.update(chunk)
+                    if extracted_size != entry.file_size:
                         raise BackupValidationError("备份内容大小无效")
-                    payloads[entry.filename] = value
+                    os.chmod(target, 0o600)
+                    payload_paths[entry.filename] = target
+                    payload_details[entry.filename] = {
+                        "sha256": digest.hexdigest(),
+                        "size": extracted_size,
+                    }
         except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
             if isinstance(exc, BackupValidationError):
                 raise
             raise BackupValidationError("ZIP 备份文件无效") from exc
         try:
-            manifest = json.loads(payloads["manifest.json"].decode("utf-8"))
+            manifest = json.loads(
+                self._read_bounded(
+                    payload_paths["manifest.json"], self.FILE_LIMITS["manifest.json"]
+                ).decode("utf-8")
+            )
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise BackupValidationError("备份清单无效") from exc
         if not isinstance(manifest, dict) or manifest.get("formatVersion") != BACKUP_FORMAT_VERSION:
             raise BackupValidationError("不支持的备份格式版本")
+        self._validate_manifest_metadata(manifest)
         file_manifest = manifest.get("files")
         if not isinstance(file_manifest, dict) or set(file_manifest) != self.PAYLOAD_NAMES:
             raise BackupValidationError("备份校验清单无效")
         for name in self.PAYLOAD_NAMES:
             details = file_manifest.get(name)
-            value = payloads[name]
             if (
                 not isinstance(details, dict)
-                or details.get("size") != len(value)
-                or details.get("sha256") != self._sha256(value)
+                or details.get("size") != payload_details[name]["size"]
+                or details.get("sha256") != payload_details[name]["sha256"]
             ):
                 raise BackupValidationError("备份文件校验失败")
-        return manifest, payloads
+        return manifest, payload_paths
 
-    def _validate_database(self, database_bytes, hmac_key, directory):
-        database_path = Path(directory) / "validated.db"
-        database_path.write_bytes(database_bytes)
+    def _validate_database_path(self, database_path, hmac_key):
+        database_path = Path(database_path)
         try:
             with sqlite3.connect(str(database_path)) as connection:
                 integrity = connection.execute("PRAGMA integrity_check").fetchone()
@@ -587,24 +994,39 @@ class BackupManager:
                     raise BackupValidationError("用户数据库版本不兼容")
                 users = connection.execute(
                     "SELECT id, token_seed, token_fingerprint FROM proxy_users"
-                ).fetchall()
-            verifier = Database(database_path, hmac_key)
-            for user_id, seed, expected_fingerprint in users:
-                if seed is None:
-                    continue
-                if not isinstance(seed, bytes):
-                    raise BackupValidationError("用户数据库令牌种子格式无效")
-                token = verifier._token_from_seed(bytes(seed))
-                if not hmac.compare_digest(verifier._fingerprint(token), expected_fingerprint):
-                    raise BackupValidationError("用户签名密钥与数据库不匹配")
-            return len(users)
+                )
+                verifier = Database(database_path, hmac_key)
+                user_count = 0
+                for _user_id, seed, expected_fingerprint in users:
+                    user_count += 1
+                    if seed is None:
+                        continue
+                    if not isinstance(seed, bytes):
+                        raise BackupValidationError("用户数据库令牌种子格式无效")
+                    token = verifier._token_from_seed(bytes(seed))
+                    if not hmac.compare_digest(
+                        verifier._fingerprint(token), expected_fingerprint
+                    ):
+                        raise BackupValidationError("用户签名密钥与数据库不匹配")
+                return user_count
         except sqlite3.DatabaseError as exc:
             raise BackupValidationError("用户数据库无效") from exc
 
-    def validate_archive(self, archive_path, require_compatible_endpoint=False):
-        self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        manifest, payloads = self._read_archive(archive_path)
-        hmac_hex = payloads["secrets/hmac-key.hex"].decode("ascii").strip()
+    def _validate_database(self, database_bytes, hmac_key, directory):
+        database_path = Path(directory) / "validated.db"
+        database_path.write_bytes(database_bytes)
+        return self._validate_database_path(database_path, hmac_key)
+
+    def _validate_extracted_archive(
+        self, manifest, payload_paths, require_compatible_endpoint=False
+    ):
+        try:
+            hmac_hex = self._read_bounded(
+                payload_paths["secrets/hmac-key.hex"],
+                self.FILE_LIMITS["secrets/hmac-key.hex"],
+            ).decode("ascii").strip()
+        except UnicodeDecodeError as exc:
+            raise BackupValidationError("签名密钥格式无效") from exc
         if not re.fullmatch(r"[0-9a-f]{64,256}", hmac_hex) or len(hmac_hex) % 2:
             raise BackupValidationError("签名密钥格式无效")
         hmac_key = bytes.fromhex(hmac_hex)
@@ -618,18 +1040,24 @@ class BackupManager:
             raise BackupValidationError("备份来源信息无效")
         if require_compatible_endpoint:
             if source["publicHost"].lower() != self.public_host.lower():
-                raise BackupValidationError("备份域名与当前部署域名不一致，旧节点无法无感迁移")
+                raise BackupValidationError(
+                    "备份域名与当前部署域名不一致，旧节点无法无感迁移"
+                )
             if source["hysteriaPort"] != self.hysteria_port:
-                raise BackupValidationError("备份 UDP 端口与当前部署端口不一致，旧节点无法无感迁移")
-        with tempfile.TemporaryDirectory(dir=str(self.work_dir)) as temporary:
-            user_count = self._validate_database(payloads["data/panel.db"], hmac_key, temporary)
-            certificate_path = Path(temporary) / "server.crt"
-            private_key_path = Path(temporary) / "server.key"
-            certificate_path.write_bytes(payloads["tls/server.crt"])
-            private_key_path.write_bytes(payloads["tls/server.key"])
-            expires_at = self._certificate_details(certificate_path, private_key_path)
+                raise BackupValidationError(
+                    "备份 UDP 端口与当前部署端口不一致，旧节点无法无感迁移"
+                )
+        user_count = self._validate_database_path(
+            payload_paths["data/panel.db"], hmac_key
+        )
+        expires_at = self._certificate_details(
+            payload_paths["tls/server.crt"], payload_paths["tls/server.key"]
+        )
+        certificate_bytes = self._read_bounded(
+            payload_paths["tls/server.crt"], self.FILE_LIMITS["tls/server.crt"]
+        )
         certificate = manifest.get("certificate")
-        pin = self._certificate_pin(payloads["tls/server.crt"])
+        pin = self._certificate_pin(certificate_bytes)
         if (
             not isinstance(certificate, dict)
             or certificate.get("pinSHA256") != pin
@@ -637,6 +1065,17 @@ class BackupManager:
             or manifest.get("proxyUserCount") != user_count
         ):
             raise BackupValidationError("证书或用户数量校验失败")
+        return hmac_key
+
+    def validate_archive(self, archive_path, require_compatible_endpoint=False):
+        self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with tempfile.TemporaryDirectory(dir=str(self.work_dir)) as temporary:
+            manifest, payload_paths = self._extract_archive(archive_path, temporary)
+            self._validate_extracted_archive(
+                manifest,
+                payload_paths,
+                require_compatible_endpoint=require_compatible_endpoint,
+            )
         return manifest
 
     def stage_archive(self, source, content_length):
@@ -821,6 +1260,13 @@ class BackupManager:
             )
             _durable_move(captured_archive, quarantine)
             self._discard_matching_pending(digest, size)
+            self._prune_entries(
+                self.work_dir,
+                FAILED_RESTORE_NAME_PATTERN,
+                FAILED_RESTORE_RETENTION_SECONDS,
+                FAILED_RESTORE_MAX_ENTRIES,
+                keep=(quarantine,),
+            )
             raise
         record = {
             "version": RESTORE_TRANSACTION_VERSION,
@@ -853,6 +1299,13 @@ class BackupManager:
         except FileNotFoundError:
             return None
         _fsync_directory(self.work_dir)
+        self._prune_entries(
+            self.work_dir,
+            FAILED_RESTORE_NAME_PATTERN,
+            FAILED_RESTORE_RETENTION_SECONDS,
+            FAILED_RESTORE_MAX_ENTRIES,
+            keep=(quarantine,),
+        )
         return quarantine
 
     @staticmethod
@@ -870,26 +1323,34 @@ class BackupManager:
             raise BackupValidationError("恢复后的环境配置缺少或重复关键项")
         return values[0]
 
-    def _proxy_rows(self, database_path):
+    def _proxy_rows_equal(self, first_database, second_database):
         try:
-            with sqlite3.connect(str(database_path)) as connection:
-                return connection.execute(
+            with sqlite3.connect(str(first_database)) as first, sqlite3.connect(
+                str(second_database)
+            ) as second:
+                query = (
                     # Identifiers come only from the fixed PROXY_COLUMNS tuple.
                     "SELECT {} FROM proxy_users ORDER BY id".format(  # nosec B608
                         ",".join(self.PROXY_COLUMNS)
                     )
-                ).fetchall()
+                )
+                first_rows = first.execute(query)
+                second_rows = second.execute(query)
+                while True:
+                    first_batch = first_rows.fetchmany(256)
+                    second_batch = second_rows.fetchmany(256)
+                    if first_batch != second_batch:
+                        return False
+                    if not first_batch:
+                        return True
         except sqlite3.DatabaseError as exc:
             raise BackupValidationError("恢复后的用户数据库无法读取") from exc
 
     def _validate_applied_restore(
         self, env_file, restored_hmac, manifest, directory, expected_database
     ):
-        database_bytes = self._read_bounded(
-            self.database.path, self.FILE_LIMITS["data/panel.db"]
-        )
-        user_count = self._validate_database(database_bytes, restored_hmac, directory)
-        if self._proxy_rows(self.database.path) != self._proxy_rows(expected_database):
+        user_count = self._validate_database_path(self.database.path, restored_hmac)
+        if not self._proxy_rows_equal(self.database.path, expected_database):
             raise BackupValidationError("恢复后的用户数据与备份不一致")
         certificate = self._read_bounded(
             self.tls_cert, self.FILE_LIMITS["tls/server.crt"]
@@ -897,11 +1358,7 @@ class BackupManager:
         private_key = self._read_bounded(
             self.tls_key, self.FILE_LIMITS["tls/server.key"]
         )
-        certificate_path = Path(directory) / "applied-server.crt"
-        private_key_path = Path(directory) / "applied-server.key"
-        certificate_path.write_bytes(certificate)
-        private_key_path.write_bytes(private_key)
-        expires_at = self._certificate_details(certificate_path, private_key_path)
+        expires_at = self._certificate_details(self.tls_cert, self.tls_key)
         expected_certificate = manifest["certificate"]
         if (
             user_count != manifest["proxyUserCount"]
@@ -927,61 +1384,115 @@ class BackupManager:
         self, archive_path, env_file, backup_root, transaction_path=None
     ):
         self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        manifest = self.validate_archive(archive_path, require_compatible_endpoint=True)
-        _, payloads = self._read_archive(archive_path)
-        restored_hmac = bytes.fromhex(
-            payloads["secrets/hmac-key.hex"].decode("ascii").strip()
-        )
         backup_root = Path(backup_root)
         backup_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        backup_dir = backup_root / "restore-{}-{}".format(
-            datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
-            secrets.token_hex(4),
-        )
-        backup_dir.mkdir(mode=0o700)
         env_file = Path(env_file)
-        self._copy_database(self.database.path, backup_dir / "panel.db")
-        shutil.copy2(self.tls_cert, backup_dir / "server.crt")
-        shutil.copy2(self.tls_key, backup_dir / "server.key")
-        shutil.copy2(env_file, backup_dir / "panel.env")
-        incoming_archive = backup_dir / "incoming.zip"
-        shutil.copyfile(archive_path, incoming_archive)
-        for durable_file in (
-            backup_dir / "panel.db",
-            backup_dir / "server.crt",
-            backup_dir / "server.key",
-            backup_dir / "panel.env",
-            incoming_archive,
-        ):
-            os.chmod(durable_file, 0o600)
-            _fsync_file(durable_file)
-        _fsync_directory(backup_dir)
-        _fsync_directory(backup_root)
-        if transaction_path is not None:
-            record = _read_restore_transaction(
-                transaction_path,
-                expected_uid=os.geteuid() if hasattr(os, "geteuid") else None,
-                strict_paths=False,
-            )
-            if record["phase"] != "queued":
-                raise RuntimeError("restore transaction phase is invalid")
-            record.update(
-                {
-                    "phase": "prepared",
-                    "backupDir": str(backup_dir),
-                    "incomingArchive": str(incoming_archive),
-                    "oldFiles": {
-                        name: self._sha256((backup_dir / name).read_bytes())
-                        for name in ("panel.db", "server.crt", "server.key", "panel.env")
-                    },
-                }
-            )
-            _atomic_write_json(transaction_path, record)
         with tempfile.TemporaryDirectory(dir=str(self.work_dir)) as temporary:
+            temporary_path = Path(temporary)
+            manifest, payload_paths = self._extract_archive(
+                archive_path, temporary_path / "incoming"
+            )
+            restored_hmac = self._validate_extracted_archive(
+                manifest, payload_paths, require_compatible_endpoint=True
+            )
+            self._prune_entries(
+                backup_root,
+                RESTORE_BACKUP_NAME_PATTERN,
+                RESTORE_BACKUP_RETENTION_SECONDS,
+                max(0, RESTORE_BACKUP_MAX_ENTRIES - 1),
+            )
+            database_size = self._database_logical_size(self.database.path)
+            incoming_database_size = int(
+                manifest["files"]["data/panel.db"]["size"]
+            )
+            # SQLite can keep the destination's retained tables/pages while it
+            # inserts every proxy row from the incoming database. The sum is a
+            # conservative upper bound for both staging and atomic replacement.
+            replacement_database_size = database_size + incoming_database_size
+            archive_size = Path(archive_path).stat().st_size
+            new_env = self._updated_env(
+                env_file.read_bytes(),
+                {
+                    "HY2PANEL_HMAC_KEY": restored_hmac.hex(),
+                    "HY2PANEL_CERT_PIN": manifest["certificate"]["pinSHA256"],
+                },
+            )
+            backup_bytes = (
+                database_size
+                + archive_size
+                + self.tls_cert.stat().st_size
+                + self.tls_key.stat().st_size
+                + env_file.stat().st_size
+            )
+            self._require_space_allocations(
+                (
+                    (backup_root, backup_bytes),
+                    (self.work_dir, replacement_database_size),
+                    (self.database.path.parent, replacement_database_size),
+                    (
+                        self.tls_cert.parent,
+                        payload_paths["tls/server.crt"].stat().st_size,
+                    ),
+                    (
+                        self.tls_key.parent,
+                        payload_paths["tls/server.key"].stat().st_size,
+                    ),
+                    (env_file.parent, len(new_env)),
+                )
+            )
+
+            backup_dir = backup_root / "restore-{}-{}".format(
+                datetime.datetime.now(datetime.timezone.utc).strftime(
+                    "%Y%m%dT%H%M%SZ"
+                ),
+                secrets.token_hex(4),
+            )
+            backup_dir.mkdir(mode=0o700)
+            self._copy_database(self.database.path, backup_dir / "panel.db")
+            shutil.copy2(self.tls_cert, backup_dir / "server.crt")
+            shutil.copy2(self.tls_key, backup_dir / "server.key")
+            shutil.copy2(env_file, backup_dir / "panel.env")
+            incoming_archive = backup_dir / "incoming.zip"
+            shutil.copyfile(archive_path, incoming_archive)
+            for durable_file in (
+                backup_dir / "panel.db",
+                backup_dir / "server.crt",
+                backup_dir / "server.key",
+                backup_dir / "panel.env",
+                incoming_archive,
+            ):
+                os.chmod(durable_file, 0o600)
+                _fsync_file(durable_file)
+            _fsync_directory(backup_dir)
+            _fsync_directory(backup_root)
+            if transaction_path is not None:
+                record = _read_restore_transaction(
+                    transaction_path,
+                    expected_uid=os.geteuid() if hasattr(os, "geteuid") else None,
+                    strict_paths=False,
+                )
+                if record["phase"] != "queued":
+                    raise RuntimeError("restore transaction phase is invalid")
+                record.update(
+                    {
+                        "phase": "prepared",
+                        "backupDir": str(backup_dir),
+                        "incomingArchive": str(incoming_archive),
+                        "oldFiles": {
+                            name: self._file_details(backup_dir / name)["sha256"]
+                            for name in (
+                                "panel.db",
+                                "server.crt",
+                                "server.key",
+                                "panel.env",
+                            )
+                        },
+                    }
+                )
+                _atomic_write_json(transaction_path, record)
             staged_database = Path(temporary) / "panel.db"
-            incoming_database = Path(temporary) / "incoming.db"
             self._copy_database(self.database.path, staged_database)
-            incoming_database.write_bytes(payloads["data/panel.db"])
+            incoming_database = payload_paths["data/panel.db"]
             with sqlite3.connect(str(incoming_database)) as source:
                 source.row_factory = sqlite3.Row
                 incoming_columns = {
@@ -996,42 +1507,31 @@ class BackupManager:
                     "SELECT {} FROM proxy_users ORDER BY id".format(  # nosec B608
                         ",".join(self.PROXY_COLUMNS)
                     )
-                ).fetchall()
-            with sqlite3.connect(str(staged_database)) as destination:
-                destination.execute("PRAGMA journal_mode = DELETE")
-                destination.execute("PRAGMA foreign_keys = ON")
-                destination.execute("DELETE FROM sessions")
-                destination.execute("DELETE FROM proxy_users")
-                destination.executemany(
-                    # Identifiers come only from the fixed PROXY_COLUMNS tuple.
-                    "INSERT INTO proxy_users ({}) VALUES ({})".format(  # nosec B608
-                        ",".join(self.PROXY_COLUMNS),
-                        ",".join("?" for _ in self.PROXY_COLUMNS),
-                    ),
-                    [tuple(row[column] for column in self.PROXY_COLUMNS) for row in rows],
                 )
-            self._validate_database(
-                self._read_bounded(staged_database, self.FILE_LIMITS["data/panel.db"]),
-                restored_hmac,
-                temporary,
-            )
-            new_env = self._updated_env(
-                env_file.read_bytes(),
-                {
-                    "HY2PANEL_HMAC_KEY": restored_hmac.hex(),
-                    "HY2PANEL_CERT_PIN": manifest["certificate"]["pinSHA256"],
-                },
-            )
+                with sqlite3.connect(str(staged_database)) as destination:
+                    destination.execute("PRAGMA journal_mode = DELETE")
+                    destination.execute("PRAGMA foreign_keys = ON")
+                    destination.execute("DELETE FROM sessions")
+                    destination.execute("DELETE FROM proxy_users")
+                    destination.executemany(
+                        # Identifiers come only from the fixed PROXY_COLUMNS tuple.
+                        "INSERT INTO proxy_users ({}) VALUES ({})".format(  # nosec B608
+                            ",".join(self.PROXY_COLUMNS),
+                            ",".join("?" for _ in self.PROXY_COLUMNS),
+                        ),
+                        (
+                            tuple(row[column] for column in self.PROXY_COLUMNS)
+                            for row in rows
+                        ),
+                    )
+            self._validate_database_path(staged_database, restored_hmac)
             try:
-                self._replace_bytes(
-                    self.database.path,
-                    self._read_bounded(staged_database, self.FILE_LIMITS["data/panel.db"]),
-                )
+                self._replace_file(self.database.path, staged_database)
                 for suffix in ("-wal", "-shm"):
                     sidecar = Path(str(self.database.path) + suffix)
                     _durable_unlink(sidecar)
-                self._replace_bytes(self.tls_cert, payloads["tls/server.crt"])
-                self._replace_bytes(self.tls_key, payloads["tls/server.key"])
+                self._replace_file(self.tls_cert, payload_paths["tls/server.crt"])
+                self._replace_file(self.tls_key, payload_paths["tls/server.key"])
                 self._replace_bytes(env_file, new_env)
                 self._validate_applied_restore(
                     env_file,
@@ -1041,17 +1541,24 @@ class BackupManager:
                     incoming_database,
                 )
             except Exception:
-                self._replace_bytes(self.database.path, (backup_dir / "panel.db").read_bytes())
+                self._replace_file(self.database.path, backup_dir / "panel.db")
                 for suffix in ("-wal", "-shm"):
                     _durable_unlink(Path(str(self.database.path) + suffix))
-                self._replace_bytes(self.tls_cert, (backup_dir / "server.crt").read_bytes())
-                self._replace_bytes(self.tls_key, (backup_dir / "server.key").read_bytes())
+                self._replace_file(self.tls_cert, backup_dir / "server.crt")
+                self._replace_file(self.tls_key, backup_dir / "server.key")
                 self._replace_bytes(env_file, (backup_dir / "panel.env").read_bytes())
                 if transaction_path is not None:
                     record["phase"] = "disk-consistent"
                     record["outcome"] = "rolled-back"
                     _atomic_write_json(transaction_path, record)
                 raise
+            self._prune_entries(
+                backup_root,
+                RESTORE_BACKUP_NAME_PATTERN,
+                RESTORE_BACKUP_RETENTION_SECONDS,
+                RESTORE_BACKUP_MAX_ENTRIES,
+                keep=(backup_dir,),
+            )
         if transaction_path is not None:
             record["phase"] = "disk-consistent"
             record["outcome"] = "applied"
@@ -1241,6 +1748,8 @@ class Database:
                     batch_id TEXT PRIMARY KEY,
                     applied_at INTEGER NOT NULL
                 );
+                CREATE INDEX IF NOT EXISTS applied_traffic_batches_applied_at_idx
+                    ON applied_traffic_batches(applied_at);
                 """
             )
             columns = {
@@ -1593,8 +2102,14 @@ class Database:
                 (batch_id, now),
             )
             connection.execute(
-                "DELETE FROM applied_traffic_batches WHERE applied_at < ?",
-                (now - 30 * 86400,),
+                "DELETE FROM applied_traffic_batches WHERE applied_at < ? AND batch_id <> ?",
+                (now - max(1, int(TRAFFIC_BATCH_RETENTION_SECONDS)), batch_id),
+            )
+            connection.execute(
+                """DELETE FROM applied_traffic_batches
+                WHERE rowid <= (SELECT MAX(rowid) - ? FROM applied_traffic_batches)
+                AND batch_id <> ?""",
+                (max(1, int(TRAFFIC_BATCH_MAX_ROWS)), batch_id),
             )
         return True
 
@@ -1692,14 +2207,26 @@ def build_qr_matrix(value):
 
 
 class LoginRateLimiter:
-    def __init__(self, max_attempts=5, window_seconds=900, max_addresses=4096, clock=time.time):
+    def __init__(
+        self,
+        max_attempts=5,
+        window_seconds=900,
+        max_addresses=4096,
+        clock=time.time,
+        max_concurrent_verifications=2,
+        busy_retry_after=1,
+    ):
         self.max_attempts = int(max_attempts)
         self.window_seconds = int(window_seconds)
         self.max_addresses = max(1, int(max_addresses))
         self.clock = clock
+        self.busy_retry_after = max(1, int(busy_retry_after))
         self._attempts = {}
         self._lock = threading.Lock()
         self._authentication_locks = tuple(threading.Lock() for _ in range(64))
+        self._verification_slots = threading.BoundedSemaphore(
+            max(1, int(max_concurrent_verifications))
+        )
 
     @staticmethod
     def _address_key(address):
@@ -1769,7 +2296,12 @@ class LoginRateLimiter:
             retry_after = self.retry_after(address)
             if retry_after:
                 return None, retry_after, False
-            result = verifier()
+            if not self._verification_slots.acquire(blocking=False):
+                return None, self.busy_retry_after, False
+            try:
+                result = verifier()
+            finally:
+                self._verification_slots.release()
             if result:
                 self.record_success(address)
                 return result, 0, True
@@ -1829,16 +2361,37 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         max_workers=64,
         request_timeout=10,
         request_deadline=30,
+        maintenance_request_deadline=15 * 60,
+        worker_queue_timeout=0,
+        request_queue_size=64,
     ):
         self.max_workers = max(1, int(max_workers))
         self.request_timeout = max(1, int(request_timeout))
         self.request_deadline = max(1, int(request_deadline))
+        self.maintenance_request_deadline = max(
+            self.request_deadline, int(maintenance_request_deadline)
+        )
+        self.worker_queue_timeout = max(0, float(worker_queue_timeout))
+        self.request_queue_size = max(1, int(request_queue_size))
         self.tls_context = None
         self._worker_slots = threading.BoundedSemaphore(self.max_workers)
         self._active_requests = set()
+        self._request_deadlines = {}
+        self._deadline_heap = []
+        self._deadline_sequence = 0
+        self._deadline_shutdown = False
         self._active_requests_lock = threading.Lock()
+        self._deadline_condition = threading.Condition(
+            self._active_requests_lock
+        )
         self._active_request_shutdown_started = False
         super().__init__(address, handler)
+        self._deadline_thread = threading.Thread(
+            target=self._run_deadline_scheduler,
+            name="http-deadline-scheduler",
+            daemon=True,
+        )
+        self._deadline_thread.start()
 
     def get_request(self):
         request, client_address = super().get_request()
@@ -1846,7 +2399,11 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         return request, client_address
 
     def process_request(self, request, client_address):
-        if not self._worker_slots.acquire(blocking=False):
+        if self.worker_queue_timeout:
+            acquired = self._worker_slots.acquire(timeout=self.worker_queue_timeout)
+        else:
+            acquired = self._worker_slots.acquire(blocking=False)
+        if not acquired:
             self.shutdown_request(request)
             return
         with self._active_requests_lock:
@@ -1867,15 +2424,26 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def process_request_thread(self, request, client_address):
         tracked_request = request
-        deadline_timer = None
+        request_deadline = time.monotonic() + self.request_deadline
+        self._arm_request_deadline_at(request, request_deadline)
         try:
             try:
                 if self.tls_context is not None:
-                    request = self.tls_context.wrap_socket(request, server_side=True)
-                    with self._active_requests_lock:
+                    with self._deadline_condition:
+                        request = self.tls_context.wrap_socket(
+                            request,
+                            server_side=True,
+                            do_handshake_on_connect=False,
+                        )
+                        self._request_deadlines.pop(tracked_request, None)
                         self._active_requests.discard(tracked_request)
                         self._active_requests.add(request)
                         shutdown_started = self._active_request_shutdown_started
+                        if not shutdown_started:
+                            self._schedule_deadline_locked(
+                                request, request_deadline
+                            )
+                        self._deadline_condition.notify()
                     tracked_request = request
                     if shutdown_started:
                         try:
@@ -1884,6 +2452,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                             pass
                         self.shutdown_request(request)
                         return
+                    request.do_handshake()
             except OSError:
                 self.shutdown_request(request)
             except Exception:
@@ -1892,20 +2461,71 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                 finally:
                     self.shutdown_request(request)
             else:
-                deadline_timer = threading.Timer(
-                    self.request_deadline,
-                    self._expire_request,
-                    args=(request,),
-                )
-                deadline_timer.daemon = True
-                deadline_timer.start()
                 super().process_request_thread(request, client_address)
         finally:
-            if deadline_timer is not None:
-                deadline_timer.cancel()
-            with self._active_requests_lock:
+            with self._deadline_condition:
+                self._request_deadlines.pop(tracked_request, None)
                 self._active_requests.discard(tracked_request)
+                self._deadline_condition.notify()
             self._worker_slots.release()
+
+    def _arm_request_deadline(self, request, seconds):
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        return self._arm_request_deadline_at(request, deadline)
+
+    def _schedule_deadline_locked(self, request, deadline):
+        self._deadline_sequence += 1
+        generation = self._deadline_sequence
+        self._request_deadlines[request] = generation
+        heapq.heappush(
+            self._deadline_heap,
+            (deadline, generation, request),
+        )
+
+    def _arm_request_deadline_at(self, request, deadline):
+        with self._deadline_condition:
+            if (
+                request not in self._active_requests
+                or self._deadline_shutdown
+            ):
+                return False
+            self._schedule_deadline_locked(request, deadline)
+            self._deadline_condition.notify()
+        return True
+
+    def _expire_deadline_if_current(self, request, generation):
+        with self._deadline_condition:
+            if self._request_deadlines.get(request) != generation:
+                return False
+            self._request_deadlines.pop(request, None)
+        self._expire_request(request)
+        return True
+
+    def _run_deadline_scheduler(self):
+        while True:
+            due = None
+            with self._deadline_condition:
+                while not self._deadline_shutdown:
+                    if not self._deadline_heap:
+                        self._deadline_condition.wait()
+                        continue
+                    deadline, generation, request = self._deadline_heap[0]
+                    if self._request_deadlines.get(request) != generation:
+                        heapq.heappop(self._deadline_heap)
+                        continue
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        self._deadline_condition.wait(remaining)
+                        continue
+                    heapq.heappop(self._deadline_heap)
+                    due = (request, generation)
+                    break
+                if self._deadline_shutdown:
+                    return
+            self._expire_deadline_if_current(*due)
+
+    def begin_maintenance_request(self, request):
+        return self._arm_request_deadline(request, self.maintenance_request_deadline)
 
     @staticmethod
     def _expire_request(request):
@@ -1923,6 +2543,15 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
                 request.shutdown(socket.SHUT_RDWR)
             except OSError:
                 pass
+
+    def server_close(self):
+        try:
+            super().server_close()
+        finally:
+            with self._deadline_condition:
+                self._deadline_shutdown = True
+                self._deadline_condition.notify_all()
+            self._deadline_thread.join(timeout=5)
 
     def handle_error(self, request, client_address):
         error = sys.exc_info()[1]
@@ -1962,7 +2591,12 @@ class InternalAuthHandler(JsonHandler):
 
 
 def make_internal_server(address, database, usage_manager=None):
-    server = BoundedThreadingHTTPServer(address, InternalAuthHandler)
+    server = BoundedThreadingHTTPServer(
+        address,
+        InternalAuthHandler,
+        worker_queue_timeout=5,
+        request_queue_size=256,
+    )
     server.database = database
     server.usage_manager = usage_manager
     return server
@@ -2471,6 +3105,32 @@ class PanelHandler(JsonHandler):
             update_action = """<form method="post" action="/updates/apply" data-update-form data-confirm="在线更新会短暂重启面板与 Hysteria 服务，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button success" type="submit">立即更新</button></form>""".format(
                 csrf=csrf
             )
+        certificate_status = self.app.health_monitor.certificate_status()
+        certificate_remaining = certificate_status["seconds_remaining"]
+        if certificate_remaining is None:
+            certificate_text = "未监测"
+            certificate_class = "bad"
+        elif certificate_status["level"] == "not-yet-valid":
+            certificate_text = "尚未生效"
+            certificate_class = "bad"
+        elif certificate_remaining <= 0:
+            certificate_text = "已过期"
+            certificate_class = "bad"
+        else:
+            certificate_days = max(1, (certificate_remaining + 86399) // 86400)
+            certificate_prefix = {
+                "critical": "紧急",
+                "warning": "警告",
+                "notice": "注意",
+            }.get(certificate_status["level"], "正常")
+            certificate_text = "{} · 剩余 {} 天".format(
+                certificate_prefix, certificate_days
+            )
+            certificate_class = (
+                "bad"
+                if certificate_status["level"] in {"critical", "warning", "expired"}
+                else "ok"
+            )
         content = """<header class="topbar"><span class="eyebrow brand">HYSTERIA CONTROL CENTER</span><h1>Hysteria 2 用户管理面板</h1><span class="topbar-spacer"></span>
 <span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">最近刷新 <strong>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
 <button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
@@ -2489,7 +3149,8 @@ class PanelHandler(JsonHandler):
 <div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
 <div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu:.1f}%</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory:.1f}%</strong><small class="muted">{memory_used} / {memory_total}</small></div>
-<div class="resource"><span class="muted">磁盘占用</span><strong>{disk:.1f}%</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div></div></article>
+<div class="resource"><span class="muted">磁盘占用</span><strong>{disk:.1f}%</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div>
+<div class="resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong><small class="muted">180 / 90 / 30 天分级提醒</small></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">完整备份或恢复节点身份与全部用户数据。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">×</button></div>
@@ -2551,6 +3212,8 @@ class PanelHandler(JsonHandler):
             disk_used=_human_bytes(resources["disk_used"]),
             disk_total=_human_bytes(resources["disk_total"]),
             uptime=html.escape(resources["uptime"]),
+            certificate_class=certificate_class,
+            certificate_text=certificate_text,
             tcp_cc=html.escape(resources["tcp_congestion_control"]),
             qdisc=html.escape(resources["default_qdisc"]),
             rank_rows=rank_rows,
@@ -2743,13 +3406,14 @@ class PanelHandler(JsonHandler):
         if self.app.backup_manager is None:
             self._error_page(503, "备份功能尚未配置")
             return
+        self.server.begin_maintenance_request(self.connection)
         try:
             with self.app.user_action_lock:
                 archive = self.app.usage_manager.run_after_collect(
                     self.app.backup_manager.create_archive
                 )
-            self._audit_safely(session["username"], "backup_downloaded", "proxy-users")
             self._send_archive(archive)
+            self._audit_safely(session["username"], "backup_downloaded", "proxy-users")
         except Exception:
             LOGGER.exception("backup creation failed")
             self._error_page(500, "备份生成失败，请检查服务日志")
@@ -2773,6 +3437,7 @@ class PanelHandler(JsonHandler):
         if self.app.backup_manager is None:
             self._error_page(503, "恢复功能尚未配置")
             return
+        self.server.begin_maintenance_request(self.connection)
         staged = False
         try:
             with self.app.user_action_lock:
@@ -2780,10 +3445,10 @@ class PanelHandler(JsonHandler):
                     self.rfile, content_length
                 )
                 staged = True
+                self.app.restore_controller.queue()
                 self._audit_safely(
                     session["username"], "restore_queued", manifest["createdAt"]
                 )
-                self.app.restore_controller.queue()
         except BackupValidationError as exc:
             self._error_page(400, str(exc))
             return
@@ -2919,6 +3584,7 @@ class PanelHandler(JsonHandler):
         try:
             self.app.stats_client.kick(name)
         except Exception:
+            self.app.usage_manager._record_health(False)
             LOGGER.exception("disconnecting active user failed")
 
     def _handle_user_action(self, session, user_id, action, form):
@@ -3281,12 +3947,17 @@ class UsageManager:
         pending_ttl=5,
         clock=time.monotonic,
         health_monitor=None,
+        auth_stats_ttl=1,
     ):
         self.database = database
         self.stats_client = stats_client
         self.pending_ttl = max(1, int(pending_ttl))
         self.clock = clock
         self.lock = threading.Lock()
+        self._authorization_lock = threading.Lock()
+        self.auth_stats_ttl = max(0, float(auth_stats_ttl))
+        self._auth_stats_at = None
+        self._auth_online = {}
         self.pending = {}
         self.pending_traffic_path = database.path.with_name("pending-traffic.json")
         self.pending_traffic_batch_id = None
@@ -3416,6 +4087,7 @@ class UsageManager:
         self.pending_traffic = {}
 
     def _collect_locked(self):
+        self._auth_stats_at = None
         try:
             self._flush_pending_traffic_locked()
             try:
@@ -3457,7 +4129,11 @@ class UsageManager:
                 self._record_health(False)
                 LOGGER.exception("online reconciliation failed during traffic sync")
                 return traffic
-            self.stats_client.kick_many(blocked)
+            try:
+                self.stats_client.kick_many(blocked)
+            except Exception:
+                self._record_health(False)
+                raise
             return traffic
 
     def run_after_collect(self, action):
@@ -3466,28 +4142,43 @@ class UsageManager:
             return action()
 
     def forget_user(self, name):
-        with self.lock:
+        with self._authorization_lock:
             self.pending.pop(name, None)
             self.last_online.pop(name, None)
 
+    def _authorization_online_locked(self):
+        now = self.clock()
+        if (
+            self._auth_stats_at is not None
+            and now - self._auth_stats_at < self.auth_stats_ttl
+        ):
+            return dict(self._auth_online)
+        try:
+            self._collect_locked()
+        except Exception:
+            LOGGER.exception("traffic sync failed during authentication")
+            return None
+        try:
+            online = self.stats_client.online()
+        except Exception:
+            self._record_health(False)
+            LOGGER.exception("online snapshot failed during authentication")
+            return None
+        self._auth_online = dict(online)
+        self._auth_stats_at = self.clock()
+        return dict(self._auth_online)
+
     def authorize(self, name):
         with self.lock:
-            try:
-                self._collect_locked()
-            except Exception:
-                LOGGER.exception("traffic sync failed during authentication")
-                return False
-            user = self.database.get_proxy_user_by_name(name)
-            if not user or not user["enabled"]:
-                return False
-            if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
-                return False
-            try:
-                online = self.stats_client.online()
-            except Exception:
-                self._record_health(False)
-                LOGGER.exception("online snapshot failed during authentication")
-                return False
+            online = self._authorization_online_locked()
+        if online is None:
+            return False
+        user = self.database.get_proxy_user_by_name(name)
+        if not user or not user["enabled"]:
+            return False
+        if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
+            return False
+        with self._authorization_lock:
             now = self.clock()
             pending = [
                 timestamp
@@ -3535,8 +4226,13 @@ class UsageManager:
             self._collect_locked()
             user = self.database.get_proxy_user(user_id)
             self.database.reset_proxy_user_traffic(user_id, expected_generation)
-            self.stats_client.kick(user["name"])
-            self.pending.pop(user["name"], None)
+            try:
+                self.stats_client.kick(user["name"])
+            except Exception:
+                self._record_health(False)
+                raise
+            with self._authorization_lock:
+                self.pending.pop(user["name"], None)
 
     def reset_all(self):
         with self.lock:
@@ -3545,10 +4241,15 @@ class UsageManager:
 
     def run_collector(self, stop_event, interval=10):
         while not stop_event.is_set():
+            heartbeat = getattr(self, "collector_heartbeat", None)
+            if heartbeat is not None:
+                heartbeat()
             try:
                 self.collect_once()
             except Exception:
                 LOGGER.exception("background traffic sync failed")
+            if heartbeat is not None:
+                heartbeat()
             if stop_event.wait(interval):
                 break
 
@@ -3817,13 +4518,86 @@ def sync_traffic(
     UsageManager(database, stats_client).collect_once()
 
 
-def run_supervised_services(panel_server, auth_server, usage_manager, panel_scheme):
+def _probe_local_health(server, scheme, timeout=2):
+    bound_host = str(server.server_address[0])
+    try:
+        bound_address = ipaddress.ip_address(bound_host)
+    except ValueError:
+        return False
+    if bound_address.is_unspecified:
+        host = "::1" if bound_address.version == 6 else "127.0.0.1"
+    else:
+        host = bound_host
+    port = int(server.server_address[1])
+    connection = None
+    try:
+        if scheme == "https":
+            context = ssl._create_unverified_context()  # nosec B323
+            connection = http.client.HTTPSConnection(
+                host, port, timeout=timeout, context=context
+            )
+        else:
+            connection = http.client.HTTPConnection(host, port, timeout=timeout)
+        connection.request("GET", "/healthz", headers={"Connection": "close"})
+        response = connection.getresponse()
+        payload = response.read(1025)
+        return (
+            response.status == 200
+            and len(payload) <= 1024
+            and json.loads(payload.decode("utf-8")) == {"status": "ok"}
+        )
+    except (OSError, ValueError, http.client.HTTPException, json.JSONDecodeError):
+        return False
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
+
+
+def run_supervised_services(
+    panel_server,
+    auth_server,
+    usage_manager,
+    panel_scheme,
+    notifier=None,
+    watchdog_probe=None,
+):
     stop_event = threading.Event()
     failures = queue.Queue()
     previous_termination_handler = None
     termination_requested = [False]
     application = getattr(panel_server, "application", None)
     health_monitor = getattr(application, "health_monitor", None)
+    notifier = notifier or SystemdNotifier()
+    watchdog_interval = notifier.watchdog_interval
+    next_watchdog = None
+    collector_heartbeat = [None]
+    watchdog_unhealthy_reported = [False]
+    previous_collector_heartbeat = getattr(
+        usage_manager, "collector_heartbeat", None
+    )
+    had_collector_heartbeat = hasattr(usage_manager, "collector_heartbeat")
+
+    def record_collector_heartbeat():
+        collector_heartbeat[0] = time.monotonic()
+
+    def watchdog_is_healthy():
+        heartbeat = collector_heartbeat[0]
+        if heartbeat is None:
+            return False
+        stale_after = max(5.0, 2 * watchdog_interval)
+        if time.monotonic() - heartbeat >= stale_after:
+            return False
+        if watchdog_probe is not None:
+            try:
+                return bool(watchdog_probe())
+            except Exception:
+                return False
+        return _probe_local_health(panel_server, panel_scheme) and _probe_local_health(
+            auth_server, "http"
+        )
 
     def request_graceful_shutdown(_signum, _frame):
         termination_requested[0] = True
@@ -3867,6 +4641,8 @@ def run_supervised_services(panel_server, auth_server, usage_manager, panel_sche
         previous_termination_handler = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, request_graceful_shutdown)
     try:
+        if watchdog_interval is not None:
+            usage_manager.collector_heartbeat = record_collector_heartbeat
         for thread in workers:
             thread.start()
             started_workers.append(thread)
@@ -3874,7 +4650,20 @@ def run_supervised_services(panel_server, auth_server, usage_manager, panel_sche
                 started_servers.append(
                     panel_server if thread.name.startswith("panel-") else auth_server
                 )
+        notifier.ready("panel workers started")
+        if watchdog_interval is not None:
+            next_watchdog = time.monotonic() + watchdog_interval
         while not termination_requested[0]:
+            if next_watchdog is not None and time.monotonic() >= next_watchdog:
+                if watchdog_is_healthy():
+                    notifier.watchdog()
+                    watchdog_unhealthy_reported[0] = False
+                elif not watchdog_unhealthy_reported[0]:
+                    LOGGER.error(
+                        "systemd watchdog withheld: a local worker is not responsive"
+                    )
+                    watchdog_unhealthy_reported[0] = True
+                next_watchdog = time.monotonic() + watchdog_interval
             try:
                 failed_worker, error = failures.get(timeout=0.2)
                 break
@@ -3891,6 +4680,7 @@ def run_supervised_services(panel_server, auth_server, usage_manager, panel_sche
     finally:
         primary_error = sys.exc_info()[1]
         cleanup_error = None
+        notifier.stopping("panel stopping")
         try:
             try:
                 stop_event.set()
@@ -3926,6 +4716,14 @@ def run_supervised_services(panel_server, auth_server, usage_manager, panel_sche
             if primary_error is None and cleanup_error is not None:
                 raise cleanup_error
         finally:
+            if watchdog_interval is not None:
+                if had_collector_heartbeat:
+                    usage_manager.collector_heartbeat = previous_collector_heartbeat
+                else:
+                    try:
+                        del usage_manager.collector_heartbeat
+                    except AttributeError:
+                        pass
             if previous_termination_handler is not None:
                 signal.signal(signal.SIGTERM, previous_termination_handler)
 
@@ -3948,6 +4746,12 @@ def run_service(settings):
         work_dir=settings.database_path.parent / "backup-restore",
         maintenance_lock_group=os.getgid() if hasattr(os, "getgid") else None,
     )
+    health_monitor = RuntimeHealth(
+        database.readiness_probe,
+        certificate_validity_probe=functools.partial(
+            certificate_validity_timestamps, settings.tls_cert
+        ),
+    )
     application = PanelApplication(
         database=database,
         public_host=settings.public_host,
@@ -3958,6 +4762,7 @@ def run_service(settings):
         secure_cookies=settings.panel_scheme == "https",
         usage_manager=usage_manager,
         backup_manager=backup_manager,
+        health_monitor=health_monitor,
     )
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
     if settings.panel_scheme == "https":
@@ -4351,7 +5156,7 @@ def _validate_current_restore_identity(record, root_uid=0):
     env_bytes, hmac_key, pin = _restore_env_identity(record["envFile"], root_uid)
     database_path = Path(record["databasePath"])
     database_uid = os.lstat(database_path.parent).st_uid
-    database = _read_secure_regular(
+    database_details = _secure_regular_details(
         database_path,
         manager.FILE_LIMITS["data/panel.db"],
         allowed_uids={database_uid},
@@ -4370,7 +5175,7 @@ def _validate_current_restore_identity(record, root_uid=0):
         required_mode=0o640,
     )
     with tempfile.TemporaryDirectory(dir=record["workDir"]) as temporary:
-        manager._validate_database(database, hmac_key, temporary)
+        manager._validate_database_path(database_path, hmac_key)
         cert_path = Path(temporary) / "server.crt"
         key_path = Path(temporary) / "server.key"
         cert_path.write_bytes(cert)
@@ -4379,7 +5184,7 @@ def _validate_current_restore_identity(record, root_uid=0):
     if not hmac.compare_digest(manager._certificate_pin(cert), pin):
         raise RuntimeError("restore certificate pin is inconsistent")
     return {
-        "panel.db": manager._sha256(database),
+        "panel.db": database_details["sha256"],
         "server.crt": manager._sha256(cert),
         "server.key": manager._sha256(key),
         "panel.env": manager._sha256(env_bytes),
@@ -4388,11 +5193,14 @@ def _validate_current_restore_identity(record, root_uid=0):
 
 def _validate_applied_transaction(record):
     manager = _restore_manager_from_record(record)
-    manifest, payloads = manager._read_archive(record["incomingArchive"])
-    restored_hmac = bytes.fromhex(payloads["secrets/hmac-key.hex"].decode("ascii").strip())
     with tempfile.TemporaryDirectory(dir=record["workDir"]) as temporary:
-        expected_database = Path(temporary) / "expected.db"
-        expected_database.write_bytes(payloads["data/panel.db"])
+        manifest, payload_paths = manager._extract_archive(
+            record["incomingArchive"], Path(temporary) / "incoming"
+        )
+        restored_hmac = manager._validate_extracted_archive(
+            manifest, payload_paths, require_compatible_endpoint=True
+        )
+        expected_database = payload_paths["data/panel.db"]
         with sqlite3.connect(str(expected_database)) as connection:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(proxy_users)")}
             if "allow_udp_443" not in columns:
@@ -4412,6 +5220,7 @@ def _validate_backup_directory(record, root_uid=0):
         or stat.S_IMODE(metadata.st_mode) != 0o700
     ):
         raise RuntimeError("restore backup directory is invalid")
+    verified = {}
     for name, digest in record["oldFiles"].items():
         path = backup_dir / name
         maximum = {
@@ -4420,38 +5229,31 @@ def _validate_backup_directory(record, root_uid=0):
             "server.key": 1024 * 1024,
             "panel.env": 1024 * 1024,
         }[name]
-        value = _read_secure_regular(
+        details = _secure_regular_details(
             path, maximum, allowed_uids={root_uid}, required_mode=0o600
         )
-        if hashlib.sha256(value).hexdigest() != digest:
+        if details["sha256"] != digest:
             raise RuntimeError("restore backup file is invalid")
+        verified[name] = details
+    return verified
 
 
 def _restore_old_files(record, root_uid=0):
-    _validate_backup_directory(record, root_uid)
+    verified = _validate_backup_directory(record, root_uid)
     manager = _restore_manager_from_record(record)
     backup_dir = Path(record["backupDir"])
-    for target, name in (
+    replacements = (
         (record["databasePath"], "panel.db"),
         (record["tlsCert"], "server.crt"),
         (record["tlsKey"], "server.key"),
         (record["envFile"], "panel.env"),
-    ):
-        maximum = {
-            "panel.db": MAX_BACKUP_CONTENT_BYTES,
-            "server.crt": 1024 * 1024,
-            "server.key": 1024 * 1024,
-            "panel.env": 1024 * 1024,
-        }[name]
-        manager._replace_bytes(
-            target,
-            _read_secure_regular(
-                backup_dir / name,
-                maximum,
-                allowed_uids={root_uid},
-                required_mode=0o600,
-            ),
-        )
+    )
+    manager._require_space_allocations(
+        (Path(target).parent, verified[name]["size"])
+        for target, name in replacements
+    )
+    for target, name in replacements:
+        manager._replace_file(target, backup_dir / name)
     for suffix in ("-wal", "-shm"):
         _durable_unlink(Path(record["databasePath"] + suffix))
     if _validate_current_restore_identity(record, root_uid) != record["oldFiles"]:
@@ -4461,15 +5263,15 @@ def _restore_old_files(record, root_uid=0):
 def _quarantine_queued_transaction(record, root_uid=0):
     manager = _restore_manager_from_record(record)
     archive = Path(record["queuedArchive"])
-    value = _read_secure_regular(
+    details = _secure_regular_details(
         archive,
         MAX_BACKUP_ARCHIVE_BYTES,
         allowed_uids={root_uid},
         required_mode=0o600,
     )
     if (
-        hashlib.sha256(value).hexdigest() != record["pendingSha256"]
-        or len(value) != record["pendingSize"]
+        details["sha256"] != record["pendingSha256"]
+        or details["size"] != record["pendingSize"]
     ):
         raise RuntimeError("pending restore archive changed")
     quarantine = manager.work_dir / "failed-restore-{}-{}.zip".format(
@@ -4477,6 +5279,13 @@ def _quarantine_queued_transaction(record, root_uid=0):
         secrets.token_hex(4),
     )
     _durable_move(archive, quarantine)
+    manager._prune_entries(
+        manager.work_dir,
+        FAILED_RESTORE_NAME_PATTERN,
+        FAILED_RESTORE_RETENTION_SECONDS,
+        FAILED_RESTORE_MAX_ENTRIES,
+        keep=(quarantine,),
+    )
 
 
 def _discard_recorded_pending(record):
@@ -4559,6 +5368,12 @@ def recover_restore_files(
     strict_paths=True,
 ):
     captured_path = Path(captured_path or (str(marker_path) + ".archive"))
+    default_target_paths = (
+        Path("/var/lib/hysteria2-panel/panel.db"),
+        Path("/etc/hysteria2-panel/server.crt"),
+        Path("/etc/hysteria2-panel/server.key"),
+        Path(RESTORE_ENV_FILE),
+    )
     try:
         os.lstat(marker_path)
     except FileNotFoundError:
@@ -4572,10 +5387,38 @@ def recover_restore_files(
         except FileNotFoundError:
             captured_exists = False
         if not pending_exists and not captured_exists:
+            try:
+                with exclusive_maintenance_lock(lock_path, blocking=False):
+                    _cleanup_restore_temporary_files(
+                        work_dir,
+                        pending_path,
+                        captured_path,
+                        target_paths=default_target_paths,
+                        expected_uid=expected_uid,
+                        pending_uid=pending_uid,
+                    )
+            except RuntimeError as exc:
+                if "维护任务正在运行" not in str(exc):
+                    raise
             return
     with exclusive_maintenance_lock(lock_path, blocking=True):
         record = _read_restore_transaction(
             marker_path, expected_uid=expected_uid, strict_paths=strict_paths
+        )
+        target_paths = default_target_paths
+        target_keys = ("databasePath", "tlsCert", "tlsKey", "envFile")
+        if record is not None and all(name in record for name in target_keys):
+            target_paths = tuple(
+                Path(record[name])
+                for name in target_keys
+            )
+        _cleanup_restore_temporary_files(
+            work_dir,
+            pending_path,
+            captured_path,
+            target_paths=target_paths,
+            expected_uid=expected_uid,
+            pending_uid=pending_uid,
         )
         if record is not None:
             _reconcile_to_services_pending(
@@ -4592,6 +5435,7 @@ def recover_restore_files(
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y%m%dT%H%M%SZ"
         )
+        quarantines = []
         for source, owner_uid, label in (
             (Path(pending_path), allowed_pending_uid, "pending"),
             (captured_path, expected_uid, "captured"),
@@ -4606,6 +5450,14 @@ def recover_restore_files(
             _quarantine_secure_orphan(
                 source, quarantine, MAX_BACKUP_ARCHIVE_BYTES, owner_uid
             )
+            quarantines.append(quarantine)
+        BackupManager._prune_entries(
+            work_dir,
+            FAILED_RESTORE_NAME_PATTERN,
+            FAILED_RESTORE_RETENTION_SECONDS,
+            FAILED_RESTORE_MAX_ENTRIES,
+            keep=quarantines,
+        )
 
 
 def verify_restore_services(

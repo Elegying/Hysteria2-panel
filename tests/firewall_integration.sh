@@ -3,8 +3,10 @@ set -Eeuo pipefail
 
 [[ ${EUID} -eq 0 ]] || { echo "firewall integration test requires root" >&2; exit 1; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DURABLE_FUNCTIONS="$(sed -n '/^durable_replace_file()/,/^flush_install_payload_for_commit()/p' "${ROOT}/install.sh" | sed '$d')"
 FUNCTIONS="$(sed -n '/^ufw_rule_is_recorded()/,/^optimize_network_stack()/p' "${ROOT}/install.sh" | sed '$d')"
 # The extracted source is the exact installer implementation under test.
+eval "${DURABLE_FUNCTIONS}"
 eval "${FUNCTIONS}"
 
 fail() {
@@ -20,9 +22,17 @@ declare FIREWALL_MANAGER=unprepared FIREWALL_RESULT="" UFW_ADDED_RULES="" FIREWA
 # shellcheck disable=SC2034
 declare UFW_RULES_PATH=/etc/ufw UFW_TEMPLATE_PATH=/usr/share/ufw/iptables
 # shellcheck disable=SC2034
+declare FIREWALL_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FIREWALL_TRANSACTION_V1
+# shellcheck disable=SC2034
 declare -a FIREWALL_RULES=() FIREWALL_ZONES=() FIREWALL_PENDING=() FIREWALL_APPLIED=()
+# shellcheck disable=SC2034
+declare -a FIREWALL_OWNED=() FIREWALL_NEWLY_OWNED=() FIREWALL_TRANSACTION_LINES=()
 RULES=(29999/tcp 29999/udp 29998/tcp 443/tcp 443/udp)
 TEST_TMP="$(mktemp -d /tmp/hysteria2-panel-firewall.XXXXXX)"
+# shellcheck disable=SC2034
+MANAGED_FIREWALL_STATE_FILE="${TEST_TMP}/managed-firewall.rules"
+# shellcheck disable=SC2034
+FIREWALL_TRANSACTION_FILE="${TEST_TMP}/firewall-transaction"
 LISTENER_PID=""
 
 cleanup() {
@@ -108,6 +118,9 @@ reset_ufw
 prepare_firewall
 [[ "${FIREWALL_MANAGER}" == "ufw" ]]
 configure_firewall
+finalize_firewall_transaction
+[[ "$(wc -l <"${MANAGED_FIREWALL_STATE_FILE}")" -eq 5 ]]
+[[ ! -e "${FIREWALL_TRANSACTION_FILE}" ]]
 for rule in "${RULES[@]}"; do
   # shellcheck disable=SC2034
   UFW_ADDED_RULES="$(LC_ALL=C ufw show added)"
@@ -116,6 +129,7 @@ done
 ufw_before="$(LC_ALL=C ufw show added | sha256sum | awk '{print $1}')"
 prepare_firewall
 configure_firewall
+finalize_firewall_transaction
 ufw_after="$(LC_ALL=C ufw show added | sha256sum | awk '{print $1}')"
 [[ "${ufw_before}" == "${ufw_after}" ]]
 
@@ -148,6 +162,9 @@ ufw --force reset >/dev/null
 # Remove UFW's live nft compatibility chains before starting the independent
 # firewalld scenario; production correctly rejects both managers coexisting.
 nft flush ruleset
+rm -f -- "${MANAGED_FIREWALL_STATE_FILE}" "${FIREWALL_TRANSACTION_FILE}"
+# shellcheck disable=SC2034
+declare -a FIREWALL_OWNED=() FIREWALL_NEWLY_OWNED=() FIREWALL_TRANSACTION_LINES=() FIREWALL_APPLIED=()
 systemctl start firewalld.service
 [[ "$(read_firewalld_backend)" == "nftables" ]]
 zone="$(firewall-cmd --get-default-zone)"
@@ -169,6 +186,9 @@ fi
 prepare_firewall
 [[ "${FIREWALL_MANAGER}" == "firewalld" ]]
 configure_firewall
+finalize_firewall_transaction
+[[ "$(wc -l <"${MANAGED_FIREWALL_STATE_FILE}")" -eq 10 ]]
+[[ ! -e "${FIREWALL_TRANSACTION_FILE}" ]]
 for rule in "${RULES[@]}"; do
   firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"
   firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"
@@ -177,6 +197,7 @@ runtime_before="$(firewall-cmd --zone="${zone}" --list-ports | tr ' ' '\n' | sor
 permanent_before="$(firewall-cmd --permanent --zone="${zone}" --list-ports | tr ' ' '\n' | sort | sha256sum | awk '{print $1}')"
 prepare_firewall
 configure_firewall
+finalize_firewall_transaction
 runtime_after="$(firewall-cmd --zone="${zone}" --list-ports | tr ' ' '\n' | sort | sha256sum | awk '{print $1}')"
 permanent_after="$(firewall-cmd --permanent --zone="${zone}" --list-ports | tr ' ' '\n' | sort | sha256sum | awk '{print $1}')"
 [[ "${runtime_before}" == "${runtime_after}" ]]

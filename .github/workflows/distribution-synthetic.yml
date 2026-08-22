@@ -1,0 +1,98 @@
+name: Anonymous release distribution synthetic
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  anonymous-release-assets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Resolve the latest formal release anonymously
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="${RUNNER_TEMP}/latest-release.json"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/latest" \
+            --output "${response}"
+          test "$(wc -c <"${response}")" -gt 0
+          test "$(wc -c <"${response}")" -le 524288
+          python - "${response}" >>"${GITHUB_OUTPUT}" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          release = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          tag = release.get("tag_name", "")
+          if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+              raise SystemExit("latest release has an invalid version tag")
+          if release.get("draft") or release.get("prerelease"):
+              raise SystemExit("latest endpoint returned a non-formal release")
+          names = [asset.get("name") for asset in release.get("assets", [])]
+          expected = {"install.sh", "install.sh.sigstore.json"}
+          if len(names) != len(expected) or set(names) != expected:
+              raise SystemExit("latest release has unexpected asset set")
+          print("tag={}".format(tag))
+          PY
+
+      - name: Download release and tagged source anonymously
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="${RUNNER_TEMP}/anonymous-release"
+          mkdir -p "${asset_dir}"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          raw="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${RELEASE_TAG}/install.sh"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
+            "${base}/install.sh" --output "${asset_dir}/install.sh"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
+            "${base}/install.sh.sigstore.json" \
+            --output "${asset_dir}/install.sh.sigstore.json"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
+            "${raw}" --output "${asset_dir}/tagged-install.sh"
+          test "$(wc -c <"${asset_dir}/install.sh")" -gt 0
+          test "$(wc -c <"${asset_dir}/install.sh")" -le 1048576
+          test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -gt 0
+          test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -le 5242880
+          cmp --silent "${asset_dir}/install.sh" "${asset_dir}/tagged-install.sh"
+          bash -n "${asset_dir}/install.sh"
+          python -m json.tool "${asset_dir}/install.sh.sigstore.json" >/dev/null
+
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        with:
+          cosign-release: v3.1.3
+
+      - name: Verify the public signature bundle
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="${RUNNER_TEMP}/anonymous-release"
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-signature.yml@refs/tags/${RELEASE_TAG}"
+          cosign verify-blob "${asset_dir}/install.sh" \
+            --bundle "${asset_dir}/install.sh.sigstore.json" \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+      - name: Surface anonymous distribution failure
+        if: failure()
+        run: |
+          echo "::error title=Anonymous release distribution unavailable::The latest API, release assets, tagged source, or Sigstore verification is unavailable anonymously."
+          exit 1

@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  release-ref-is-tag:
+    name: release-ref-is-tag
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Reject a release-like branch ref
+        shell: bash
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "${GITHUB_REF_TYPE}" = tag
+          test "${GITHUB_REF}" = "refs/tags/${GITHUB_REF_NAME}"
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -124,35 +141,12 @@ jobs:
           if missing:
               raise SystemExit("README signed bootstrap is incomplete: {}".format(missing))
           PY
-      - name: Require the version tag to point at a main push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          EXPECTED_COMMIT: ${{ github.sha }}
-        run: |
-          version="$(python - <<'PY'
-          import pathlib
-          import re
-
-          source = pathlib.Path("hy2panel/version.py").read_text()
-          match = re.search(
-              r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$',
-              source,
-              re.MULTILINE,
-          )
-          if not match:
-              raise SystemExit("panel version metadata is missing")
-          print(match.group(1))
-          PY
-          )"
-          git fetch --force origin "refs/tags/v${version}:refs/tags/v${version}"
-          tag_commit="$(git rev-parse "v${version}^{commit}")"
-          test "${tag_commit}" = "${EXPECTED_COMMIT}"
       - name: Install pinned audit tools
         run: python -m pip install ruff==0.12.11 bandit==1.8.6
       - name: Lint Python
-        run: ruff check hysteria2_panel.py tcp_probe.py hy2panel tests
+        run: ruff check hysteria2_panel.py tcp_probe.py hy2panel .github/scripts tests
       - name: Audit Python security
-        run: bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel
+        run: bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel .github/scripts
       - name: Validate installer syntax
         run: bash -n install.sh
       - name: Install ShellCheck

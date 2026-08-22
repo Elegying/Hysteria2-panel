@@ -174,6 +174,68 @@ class DatabaseTests(unittest.TestCase):
             ]
         self.assertEqual(["failure-1", "failure-2", "failure-3"], actions)
 
+    def test_traffic_batch_ledger_has_an_applied_at_index(self):
+        with sqlite3.connect(self.db_path) as connection:
+            indexes = {
+                row[1]
+                for row in connection.execute("PRAGMA index_list(applied_traffic_batches)")
+            }
+
+        self.assertIn("applied_traffic_batches_applied_at_idx", indexes)
+
+    def test_traffic_batch_ledger_drops_entries_older_than_retention(self):
+        self.db.create_proxy_user("alice")
+        with mock.patch.object(
+            hysteria2_panel, "TRAFFIC_BATCH_RETENTION_SECONDS", 100, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "TRAFFIC_BATCH_MAX_ROWS", 100, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=100):
+            self.db.apply_traffic_batch("1" * 32, {"alice": {"tx": 1, "rx": 0}})
+
+        with mock.patch.object(
+            hysteria2_panel, "TRAFFIC_BATCH_RETENTION_SECONDS", 100, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "TRAFFIC_BATCH_MAX_ROWS", 100, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=201):
+            self.db.apply_traffic_batch("2" * 32, {"alice": {"tx": 1, "rx": 0}})
+
+        with sqlite3.connect(self.db_path) as connection:
+            batch_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT batch_id FROM applied_traffic_batches ORDER BY batch_id"
+                )
+            ]
+        self.assertEqual(["2" * 32], batch_ids)
+
+    def test_traffic_batch_ledger_caps_rows_and_preserves_the_current_batch(self):
+        user = self.db.create_proxy_user("alice")
+        batch_ids = ["{:032x}".format(value) for value in range(1, 5)]
+        with mock.patch.object(
+            hysteria2_panel, "TRAFFIC_BATCH_RETENTION_SECONDS", 1000, create=True
+        ), mock.patch.object(
+            hysteria2_panel, "TRAFFIC_BATCH_MAX_ROWS", 3, create=True
+        ), mock.patch("hysteria2_panel.time.time", return_value=500):
+            for batch_id in batch_ids:
+                self.assertTrue(
+                    self.db.apply_traffic_batch(
+                        batch_id, {"alice": {"tx": 1, "rx": 0}}
+                    )
+                )
+            self.assertFalse(
+                self.db.apply_traffic_batch(
+                    batch_ids[-1], {"alice": {"tx": 100, "rx": 0}}
+                )
+            )
+
+        with sqlite3.connect(self.db_path) as connection:
+            retained = {
+                row[0] for row in connection.execute("SELECT batch_id FROM applied_traffic_batches")
+            }
+        self.assertEqual(3, len(retained))
+        self.assertIn(batch_ids[-1], retained)
+        self.assertEqual(4, self.db.get_proxy_user(user["id"])["tx_bytes"])
+
     def test_updating_admin_password_revokes_existing_sessions(self):
         admin_id = self.db.upsert_admin("Elegy", "old-password")
         raw_token, _ = self.db.create_session(admin_id)
@@ -571,6 +633,49 @@ class RateLimiterTests(unittest.TestCase):
 
         self.assertEqual((123, 0, True), limiter.authenticate(address, lambda: 123))
 
+    def test_global_verifier_gate_rejects_excess_addresses_without_counting_failure(self):
+        limiter = LoginRateLimiter(
+            max_attempts=1,
+            window_seconds=60,
+            max_concurrent_verifications=2,
+        )
+        entered = threading.Barrier(3)
+        release = threading.Event()
+        results = []
+
+        def blocking_verifier():
+            entered.wait(1)
+            self.assertTrue(release.wait(1))
+            return 123
+
+        workers = [
+            threading.Thread(
+                target=lambda address=address: results.append(
+                    limiter.authenticate(address, blocking_verifier)
+                )
+            )
+            for address in ("192.0.2.1", "198.51.100.1")
+        ]
+        for worker in workers:
+            worker.start()
+        entered.wait(1)
+
+        self.assertEqual(
+            (None, 1, False),
+            limiter.authenticate("203.0.113.1", lambda: 123),
+        )
+        self.assertTrue(limiter.is_allowed("203.0.113.1"))
+
+        release.set()
+        for worker in workers:
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual([(123, 0, True), (123, 0, True)], sorted(results))
+        self.assertEqual(
+            (123, 0, True),
+            limiter.authenticate("203.0.113.1", lambda: 123),
+        )
+
 
 class FakeStatsClient:
     def __init__(self):
@@ -663,6 +768,31 @@ class UsageManagerTests(unittest.TestCase):
         manager = UsageManager(self.db, stats, health_monitor=health)
 
         manager.collect_once()
+
+        self.assertEqual([True, False], health.events)
+
+    def test_failed_kick_marks_runtime_not_ready_after_traffic_is_persisted(self):
+        class FakeHealth:
+            def __init__(self):
+                self.events = []
+
+            def refresh_database(self):
+                pass
+
+            def record_stats_sync(self, success):
+                self.events.append(success)
+
+        user = self.db.create_proxy_user("disabled")
+        self.db.set_proxy_user_enabled(user["id"], False)
+        health = FakeHealth()
+        stats = PolicyStatsClient(online={"disabled": 1})
+        stats.kick_many = lambda _names: (_ for _ in ()).throw(
+            OSError("kick unavailable")
+        )
+        manager = UsageManager(self.db, stats, health_monitor=health)
+
+        with self.assertRaisesRegex(OSError, "kick unavailable"):
+            manager.collect_once()
 
         self.assertEqual([True, False], health.events)
 
@@ -1134,6 +1264,71 @@ class UsageManagerTests(unittest.TestCase):
         self.assertTrue(manager.authorize("alice"))
         self.assertFalse(manager.authorize("alice"))
 
+    def test_authorization_burst_reuses_fresh_stats_and_still_fails_closed_when_stale(self):
+        self.db.create_proxy_user("alice", device_limit=10)
+
+        class CountingStats(PolicyStatsClient):
+            def __init__(self):
+                super().__init__(online={"alice": 0})
+                self.collect_calls = 0
+                self.online_calls = 0
+                self.online_error = None
+
+            def collect_and_clear(self):
+                self.collect_calls += 1
+                return super().collect_and_clear()
+
+            def online(self):
+                self.online_calls += 1
+                if self.online_error is not None:
+                    raise self.online_error
+                return super().online()
+
+        now = [100.0]
+        stats = CountingStats()
+        manager = UsageManager(
+            self.db,
+            stats,
+            pending_ttl=10,
+            clock=lambda: now[0],
+            auth_stats_ttl=1,
+        )
+
+        self.assertEqual([True] * 4, [manager.authorize("alice") for _ in range(4)])
+        self.assertEqual((1, 1), (stats.collect_calls, stats.online_calls))
+
+        now[0] += 2
+        stats.online_error = OSError("stats unavailable")
+        self.assertFalse(manager.authorize("alice"))
+        self.assertEqual((2, 2), (stats.collect_calls, stats.online_calls))
+
+    def test_concurrent_authorizations_keep_pending_device_reservations_atomic(self):
+        self.db.create_proxy_user("alice", device_limit=3)
+        manager = UsageManager(
+            self.db,
+            PolicyStatsClient(online={"alice": 0}),
+            pending_ttl=10,
+            clock=lambda: 100.0,
+            auth_stats_ttl=1,
+        )
+        start = threading.Barrier(17)
+        results = []
+
+        def authorize():
+            start.wait(1)
+            results.append(manager.authorize("alice"))
+
+        workers = [threading.Thread(target=authorize) for _ in range(16)]
+        for worker in workers:
+            worker.start()
+        start.wait(1)
+        for worker in workers:
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+
+        self.assertEqual(3, results.count(True))
+        self.assertEqual(13, results.count(False))
+
     def test_fourth_client_is_rejected_without_kicking_existing_clients(self):
         self.db.create_proxy_user("alice", device_limit=3)
         stats = PolicyStatsClient(online={})
@@ -1200,6 +1395,28 @@ class UsageManagerTests(unittest.TestCase):
 
         manager.reset_all()
         self.assertEqual((0, 0), tuple(self.db.get_proxy_user(bob["id"])[key] for key in ("tx_bytes", "rx_bytes")))
+
+    def test_reset_kick_failure_marks_runtime_not_ready(self):
+        class FakeHealth:
+            def __init__(self):
+                self.events = []
+
+            def refresh_database(self):
+                pass
+
+            def record_stats_sync(self, success):
+                self.events.append(success)
+
+        user = self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient()
+        stats.kick = lambda _name: (_ for _ in ()).throw(OSError("kick unavailable"))
+        health = FakeHealth()
+        manager = UsageManager(self.db, stats, health_monitor=health)
+
+        with self.assertRaisesRegex(OSError, "kick unavailable"):
+            manager.reset_user(user["id"], expected_generation=0)
+
+        self.assertEqual([True, False], health.events)
 
 
 class OperationsTests(unittest.TestCase):
@@ -3086,6 +3303,103 @@ class OperationsTests(unittest.TestCase):
         self.assertFalse(serving.is_alive())
         self.assertFalse(closing.is_alive())
 
+    def test_worker_queue_waits_for_an_inflight_request_with_a_bounded_timeout(self):
+        first_started = threading.Event()
+        release_first = threading.Event()
+        requests_seen = []
+
+        class BlockingFirstHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests_seen.append(self.path)
+                if self.path == "/first":
+                    first_started.set()
+                    release_first.wait(2)
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            BlockingFirstHandler,
+            max_workers=1,
+            worker_queue_timeout=1,
+        )
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        outcomes = []
+
+        def request(path):
+            try:
+                with urllib.request.urlopen(
+                    "http://127.0.0.1:{}{}".format(server.server_address[1], path),
+                    timeout=2,
+                ) as response:
+                    outcomes.append(response.status)
+            except Exception as exc:
+                outcomes.append(type(exc).__name__)
+
+        first = threading.Thread(target=request, args=("/first",))
+        second = threading.Thread(target=request, args=("/second",))
+        first.start()
+        self.assertTrue(first_started.wait(1))
+        second.start()
+        time.sleep(0.05)
+        self.assertEqual(["/first"], requests_seen)
+        release_first.set()
+
+        first.join(2)
+        second.join(2)
+        server.shutdown()
+        server.server_close()
+        serving.join(2)
+
+        self.assertEqual([204, 204], sorted(outcomes, key=str))
+        self.assertEqual(["/first", "/second"], requests_seen)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertFalse(serving.is_alive())
+
+    def test_handler_can_extend_only_the_current_request_to_the_maintenance_deadline(self):
+        extension_granted = []
+
+        class MaintenanceHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                extension_granted.append(
+                    self.server.begin_maintenance_request(self.connection)
+                )
+                time.sleep(1.2)
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            MaintenanceHandler,
+            max_workers=1,
+            request_deadline=1,
+            maintenance_request_deadline=3,
+        )
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:{}/maintenance".format(server.server_address[1]),
+                timeout=2,
+            ) as response:
+                self.assertEqual(204, response.status)
+        finally:
+            server.shutdown()
+            server.shutdown_active_requests()
+            server.server_close()
+            serving.join(2)
+
+        self.assertEqual([True], extension_granted)
+        self.assertFalse(serving.is_alive())
+
     def test_shutdown_interrupts_a_slow_request_before_waiting_for_threads(self):
         request_started = threading.Event()
 
@@ -3168,7 +3482,7 @@ class OperationsTests(unittest.TestCase):
         self.assertFalse(dripping.is_alive())
         self.assertFalse(serving.is_alive())
 
-    def test_tls_socket_registered_after_shutdown_is_closed_immediately(self):
+    def test_tls_socket_registration_and_shutdown_are_atomic(self):
         with tempfile.TemporaryDirectory() as directory:
             certificate, private_key = create_test_certificate(directory)
             wrapped_ready = threading.Event()
@@ -3206,14 +3520,18 @@ class OperationsTests(unittest.TestCase):
             client = client_context.wrap_socket(
                 socket.create_connection(server.server_address, timeout=2),
                 server_hostname="vpn.example.test",
+                do_handshake_on_connect=False,
             )
             closing = None
             try:
                 self.assertTrue(wrapped_ready.wait(2))
                 server.shutdown()
-                server.shutdown_active_requests()
                 closing = threading.Thread(
-                    target=lambda: (server.server_close(), close_finished.set())
+                    target=lambda: (
+                        server.shutdown_active_requests(),
+                        server.server_close(),
+                        close_finished.set(),
+                    )
                 )
                 closing.start()
                 self.assertFalse(close_finished.wait(0.05))
@@ -4460,16 +4778,16 @@ class BackupManagerTests(unittest.TestCase):
             hysteria_port=19999,
             work_dir=destination_root / "work",
         )
-        replace_bytes = destination._replace_bytes
+        replace_file = destination._replace_file
         failed = {"value": False}
 
-        def fail_once(path, value):
+        def fail_once(path, source_path):
             if Path(path) == destination_cert and not failed["value"]:
                 failed["value"] = True
                 raise OSError("simulated disk failure")
-            return replace_bytes(path, value)
+            return replace_file(path, source_path)
 
-        destination._replace_bytes = fail_once
+        destination._replace_file = fail_once
 
         with self.assertRaises(OSError):
             destination.apply_archive(
@@ -5238,6 +5556,14 @@ class PanelHttpTests(unittest.TestCase):
     def test_backup_download_and_restore_upload_are_authenticated_and_csrf_protected(self):
         self.db.create_proxy_user("migrating-user")
         headers, csrf_token = self.authenticated_headers()
+        events = []
+        self.db.audit = lambda _actor, action, _target, _address: events.append(action)
+
+        def queue_restore():
+            events.append("queue_restore")
+            self.restore_controller.queued += 1
+
+        self.restore_controller.queue = queue_restore
 
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.request(
@@ -5276,6 +5602,86 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("恢复任务已启动", body)
         self.assertEqual(1, self.restore_controller.queued)
         self.assertTrue(self.backup_manager.pending_archive.is_file())
+        self.assertLess(events.index("queue_restore"), events.index("restore_queued"))
+
+    def test_backup_is_audited_only_after_the_archive_send_completes(self):
+        events = []
+        handler = object.__new__(PanelHandler)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.connection = object()
+        handler.server = mock.Mock()
+        app = handler.server.application
+        app.user_action_lock = threading.Lock()
+        app.backup_manager.create_archive.return_value = Path("archive.zip")
+        app.usage_manager.run_after_collect.side_effect = lambda action: action()
+        app.database.audit.side_effect = (
+            lambda _actor, action, _target, _address: events.append(action)
+        )
+        handler._send_archive = lambda _archive: events.append("archive_sent")
+        handler._error_page = lambda _status, _message: events.append("error")
+
+        handler._handle_backup({"username": "admin"})
+
+        self.assertEqual(["archive_sent", "backup_downloaded"], events)
+
+    def test_maintenance_deadline_is_granted_only_after_authentication_and_csrf(self):
+        headers, csrf_token = self.authenticated_headers()
+        with mock.patch.object(
+            self.server,
+            "begin_maintenance_request",
+            wraps=self.server.begin_maintenance_request,
+        ) as extend:
+            with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
+                self.request(
+                    "/backup",
+                    {"csrf": csrf_token},
+                    follow_redirects=False,
+                )
+            self.assertEqual(303, unauthenticated.exception.code)
+            extend.assert_not_called()
+
+            with self.assertRaises(urllib.error.HTTPError) as wrong_csrf:
+                self.request(
+                    "/backup",
+                    {"csrf": "wrong"},
+                    headers=headers,
+                    follow_redirects=False,
+                )
+            self.assertEqual(403, wrong_csrf.exception.code)
+            extend.assert_not_called()
+
+            with self.request(
+                "/backup", {"csrf": csrf_token}, headers=headers
+            ) as response:
+                archive = response.read()
+            self.assertEqual(1, extend.call_count)
+
+            with self.assertRaises(urllib.error.HTTPError) as restore_wrong_csrf:
+                self.request(
+                    "/restore",
+                    headers={
+                        **headers,
+                        "Content-Type": "application/zip",
+                        "X-HY2Panel-CSRF": "wrong",
+                    },
+                    raw_data=archive,
+                    follow_redirects=False,
+                )
+            self.assertEqual(403, restore_wrong_csrf.exception.code)
+            self.assertEqual(1, extend.call_count)
+
+            with self.request(
+                "/restore",
+                headers={
+                    **headers,
+                    "Content-Type": "application/zip",
+                    "X-HY2Panel-CSRF": csrf_token,
+                },
+                raw_data=archive,
+                follow_redirects=False,
+            ) as response:
+                self.assertEqual(202, response.status)
+            self.assertEqual(2, extend.call_count)
 
     def test_backup_fails_closed_when_pending_traffic_cannot_be_flushed(self):
         headers, csrf_token = self.authenticated_headers()
@@ -5328,6 +5734,8 @@ class PanelHttpTests(unittest.TestCase):
         self.application.restore_controller = FailingRestoreController()
         archive = self.backup_manager.create_archive().read_bytes()
         headers, csrf_token = self.authenticated_headers()
+        actions = []
+        self.db.audit = lambda _actor, action, _target, _address: actions.append(action)
 
         with self.assertRaises(urllib.error.HTTPError) as raised:
             self.request(
@@ -5343,6 +5751,7 @@ class PanelHttpTests(unittest.TestCase):
 
         self.assertEqual(500, raised.exception.code)
         self.assertFalse(self.backup_manager.pending_archive.exists())
+        self.assertNotIn("restore_queued", actions)
 
     def test_dashboard_shows_only_top_five_traffic_users(self):
         for index in range(6):
@@ -5509,7 +5918,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.21.1", body)
+        self.assertIn("v0.22.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
@@ -5533,6 +5942,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
 
         self.assertIn('class="detail compact-detail port-detail"', body)
+
         self.assertIn('action="/egress/full"', body)
         self.assertIn('data-egress-form', body)
         self.assertIn('aria-pressed="false"', body)
@@ -5545,6 +5955,36 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('action="/egress/web"', body)
         self.assertIn('aria-pressed="true"', body)
         self.assertIn('FULL 已开启', body)
+
+    def test_dashboard_renders_certificate_warning_and_future_validity_states(self):
+        headers, _csrf_token = self.authenticated_headers()
+        health = mock.Mock()
+        self.application.health_monitor = health
+        health.certificate_status.return_value = {
+            "configured": True,
+            "not_before": None,
+            "expires_at": time.time() + 90 * 86400,
+            "seconds_until_valid": None,
+            "seconds_remaining": 90 * 86400,
+            "level": "warning",
+        }
+
+        with self.request("/", headers=headers) as response:
+            warning_body = response.read().decode()
+
+        self.assertIn('class="bad">警告 · 剩余 90 天</strong>', warning_body)
+
+        health.certificate_status.return_value.update(
+            {
+                "not_before": time.time() + 3600,
+                "seconds_until_valid": 3600,
+                "level": "not-yet-valid",
+            }
+        )
+        with self.request("/", headers=headers) as response:
+            future_body = response.read().decode()
+
+        self.assertIn('class="bad">尚未生效</strong>', future_body)
 
     def test_egress_policy_switch_requires_csrf_and_accepts_only_fixed_policies(self):
         headers, csrf_token = self.authenticated_headers()
@@ -5786,6 +6226,7 @@ class PanelHttpTests(unittest.TestCase):
         created = self.db.create_proxy_user("alice", token="first-token")
         self.application.stats_client = FailingStatsClient()
         headers, csrf_token = self.authenticated_headers()
+        failures_before = self.application.health_monitor.stats_failures
 
         with self.request(
             "/users/{}/rotate".format(created["id"]),
@@ -5797,6 +6238,10 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(200, response.status)
         self.assertIn("hysteria2://", body)
         self.assertIsNone(self.db.authenticate_token("first-token"))
+        self.assertEqual(
+            failures_before + 1,
+            self.application.health_monitor.stats_failures,
+        )
 
     def test_panel_server_sets_timeout_and_worker_limit(self):
         self.assertEqual(10, self.server.request_timeout)
@@ -5827,6 +6272,76 @@ class PanelHttpTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 1)
         finally:
             slow_client.close()
+            server.shutdown()
+            server.server_close()
+
+    def test_tls_handshake_has_a_total_deadline(self):
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            PanelHandler,
+            max_workers=1,
+            request_timeout=10,
+            request_deadline=1,
+        )
+        server.application = self.application
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(
+            str(self.backup_manager.tls_cert), str(self.backup_manager.tls_key)
+        )
+        server.tls_context = tls_context
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+
+        client_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        client_context.check_hostname = False
+        client_context.verify_mode = ssl.CERT_NONE
+        incoming = ssl.MemoryBIO()
+        outgoing = ssl.MemoryBIO()
+        client = client_context.wrap_bio(
+            incoming, outgoing, server_side=False, server_hostname="localhost"
+        )
+        with contextlib.suppress(ssl.SSLWantReadError):
+            client.do_handshake()
+        client_hello = outgoing.read()
+        self.assertGreater(len(client_hello), 100)
+
+        port = server.server_address[1]
+        slow_client = socket.create_connection(("127.0.0.1", port), timeout=1)
+        stop_drip = threading.Event()
+
+        def drip_handshake():
+            for value in client_hello:
+                if stop_drip.wait(0.05):
+                    return
+                try:
+                    slow_client.sendall(bytes((value,)))
+                except OSError:
+                    return
+
+        drip_thread = threading.Thread(target=drip_handshake, daemon=True)
+        drip_thread.start()
+        try:
+            time.sleep(1.3)
+            deadline = time.monotonic() + 3
+            last_error = None
+            while time.monotonic() < deadline:
+                try:
+                    with urllib.request.urlopen(
+                        "https://127.0.0.1:{}/healthz".format(port),
+                        context=ssl._create_unverified_context(),
+                        timeout=0.5,
+                    ) as response:
+                        self.assertEqual({"status": "ok"}, json.load(response))
+                    break
+                except (OSError, urllib.error.URLError) as exc:
+                    last_error = exc
+                    time.sleep(0.05)
+            else:
+                self.fail("TLS worker was not released: {!r}".format(last_error))
+        finally:
+            stop_drip.set()
+            slow_client.close()
+            drip_thread.join(timeout=1)
             server.shutdown()
             server.server_close()
 

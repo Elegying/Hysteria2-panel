@@ -39,6 +39,18 @@ FIREWALL_ZONES=()
 FIREWALL_PENDING=()
 FIREWALL_APPLIED=()
 UFW_ADDED_RULES=""
+MANAGED_FIREWALL_STATE_FILE="${{CAPTURE}}.managed"
+FIREWALL_TRANSACTION_FILE="${{CAPTURE}}.transaction"
+FIREWALL_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FIREWALL_TRANSACTION_V1
+FIREWALL_OWNED=()
+FIREWALL_TRANSACTION_LINES=()
+FIREWALL_NEWLY_OWNED=()
+durable_replace_file() {{
+  local source_file="$1" destination="$2" mode="$3"
+  install -m "$mode" "$source_file" "${{destination}}.new"
+  mv "${{destination}}.new" "$destination"
+}}
+durable_remove_file() {{ rm -f -- "$1"; }}
 {mocks}
 UFW_RULES_PATH="${{CAPTURE}}.ufw"
 UFW_TEMPLATE_PATH="${{CAPTURE}}.ufw-templates"
@@ -467,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.21.1"', source)
+        self.assertIn('PANEL_VERSION="0.22.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -521,6 +533,8 @@ esac
             "hy2panel/operations.py": "HY2PANEL_OPERATIONS_SHA256",
             "hy2panel/release.py": "HY2PANEL_RELEASE_SHA256",
             "hy2panel/health.py": "HY2PANEL_HEALTH_SHA256",
+            "hy2panel/certificate.py": "HY2PANEL_CERTIFICATE_SHA256",
+            "hy2panel/systemd.py": "HY2PANEL_SYSTEMD_SHA256",
         }
 
         for relative_path, variable in modules.items():
@@ -642,6 +656,35 @@ esac
         self.assertNotIn("dnf install -y ca-certificates curl", function)
         self.assertNotIn("yum install -y ca-certificates curl", function)
         self.assertNotIn("python3 coreutils findutils", function)
+
+    def test_verified_root_owned_hysteria_and_cosign_are_reused_before_download(self):
+        source = INSTALLER.read_text()
+        helper = source[
+            source.index('stage_verified_installed_binary()'):
+            source.index('\n\nufw_rule_is_recorded()', source.index('stage_verified_installed_binary()'))
+        ]
+
+        self.assertIn("stat -c '%u:%g:%a:%h'", helper)
+        self.assertIn('[[ ! -L "${installed_path}" && -f "${installed_path}" ]]', helper)
+        self.assertIn('"${metadata}" =~ ^0:0:([0-7]{3,4}):1$', helper)
+        self.assertIn('(( (8#${BASH_REMATCH[1]} & 022) == 0 ))', helper)
+        self.assertIn('sha256sum --check --status', helper)
+        self.assertIn('install -o root -g root -m 0755', helper)
+
+        hysteria_reuse = source.index(
+            'stage_verified_installed_binary \\\n  /opt/hysteria2-panel/bin/hysteria "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria"'
+        )
+        hysteria_download = source.index(
+            'https://github.com/apernet/hysteria/releases/download', hysteria_reuse
+        )
+        cosign_reuse = source.index(
+            'stage_verified_installed_binary \\\n  /opt/hysteria2-panel/bin/cosign "${COSIGN_SHA256}" "${TMP_DIR}/cosign"'
+        )
+        cosign_download = source.index(
+            'https://github.com/sigstore/cosign/releases/download', cosign_reuse
+        )
+        self.assertLess(hysteria_reuse, hysteria_download)
+        self.assertLess(cosign_reuse, cosign_download)
 
     def test_installer_is_namespaced_and_separates_service_identities(self):
         source = INSTALLER.read_text()
@@ -1893,6 +1936,149 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         self.assertTrue(calls[0].startswith("ADD "))
         self.assertTrue(calls[1].startswith("DEL "))
 
+    def test_firewall_port_migration_adds_new_rules_before_removing_only_owned_old_rules(self):
+        result, calls = self.run_firewall_function(
+            r'''
+printf '%s\n' \
+  'ufw||18888/tcp' \
+  'ufw||18888/udp' \
+  'ufw||18887/tcp' > "$MANAGED_FIREWALL_STATE_FILE"
+chmod 0600 "$MANAGED_FIREWALL_STATE_FILE"
+printf '%s\n' \
+  '18888/tcp' \
+  '18888/udp' \
+  '18887/tcp' \
+  '17777/tcp' > "${CAPTURE}.ufw-state"
+ufw() {
+  state_file="${CAPTURE}.ufw-state"
+  if [[ "$1" == "status" ]]; then
+    printf 'Status: active\n'
+  elif [[ "$1 $2" == "show added" ]]; then
+    awk '{print "ufw allow " $1}' "$state_file"
+  elif [[ "$1" == "allow" ]]; then
+    printf 'ADD %s\n' "$2" >> "$CAPTURE"
+    grep -Fxq -- "$2" "$state_file" || printf '%s\n' "$2" >> "$state_file"
+  elif [[ "$1 $2 $3" == "--force delete allow" ]]; then
+    printf 'DEL %s\n' "$4" >> "$CAPTURE"
+    awk -v removed="$4" '$0 != removed' "$state_file" > "${state_file}.new"
+    mv "${state_file}.new" "$state_file"
+  fi
+}
+firewall-cmd() { printf 'not running\n'; return 1; }
+nft() { printf '%s\n' '{"nftables":[]}'; }
+iptables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
+ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
+'''
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        additions = [index for index, call in enumerate(calls) if call.startswith("ADD ")]
+        deletions = [index for index, call in enumerate(calls) if call.startswith("DEL ")]
+        self.assertEqual(5, len(additions))
+        self.assertEqual(3, len(deletions))
+        self.assertLess(max(additions), min(deletions))
+        self.assertEqual(
+            {"DEL 18888/tcp", "DEL 18888/udp", "DEL 18887/tcp"},
+            {calls[index] for index in deletions},
+        )
+        self.assertNotIn("DEL 17777/tcp", calls)
+
+    def test_firewall_ownership_and_crash_rollback_are_durable(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn(
+            'MANAGED_FIREWALL_STATE_FILE=/etc/hysteria2-panel/managed-firewall.rules',
+            source,
+        )
+        self.assertIn(
+            'FIREWALL_TRANSACTION_FILE=/etc/hysteria2-panel/.firewall-transaction',
+            source,
+        )
+        self.assertIn('load_managed_firewall_state()', source)
+        self.assertIn('record_firewall_transaction_operation()', source)
+        self.assertIn('rollback_persisted_firewall_transaction()', source)
+        self.assertIn('remove_obsolete_managed_firewall_rules()', source)
+        ufw_record = source.index('record_firewall_transaction_operation add "ufw||${rule}"')
+        ufw_write = source.index('ufw allow "${rule}"', ufw_record)
+        self.assertLess(ufw_record, ufw_write)
+        remove_start = source.index('remove_obsolete_managed_firewall_rules')
+        self.assertGreater(remove_start, source.index('ufw_listeners_are_allowed'))
+        self.assertIn('finalize_firewall_transaction', source)
+        self.assertGreater(
+            source.rindex('\nfinalize_firewall_transaction\n'),
+            source.rindex('clear_upgrade_transaction'),
+        )
+
+    def test_firewall_finalize_fsync_failure_replays_the_in_memory_journal(self):
+        source = INSTALLER.read_text()
+        start = source.index("ufw_rule_is_recorded()")
+        end = source.index("\n\noptimize_network_stack()", start)
+        firewall_functions = source[start:end]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            transaction = root / "transaction"
+            managed = root / "managed"
+            ufw_state = root / "ufw-state"
+            transaction.write_text(
+                "HYSTERIA2_PANEL_FIREWALL_TRANSACTION_V1\n"
+                "old|ufw||18888/tcp\n"
+                "add|ufw||19999/tcp\n"
+                "remove|ufw||18888/tcp\n"
+            )
+            managed.write_text("ufw||19999/tcp\n")
+            ufw_state.write_text("19999/tcp\n")
+            transaction.chmod(0o600)
+            managed.chmod(0o600)
+            script = f"""
+set -Eeuo pipefail
+{firewall_functions}
+FIREWALL_TRANSACTION_FILE={str(transaction)!r}
+MANAGED_FIREWALL_STATE_FILE={str(managed)!r}
+FIREWALL_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FIREWALL_TRANSACTION_V1
+FIREWALL_TRANSACTION_LINES=()
+FIREWALL_APPLIED=("ufw||19999/tcp")
+FIREWALL_OWNED=()
+FIREWALL_NEWLY_OWNED=()
+UFW_ADDED_RULES=""
+FAIL_FINALIZE_SYNC=1
+durable_replace_file() {{
+  install -m "$3" "$1" "$2.new"
+  mv "$2.new" "$2"
+}}
+durable_remove_file() {{
+  if [[ "$1" == "${{FIREWALL_TRANSACTION_FILE}}" && "${{FAIL_FINALIZE_SYNC}}" == 1 ]]; then
+    rm -f -- "$1"
+    FAIL_FINALIZE_SYNC=0
+    return 1
+  fi
+  rm -f -- "$1"
+}}
+ufw() {{
+  state={str(ufw_state)!r}
+  if [[ "$1 $2" == "show added" ]]; then
+    awk '{{print "ufw allow " $1}}' "$state"
+  elif [[ "$1" == "allow" ]]; then
+    grep -Fxq -- "$2" "$state" || printf '%s\\n' "$2" >> "$state"
+  elif [[ "$1 $2 $3" == "--force delete allow" ]]; then
+    awk -v removed="$4" '$0 != removed' "$state" > "$state.new"
+    mv "$state.new" "$state"
+  fi
+}}
+if finalize_firewall_transaction; then
+  exit 91
+fi
+[[ ! -e "${{FIREWALL_TRANSACTION_FILE}}" ]]
+rollback_firewall_changes
+"""
+            result = subprocess.run(
+                ["bash"], input=script, capture_output=True, text=True
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("ufw||18888/tcp\n", managed.read_text())
+            self.assertEqual("18888/tcp\n", ufw_state.read_text())
+            self.assertFalse(transaction.exists())
+
     def test_failed_upgrade_automatically_rolls_back_node_identity_and_runtime(self):
         source = INSTALLER.read_text()
 
@@ -1920,6 +2106,69 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
             verifier.index("systemctl restart hysteria2-panel.service"),
             verifier.index("verify_rollback_recovery"),
         )
+        recovery_health = source[
+            source.index("verify_rollback_recovery()") : source.index(
+                "\n\nrollback_existing_install()"
+            )
+        ]
+        self.assertIn(
+            '"${HY2PANEL_PANEL_SCHEME}://127.0.0.1:${HY2PANEL_PANEL_PORT}/healthz"',
+            recovery_health,
+        )
+        self.assertNotIn("/readyz", recovery_health)
+        self.assertIn(
+            'wait_for_listener udp "${HY2PANEL_HYSTERIA_PORT}"', recovery_health
+        )
+        self.assertIn(
+            'wait_for_listener tcp "${HY2PANEL_HYSTERIA_PORT}"', recovery_health
+        )
+        self.assertIn('wait_for_listener udp 443', recovery_health)
+        self.assertIn('wait_for_listener tcp 443', recovery_health)
+        self.assertEqual(
+            2, recovery_health.count("verify_backed_up_runtime_units_active")
+        )
+        self.assertLess(
+            recovery_health.rindex("wait_for_listener"),
+            recovery_health.rindex("verify_backed_up_runtime_units_active"),
+        )
+        unit_check = source[
+            source.index("verify_backed_up_runtime_units_active()") : source.index(
+                "\n\nverify_rollback_recovery()"
+            )
+        ]
+        for unit in (
+            "hysteria2-panel.service",
+            "hysteria2-panel-server.service",
+            "hysteria2-panel-tcp-probe.service",
+            "hysteria2-panel-server-443.service",
+            "hysteria2-panel-tcp-probe-443.service",
+        ):
+            with self.subTest(unit=unit):
+                self.assertIn(unit, unit_check)
+        listener_wait = source[
+            source.index("wait_for_listener()") : source.index(
+                "\n\nwait_for_health()"
+            )
+        ]
+        self.assertIn("for _attempt in {1..30}", listener_wait)
+        self.assertIn(
+            'listener_output="$(ss "${socket_options[@]}" "sport = :${port_number}")"',
+            listener_wait,
+        )
+        listener_result = subprocess.run(
+            ["bash"],
+            input=(
+                "set -euo pipefail\n"
+                + listener_wait
+                + "\nss() { [[ \"$*\" == *\"sport = :443\"* ]] || return 3; "
+                + "awk 'BEGIN { for (i = 0; i < 100000; i++) print \"listener\" }'; }\n"
+                + "sleep() { :; }\n"
+                + "wait_for_listener tcp 0443\n"
+            ),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(0, listener_result.returncode, listener_result.stderr)
         self.assertIn("--timer-property=AccuracySec=1s", source)
         self.assertIn('preserve_or_restore_database', source)
         self.assertIn('rm -f -- "${database_path}-wal" "${database_path}-shm"', source)
@@ -1936,7 +2185,7 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         self.assertIn('/etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service', source)
         configure = source.rindex("\nconfigure_firewall\n")
         marker = source.index(
-            'install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"',
+            'durable_replace_file /dev/null "${MANAGED_MARKER}" 0644',
             configure,
         )
         clear = source.index("clear_upgrade_transaction", marker)
@@ -2298,33 +2547,225 @@ assert_units_unclaimed
 
     def test_fresh_install_writes_managed_marker_only_after_success(self):
         source = INSTALLER.read_text()
-        marker_write = 'install -o root -g root -m 0644 /dev/null "${MANAGED_MARKER}"'
+        marker_write = 'durable_replace_file /dev/null "${MANAGED_MARKER}" 0644'
 
         self.assertEqual(1, source.count(marker_write))
         self.assertGreater(source.index(marker_write), source.rindex("configure_firewall\n"))
         self.assertIn('FRESH_INSTALL_MUTATED=1', source)
         self.assertIn('stop_loaded_units', source)
         self.assertIn('/var/backups/hysteria2-panel', source)
-        self.assertIn('userdel --remove hy2panel', source)
-        self.assertIn('userdel hy2server', source)
-        self.assertIn('groupdel hy2panel', source)
-        self.assertIn('groupdel hy2tls', source)
+        self.assertIn('remove_fresh_install_principals', source)
+        self.assertIn('userdel --remove "${principal}"', source)
+        self.assertIn('userdel "${principal}"', source)
+        self.assertIn('groupdel "${principal_group}"', source)
         self.assertIn('可以直接重新运行安装器', source)
 
-    def test_fresh_install_uses_an_authenticated_retry_marker_before_mutation(self):
+    def test_fresh_install_uses_a_durable_version_independent_transaction_before_mutation(self):
         source = INSTALLER.read_text()
-        transaction_write = (
-            'install -o root -g root -m 0600 \\\n    "${TMP_DIR}/fresh-install-marker" "${FRESH_IN_PROGRESS_MARKER}"'
-        )
+        transaction_write = 'durable_replace_file "${transaction_stage}" "${FRESH_IN_PROGRESS_MARKER}" 0600'
 
-        self.assertIn('FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer', source)
+        self.assertIn('FRESH_IN_PROGRESS_MARKER=/etc/.hysteria2-panel-installing-by-installer', source)
+        self.assertIn('FRESH_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FRESH_TRANSACTION_V1', source)
         self.assertIn('recover_interrupted_fresh_install()', source)
+        self.assertIn('arm_fresh_install_transaction()', source)
         self.assertIn(transaction_write, source)
         self.assertLess(source.index(transaction_write), source.index('groupadd --system hy2tls'))
-        self.assertIn('"${marker_value}" == "Hysteria2-panel installer ${PANEL_VERSION}"', source)
-        self.assertIn('stat -c \'%u:%g:%a\' "${FRESH_IN_PROGRESS_MARKER}"', source)
-        self.assertIn('stop_loaded_units', source[source.index('recover_interrupted_fresh_install()'):])
-        self.assertIn('rm -f -- "${FRESH_IN_PROGRESS_MARKER}"', source)
+        recovery = source[
+            source.index('read_fresh_install_transaction()'):
+            source.index('\n\nwait_for_health()', source.index('recover_interrupted_fresh_install()'))
+        ]
+        self.assertIn('"${marker_magic}" == "${FRESH_TRANSACTION_MAGIC}"', recovery)
+        self.assertNotIn('PANEL_VERSION', recovery)
+        self.assertIn('stat -c \'%u:%g:%a\' "${marker_path}"', recovery)
+        self.assertIn('stop_loaded_units', recovery)
+        self.assertIn('restore_fresh_install_sysctls', recovery)
+        self.assertIn('if [[ -e /proc/sys/net/core/default_qdisc ]]; then', source)
+        self.assertIn(
+            'original_qdisc="$(sysctl -n net.core.default_qdisc)"', source
+        )
+        self.assertIn('original_qdisc="-"', source)
+        self.assertIn('if [[ "${FRESH_ORIGINAL_QDISC}" == "-" ]]; then', recovery)
+        self.assertIn('FRESH_ORIGINAL_QDISC=""', recovery)
+
+    def test_fresh_install_installs_boot_recovery_before_persistent_payload(self):
+        source = INSTALLER.read_text()
+        recovery_infrastructure = source.rindex(
+            '\n  install_fresh_recovery_infrastructure\n'
+        )
+        arm = source.index('\n  arm_fresh_install_transaction\n', recovery_infrastructure)
+        recovery_gate = source.index('\n  install_fresh_recovery_gate\n', arm)
+        first_principal = source.index('groupadd --system hy2tls', arm)
+
+        self.assertIn(
+            'FRESH_RECOVERY_SCRIPT=/var/backups/hysteria2-panel/.install-recover.sh',
+            source,
+        )
+        self.assertIn(
+            'FRESH_RECOVERY_UNIT=/etc/systemd/system/hysteria2-panel-install-recover.service',
+            source,
+        )
+        self.assertIn(
+            'FRESH_RECOVERY_DROPIN=/etc/systemd/system/hysteria2-panel.service.d/05-fresh-install-recovery.conf',
+            source,
+        )
+        self.assertLess(recovery_infrastructure, arm)
+        self.assertLess(arm, recovery_gate)
+        self.assertLess(recovery_gate, first_principal)
+        unit_start = source.index('cat > "${recovery_unit_stage}"')
+        recovery_unit = source[unit_start:source.index('\nEOF', unit_start)]
+        self.assertIn('ConditionPathExists=${FRESH_IN_PROGRESS_MARKER}', recovery_unit)
+        self.assertIn('Before=hysteria2-panel.service hysteria2-panel-server.service', recovery_unit)
+        self.assertIn('ExecStart=/bin/bash ${FRESH_RECOVERY_SCRIPT} --recover-fresh', recovery_unit)
+        self.assertIn('systemctl enable hysteria2-panel-install-recover.service', source)
+        gate_start = source.index('install_fresh_recovery_gate()')
+        recovery_gate_helper = source[
+            gate_start:source.index('\n\ndisarm_fresh_install_transaction()', gate_start)
+        ]
+        self.assertIn('Requires=hysteria2-panel-install-recover.service', recovery_gate_helper)
+        self.assertIn('After=hysteria2-panel-install-recover.service', recovery_gate_helper)
+        self.assertIn('durable_replace_file "${gate_stage}" "${dropin}" 0644', recovery_gate_helper)
+        ownership_check = source[
+            source.index('assert_units_claimed_by_installer()'):
+            source.index('\n\ndatabase_is_healthy()', source.index('assert_units_claimed_by_installer()'))
+        ]
+        self.assertIn('${FRESH_RECOVERY_DROPIN}', ownership_check)
+        self.assertIn('${FRESH_RECOVERY_SERVER_DROPIN}', ownership_check)
+        self.assertIn('${FRESH_RECOVERY_SERVER_443_DROPIN}', ownership_check)
+        disarm = source[
+            source.index('disarm_fresh_install_transaction()'):
+            source.index('\n\nrecover_interrupted_fresh_install()', source.index('disarm_fresh_install_transaction()'))
+        ]
+        self.assertIn('"${FRESH_RECOVERY_DROPIN}"', disarm)
+
+    def test_markerless_fresh_recovery_orphans_are_authenticated_and_cleaned_before_admission(self):
+        source = INSTALLER.read_text()
+        helper = source[
+            source.index('cleanup_orphaned_fresh_recovery_infrastructure()'):
+            source.index('\n\nread_fresh_install_transaction()', source.index('cleanup_orphaned_fresh_recovery_infrastructure()'))
+        ]
+        main = source.split('if [[ "${1:-}" == "--help"', 1)[1]
+
+        self.assertIn('FRESH_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FRESH_TRANSACTION_V1', source)
+        self.assertIn('FRESH_TRANSACTION_MAGIC=${FRESH_TRANSACTION_MAGIC}', helper)
+        self.assertIn('ConditionPathExists=${FRESH_IN_PROGRESS_MARKER}', helper)
+        self.assertIn('ExecStart=/bin/bash ${FRESH_RECOVERY_SCRIPT} --recover-fresh', helper)
+        self.assertIn("stat -c '%u:%g:%a:%h'", helper)
+        self.assertIn('systemctl disable hysteria2-panel-install-recover.service', helper)
+        cleanup = main.index('cleanup_orphaned_fresh_recovery_infrastructure')
+        admission = main.index('assert_no_unmanaged_install_paths')
+        self.assertLess(cleanup, admission)
+
+    def test_clean_host_orphan_recovery_does_not_require_var_backups(self):
+        source = INSTALLER.read_text()
+        helper = source[
+            source.index('cleanup_orphaned_fresh_recovery_infrastructure()'):
+            source.index('\n\nread_fresh_install_transaction()', source.index('cleanup_orphaned_fresh_recovery_infrastructure()'))
+        ]
+
+        self.assertNotIn('sync -f /etc/systemd/system /var/backups', helper)
+        self.assertIn('sync -f /etc/systemd/system', helper)
+        self.assertRegex(
+            helper,
+            r'if \[\[ -d /var/backups \]\]; then\s+'
+            r'sync -f /var/backups',
+        )
+
+    def test_fresh_install_commit_is_durable_before_disarming_recovery(self):
+        source = INSTALLER.read_text()
+        marker_write = 'durable_replace_file /dev/null "${MANAGED_MARKER}" 0644'
+        payload_flush = 'flush_install_payload_for_commit'
+
+        self.assertEqual(1, source.count(marker_write))
+        self.assertGreater(source.index(marker_write), source.rindex('configure_firewall\n'))
+        self.assertLess(source.rindex(payload_flush), source.index(marker_write))
+        self.assertGreater(
+            source.rindex('\n  disarm_fresh_install_transaction \\'),
+            source.index(marker_write),
+        )
+        self.assertIn('durable_remove_file "${FRESH_IN_PROGRESS_MARKER}"', source)
+
+        flush_helper = source[
+            source.index('flush_install_payload_for_commit()'):
+            source.index('\n\nstop_loaded_units()', source.index('flush_install_payload_for_commit()'))
+        ]
+        for path in (
+            '/opt/hysteria2-panel',
+            '/etc/hysteria2-panel',
+            '/var/lib/hysteria2-panel',
+            '/etc/systemd/system',
+            '/etc/sudoers.d',
+            '/etc/sysctl.d',
+            '/etc/tmpfiles.d',
+        ):
+            self.assertIn(path, flush_helper)
+
+    def test_fresh_install_failure_keeps_boot_recovery_armed_until_strict_cleanup(self):
+        source = INSTALLER.read_text()
+        rollback = source[
+            source.index('rollback_existing_install()'):
+            source.index('\n\nfinalize_install()', source.index('rollback_existing_install()'))
+        ]
+        fresh_branch = rollback[
+            rollback.index('if [[ "${FRESH_INSTALL_MUTATED:-0}" == "1"'):
+            rollback.index('\n  if [[ "${ROLLBACK_REQUIRED:-0}"', rollback.index('if [[ "${FRESH_INSTALL_MUTATED:-0}" == "1"'))
+        ]
+
+        self.assertIn('( set -e; recover_interrupted_fresh_install )', fresh_branch)
+        self.assertNotIn('rollback_firewall_after_service_recovery || true', fresh_branch)
+        self.assertNotIn('durable_remove_file "${FRESH_IN_PROGRESS_MARKER}"', fresh_branch)
+
+        recovery = source[
+            source.index('recover_interrupted_fresh_install()'):
+            source.index('\n\nwait_for_health()', source.index('recover_interrupted_fresh_install()'))
+        ]
+        self.assertIn('verify_fresh_install_commit_payload', recovery)
+        self.assertIn('remove_fresh_install_principals', recovery)
+        self.assertIn('disarm_fresh_install_transaction', recovery)
+        strict_cleanup = recovery[recovery.index('检测到上次未完成'):]
+        disarm_index = strict_cleanup.index('disarm_fresh_install_transaction')
+        self.assertLess(strict_cleanup.index('remove_fresh_install_principals'), disarm_index)
+        self.assertLess(strict_cleanup.index('flush_fresh_cleanup_before_disarm'), disarm_index)
+        self.assertNotIn(
+            'hysteria2-panel-install-recover.service',
+            strict_cleanup[strict_cleanup.index('systemctl disable'):disarm_index],
+        )
+
+        cleanup_barrier = source[
+            source.index('flush_fresh_cleanup_before_disarm()'):
+            source.index('\n\narm_fresh_install_transaction()', source.index('flush_fresh_cleanup_before_disarm()'))
+        ]
+        for path in (
+            '/opt',
+            '/etc',
+            '/var/lib',
+            '/var/backups',
+            '/etc/systemd/system',
+            '/etc/sudoers.d',
+            '/etc/sysctl.d',
+            '/etc/tmpfiles.d',
+        ):
+            self.assertIn(path, cleanup_barrier)
+        self.assertIn('/opt/hysteria2-panel', cleanup_barrier)
+        self.assertIn('/var/lib/hysteria2-panel', cleanup_barrier)
+        self.assertIn('${UPGRADE_RECOVERY_SCRIPT}', cleanup_barrier)
+
+        commit_verifier = source[
+            source.index('verify_fresh_install_commit_payload()'):
+            source.index('\n\narm_fresh_install_transaction()', source.index('verify_fresh_install_commit_payload()'))
+        ]
+        for path in (
+            '/opt/hysteria2-panel/bin/hysteria',
+            '/opt/hysteria2-panel/hysteria2_panel.py',
+            '/opt/hysteria2-panel/hy2panel/systemd.py',
+            '/etc/hysteria2-panel/panel.env',
+            '/etc/hysteria2-panel/hysteria.yaml',
+            '/etc/hysteria2-panel/server.crt',
+            '/etc/hysteria2-panel/server.key',
+            '/var/lib/hysteria2-panel/panel.db',
+            '/etc/systemd/system/hysteria2-panel.service',
+            '/etc/systemd/system/hysteria2-panel-server.service',
+        ):
+            self.assertIn(path, commit_verifier)
 
     def test_existing_install_requires_an_owned_regular_managed_marker(self):
         source = INSTALLER.read_text()
@@ -2447,6 +2888,81 @@ assert_units_unclaimed
         self.assertIn('wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz"', source)
         self.assertIn('wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz"', source)
 
+    def test_panel_service_uses_native_systemd_readiness_and_watchdog_contract(self):
+        source = INSTALLER.read_text()
+        panel_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel.service <<EOF", 1
+        )[1].split("\nEOF", 1)[0]
+
+        self.assertIn("Type=notify", panel_unit)
+        self.assertIn("NotifyAccess=main", panel_unit)
+        self.assertIn("TimeoutStartSec=60s", panel_unit)
+        self.assertIn("WatchdogSec=30s", panel_unit)
+        self.assertIn("Restart=on-failure", panel_unit)
+        self.assertNotIn("Type=simple", panel_unit)
+
+    def test_panel_watchdog_restart_does_not_stop_hysteria_data_plane(self):
+        source = INSTALLER.read_text()
+        primary = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-server.service <<EOF", 1
+        )[1].split("\nEOF", 1)[0]
+        secondary = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-server-443.service <<'EOF'", 1
+        )[1].split("\nEOF", 1)[0]
+
+        for server_unit in (primary, secondary):
+            self.assertIn("Wants=hysteria2-panel.service", server_unit)
+            self.assertIn("After=", server_unit)
+            self.assertIn("hysteria2-panel.service", server_unit)
+            self.assertNotIn("Requires=hysteria2-panel.service", server_unit)
+            for recovery in (
+                "hysteria2-panel-upgrade-recover.service",
+                "hysteria2-panel-restore-recover.service",
+                "hysteria2-panel-egress-recover.service",
+            ):
+                self.assertIn(recovery, server_unit)
+
+        gate = source[
+            source.index("install_fresh_recovery_gate()"):
+            source.index(
+                "\n\ndisarm_fresh_install_transaction()",
+                source.index("install_fresh_recovery_gate()"),
+            )
+        ]
+        self.assertIn("${FRESH_RECOVERY_DROPIN}", gate)
+        self.assertIn("${FRESH_RECOVERY_SERVER_DROPIN}", gate)
+        self.assertIn("${FRESH_RECOVERY_SERVER_443_DROPIN}", gate)
+
+    def test_installer_e2e_exercises_watchdog_hang_without_restarting_data_plane(self):
+        e2e = (ROOT / "tests" / "installer_e2e.sh").read_text()
+
+        self.assertIn("--signal=SIGSTOP hysteria2-panel.service", e2e)
+        self.assertIn('kill -CONT "${watchdog_panel_pid_before}"', e2e)
+        self.assertIn(
+            '"$(systemctl show --property=MainPID --value '
+            'hysteria2-panel-server.service)" == "${watchdog_server_pid_before}"',
+            e2e,
+        )
+        self.assertIn(
+            '"$(systemctl show --property=MainPID --value '
+            'hysteria2-panel-server-443.service)" == '
+            '"${watchdog_secondary_pid_before}"',
+            e2e,
+        )
+
+    def test_installer_e2e_waits_for_readiness_after_recovery_commit(self):
+        e2e = (ROOT / "tests" / "installer_e2e.sh").read_text()
+        recovery_checks = e2e[e2e.rindex(
+            "test ! -e /var/backups/hysteria2-panel/.upgrade-active"
+        ) :]
+
+        self.assertIn("recovery_ready=0", recovery_checks)
+        self.assertIn("recovery_deadline=$((SECONDS + 30))", recovery_checks)
+        self.assertIn("while (( SECONDS < recovery_deadline )); do", recovery_checks)
+        self.assertIn('--connect-timeout 1 --max-time "${recovery_remaining}"', recovery_checks)
+        self.assertIn("recovery_ready=1", recovery_checks)
+        self.assertIn("(( recovery_ready == 1 ))", recovery_checks)
+
     def test_installer_persists_quic_udp_buffer_optimization(self):
         source = INSTALLER.read_text()
 
@@ -2458,7 +2974,7 @@ assert_units_unclaimed
         arm_transaction = source.split(
             'if [[ "${1:-}" == "--maintenance-lock-held"', 1
         )[1].index("arm_upgrade_transaction")
-        self.assertLess(ensure_call, arm_transaction)
+        self.assertGreater(ensure_call, arm_transaction)
         self.assertIn("net.core.rmem_max", source)
         self.assertIn("net.core.wmem_max", source)
         self.assertIn("16777216", source)
@@ -2740,7 +3256,7 @@ assert_units_unclaimed
         self.assertIn("hysteria2-panel-restore.service", helper)
         main = source.split('if [[ "${1:-}" == "--help"', 1)[1]
         self.assertIn(
-            "for command_name in awk flock id install mkdir rm rmdir stat systemctl",
+            "for command_name in awk flock id install mkdir mktemp mv rm rmdir stat sync systemctl",
             main,
         )
         lock_index = main.index("acquire_maintenance_lock")
@@ -2791,7 +3307,7 @@ assert_units_unclaimed
             source,
         )
         self.assertIn(
-            "for command_name in awk flock id install mkdir rm rmdir stat systemctl",
+            "for command_name in awk flock id install mkdir mktemp mv rm rmdir stat sync systemctl",
             source,
         )
 
@@ -2807,9 +3323,9 @@ assert_units_unclaimed
         self.assertIn('/bin/bash "$0" --maintenance-lock-held', helper)
         self.assertIn('"${ORIGINAL_ARGS[@]}"', helper)
         self.assertIn(
-            "lock_status == 75 && RECOVER_UPGRADE == 1", helper
+            "lock_status == 75 && (RECOVER_UPGRADE == 1 || RECOVER_FRESH == 1)", helper
         )
-        self.assertIn("升级事务仍由安装器持锁", helper)
+        self.assertIn("安装事务仍由安装器持锁", helper)
         self.assertNotIn('exec 9<>"${MAINTENANCE_LOCK_FILE}"', helper)
         self.assertNotIn("flock -n 9", helper)
 

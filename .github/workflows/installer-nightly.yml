@@ -9,6 +9,23 @@ permissions:
   contents: read
 
 jobs:
+  release-ref-is-tag:
+    name: release-ref-is-tag
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Reject a release-like branch ref
+        shell: bash
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "${GITHUB_REF_TYPE}" = tag
+          test "${GITHUB_REF}" = "refs/tags/${GITHUB_REF_NAME}"
+
   full-installer-matrix:
     name: ${{ matrix.platform }} / ${{ matrix.architecture }}
     runs-on: ${{ matrix.runner }}
@@ -25,6 +42,14 @@ jobs:
             architecture: arm64
             runner: ubuntu-24.04-arm
             base_image: ubuntu:24.04
+          - platform: debian-stable
+            architecture: amd64
+            runner: ubuntu-24.04
+            base_image: debian:stable
+          - platform: debian-stable
+            architecture: arm64
+            runner: ubuntu-24.04-arm
+            base_image: debian:stable
           - platform: rocky-9
             architecture: amd64
             runner: ubuntu-24.04
