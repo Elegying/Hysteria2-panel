@@ -161,6 +161,19 @@ sync_existing_directories() {
   done
 }
 
+download_file() {
+  local url="$1" destination="$2" attempt
+  for attempt in 1 2 3 4; do
+    if curl -q -fL --connect-timeout 10 --max-time 300 \
+      "${url}" -o "${destination}"; then
+      return 0
+    fi
+    rm -f -- "${destination}" || return 1
+    (( attempt >= 4 )) || sleep "${attempt}" || return 1
+  done
+  return 1
+}
+
 flush_install_payload_for_commit() {
   sync -f \
     /opt/hysteria2-panel \
@@ -3845,9 +3858,9 @@ if stage_verified_installed_binary \
   /opt/hysteria2-panel/bin/hysteria "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria"; then
   echo "复用已安装且哈希匹配的 root-owned Hysteria ${HYSTERIA_VERSION}"
 else
-  curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
+  download_file \
     "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" \
-    -o "${TMP_DIR}/hysteria"
+    "${TMP_DIR}/hysteria"
   printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
     || fail "Hysteria SHA-256 校验失败"
 fi
@@ -3856,24 +3869,24 @@ if stage_verified_installed_binary \
   /opt/hysteria2-panel/bin/cosign "${COSIGN_SHA256}" "${TMP_DIR}/cosign"; then
   echo "复用已安装且哈希匹配的 root-owned Cosign ${COSIGN_VERSION}"
 else
-  curl -fL --retry 3 --connect-timeout 10 --max-time 300 \
+  download_file \
     "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/${COSIGN_ASSET}" \
-    -o "${TMP_DIR}/cosign"
+    "${TMP_DIR}/cosign"
   printf '%s  %s\n' "${COSIGN_SHA256}" "${TMP_DIR}/cosign" | sha256sum --check --status \
     || fail "Cosign SHA-256 校验失败"
 fi
 install -d -m 0755 "${TMP_DIR}/hy2panel"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${PANEL_SOURCE_URL}" -o "${TMP_DIR}/hysteria2_panel.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${QRCODEGEN_SOURCE_URL}" -o "${TMP_DIR}/qrcodegen.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${TCP_PROBE_SOURCE_URL}" -o "${TMP_DIR}/tcp_probe.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_INIT_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/__init__.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_VERSION_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/version.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_WEB_ASSETS_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/web_assets.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_OPERATIONS_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/operations.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_RELEASE_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/release.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_HEALTH_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/health.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_CERTIFICATE_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/certificate.py"
-curl -fL --retry 3 --connect-timeout 10 --max-time 300 "${HY2PANEL_SYSTEMD_SOURCE_URL}" -o "${TMP_DIR}/hy2panel/systemd.py"
+download_file "${PANEL_SOURCE_URL}" "${TMP_DIR}/hysteria2_panel.py"
+download_file "${QRCODEGEN_SOURCE_URL}" "${TMP_DIR}/qrcodegen.py"
+download_file "${TCP_PROBE_SOURCE_URL}" "${TMP_DIR}/tcp_probe.py"
+download_file "${HY2PANEL_INIT_SOURCE_URL}" "${TMP_DIR}/hy2panel/__init__.py"
+download_file "${HY2PANEL_VERSION_SOURCE_URL}" "${TMP_DIR}/hy2panel/version.py"
+download_file "${HY2PANEL_WEB_ASSETS_SOURCE_URL}" "${TMP_DIR}/hy2panel/web_assets.py"
+download_file "${HY2PANEL_OPERATIONS_SOURCE_URL}" "${TMP_DIR}/hy2panel/operations.py"
+download_file "${HY2PANEL_RELEASE_SOURCE_URL}" "${TMP_DIR}/hy2panel/release.py"
+download_file "${HY2PANEL_HEALTH_SOURCE_URL}" "${TMP_DIR}/hy2panel/health.py"
+download_file "${HY2PANEL_CERTIFICATE_SOURCE_URL}" "${TMP_DIR}/hy2panel/certificate.py"
+download_file "${HY2PANEL_SYSTEMD_SOURCE_URL}" "${TMP_DIR}/hy2panel/systemd.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
 printf '%s  %s\n' "${QRCODEGEN_SHA256}" "${TMP_DIR}/qrcodegen.py" | sha256sum --check --status \

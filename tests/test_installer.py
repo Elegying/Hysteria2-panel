@@ -2792,7 +2792,7 @@ assert_units_unclaimed
         helper = source[
             source.index('sync_existing_directories()'):
             source.index(
-                '\n\nflush_install_payload_for_commit()',
+                '\n\ndownload_file()',
                 source.index('sync_existing_directories()'),
             )
         ]
@@ -2826,6 +2826,63 @@ fi
 
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual([str(first), str(failing)], log.read_text().splitlines())
+
+    def test_download_file_retries_all_errors_and_clears_partial_output(self):
+        source = INSTALLER.read_text()
+        helper = source[
+            source.index('download_file()'):
+            source.index(
+                '\n\nflush_install_payload_for_commit()',
+                source.index('download_file()'),
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            destination = Path(temporary_directory) / 'download'
+            script = f'''
+set -euo pipefail
+{helper}
+attempts=0
+curl_mode=eventual
+curl() {{
+  local output=''
+  [[ "$1" == '-q' ]] || return 96
+  while (( $# > 0 )); do
+    if [[ "$1" == '-o' ]]; then
+      output="$2"
+      shift 2
+    else
+      shift
+    fi
+  done
+  [[ ! -e "${{output}}" ]] || return 97
+  attempts=$((attempts + 1))
+  printf 'partial-%s\n' "${{attempts}}" > "${{output}}"
+  if [[ "${{curl_mode}}" == 'fail' || "${{attempts}}" -lt 3 ]]; then
+    return 35
+  fi
+  printf 'complete\n' > "${{output}}"
+}}
+sleep() {{ :; }}
+download_file https://example.invalid/source {str(destination)!r}
+[[ "${{attempts}}" == 3 ]]
+[[ "$(cat {str(destination)!r})" == 'complete' ]]
+rm -f -- {str(destination)!r}
+attempts=0
+curl_mode=fail
+if download_file https://example.invalid/source {str(destination)!r}; then
+  exit 92
+fi
+[[ "${{attempts}}" == 4 ]]
+[[ ! -e {str(destination)!r} ]]
+'''
+            result = subprocess.run(
+                ['bash', '-c', script],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
 
     def test_existing_install_requires_an_owned_regular_managed_marker(self):
         source = INSTALLER.read_text()
