@@ -127,9 +127,9 @@ jobs:
       - name: Install pinned audit tools
         run: python -m pip install ruff==0.12.11 bandit==1.8.6
       - name: Lint Python
-        run: ruff check hysteria2_panel.py tcp_probe.py hy2panel tests
+        run: ruff check hysteria2_panel.py tcp_probe.py hy2panel .github/scripts tests
       - name: Audit Python security
-        run: bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel
+        run: bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel .github/scripts
       - name: Validate installer syntax
         run: bash -n install.sh
       - name: Install ShellCheck

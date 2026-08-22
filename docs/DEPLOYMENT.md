@@ -4,7 +4,7 @@
 
 ## 正式 Release 创建与发布门禁
 
-发布工作流只接受严格的 `vX.Y.Z` 标签，并且必须从该标签引用显式调度。它会验证标签提交等于当前 `origin/main`、源码与安装器版本一致、全部必需 CI 检查成功；随后创建或复用**草稿** Release，生成并上传 Sigstore bundle，重新下载草稿资产逐字节比较并验签。`gh release edit --draft=false` 是工作流最后一个命令，前一步失败时 Release 保持不可公开的草稿状态。
+发布工作流只接受严格的 `vX.Y.Z` 标签，并且必须从该标签引用显式调度。它会验证标签提交等于当前 `origin/main`、源码与安装器版本一致，并把七项常规 CI 与六平台安装矩阵都绑定到该标签引用和精确提交；随后创建或复用**草稿** Release，生成并上传 Sigstore bundle，重新下载草稿资产逐字节比较并验签。`gh release edit --draft=false` 是工作流最后一个命令，前一步失败时 Release 保持不可公开的草稿状态。
 
 维护者先确认 PR/主分支 CI 通过，再在最新 `main` 创建并推送标签；标签 push 触发的 CI 也必须全部完成，发布工作流不会等待或跳过红灯。可以提前创建草稿；省略 `gh release create` 时工作流也会创建：
 
@@ -19,14 +19,16 @@ grep -Fx "PANEL_VERSION=\"${version}\"" install.sh
 git tag --annotate "${tag}" --message "${tag}"
 test "$(git rev-parse "${tag}^{commit}")" = "$(git rev-parse origin/main^{commit})"
 git push origin "refs/tags/${tag}"
-# 等待该提交的 CI（含 full-installer-e2e）全部为 success
+# 等待该标签 push 的 CI（含 full-installer-e2e）全部为 success
+gh workflow run installer-nightly.yml --ref "${tag}"
+# 等待该标签的 Ubuntu、Debian、Rocky Linux amd64/arm64 六项矩阵全部为 success
 gh release create "${tag}" --verify-tag --draft --title "${tag}" --generate-notes
 gh workflow run release-signature.yml --ref "${tag}" -f tag="${tag}"
 ```
 
 不要从 `main` 引用调度签名：更新器固定的 Sigstore identity 以 `@refs/tags/<版本>` 结尾，工作流也会拒绝 `GITHUB_REF` 与输入标签不一致。若同名 Release 已公开或被标为 prerelease，工作流安全停止，不会覆盖后再签名。
 
-本地契约测试会确认 `full-installer-e2e` 是发布工作流的硬门禁，但本地文件不能伪造 GitHub 远端分支规则。`Protect main` ruleset 已于 2026-08-22 通过 GitHub API 回读确认七项 required status checks，其中包含 `full-installer-e2e`；每次发布仍应重新回读远端规则。发布门禁本身还会逐项查询 GitHub Actions check-runs，因此远端 ruleset 后续漂移时也不会公开 Release。
+本地契约测试会确认 `full-installer-e2e` 和六平台矩阵都是发布工作流的硬门禁，但本地文件不能伪造 GitHub 远端分支规则。`Protect main` ruleset 已于 2026-08-22 通过 GitHub API 回读确认七项 required status checks，其中包含 `full-installer-e2e`；每次发布仍应重新回读远端规则。发布门禁通过 Actions workflow-run 与 jobs API 绑定精确标签、提交、触发事件和任务集合，因此不会复用同一提交上更早的 PR 或 main 检查结果。
 
 `Anonymous release distribution synthetic` 每日以无凭据请求 latest API、两个 Release 资产和标签 raw 文件，比较安装器并复核 Sigstore 身份；它只拥有 `contents: read`，失败会留下 Actions error 并令 job 变红。仓库由私有恢复为公开后，仍需手工运行一次该 workflow 并取得绿灯，再把匿名分发恢复判定为闭环；同时应为该 workflow 开启 GitHub Actions 失败通知。
 

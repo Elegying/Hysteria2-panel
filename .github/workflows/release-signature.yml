@@ -9,9 +9,9 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   id-token: write
-  checks: read
 
 concurrency:
   group: installer-release-${{ inputs.tag }}
@@ -79,47 +79,69 @@ jobs:
               raise SystemExit("release tag does not match source version")
           PY
 
-      - name: Verify required CI checks
+      - name: Verify exact tag CI run
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_COMMIT: ${{ steps.source.outputs.tag_commit }}
         shell: bash
         run: |
           set -euo pipefail
-          required_checks=(
-            "test (3.8)"
-            "test (3.12)"
-            "static-analysis"
-            "managed-firewall-integration"
-            "systemd-service-semantics"
-            "full-installer-e2e"
-            "rhel-firewall-package-contract"
-          )
-          for required in "${required_checks[@]}"; do
-            payload="$(gh api --method GET \
-              -H 'Accept: application/vnd.github+json' \
-              "/repos/${GITHUB_REPOSITORY}/commits/${TAG_COMMIT}/check-runs" \
-              -f check_name="${required}" -f filter=latest -f per_page=100)"
-            conclusion="$(python -c '
-          import json
-          import sys
+          runs_payload="$(gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+            -f event=push -f status=completed -f per_page=100)"
+          run_id="$(python .github/scripts/verify_release_run.py select-run \
+            --release-tag "${RELEASE_TAG}" \
+            --tag-commit "${TAG_COMMIT}" \
+            --event push \
+            --workflow-path .github/workflows/ci.yml \
+            <<<"${runs_payload}")"
 
-          runs = [
-              run for run in json.load(sys.stdin).get("check_runs", [])
-              if run.get("app", {}).get("slug") == "github-actions"
-          ]
-          if not runs:
-              print("missing")
-          else:
-              latest = max(runs, key=lambda run: run.get("id", 0))
-              print(latest.get("conclusion") or latest.get("status") or "unknown")
-          ' <<<"${payload}")"
-            if [[ "${conclusion}" != "success" ]]; then
-              printf 'required check %s is %s for %s\n' \
-                "${required}" "${conclusion}" "${TAG_COMMIT}" >&2
-              exit 1
-            fi
-          done
+          jobs_payload="$(gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+            -f filter=latest -f per_page=100)"
+          python .github/scripts/verify_release_run.py verify-jobs \
+            --required "test (3.8)" \
+            --required "test (3.12)" \
+            --required static-analysis \
+            --required managed-firewall-integration \
+            --required systemd-service-semantics \
+            --required full-installer-e2e \
+            --required rhel-firewall-package-contract \
+            <<<"${jobs_payload}"
+
+      - name: Verify exact tag installer platform run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_COMMIT: ${{ steps.source.outputs.tag_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          runs_payload="$(gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/installer-nightly.yml/runs" \
+            -f event=workflow_dispatch -f status=completed -f per_page=100)"
+          run_id="$(python .github/scripts/verify_release_run.py select-run \
+            --release-tag "${RELEASE_TAG}" \
+            --tag-commit "${TAG_COMMIT}" \
+            --event workflow_dispatch \
+            --workflow-path .github/workflows/installer-nightly.yml \
+            <<<"${runs_payload}")"
+
+          jobs_payload="$(gh api --method GET \
+            -H 'Accept: application/vnd.github+json' \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
+            -f filter=latest -f per_page=100)"
+          python .github/scripts/verify_release_run.py verify-jobs \
+            --required release-ref-is-tag \
+            --required "ubuntu-24.04 / amd64" \
+            --required "ubuntu-24.04 / arm64" \
+            --required "debian-stable / amd64" \
+            --required "debian-stable / arm64" \
+            --required "rocky-9 / amd64" \
+            --required "rocky-9 / arm64" \
+            <<<"${jobs_payload}"
 
       - name: Create or verify draft release
         env:

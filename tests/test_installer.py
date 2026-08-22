@@ -2516,6 +2516,13 @@ assert_units_unclaimed
         self.assertIn('stat -c \'%u:%g:%a\' "${marker_path}"', recovery)
         self.assertIn('stop_loaded_units', recovery)
         self.assertIn('restore_fresh_install_sysctls', recovery)
+        self.assertIn('if [[ -e /proc/sys/net/core/default_qdisc ]]; then', source)
+        self.assertIn(
+            'original_qdisc="$(sysctl -n net.core.default_qdisc)"', source
+        )
+        self.assertIn('original_qdisc="-"', source)
+        self.assertIn('if [[ "${FRESH_ORIGINAL_QDISC}" == "-" ]]; then', recovery)
+        self.assertIn('FRESH_ORIGINAL_QDISC=""', recovery)
 
     def test_fresh_install_installs_boot_recovery_before_persistent_payload(self):
         source = INSTALLER.read_text()

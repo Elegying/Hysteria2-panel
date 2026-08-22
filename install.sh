@@ -1335,6 +1335,9 @@ read_fresh_install_transaction() {
   FRESH_ORIGINAL_WMEM="${BASH_REMATCH[1]}"
   [[ "${transaction_lines[3]}" =~ ^qdisc=([A-Za-z0-9_.+-]+)$ ]] || return 1
   FRESH_ORIGINAL_QDISC="${BASH_REMATCH[1]}"
+  if [[ "${FRESH_ORIGINAL_QDISC}" == "-" ]]; then
+    FRESH_ORIGINAL_QDISC=""
+  fi
   [[ "${transaction_lines[4]}" =~ ^cc=([A-Za-z0-9_.+-]+)$ ]] || return 1
   FRESH_ORIGINAL_CC="${BASH_REMATCH[1]}"
 }
@@ -1467,8 +1470,12 @@ arm_fresh_install_transaction() {
     || fail "无法读取当前 UDP 接收缓冲；安装已停止"
   original_wmem="$(sysctl -n net.core.wmem_max)" \
     || fail "无法读取当前 UDP 发送缓冲；安装已停止"
-  original_qdisc="$(sysctl -n net.core.default_qdisc)" \
-    || fail "无法读取当前队列算法；安装已停止"
+  if [[ -e /proc/sys/net/core/default_qdisc ]]; then
+    original_qdisc="$(sysctl -n net.core.default_qdisc)" \
+      || fail "无法读取当前队列算法；安装已停止"
+  else
+    original_qdisc="-"
+  fi
   original_cc="$(sysctl -n net.ipv4.tcp_congestion_control)" \
     || fail "无法读取当前拥塞控制算法；安装已停止"
   [[ "${original_rmem}" =~ ^[0-9]+$ && "${original_wmem}" =~ ^[0-9]+$ && \

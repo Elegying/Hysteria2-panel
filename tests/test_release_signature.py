@@ -1,8 +1,120 @@
+import importlib.util
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+VERIFY_RUN_PATH = ROOT / ".github" / "scripts" / "verify_release_run.py"
+VERIFY_RUN_SPEC = importlib.util.spec_from_file_location(
+    "verify_release_run", VERIFY_RUN_PATH
+)
+verify_release_run = importlib.util.module_from_spec(VERIFY_RUN_SPEC)
+VERIFY_RUN_SPEC.loader.exec_module(verify_release_run)
+
+
+class ReleaseRunVerifierTests(unittest.TestCase):
+    def _run(self, **changes):
+        run = {
+            "id": 20,
+            "head_sha": "abc123",
+            "head_branch": "v1.2.3",
+            "event": "push",
+            "path": ".github/workflows/ci.yml",
+            "status": "completed",
+            "conclusion": "success",
+        }
+        run.update(changes)
+        return run
+
+    def test_selector_binds_sha_tag_event_path_and_latest_result(self):
+        payload = {
+            "workflow_runs": [
+                self._run(id=10, head_branch="main"),
+                self._run(id=11, head_sha="wrong"),
+                self._run(id=12, event="pull_request"),
+                self._run(id=13, path=".github/workflows/other.yml"),
+                self._run(id=20),
+            ]
+        }
+
+        self.assertEqual(
+            20,
+            verify_release_run.select_successful_run(
+                payload,
+                "v1.2.3",
+                "abc123",
+                "push",
+                ".github/workflows/ci.yml",
+            ),
+        )
+
+        payload["workflow_runs"].append(self._run(id=21, conclusion="failure"))
+        with self.assertRaises(verify_release_run.VerificationError):
+            verify_release_run.select_successful_run(
+                payload,
+                "v1.2.3",
+                "abc123",
+                "push",
+                ".github/workflows/ci.yml",
+            )
+
+    def test_selector_rejects_missing_or_malformed_evidence(self):
+        for payload in ({}, {"workflow_runs": "bad"}, {"workflow_runs": [None]}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(verify_release_run.VerificationError):
+                    verify_release_run.select_successful_run(
+                        payload,
+                        "v1.2.3",
+                        "abc123",
+                        "push",
+                        ".github/workflows/ci.yml",
+                    )
+
+    def test_job_verifier_rejects_missing_failed_and_newer_duplicate_jobs(self):
+        required = ("one", "two")
+        jobs = {
+            "jobs": [
+                {
+                    "id": 1,
+                    "name": "one",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 2,
+                    "name": "two",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            ]
+        }
+        verify_release_run.verify_required_jobs(jobs, required)
+
+        for invalid in (
+            {"jobs": jobs["jobs"][:1]},
+            {
+                "jobs": jobs["jobs"]
+                + [
+                    {
+                        "id": 3,
+                        "name": "two",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    }
+                ]
+            },
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(verify_release_run.VerificationError):
+                    verify_release_run.verify_required_jobs(invalid, required)
+
+    def test_release_like_nightly_dispatch_requires_a_tag_sentinel(self):
+        source = (ROOT / ".github" / "workflows" / "installer-nightly.yml").read_text()
+
+        self.assertIn("release-ref-is-tag:", source)
+        self.assertIn("GITHUB_REF_TYPE: ${{ github.ref_type }}", source)
+        self.assertIn('test "${GITHUB_REF_TYPE}" = tag', source)
+        self.assertIn('test "${GITHUB_REF}" = "refs/tags/${GITHUB_REF_NAME}"', source)
 
 
 class ReleaseSignatureWorkflowTests(unittest.TestCase):
@@ -37,13 +149,20 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         self.assertIn('main_commit="$(git rev-parse "origin/main^{commit}")"', source)
         self.assertIn('test "${tag_commit}" = "${main_commit}"', source)
 
-    def test_release_requires_every_ci_job_including_full_installer_e2e(self):
+    def test_release_requires_exact_tag_ci_and_platform_runs(self):
         source = self.release
         ci_source = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
-        self.assertIn("checks: read", source)
-        self.assertIn("Verify required CI checks", source)
-        self.assertIn("/check-runs", source)
+        self.assertIn("actions: read", source)
+        self.assertNotIn("checks: read", source)
+        self.assertIn("Verify exact tag CI run", source)
+        self.assertIn("/actions/workflows/ci.yml/runs", source)
+        self.assertIn(".github/scripts/verify_release_run.py select-run", source)
+        self.assertIn('--release-tag "${RELEASE_TAG}"', source)
+        self.assertIn('--tag-commit "${TAG_COMMIT}"', source)
+        self.assertIn("--event push", source)
+        self.assertIn("--workflow-path .github/workflows/ci.yml", source)
+        self.assertNotIn("/check-runs", source)
         for check_name in (
             "test (3.8)",
             "test (3.12)",
@@ -57,6 +176,23 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
                 self.assertIn(check_name, source)
 
         self.assertIn("  full-installer-e2e:\n", ci_source)
+        self.assertIn("Verify exact tag installer platform run", source)
+        self.assertIn("/actions/workflows/installer-nightly.yml/runs", source)
+        self.assertIn("--event workflow_dispatch", source)
+        self.assertIn(
+            "--workflow-path .github/workflows/installer-nightly.yml", source
+        )
+        for check_name in (
+            "release-ref-is-tag",
+            "ubuntu-24.04 / amd64",
+            "ubuntu-24.04 / arm64",
+            "debian-stable / amd64",
+            "debian-stable / arm64",
+            "rocky-9 / amd64",
+            "rocky-9 / arm64",
+        ):
+            with self.subTest(check_name=check_name):
+                self.assertIn(check_name, source)
 
     def test_main_push_does_not_require_the_future_release_tag(self):
         ci_source = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
@@ -98,7 +234,10 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         publish = 'gh release edit "${RELEASE_TAG}" --draft=false'
         self.assertIn(publish, source)
         self.assertGreater(source.index(publish), source.index("gh release download"))
-        self.assertGreater(source.index(publish), source.index("Verify required CI checks"))
+        self.assertGreater(source.index(publish), source.index("Verify exact tag CI run"))
+        self.assertGreater(
+            source.index(publish), source.index("Verify exact tag installer platform run")
+        )
         self.assertTrue(
             source.rstrip().endswith(
                 'gh release edit "${RELEASE_TAG}" '
@@ -175,6 +314,7 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn("gh release create", deployment)
         self.assertIn("--draft", deployment)
         self.assertIn("gh workflow run release-signature.yml", deployment)
+        self.assertIn("gh workflow run installer-nightly.yml", deployment)
         self.assertIn("--ref", deployment)
         self.assertIn("full-installer-e2e", deployment)
         self.assertIn("Protect main", deployment)

@@ -127,8 +127,12 @@ test ! -e /opt/hysteria2-panel
 test ! -e /etc/hysteria2-panel
 test ! -e /var/lib/hysteria2-panel
 test ! -e /etc/sysctl.d/99-hysteria2-panel.conf
-systemctl is-active --quiet hysteria2-panel.service && exit 1 || true
-systemctl is-active --quiet hysteria2-panel-server.service && exit 1 || true
+if systemctl is-active --quiet hysteria2-panel.service; then
+  exit 1
+fi
+if systemctl is-active --quiet hysteria2-panel-server.service; then
+  exit 1
+fi
 
 bash /workspace/install.sh
 systemctl is-active --quiet hysteria2-panel.service

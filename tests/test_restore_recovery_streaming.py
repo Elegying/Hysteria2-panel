@@ -77,8 +77,12 @@ class RestoreRecoveryStreamingTests(unittest.TestCase):
     def test_rollback_restores_database_without_materializing_it(self):
         backup_dir = self.root / "restore-20260822T000000Z-1234abcd"
         backup_dir.mkdir(mode=0o700)
+        database_backup = backup_dir / "panel.db"
+        hysteria2_panel.BackupManager._copy_database(
+            self.database_path, database_backup
+        )
+        os.chmod(database_backup, 0o600)
         for source, name in (
-            (self.database_path, "panel.db"),
             (self.certificate, "server.crt"),
             (self.private_key, "server.key"),
             (self.env_file, "panel.env"),
@@ -106,8 +110,12 @@ class RestoreRecoveryStreamingTests(unittest.TestCase):
     def test_rollback_checks_peak_capacity_before_replacing_any_file(self):
         backup_dir = self.root / "restore-20260822T000000Z-8765abcd"
         backup_dir.mkdir(mode=0o700)
+        database_backup = backup_dir / "panel.db"
+        hysteria2_panel.BackupManager._copy_database(
+            self.database_path, database_backup
+        )
+        os.chmod(database_backup, 0o600)
         for source, name in (
-            (self.database_path, "panel.db"),
             (self.certificate, "server.crt"),
             (self.private_key, "server.key"),
             (self.env_file, "panel.env"),
