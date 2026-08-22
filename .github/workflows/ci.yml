@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  release-ref-is-tag:
+    name: release-ref-is-tag
+    if: github.event_name == 'push' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Reject a release-like branch ref
+        shell: bash
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "${GITHUB_REF_TYPE}" = tag
+          test "${GITHUB_REF}" = "refs/tags/${GITHUB_REF_NAME}"
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15

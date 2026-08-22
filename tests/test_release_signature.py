@@ -108,13 +108,23 @@ class ReleaseRunVerifierTests(unittest.TestCase):
                 with self.assertRaises(verify_release_run.VerificationError):
                     verify_release_run.verify_required_jobs(invalid, required)
 
-    def test_release_like_nightly_dispatch_requires_a_tag_sentinel(self):
-        source = (ROOT / ".github" / "workflows" / "installer-nightly.yml").read_text()
-
-        self.assertIn("release-ref-is-tag:", source)
-        self.assertIn("GITHUB_REF_TYPE: ${{ github.ref_type }}", source)
-        self.assertIn('test "${GITHUB_REF_TYPE}" = tag', source)
-        self.assertIn('test "${GITHUB_REF}" = "refs/tags/${GITHUB_REF_NAME}"', source)
+    def test_release_like_runs_require_a_tag_sentinel(self):
+        for workflow, event in (
+            ("ci.yml", "push"),
+            ("installer-nightly.yml", "workflow_dispatch"),
+        ):
+            with self.subTest(workflow=workflow):
+                source = (ROOT / ".github" / "workflows" / workflow).read_text()
+                self.assertIn("release-ref-is-tag:", source)
+                self.assertIn("GITHUB_REF_TYPE: ${{ github.ref_type }}", source)
+                self.assertIn(
+                    "github.event_name == '{}'".format(event), source
+                )
+                self.assertIn('test "${GITHUB_REF_TYPE}" = tag', source)
+                self.assertIn(
+                    'test "${GITHUB_REF}" = "refs/tags/${GITHUB_REF_NAME}"',
+                    source,
+                )
 
 
 class ReleaseSignatureWorkflowTests(unittest.TestCase):
@@ -164,6 +174,7 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         self.assertIn("--workflow-path .github/workflows/ci.yml", source)
         self.assertNotIn("/check-runs", source)
         for check_name in (
+            "release-ref-is-tag",
             "test (3.8)",
             "test (3.12)",
             "static-analysis",
@@ -174,6 +185,7 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         ):
             with self.subTest(check_name=check_name):
                 self.assertIn(check_name, source)
+        self.assertEqual(source.count("--required release-ref-is-tag"), 2)
 
         self.assertIn("  full-installer-e2e:\n", ci_source)
         self.assertIn("Verify exact tag installer platform run", source)

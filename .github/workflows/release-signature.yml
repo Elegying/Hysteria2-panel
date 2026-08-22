@@ -102,6 +102,7 @@ jobs:
             "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs" \
             -f filter=latest -f per_page=100)"
           python .github/scripts/verify_release_run.py verify-jobs \
+            --required release-ref-is-tag \
             --required "test (3.8)" \
             --required "test (3.12)" \
             --required static-analysis \
