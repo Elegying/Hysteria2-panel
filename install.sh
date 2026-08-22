@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.22.0"
+PANEL_VERSION="0.22.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -21,7 +21,7 @@ PANEL_SHA256="6d10f41a1327999a7dda81ab407404b005ae36e3ccc3d8cb1f5c489c3058fb5c"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="8289233ab70566bd5ec42e09c4a37722194c409fa972d30b89972b7b4c0026ba"
+HY2PANEL_VERSION_SHA256="12b95c69b9d8e922d6ad244fc4f4469039c7777dcd7e02059114c291527674e2"
 HY2PANEL_WEB_ASSETS_SHA256="77bcc20e8296320d0af69fe82402f85e058933c28da40f6d558cc50448674ca8"
 HY2PANEL_OPERATIONS_SHA256="2660f871020b95ed648df0b0d72ea7d6ca5f9a05f82634639a4183c97dbe9f39"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
@@ -150,6 +150,15 @@ durable_remove_file() {
     rm -f -- "${destination}" || return 1
     sync -f "${destination_directory}" || return 1
   fi
+}
+
+sync_existing_directories() {
+  local path
+  for path in "$@"; do
+    if [[ -d "${path}" ]]; then
+      sync -f "${path}" || return 1
+    fi
+  done
 }
 
 flush_install_payload_for_commit() {
@@ -1438,6 +1447,16 @@ flush_fresh_cleanup_before_disarm() {
     "${SYSCTL_FILE}"
     "${TMPFILES_FILE}"
   )
+  local -a cleanup_sync_dirs=(
+    /opt
+    /etc
+    /var/lib
+    /var/backups
+    /etc/systemd/system
+    /etc/sudoers.d
+    /etc/sysctl.d
+    /etc/tmpfiles.d
+  )
   for path in "${removed_paths[@]}"; do
     [[ ! -e "${path}" && ! -L "${path}" ]] || return 1
   done
@@ -1457,15 +1476,7 @@ flush_fresh_cleanup_before_disarm() {
     current_value="$(sysctl -n net.ipv4.tcp_congestion_control)" || return 1
     [[ "${current_value}" == "${FRESH_ORIGINAL_CC}" ]] || return 1
   fi
-  sync -f \
-    /opt \
-    /etc \
-    /var/lib \
-    /var/backups \
-    /etc/systemd/system \
-    /etc/sudoers.d \
-    /etc/sysctl.d \
-    /etc/tmpfiles.d
+  sync_existing_directories "${cleanup_sync_dirs[@]}"
 }
 
 arm_fresh_install_transaction() {

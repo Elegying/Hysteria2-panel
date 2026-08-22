@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.22.0"', source)
+        self.assertIn('PANEL_VERSION="0.22.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -2766,6 +2766,66 @@ assert_units_unclaimed
             '/etc/systemd/system/hysteria2-panel-server.service',
         ):
             self.assertIn(path, commit_verifier)
+
+    def test_fresh_cleanup_skips_optional_directories_that_never_existed(self):
+        source = INSTALLER.read_text()
+        cleanup_barrier = source[
+            source.index('flush_fresh_cleanup_before_disarm()'):
+            source.index(
+                '\n\narm_fresh_install_transaction()',
+                source.index('flush_fresh_cleanup_before_disarm()'),
+            )
+        ]
+
+        self.assertIn('local -a cleanup_sync_dirs=(', cleanup_barrier)
+        self.assertIn(
+            'sync_existing_directories "${cleanup_sync_dirs[@]}"',
+            cleanup_barrier,
+        )
+        self.assertNotRegex(
+            cleanup_barrier,
+            r'sync -f\s+\\\s+(?:/[^\s]+\s+)+',
+        )
+
+    def test_sync_existing_directories_propagates_an_intermediate_failure(self):
+        source = INSTALLER.read_text()
+        helper = source[
+            source.index('sync_existing_directories()'):
+            source.index(
+                '\n\nflush_install_payload_for_commit()',
+                source.index('sync_existing_directories()'),
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            first = root / 'first'
+            missing = root / 'missing'
+            failing = root / 'failing'
+            after = root / 'after'
+            log = root / 'sync.log'
+            for directory in (first, failing, after):
+                directory.mkdir()
+            script = f'''
+set -euo pipefail
+{helper}
+sync() {{
+  printf '%s\n' "$2" >> {str(log)!r}
+  [[ "$2" != {str(failing)!r} ]]
+}}
+if sync_existing_directories \
+  {str(first)!r} {str(missing)!r} {str(failing)!r} {str(after)!r}; then
+  exit 91
+fi
+'''
+            result = subprocess.run(
+                ['bash', '-c', script],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual([str(first), str(failing)], log.read_text().splitlines())
 
     def test_existing_install_requires_an_owned_regular_managed_marker(self):
         source = INSTALLER.read_text()
