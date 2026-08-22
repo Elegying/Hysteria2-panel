@@ -3177,6 +3177,75 @@ class OperationsTests(unittest.TestCase):
         self.assertTrue(panel_server.closed)
         self.assertTrue(auth_server.closed)
 
+    def test_sigterm_tolerates_partial_final_traffic_sync(self):
+        class FakeServer:
+            def __init__(self):
+                self.stopped = threading.Event()
+                self.closed = False
+
+            def serve_forever(self):
+                self.stopped.wait(2)
+
+            def shutdown(self):
+                self.stopped.set()
+
+            def server_close(self):
+                self.closed = True
+
+        class PartialFinalSync:
+            def __init__(self):
+                self.collector_started = threading.Event()
+                self.final_collections = 0
+
+            def run_collector(self, stop_event):
+                self.collector_started.set()
+                stop_event.wait(2)
+
+            def collect_once(self):
+                self.final_collections += 1
+                raise hysteria2_panel.PartialTrafficCollectionError({"user": 1024})
+
+        panel_server = FakeServer()
+        auth_server = FakeServer()
+        usage = PartialFinalSync()
+        installed = {}
+        handler_ready = threading.Event()
+
+        def install_handler(signum, handler):
+            installed[signum] = handler
+            if signum == hysteria2_panel.signal.SIGTERM and callable(handler):
+                handler_ready.set()
+            return hysteria2_panel.signal.SIG_DFL
+
+        def terminate_after_collector_starts():
+            self.assertTrue(handler_ready.wait(1))
+            self.assertTrue(usage.collector_started.wait(1))
+            installed[hysteria2_panel.signal.SIGTERM](
+                hysteria2_panel.signal.SIGTERM, None
+            )
+
+        terminator = threading.Thread(target=terminate_after_collector_starts)
+        terminator.start()
+        with mock.patch.object(
+            hysteria2_panel.signal, "signal", side_effect=install_handler
+        ), mock.patch.object(
+            hysteria2_panel.signal,
+            "getsignal",
+            return_value=hysteria2_panel.signal.SIG_DFL,
+        ):
+            hysteria2_panel.run_supervised_services(
+                panel_server,
+                auth_server,
+                usage,
+                panel_scheme="http",
+            )
+        terminator.join(2)
+
+        self.assertFalse(terminator.is_alive())
+        self.assertEqual(1, usage.final_collections)
+        self.assertTrue(panel_server.closed)
+        self.assertTrue(auth_server.closed)
+
     def test_second_sigterm_during_final_collection_is_deferred_until_persisted(self):
         with tempfile.TemporaryDirectory() as directory:
             ready = Path(directory) / "collector-ready"
@@ -3682,10 +3751,19 @@ class OperationsTests(unittest.TestCase):
             return type("Result", (), {"returncode": 0, "stdout": "active\n", "stderr": ""})()
 
         controller = ServiceController(runner=runner)
-        self.assertEqual("active", controller.status())
-        self.assertEqual("active", controller.action("restart"))
-        with self.assertRaises(ValueError):
-            controller.action("restart;id")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "NOTIFY_SOCKET": "/run/systemd/notify",
+                "WATCHDOG_PID": "1234",
+                "WATCHDOG_USEC": "30000000",
+                "HY2PANEL_TEST_ENV": "preserved",
+            },
+        ):
+            self.assertEqual("active", controller.status())
+            self.assertEqual("active", controller.action("restart"))
+            with self.assertRaises(ValueError):
+                controller.action("restart;id")
         self.assertEqual(
             [
                 ["/bin/systemctl", "is-active", "hysteria2-panel-server.service"],
@@ -3695,6 +3773,11 @@ class OperationsTests(unittest.TestCase):
             [command for command, _ in calls],
         )
         self.assertTrue(all("shell" not in kwargs for _, kwargs in calls))
+        for _command, kwargs in calls:
+            self.assertEqual("preserved", kwargs["env"]["HY2PANEL_TEST_ENV"])
+            self.assertNotIn("NOTIFY_SOCKET", kwargs["env"])
+            self.assertNotIn("WATCHDOG_PID", kwargs["env"])
+            self.assertNotIn("WATCHDOG_USEC", kwargs["env"])
 
     def test_restore_controller_can_only_start_the_fixed_restore_unit(self):
         calls = []
@@ -5918,7 +6001,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.22.2", body)
+        self.assertIn("v0.22.3", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
