@@ -6658,6 +6658,68 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual("私家车-2026", settings.node_name)
         self.assertEqual("http", settings.panel_scheme)
 
+    def test_https_uses_an_independent_panel_hostname_and_certificate(self):
+        settings = Settings.from_mapping(
+            {
+                "HY2PANEL_HMAC_KEY": "ab" * 32,
+                "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+                "HY2PANEL_STATS_SECRET": "stats-secret",
+                "HY2PANEL_CERT_PIN": "NODE:CERT:PIN",
+                "HY2PANEL_TLS_CERT": "/etc/hysteria2-panel/server.crt",
+                "HY2PANEL_TLS_KEY": "/etc/hysteria2-panel/server.key",
+                "HY2PANEL_PANEL_SCHEME": "https",
+                "HY2PANEL_PANEL_PUBLIC_HOST": "panel.ssrvpn.vip",
+                "HY2PANEL_PANEL_TLS_CERT": "/etc/hysteria2-panel/panel.crt",
+                "HY2PANEL_PANEL_TLS_KEY": "/etc/hysteria2-panel/panel.key",
+            }
+        )
+
+        self.assertEqual("vpn.ssrvpn.vip", settings.public_host)
+        self.assertEqual(Path("/etc/hysteria2-panel/server.crt"), settings.tls_cert)
+        self.assertEqual(Path("/etc/hysteria2-panel/server.key"), settings.tls_key)
+        self.assertEqual("NODE:CERT:PIN", settings.cert_pin)
+        self.assertEqual("panel.ssrvpn.vip", settings.panel_public_host)
+        self.assertEqual(
+            Path("/etc/hysteria2-panel/panel.crt"), settings.panel_tls_cert
+        )
+        self.assertEqual(
+            Path("/etc/hysteria2-panel/panel.key"), settings.panel_tls_key
+        )
+
+    def test_https_rejects_missing_or_invalid_independent_panel_identity(self):
+        base = {
+            "HY2PANEL_HMAC_KEY": "ab" * 32,
+            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_STATS_SECRET": "stats-secret",
+            "HY2PANEL_CERT_PIN": "NODE:CERT:PIN",
+            "HY2PANEL_PANEL_SCHEME": "https",
+            "HY2PANEL_PANEL_PUBLIC_HOST": "panel.ssrvpn.vip",
+            "HY2PANEL_PANEL_TLS_CERT": "/etc/hysteria2-panel/panel.crt",
+            "HY2PANEL_PANEL_TLS_KEY": "/etc/hysteria2-panel/panel.key",
+        }
+        for missing in (
+            "HY2PANEL_PANEL_PUBLIC_HOST",
+            "HY2PANEL_PANEL_TLS_CERT",
+            "HY2PANEL_PANEL_TLS_KEY",
+        ):
+            with self.subTest(missing=missing):
+                values = dict(base)
+                del values[missing]
+                with self.assertRaisesRegex(ValueError, "PANEL"):
+                    Settings.from_mapping(values)
+
+        for hostname in (
+            "https://panel.ssrvpn.vip",
+            "*.ssrvpn.vip",
+            "panel/ssrvpn.vip",
+            "localhost",
+        ):
+            with self.subTest(hostname=hostname):
+                with self.assertRaisesRegex(ValueError, "PANEL_PUBLIC_HOST"):
+                    Settings.from_mapping(
+                        {**base, "HY2PANEL_PANEL_PUBLIC_HOST": hostname}
+                    )
+
     def test_invalid_node_name_or_panel_scheme_is_rejected(self):
         base = {
             "HY2PANEL_HMAC_KEY": "ab" * 32,

@@ -1,56 +1,57 @@
-# 实施计划：v0.20.0 签名更新、模块化与健康探针
+# 实施计划：面板独立 ACME/Let’s Encrypt HTTPS
 
-## Architecture Decisions
+## 架构决策
 
-- 使用 GitHub Actions OIDC 临时身份与 Sigstore/Cosign keyless signing；不创建、不保存长期私钥。
-- 先拆低耦合、可独立验证的现有边界，不搬动数据库和恢复事务核心。
-- `/readyz` 只读取本地缓存状态与轻量数据库探针；公网探针不触发 systemctl 或 Hysteria 网络请求。
-- `/metrics` 仅允许 loopback，避免为面板公网端口新增可枚举的运行细节。
+- 面板公网域名、TLS 证书和私钥与 Hysteria 节点身份分离。
+- 使用发行版 Certbot 软件包与 standalone HTTP-01，不引入 DNS API 密钥。
+- ACME 账户与证书状态放在 `/etc/hysteria2-panel/acme`，可随受管配置备份回滚。
+- 续期由项目自有 systemd timer 保证，部署钩子只重启面板服务。
 
-## Task List
+## 依赖顺序
 
-### Phase 1: 签名信任链
+面板配置合同 → 安装器输入与 ACME 签发 → 原子证书部署与续期 →
+升级/回滚/防火墙合同 → 文档与全量质量门。
 
-- [x] 新增签名失败/成功测试和正式签名合同。
-- [x] 实现固定工作流身份、Sigstore bundle 下载及执行前验证。
-- [x] 增加 Release OIDC 签名工作流、发布文档和 CI 校验。
+## 阶段 1：证书身份分离
 
-### Checkpoint: Supply chain
+- [x] RED：Settings 与安装器测试证明当前 HTTPS 复用节点证书。
+- [x] GREEN：新增独立面板域名和面板证书配置，HTTPS 监听器只加载面板证书。
 
-- [x] Release 工作流定义真实 Cosign 正向验签与单字节篡改反例；将在首次发布时由 GitHub OIDC 环境执行。
-- [x] 定向更新器与安装器合同测试通过。
+### 检查点
 
-### Phase 2: 模块边界
+- [x] 定向测试通过；连接 URI 与 Hysteria 配置身份断言不变。
 
-- [x] 抽取包内版本、Web 静态资源、运维控制和更新器。
-- [x] 保持顶层兼容导入，更新安装器固定来源与 SHA-256。
-- [x] 更新 CI 编译、lint、安全扫描范围。
+## 阶段 2：ACME 签发与续期
 
-### Checkpoint: Modularization
+- [x] RED：覆盖域名校验、Certbot standalone 参数、独立证书部署和失败保留旧证书。
+- [x] GREEN：实现 Certbot 安装、初次签发、原子部署及 systemd 续期 timer。
+- [x] 把 TCP 80 纳入 HTTPS 模式受管防火墙和云安全组提示。
 
-- [x] 模块可在 Python 3.8 语法下导入。
-- [x] 既有定向测试无行为变化。
+### 检查点
 
-### Phase 3: 健康与指标
+- [x] Bash 合同、语法与 ShellCheck 通过；timer 不依赖或重启 Hysteria。
 
-- [x] 增加运行状态聚合器和流量同步观测。
-- [x] 增加 `/readyz` 与 loopback-only `/metrics`。
-- [x] 将监督线程状态接入健康聚合器。
+## 阶段 3：升级、回滚与文档
 
-### Checkpoint: Complete
+- [x] 旧 HTTP 自动更新保持兼容；旧 HTTPS 缺少面板域名时安全拒绝自动更新。
+- [x] 新增 ACME 文件和单元纳入受管路径、备份、回滚与首次安装事务。
+- [x] 更新 README 与发布影响说明。
 
-- [x] 全量测试、编译、Ruff、Bandit、Bash、ShellCheck 和 diff 检查通过。
-- [x] 完成安全/架构对抗复审并记录首次签名升级边界。
+### 完成检查点
 
-## Risks and Mitigations
+- [x] 全量单元/集成测试、Python 编译、Ruff、Bandit、Bash 与 ShellCheck 通过。
+- [x] diff 安全复审确认没有节点身份写路径变化。
 
-| Risk | Impact | Mitigation |
+## 风险与缓解
+
+| 风险 | 影响 | 缓解 |
 |---|---|---|
-| Sigstore 或 GitHub OIDC 不可用 | 暂时无法产出可在线更新的 Release | 更新器安全拒绝；恢复后重跑签名工作流 |
-| 首次升级仍由旧版无签名更新器发起 | 信任链未真正建立 | 首次在服务器 `/tmp` 临时下载 Cosign、bundle 与安装器完成验签后升级；不在本地保存文件 |
-| 拆模块破坏导入或安装 | 服务启动失败 | 顶层 re-export、安装器哈希合同、py_compile 与全量回归 |
-| 探针被滥用造成 subprocess/网络放大 | DoS | `/readyz` 不调用外部命令；`/metrics` 仅 loopback |
+| TCP 80 不可达或被占用 | 无法签发/续期 | 安装前检查并清晰失败；不停止未知服务 |
+| Certbot 软件包不可用 | 一键 HTTPS 无法继续 | 使用系统仓库，RHEL 系缺包时由包管理器启用 EPEL；不执行远程脚本 |
+| 续期后证书部署中断 | 面板证书不一致 | 同目录暂存、校验域名与密钥配对、原子替换 |
+| 旧 HTTPS 升级仍复用节点证书 | 违反永久身份边界 | 缺新字段时自动更新安全拒绝，人工升级补录域名 |
+| ACME 故障 | 证书临近过期 | 旧证书保持不变，timer 失败可从 journal 观测 |
 
-## Open Questions
+## 开放问题
 
-- 无；发布、推送和生产部署不属于本轮默认授权。首次从无签名旧版升级需在服务器临时验签，但不在本地保存任何签名文件。
+- 无；规格已由用户明确确认。

@@ -49,9 +49,9 @@ sudo bash "${workdir}/install.sh"
 
 这段引导只执行固定正式版本的 Release 资产：先用固定 SHA-256 校验 Cosign，再验证安装器的 GitHub Actions OIDC/Sigstore 身份和 shell 语法，任一校验失败都不会以 root 执行。升级到新版本时请先把 `version` 改成对应的正式标签。
 
-安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `http`，出站策略默认是 `full`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
+安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。选择 `https` 时还会要求填写独立的面板公网域名，例如 `panel.ssrvpn.vip`。全新安装时面板协议默认是 `http`，出站策略默认是 `full`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`PANEL_PUBLIC_HOST`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
-重复运行安装器会先检查备份分区余量，再暂停面板写入而保持旧 Hysteria 统计端点运行，结算流量并截断 SQLite WAL 后建立带 SHA-256 清单的一致性备份；备份与开机恢复事务持久化后才允许覆盖程序。升级进程被强制终止或主机中途重启时，systemd 会在面板启动前核验清单并恢复旧版本，校验不通过则保持事务标记并拒绝覆盖。最终切换前会在认证入口已停止时，于有界窗口内持续为在线身份设置 Hysteria 断开标记，再执行最后一次流量结算并停止旧 Hysteria。`/kick` 只在客户端下一次产生流量时生效，因此完全空闲的会话可能仍显示在 `/online`，并由服务停止统一关闭；统计查询或踢线失败仍会安全回滚。恢复、手工安装和在线更新共用维护锁，不允许两项维护交叉写入。随后自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 TLS 身份。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、systemd 单元、sudoers 和网络参数；数据库优先保留升级窗口内通过完整性校验的最新状态，仅在损坏时清除 WAL/SHM 后恢复升级前快照。只有全部服务和端口通过检查后才解除回滚保护。自动备份仅清理符合安装器时间戳命名的目录，最多保留 10 份且最长 90 天，手工或恢复备份不会被匹配。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
+重复运行安装器会先检查备份分区余量，再暂停面板写入而保持旧 Hysteria 统计端点运行，结算流量并截断 SQLite WAL 后建立带 SHA-256 清单的一致性备份；备份与开机恢复事务持久化后才允许覆盖程序。升级进程被强制终止或主机中途重启时，systemd 会在面板启动前核验清单并恢复旧版本，校验不通过则保持事务标记并拒绝覆盖。最终切换前会在认证入口已停止时，于有界窗口内持续为在线身份设置 Hysteria 断开标记，再执行最后一次流量结算并停止旧 Hysteria。`/kick` 只在客户端下一次产生流量时生效，因此完全空闲的会话可能仍显示在 `/online`，并由服务停止统一关闭；统计查询或踢线失败仍会安全回滚。恢复、手工安装、在线更新和 ACME 续期共用维护锁，不允许两项维护交叉写入。随后自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 Hysteria TLS 身份。Hysteria 的 `server.crt`、`server.key`、用户 URI 和固定指纹不会被 ACME 读取或替换；面板 HTTPS 使用另一套 Let’s Encrypt 证书。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、systemd 单元、sudoers 和网络参数；数据库优先保留升级窗口内通过完整性校验的最新状态，仅在损坏时清除 WAL/SHM 后恢复升级前快照。只有全部服务和端口通过检查后才解除回滚保护。自动备份仅清理符合安装器时间戳命名的目录，最多保留 10 份且最长 90 天，手工或恢复备份不会被匹配。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
 
 面板发现新正式版本后会显示“立即更新”。点击后页面会显示排队、运行、成功或失败状态，并在面板进程因升级重启期间自动重试状态查询；只有固定更新任务已经成功结束且新进程的当前版本达到目标版本才会显示成功，不再把 systemd 任务已启动或新进程刚启动误报成升级完成。该操作只允许已登录管理员携带 CSRF token 启动固定的 `hysteria2-panel-update.service`，浏览器不能传入版本、下载地址或命令。root 更新任务会重新查询固定 GitHub Release API，只接受严格的 `vX.Y.Z` 正式版本，从对应版本路径下载安装器，核对安装器内版本、解释器头和 shell 语法，再以专用非交互模式升级。在线升级强制沿用当前节点与面板参数并保留管理员、数据库、HMAC、统计密钥、TLS 证书和私钥；全新服务器不能使用该内部模式。
 
@@ -63,17 +63,20 @@ sudo bash "${workdir}/install.sh"
 | 账号专属 Hysteria 入口 | 公网 UDP | `443`（按账号开启） |
 | TCP 连通性兼容探测 | 公网 TCP | `19999` 和 `443` |
 | 管理面板 | 公网 HTTP TCP（可选 HTTPS） | `19998` |
+| ACME HTTP-01 校验 | 公网 TCP（仅签发/续期时临时监听） | `80` |
 | 流量统计 API | `127.0.0.1` | `19997` |
 | UDP 443 入口流量统计 API | `127.0.0.1` | `19995` |
 | Hysteria 认证回调 | `127.0.0.1` | `19996` |
 
 服务器使用带 IP/域名 SAN 的 10 年自签名证书保护 Hysteria 连接。面板生成的 Hysteria URI 同时包含 `insecure=1` 和证书 SHA-256 固定指纹。面板使用 HTTP 并不影响 Hysteria 数据通道的 TLS 和证书固定。
 
-面板默认使用 HTTP，以避免自签名 HTTPS 的浏览器访问障碍。HTTP 模式不会设置 Secure Cookie 或 HSTS，管理员密码、会话以及备份上传下载内容都会在网络中明文传输。建议把 TCP `19998` 的安全组/防火墙来源限制为固定管理 IP；在公共 Wi-Fi 等不可信链路上操作时，应先使用 SSH 隧道或 VPN。仍可在安装时显式选择 HTTPS。
+面板默认仍使用 HTTP。HTTP 模式不会设置 Secure Cookie 或 HSTS，管理员密码、会话以及备份上传下载内容都会在网络中明文传输。建议生产部署显式选择 HTTPS：安装器从系统软件源安装 Certbot（RHEL/Rocky/Alma/CentOS 在当前仓库缺包时通过包管理器启用 EPEL），使用 standalone HTTP-01 为 `PANEL_PUBLIC_HOST` 申请 Let’s Encrypt 证书，并启用 `hysteria2-panel-cert-renew.timer` 每天检查两次。首次签发和后续续期都要求该域名解析到当前服务器，公网 TCP `80` 持续可达且不能被其他本机服务占用。续期成功后只重启面板服务，不重启 Hysteria；失败时保留旧面板证书并写入 journal。
+
+面板证书采用版本目录加单一 `panel-tls-current` 链接切换，证书和私钥先完成域名及公钥配对校验再一起生效。`/etc/hysteria2-panel/panel.crt` 与 `panel.key` 只用于面板；Hysteria 永远继续使用独立的 `server.crt` 与 `server.key`。从旧版本的自签名 HTTPS 升级时必须人工运行一次安装器补填 `PANEL_PUBLIC_HOST`；在线自动更新会安全拒绝缺少该字段的旧 HTTPS 配置，避免静默继续复用节点证书。
 
 部分网络设备会检查明文 HTTP 的 `Host` 并主动重置特定域名连接。安装器在节点域名与本机检测 IP 不同时会同时打印备用面板地址；确认该 IP 可从公网路由后，可用 `http://服务器IP:面板端口/` 登录，不需要修改 Hysteria 节点域名、证书或已分享 URI。面板会安静处理这类预期断连，避免服务日志被无意义的异常栈淹没。
 
-> 安装器会先识别防火墙所有权：UFW 或 firewalld 中恰好一个启用时，以该管理器的查询结果为准并自动放行用户输入的 Hysteria 端口（TCP/UDP）、面板端口（TCP）和账号专属入口 `443`（TCP/UDP）。UFW 对冲突或无法证明无关的入站 deny/reject/limit 会停止；firewalld 目标 zone 存在 rich rule 时也会安全停止。写入后会再次复查全部目标规则与 zone，任何漂移或缺失都会撤销本次已添加规则。两者都未启用时才只读检查 nftables、IPv4 iptables 与 IPv6 ip6tables；无规则则保持不变，自定义入站策略或检查失败则停止。安装器不会主动启用防火墙；云平台安全组不在主机控制范围内，仍需人工放行。自动开放的面板端口对所有来源生效；生产环境应再在安全组中把该端口限制为固定管理 IP。设计依据见 [ADR-012](docs/decisions/ADR-012-managed-firewall-port-opening.md)。
+> 安装器会先识别防火墙所有权：UFW 或 firewalld 中恰好一个启用时，以该管理器的查询结果为准并自动放行用户输入的 Hysteria 端口（TCP/UDP）、面板端口（TCP）、账号专属入口 `443`（TCP/UDP），以及 HTTPS 模式所需的 ACME TCP `80`。UFW 对冲突或无法证明无关的入站 deny/reject/limit 会停止；firewalld 目标 zone 存在 rich rule 时也会安全停止。写入后会再次复查全部目标规则与 zone，任何漂移或缺失都会撤销本次已添加规则。两者都未启用时才只读检查 nftables、IPv4 iptables 与 IPv6 ip6tables；无规则则保持不变，自定义入站策略或检查失败则停止。安装器不会主动启用防火墙；云平台安全组不在主机控制范围内，仍需人工放行。自动开放的面板端口对所有来源生效；生产环境应再在安全组中把该端口限制为固定管理 IP，但 TCP `80` 必须允许 Let’s Encrypt 公网校验。设计依据见 [ADR-012](docs/decisions/ADR-012-managed-firewall-port-opening.md)。
 
 TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后立即关闭，不读取或返回应用数据。它们用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；两个探测服务分别随对应的 Hysteria 服务启停。TCP `443` 探测成功也不代表账号已获准使用 UDP `443`。
 
@@ -152,8 +155,8 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 多台节点请遵循 [`max-unavailable=1` 发布与回滚流程](docs/DEPLOYMENT.md)，每次只升级并验收一台。
 
 ```bash
-systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-restore hysteria2-panel-restore-recover hysteria2-panel-restore-resume hysteria2-panel-update
-journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-restore -u hysteria2-panel-restore-recover -u hysteria2-panel-restore-resume -u hysteria2-panel-update --since today
+systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-restore hysteria2-panel-restore-recover hysteria2-panel-restore-resume hysteria2-panel-cert-renew.timer hysteria2-panel-update
+journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-restore -u hysteria2-panel-restore-recover -u hysteria2-panel-restore-resume -u hysteria2-panel-cert-renew.service -u hysteria2-panel-update --since today
 curl http://127.0.0.1:19998/healthz
 curl http://127.0.0.1:19998/readyz
 curl http://127.0.0.1:19998/metrics
@@ -165,6 +168,7 @@ curl http://127.0.0.1:19998/metrics
 |---|---|
 | `/opt/hysteria2-panel/` | 面板程序和项目专用 Hysteria 二进制 |
 | `/etc/hysteria2-panel/` | Hysteria 配置、TLS 证书和运行环境 |
+| `/etc/hysteria2-panel/acme/` | 面板 ACME 账户、续期配置与 Let’s Encrypt lineage |
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署和恢复前的自动备份 |
 | `/etc/sysctl.d/99-hysteria2-panel.conf` | 16 MiB QUIC UDP 缓冲，以及内核支持时的 `fq`/TCP BBR |
