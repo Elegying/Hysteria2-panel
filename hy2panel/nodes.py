@@ -133,12 +133,10 @@ class OpenSSLSignatureVerifier:
             with tempfile.TemporaryDirectory(prefix="hy2panel-heartbeat-") as directory:
                 directory = Path(directory)
                 public_path = directory / "public.der"
-                message_path = directory / "message.bin"
                 signature_path = directory / "signature.bin"
                 public_path.write_bytes(public_der)
-                message_path.write_bytes(message)
                 signature_path.write_bytes(signature)
-                for path in (public_path, message_path, signature_path):
+                for path in (public_path, signature_path):
                     path.chmod(0o600)
                 completed = subprocess.run(  # nosec B603 -- fixed argv, no shell.
                     [
@@ -154,9 +152,9 @@ class OpenSSLSignatureVerifier:
                         str(signature_path),
                         "-rawin",
                         "-in",
-                        str(message_path),
+                        "/dev/stdin",
                     ],
-                    stdin=subprocess.DEVNULL,
+                    input=message,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=self.timeout_seconds,

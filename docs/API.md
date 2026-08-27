@@ -42,6 +42,22 @@
 
 仅供本机 UDP `443` Hysteria 进程调用，请求和响应结构与 `/auth` 相同。除了启用状态、流量和客户端实例限制外，还要求账号的 `allow_udp_443` 为真；未开放的账号返回 HTTP 200 与 `{"ok": false, "id": ""}`。主端口认证不检查该字段，因此开放 UDP `443` 不会停止原端口。
 
+## 签名节点控制协议
+
+仅在独立面板 HTTPS 启用后开放。每个请求都包含已人工核验的 `nodeId`、服务端时间窗内的 `sentAt`、32 字节 URL-safe `nonce` 与 Ed25519 `signature`；各接口使用不同签名域，来源 IP 必须与注册绑定一致，节点还必须由管理员显式设为 `protocol_ready`。稳定错误只返回 `error.code`，不回显 token、nonce、签名或完整请求。
+
+| 方法 | 路径 | 最大请求 | 行为 |
+|---|---|---:|---|
+| `POST` | `/api/v1/node-auth-decisions` | 16 KiB | 在中央事务中统一检查本机与所有就绪节点的在线实例、短租约和流量额度 |
+| `POST` | `/api/v1/node-online-snapshots` | 128 KiB | 以单调 `sequence` 完整替换该节点的稀疏在线计数和流量确认检查点 |
+| `POST` | `/api/v1/node-traffic-batches` | 256 KiB | 以 `(nodeId,batchId)` 幂等累计已持久化的增量流量，提交后返回 ACK |
+| `POST` | `/api/v1/node-commands/poll` | 8 KiB | 立即返回至多 32 条且总响应不超过 64 KiB 的固定枚举命令 |
+| `POST` | `/api/v1/node-commands/ack` | 16 KiB | 幂等确认发给同一节点的既有命令，不能修改命令内容 |
+
+节点侧 Hysteria 只访问 `127.0.0.1` 认证代理；代理删除客户端地址后签名转发。中央超时、非 200、无效 JSON、节点快照或计量检查点超过 5 秒时，新认证统一映射为 Hysteria 所需的 HTTP 200 拒绝，既有会话不会被控制面故障主动中断。流量批次先写入 0600 有界 spool 并 `fsync`，收到中央提交 ACK 后才删除；签名与验签消息通过标准输入交给 OpenSSL，不把用户 token 写入临时文件。
+
+本阶段的控制协议与未来数据面/DNS 入池是两个独立管理员门禁。它不会安装或启动远端 Hysteria，也不会传输或修改 Hysteria TLS 身份、HMAC、`vpn.ssrvpn.vip`、用户链接或证书指纹。
+
 ## 管理面板
 
 监听：公网 TCP `19998`，默认 HTTP，也可在安装时明确选择 HTTPS。所有变更路由均要求有效管理会话和 CSRF token。
@@ -62,6 +78,11 @@
 | `POST` | `/users/{id}/share` | 携带当前 `generation`，显示可复制的当前连接 URI |
 | `POST` | `/users/{id}/reset` | 携带当前 `generation`，重置该用户流量并断开旧连接 |
 | `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
+| `POST` | `/node-enrollments` | 生成短时、单用途节点对接代码；要求面板 HTTPS |
+| `POST` | `/node-enrollments/{id}/revoke` | 作废尚未消费的节点对接码 |
+| `POST` | `/nodes/{id}/verify` | 逐字核对并确认节点 Ed25519 公钥 SHA-256 指纹 |
+| `POST` | `/nodes/{id}/revoke` | 撤销节点身份并拒绝后续心跳与控制协议请求 |
+| `POST` | `/nodes/{id}/protocol/{enable,disable}` | 独立启停中央控制协议参与状态；不部署 Hysteria 或修改 DNS |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
 | `POST` | `/egress/{web,full}` | 切换整台节点的出站策略；通过固定 root oneshot 同步更新两份 Hysteria 配置和持久状态，重启失败时恢复旧策略 |
 | `POST` | `/system/reboot` | 二次确认后通过固定 sudoers 白名单排队重启整台服务器，成功返回 HTTP 202 |

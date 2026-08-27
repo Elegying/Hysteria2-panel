@@ -1,11 +1,17 @@
 import base64
 import json
+import os
+import socket
 import sqlite3
 import stat
 import tempfile
 import threading
+import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
+from unittest import mock
 
 import node_agent
 from hy2panel.distributed import (
@@ -13,7 +19,8 @@ from hy2panel.distributed import (
     NodeRequestRejected,
     canonical_node_request,
 )
-from hysteria2_panel import Database
+from hy2panel.nodes import OpenSSLSignatureVerifier
+from hysteria2_panel import Database, UsageManager
 
 
 def public_key(value):
@@ -241,6 +248,74 @@ class DistributedAuthorizationTests(DistributedControlCase):
                 self.auth_payload(self.nodes[1], 43), remote_ip="203.0.113.2"
             )
 
+    def test_local_and_remote_auth_share_one_global_device_limit(self):
+        class Stats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {}
+
+        manager = UsageManager(self.db, Stats(), clock=lambda: self.now[0])
+        service = DistributedControlService(
+            self.db,
+            clock=lambda: self.now[0],
+            signature_verifier=lambda _key, _message, _signature: True,
+            local_state_provider=manager.distributed_local_state,
+        )
+        start = threading.Barrier(5)
+        results = []
+
+        def local_authorize():
+            start.wait(1)
+            results.append(manager.authorize("alice"))
+
+        def remote_authorize(index):
+            start.wait(1)
+            try:
+                result = service.authorize(
+                    self.auth_payload(self.nodes[index % 2], 70 + index),
+                    remote_ip="203.0.113.{}".format((index % 2) + 1),
+                )
+            except NodeRequestRejected:
+                results.append(False)
+            else:
+                results.append(result["ok"])
+
+        workers = [threading.Thread(target=local_authorize)] + [
+            threading.Thread(target=remote_authorize, args=(index,))
+            for index in range(3)
+        ]
+        for worker in workers:
+            worker.start()
+        start.wait(1)
+        for worker in workers:
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+
+        self.assertEqual(3, results.count(True))
+        self.assertEqual(1, results.count(False))
+        self.now[0] += 6
+        self.assertFalse(manager.authorize("alice"))
+
+    def test_auth_secrets_and_signed_envelopes_are_not_persisted(self):
+        payload = self.auth_payload(self.nodes[0], 80)
+        self.assertTrue(
+            self.service.authorize(payload, remote_ip="203.0.113.1")["ok"]
+        )
+        database_bytes = b"".join(
+            path.read_bytes()
+            for path in self.db_path.parent.glob(self.db_path.name + "*")
+            if path.is_file()
+        )
+        for secret in (
+            self.token,
+            payload["nonce"],
+            payload["signature"],
+            json.dumps(payload, separators=(",", ":")),
+        ):
+            self.assertNotIn(secret.encode("utf-8"), database_bytes)
+
 
 class DistributedTrafficTests(DistributedControlCase):
     def setUp(self):
@@ -289,6 +364,17 @@ class DistributedTrafficTests(DistributedControlCase):
         user = self.db.get_proxy_user_by_name("alice")
         self.assertEqual((1, 2), (user["tx_bytes"], user["rx_bytes"]))
 
+    def test_spooled_batch_survives_a_control_plane_outage(self):
+        observed_at = self.now[0]
+        self.now[0] += 600
+        payload = self.traffic_payload(self.nodes[0], 54, batch_id="b" * 32)
+        payload["observedAt"] = observed_at
+        result = self.service.apply_traffic_batch(
+            payload, remote_ip="203.0.113.1"
+        )
+        self.assertTrue(result["committed"])
+        self.assertEqual((10, 20), tuple(self.db.get_proxy_user_by_name("alice")[key] for key in ("tx_bytes", "rx_bytes")))
+
 
 class NodeCommandTests(DistributedControlCase):
     def test_only_fixed_commands_can_be_polled_and_acknowledged_idempotently(self):
@@ -310,8 +396,50 @@ class NodeCommandTests(DistributedControlCase):
                 self.nodes[0], "RUN_SHELL", {"command": "id"}, self.now[0]
             )
 
+    def test_failed_or_unacked_commands_retry_with_bounded_backoff(self):
+        command = self.db.queue_node_command(
+            self.nodes[0], "REFRESH_SNAPSHOT", {}, self.now[0]
+        )
+        first = self.common(self.nodes[0], 63)
+        first["requestId"] = "c" * 32
+        self.assertEqual(
+            [command],
+            self.service.poll_commands(first, remote_ip="203.0.113.1")["commands"],
+        )
+
+        immediate = self.common(self.nodes[0], 64)
+        immediate["requestId"] = "d" * 32
+        self.assertEqual(
+            [],
+            self.service.poll_commands(immediate, remote_ip="203.0.113.1")["commands"],
+        )
+
+        self.now[0] += 2
+        retry = self.common(self.nodes[0], 65)
+        retry["requestId"] = "e" * 32
+        self.assertEqual(
+            command["commandId"],
+            self.service.poll_commands(retry, remote_ip="203.0.113.1")["commands"][0][
+                "commandId"
+            ],
+        )
+
 
 class NodeAgentProtocolTests(unittest.TestCase):
+    class Response:
+        def __init__(self, payload, status=200):
+            self.payload = payload
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, maximum):
+            return self.payload[:maximum]
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
@@ -352,6 +480,457 @@ class NodeAgentProtocolTests(unittest.TestCase):
         self.assertEqual([batch], spool.pending())
         spool.ack(batch["batchId"])
         self.assertFalse(path.exists())
+
+    def test_spool_preflight_reserves_envelope_and_rejects_unsafe_entries(self):
+        spool = node_agent.DurableTrafficSpool(
+            self.root / "bounded-spool",
+            max_bytes=256 * 1024,
+            reserve_bytes=0,
+        )
+        with mock.patch.object(
+            node_agent.shutil,
+            "disk_usage",
+            return_value=mock.Mock(free=10 * 1024 * 1024),
+        ):
+            self.assertFalse(spool.can_collect(256 * 1024))
+
+        batch = spool.enqueue({"alice": {"tx": 1, "rx": 2}}, 2_000_000_000)
+        entry = spool.path / (batch["batchId"] + ".json")
+        entry.chmod(0o644)
+        with self.assertRaises(node_agent.ProtocolError):
+            spool.pending()
+
+        count_limited = node_agent.DurableTrafficSpool(
+            self.root / "count-spool",
+            max_bytes=1024 * 1024,
+            reserve_bytes=0,
+            max_entries=1,
+        )
+        count_limited.enqueue({}, 2_000_000_000)
+        with mock.patch.object(
+            node_agent.shutil,
+            "disk_usage",
+            return_value=mock.Mock(free=10 * 1024 * 1024),
+        ):
+            self.assertFalse(count_limited.can_collect())
+        with self.assertRaises(node_agent.ProtocolError):
+            count_limited.enqueue({}, 2_000_000_001)
+
+    def test_protocol_client_signs_domain_separated_https_requests(self):
+        state = self.root / "registration.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "nodeId": "d" * 32,
+                    "panelUrl": "https://panel.ssrvpn.vip:19998",
+                    "registeredAt": 1,
+                    "status": "PENDING_VERIFICATION",
+                }
+            )
+        )
+        state.chmod(0o600)
+        private_key = self.root / "private.pem"
+        private_key.write_text("not-read-by-test-signer")
+        private_key.chmod(0o600)
+        captured = {}
+
+        def signer(path, message):
+            captured["privateKey"] = path
+            captured["message"] = message
+            return b"s" * 64
+
+        def opener(request, timeout):
+            captured["url"] = request.full_url
+            captured["body"] = json.loads(request.data)
+            captured["timeout"] = timeout
+            return self.Response(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "id": "alice",
+                        "decisionId": "e" * 32,
+                        "expiresAt": 2_000_000_005,
+                    }
+                ).encode()
+            )
+
+        client = node_agent.NodeProtocolClient(
+            state,
+            private_key,
+            opener=opener,
+            signer=signer,
+            clock=lambda: 2_000_000_000,
+            nonce_factory=lambda _size: nonce(90),
+        )
+        result = client.authorize({"entrypoint": "main", "auth": "secret", "tx": 10})
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            "https://panel.ssrvpn.vip:19998/api/v1/node-auth-decisions",
+            captured["url"],
+        )
+        self.assertEqual(10, captured["timeout"])
+        self.assertTrue(captured["message"].startswith(b"hy2panel-node-auth-v1\n"))
+        self.assertNotIn(b"signature", captured["message"])
+        self.assertEqual(base64.b64encode(b"s" * 64).decode(), captured["body"]["signature"])
+
+    def test_signer_streams_secret_bearing_requests_without_a_temp_file(self):
+        message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
+        private_key = Path(self.temp_dir.name) / "node.key"
+        private_key.write_bytes(b"private")
+        private_key.chmod(0o600)
+        completed = mock.Mock(returncode=0, stdout=b"s" * 64)
+        with mock.patch.object(node_agent.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(
+                b"s" * 64,
+                node_agent._openssl_sign(private_key, message, executable="/usr/bin/openssl"),
+            )
+        arguments = run.call_args.args[0]
+        self.assertEqual("/dev/stdin", arguments[arguments.index("-in") + 1])
+        self.assertEqual(message, run.call_args.kwargs["input"])
+        self.assertNotIn("stdin", run.call_args.kwargs)
+
+    def test_verifier_streams_secret_bearing_requests_without_a_message_file(self):
+        public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
+        message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
+        completed = mock.Mock(returncode=0)
+        with mock.patch("hy2panel.nodes.subprocess.run", return_value=completed) as run:
+            self.assertTrue(
+                OpenSSLSignatureVerifier()(
+                    base64.b64encode(public_der).decode("ascii"),
+                    message,
+                    b"s" * 64,
+                )
+            )
+        arguments = run.call_args.args[0]
+        self.assertEqual("/dev/stdin", arguments[arguments.index("-in") + 1])
+        self.assertEqual(message, run.call_args.kwargs["input"])
+
+    def test_streaming_signer_and_verifier_interoperate_with_real_ed25519(self):
+        homebrew_openssl = Path("/opt/homebrew/opt/openssl@3/bin/openssl")
+        openssl = (
+            str(homebrew_openssl)
+            if homebrew_openssl.exists()
+            else node_agent.shutil.which("openssl")
+        )
+        self.assertIsNotNone(openssl)
+        private_key = self.root / "real-private.pem"
+        public_der = self.root / "real-public.der"
+        node_agent.subprocess.run(
+            [openssl, "genpkey", "-algorithm", "ED25519", "-out", private_key],
+            check=True,
+            capture_output=True,
+        )
+        private_key.chmod(0o600)
+        node_agent.subprocess.run(
+            [
+                openssl,
+                "pkey",
+                "-in",
+                private_key,
+                "-pubout",
+                "-outform",
+                "DER",
+                "-out",
+                public_der,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
+        signature = node_agent._openssl_sign(
+            private_key, message, executable=openssl
+        )
+        self.assertTrue(
+            OpenSSLSignatureVerifier(executable=openssl)(
+                base64.b64encode(public_der.read_bytes()).decode("ascii"),
+                message,
+                signature,
+            )
+        )
+
+    def test_command_executor_has_no_generic_command_surface(self):
+        calls = []
+
+        class Stats:
+            def kick(self, users):
+                calls.append(("kick", users))
+
+            def online(self):
+                calls.append(("online",))
+                return {}
+
+            def collect_and_clear(self):
+                calls.append(("traffic",))
+                return {}
+
+        stats = Stats()
+        node_agent.execute_control_command(
+            {"commandId": "a" * 32, "kind": "KICK_USERS", "payload": {"users": ["alice"]}},
+            stats,
+        )
+        node_agent.execute_control_command(
+            {"commandId": "b" * 32, "kind": "REFRESH_SNAPSHOT", "payload": {}},
+            stats,
+            refresh_snapshot=lambda: calls.append(("snapshot",)),
+        )
+        node_agent.execute_control_command(
+            {"commandId": "c" * 32, "kind": "FLUSH_TRAFFIC", "payload": {}},
+            stats,
+            flush_traffic=lambda: calls.append(("durable-flush",)),
+        )
+        self.assertEqual(
+            [("kick", ["alice"]), ("snapshot",), ("durable-flush",)], calls
+        )
+        with self.assertRaises(node_agent.ProtocolError):
+            node_agent.execute_control_command(
+                {"commandId": "e" * 32, "kind": "FLUSH_TRAFFIC", "payload": {}},
+                stats,
+            )
+        with self.assertRaises(node_agent.ProtocolError):
+            node_agent.execute_control_command(
+                {"commandId": "d" * 32, "kind": "RUN_SHELL", "payload": {"command": "id"}},
+                stats,
+            )
+
+    def test_control_cycle_replays_durable_traffic_after_failed_ack(self):
+        calls = []
+        now = [2_000_000_000]
+
+        class Stats:
+            def collect_and_clear(self):
+                calls.append(("collect",))
+                if len([call for call in calls if call == ("collect",)]) == 1:
+                    return {"alice": {"tx": 10, "rx": 20}}
+                return {}
+
+            def online(self):
+                return {"alice": 1}
+
+            def kick(self, users):
+                calls.append(("kick", users))
+
+        class Protocol:
+            fail_once = True
+
+            def send_traffic(self, batch):
+                calls.append(("send", batch["batchId"], dict(batch["traffic"])))
+                if self.fail_once:
+                    self.fail_once = False
+                    raise OSError("central unavailable")
+                return {"batchId": batch["batchId"], "committed": True}
+
+            def send_online(self, sequence, online, traffic_acked_at):
+                calls.append(("snapshot", sequence, online, traffic_acked_at))
+                return {"sequence": sequence}
+
+            def poll_commands(self):
+                return []
+
+            def ack_command(self, command_id, ok, error_code):
+                calls.append(("command-ack", command_id, ok, error_code))
+
+        root = Path(self.temp_dir.name)
+        spool = node_agent.DurableTrafficSpool(root / "traffic-spool")
+        state = node_agent.ProtocolState(root / "protocol-state.json")
+        cycle = node_agent.NodeControlCycle(
+            Protocol(), Stats(), spool, state, clock=lambda: now[0]
+        )
+
+        with self.assertRaises(OSError):
+            cycle.flush_traffic()
+        pending = spool.pending()
+        self.assertEqual(1, len(pending))
+        self.assertEqual({"alice": {"tx": 10, "rx": 20}}, pending[0]["traffic"])
+
+        now[0] += 1
+        cycle.run_once()
+        self.assertEqual([], spool.pending())
+        self.assertEqual(now[0], state.traffic_acked_at())
+        sent = [call for call in calls if call[0] == "send"]
+        self.assertEqual(sent[0][1], sent[1][1])
+        self.assertEqual({}, sent[2][2])
+        snapshots = [call for call in calls if call[0] == "snapshot"]
+        self.assertEqual(1, len(snapshots))
+        self.assertEqual({"alice": 1}, snapshots[0][2])
+
+    def test_control_cycle_persists_success_before_command_ack(self):
+        calls = []
+        command = {
+            "commandId": "f" * 32,
+            "kind": "KICK_USERS",
+            "payload": {"users": ["alice"]},
+        }
+
+        class Stats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {}
+
+            def kick(self, users):
+                calls.append(("kick", list(users)))
+
+        class Protocol:
+            def send_traffic(self, batch):
+                return {"batchId": batch["batchId"], "committed": True}
+
+            def send_online(self, sequence, _online, _traffic_acked_at):
+                return {"sequence": sequence}
+
+            def poll_commands(self):
+                return [command]
+
+            def ack_command(self, command_id, ok, error_code):
+                calls.append(("ack", command_id, ok, error_code))
+
+        root = Path(self.temp_dir.name)
+        state_path = root / "command-state.json"
+        cycle = node_agent.NodeControlCycle(
+            Protocol(),
+            Stats(),
+            node_agent.DurableTrafficSpool(root / "command-spool"),
+            node_agent.ProtocolState(state_path),
+            clock=lambda: 2_000_000_000,
+        )
+        cycle.run_once()
+        restarted = node_agent.NodeControlCycle(
+            Protocol(),
+            Stats(),
+            node_agent.DurableTrafficSpool(root / "command-spool"),
+            node_agent.ProtocolState(state_path),
+            clock=lambda: 2_000_000_001,
+        )
+        restarted.run_once()
+
+        self.assertEqual([("kick", ["alice"])], [call for call in calls if call[0] == "kick"])
+        self.assertEqual(2, len([call for call in calls if call[0] == "ack"]))
+
+    def test_stats_client_rejects_non_loopback_and_short_secrets(self):
+        with self.assertRaises(ValueError):
+            node_agent.LocalStatsClient("http://203.0.113.1:19997", "s" * 32)
+        with self.assertRaises(ValueError):
+            node_agent.LocalStatsClient("http://127.0.0.1:19997", "short")
+
+    def test_loopback_auth_server_maps_main_and_udp443_without_logging_secrets(self):
+        captured = []
+
+        class Client:
+            def authorize(self, payload):
+                captured.append(payload)
+                return {
+                    "ok": True,
+                    "id": "alice",
+                    "decisionId": "a" * 32,
+                    "expiresAt": 2_000_000_005,
+                }
+
+        server = node_agent.make_node_auth_proxy_server(("127.0.0.1", 0), Client())
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = urllib.request.Request(
+                "http://127.0.0.1:{}/auth/udp-443".format(server.server_address[1]),
+                data=json.dumps(
+                    {"addr": "198.51.100.4:1234", "auth": "secret", "tx": 10}
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=2) as response:
+                self.assertEqual({"ok": True, "id": "alice"}, json.loads(response.read()))
+            self.assertEqual("udp443", captured[0]["entrypoint"])
+            self.assertNotIn("addr", captured[0])
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+        with self.assertRaises(ValueError):
+            node_agent.make_node_auth_proxy_server(("0.0.0.0", 19996), Client())
+
+    def test_auth_server_evicts_slow_clients_and_bounds_workers(self):
+        class Client:
+            def authorize(self, _payload):
+                return {"ok": False, "id": "", "decisionId": "a" * 32, "expiresAt": 0}
+
+        server = node_agent.make_node_auth_proxy_server(
+            ("127.0.0.1", 0), Client(), max_workers=1, request_timeout=0.2
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        slow = socket.create_connection(server.server_address, timeout=1)
+        try:
+            slow.sendall(b"POST /auth HTTP/1.1\r\nHost: localhost\r\n")
+            time.sleep(0.35)
+            with urllib.request.urlopen(
+                "http://127.0.0.1:{}/healthz".format(server.server_address[1]),
+                timeout=1,
+            ) as response:
+                self.assertEqual(200, response.status)
+            self.assertEqual(1, server.max_workers)
+        finally:
+            slow.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
+
+    def test_control_loop_uses_fixed_polling_and_bounded_failure_backoff(self):
+        calls = []
+        stopped = threading.Event()
+
+        class Cycle:
+            def run_once(self):
+                calls.append(("cycle",))
+                if len(calls) == 1:
+                    raise node_agent.ProtocolError("central unavailable")
+
+        delays = []
+
+        def sleeper(delay):
+            delays.append(delay)
+            if len(delays) == 2:
+                stopped.set()
+
+        node_agent.run_control_loop(Cycle(), stopped, sleeper=sleeper)
+        self.assertEqual([("cycle",), ("cycle",)], calls)
+        self.assertEqual([2, 2], delays)
+
+    def test_control_once_reads_local_stats_secret_only_from_environment(self):
+        cycle = mock.Mock()
+        arguments = [
+            "control-once",
+            "--private-key",
+            "/root/node.key",
+            "--state-file",
+            "/root/registration.json",
+            "--protocol-state",
+            "/root/protocol.json",
+            "--spool-dir",
+            "/root/spool",
+            "--stats-url",
+            "http://127.0.0.1:19997",
+        ]
+        with mock.patch.object(node_agent, "NodeProtocolClient") as protocol_client:
+            with mock.patch.object(node_agent, "LocalStatsClient") as stats_client:
+                with mock.patch.object(node_agent, "DurableTrafficSpool") as spool:
+                    with mock.patch.object(node_agent, "ProtocolState") as state:
+                        with mock.patch.object(
+                            node_agent, "NodeControlCycle", return_value=cycle
+                        ):
+                            with mock.patch.dict(
+                                os.environ,
+                                {"HY2PANEL_STATS_SECRET": "s" * 32},
+                                clear=False,
+                            ):
+                                self.assertEqual(0, node_agent.main(arguments))
+                                self.assertNotIn("HY2PANEL_STATS_SECRET", os.environ)
+        stats_client.assert_called_once_with(
+            "http://127.0.0.1:19997", "s" * 32
+        )
+        protocol_client.assert_called_once()
+        spool.assert_called_once_with(Path("/root/spool"))
+        state.assert_called_once_with(Path("/root/protocol.json"))
+        cycle.run_once.assert_called_once_with()
 
 
 if __name__ == "__main__":

@@ -48,6 +48,7 @@ from hy2panel.certificate import (
     certificate_validity_timestamps,
 )
 from hy2panel.health import RuntimeHealth, is_loopback_address
+from hy2panel.distributed import DistributedControlService, NodeRequestRejected
 from hy2panel.nodes import (
     EnrollmentRejected,
     HeartbeatRejected,
@@ -1831,6 +1832,14 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS node_auth_decisions_user_idx
                     ON node_auth_decisions(user_name, expires_at);
+                CREATE TABLE IF NOT EXISTS local_auth_leases (
+                    decision_id TEXT PRIMARY KEY,
+                    user_name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS local_auth_leases_user_idx
+                    ON local_auth_leases(user_name, expires_at);
                 CREATE TABLE IF NOT EXISTS node_traffic_batches (
                     node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
                     batch_id TEXT NOT NULL,
@@ -1848,6 +1857,8 @@ class Database:
                     created_at INTEGER NOT NULL,
                     acked_at INTEGER,
                     attempts INTEGER NOT NULL DEFAULT 0,
+                    delivered_at INTEGER,
+                    next_attempt_at INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS node_commands_pending_idx
@@ -1888,6 +1899,19 @@ class Database:
             }
             for column, statement in node_migrations.items():
                 if column not in node_columns:
+                    connection.execute(statement)
+            command_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(node_commands)")
+            }
+            command_migrations = {
+                "delivered_at": "ALTER TABLE node_commands ADD COLUMN delivered_at INTEGER",
+                "next_attempt_at": (
+                    "ALTER TABLE node_commands ADD COLUMN next_attempt_at "
+                    "INTEGER NOT NULL DEFAULT 0"
+                ),
+            }
+            for column, statement in command_migrations.items():
+                if column not in command_columns:
                     connection.execute(statement)
 
     def _fingerprint(self, token):
@@ -2718,11 +2742,17 @@ class Database:
                             AND absorbed_at IS NULL AND expires_at >= ?""",
                         (user_name, int(now)),
                     ).fetchone()[0]
+                    local_pending = connection.execute(
+                        """SELECT COUNT(*) FROM local_auth_leases
+                        WHERE user_name = ? COLLATE NOCASE AND expires_at >= ?""",
+                        (user_name, int(now)),
+                    ).fetchone()[0]
                     online_count = int(local_online.get(user_name, 0)) + int(remote_online)
                     allowed = bool(
                         user["tx_bytes"] + user["rx_bytes"]
                         < user["traffic_limit_bytes"]
-                        and online_count + pending < user["device_limit"]
+                        and online_count + pending + local_pending
+                        < user["device_limit"]
                     )
                 decision_id = uuid.uuid4().hex
                 expires_at = int(now) + 5
@@ -2763,6 +2793,104 @@ class Database:
         except (sqlite3.IntegrityError, ValueError, OverflowError):
             return None
 
+    def authorize_local_participant(
+        self, name, local_online, now, freshness_seconds=5, lease_seconds=5
+    ):
+        if (
+            not isinstance(name, str)
+            or not isinstance(local_online, dict)
+            or isinstance(now, bool)
+            or not isinstance(now, int)
+        ):
+            return False
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                ready_count = connection.execute(
+                    """SELECT COUNT(*) FROM nodes
+                    WHERE policy_state = 'protocol_ready'
+                        AND status = 'pending_verification' AND verified_at IS NOT NULL"""
+                ).fetchone()[0]
+                fresh_count = connection.execute(
+                    """SELECT COUNT(*) FROM nodes AS n
+                    JOIN node_online_snapshots AS s ON s.node_id = n.node_id
+                    WHERE n.policy_state = 'protocol_ready'
+                        AND n.status = 'pending_verification' AND n.verified_at IS NOT NULL
+                        AND s.accepted_at >= ? AND s.observed_at >= ?
+                        AND s.traffic_acked_at >= ?""",
+                    (
+                        int(now) - int(freshness_seconds),
+                        int(now) - int(freshness_seconds),
+                        int(now) - int(freshness_seconds),
+                    ),
+                ).fetchone()[0]
+                if fresh_count != ready_count:
+                    raise sqlite3.IntegrityError("node state is stale")
+                user = connection.execute(
+                    """SELECT name, enabled, device_limit, traffic_limit_bytes,
+                        tx_bytes, rx_bytes FROM proxy_users
+                    WHERE name = ? COLLATE NOCASE AND enabled = 1""",
+                    (name,),
+                ).fetchone()
+                if user is None:
+                    return False
+                remote_online = connection.execute(
+                    """SELECT COALESCE(SUM(c.count), 0)
+                    FROM node_online_counts AS c
+                    JOIN nodes AS n ON n.node_id = c.node_id
+                    WHERE c.user_name = ? COLLATE NOCASE
+                        AND n.policy_state = 'protocol_ready'
+                        AND n.status = 'pending_verification'""",
+                    (user["name"],),
+                ).fetchone()[0]
+                remote_pending = connection.execute(
+                    """SELECT COUNT(*) FROM node_auth_decisions
+                    WHERE user_name = ? COLLATE NOCASE AND allowed = 1
+                        AND absorbed_at IS NULL AND expires_at >= ?""",
+                    (user["name"], int(now)),
+                ).fetchone()[0]
+                local_pending = connection.execute(
+                    """SELECT COUNT(*) FROM local_auth_leases
+                    WHERE user_name = ? COLLATE NOCASE AND expires_at >= ?""",
+                    (user["name"], int(now)),
+                ).fetchone()[0]
+                allowed = bool(
+                    user["tx_bytes"] + user["rx_bytes"]
+                    < user["traffic_limit_bytes"]
+                    and int(local_online.get(user["name"], 0))
+                    + int(remote_online)
+                    + int(remote_pending)
+                    + int(local_pending)
+                    < user["device_limit"]
+                )
+                if allowed:
+                    connection.execute(
+                        """INSERT INTO local_auth_leases(
+                            decision_id, user_name, created_at, expires_at
+                        ) VALUES (?, ?, ?, ?)""",
+                        (
+                            uuid.uuid4().hex,
+                            user["name"],
+                            int(now),
+                            int(now) + max(1, min(5, int(lease_seconds))),
+                        ),
+                    )
+                connection.execute(
+                    "DELETE FROM local_auth_leases WHERE expires_at < ?",
+                    (int(now) - 600,),
+                )
+                connection.execute(
+                    """DELETE FROM local_auth_leases
+                    WHERE rowid NOT IN (
+                        SELECT rowid FROM local_auth_leases
+                        ORDER BY created_at DESC, rowid DESC LIMIT 4096
+                    ) AND expires_at < ?""",
+                    (int(now),),
+                )
+                return allowed
+        except (sqlite3.IntegrityError, ValueError, OverflowError):
+            return False
+
     def apply_node_traffic_batch(
         self, node_id, batch_id, traffic, nonce_digest, accepted_at
     ):
@@ -2792,6 +2920,26 @@ class Database:
                         "duplicate": True,
                         "unknownUsers": existing["unknown_users"],
                     }
+                if not traffic:
+                    connection.execute(
+                        "UPDATE nodes SET last_traffic_ack_at = ? WHERE node_id = ?",
+                        (int(accepted_at), node_id),
+                    )
+                    return {
+                        "batchId": batch_id,
+                        "committed": True,
+                        "duplicate": False,
+                        "unknownUsers": 0,
+                    }
+                connection.execute(
+                    "DELETE FROM node_traffic_batches WHERE applied_at < ?",
+                    (int(accepted_at) - 8 * 86400,),
+                )
+                ledger_rows = connection.execute(
+                    "SELECT COUNT(*) FROM node_traffic_batches"
+                ).fetchone()[0]
+                if int(ledger_rows) >= 250000:
+                    raise sqlite3.IntegrityError("traffic ledger is full")
                 users = {
                     row["name"]: row
                     for row in connection.execute(
@@ -2823,15 +2971,6 @@ class Database:
                 connection.execute(
                     """UPDATE nodes SET last_traffic_ack_at = ? WHERE node_id = ?""",
                     (int(accepted_at), node_id),
-                )
-                connection.execute(
-                    "DELETE FROM node_traffic_batches WHERE applied_at < ?",
-                    (int(accepted_at) - 90 * 86400,),
-                )
-                connection.execute(
-                    """DELETE FROM node_traffic_batches WHERE rowid <= (
-                        SELECT MAX(rowid) - 100000 FROM node_traffic_batches
-                    )"""
                 )
                 return {
                     "batchId": batch_id,
@@ -2874,9 +3013,9 @@ class Database:
                 raise ValueError("node is not protocol ready")
             connection.execute(
                 """INSERT INTO node_commands(
-                    command_id, node_id, kind, payload, created_at
-                ) VALUES (?, ?, ?, ?, ?)""",
-                (command_id, node_id, kind, encoded, int(created_at)),
+                    command_id, node_id, kind, payload, created_at, next_attempt_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (command_id, node_id, kind, encoded, int(created_at), int(created_at)),
             )
         return {"commandId": command_id, "kind": kind, "payload": payload}
 
@@ -2896,19 +3035,45 @@ class Database:
                 if node is None:
                     raise sqlite3.IntegrityError("node is not protocol ready")
                 rows = connection.execute(
-                    """SELECT command_id, kind, payload FROM node_commands
+                    """SELECT command_id, kind, payload, attempts FROM node_commands
                     WHERE node_id = ? AND acked_at IS NULL AND attempts < 10
+                        AND next_attempt_at <= ?
                     ORDER BY created_at, command_id LIMIT 32""",
-                    (node_id,),
+                    (node_id, int(accepted_at)),
                 ).fetchall()
-                return [
-                    {
+                commands = []
+                for row in rows:
+                    command = {
                         "commandId": row["command_id"],
                         "kind": row["kind"],
                         "payload": json.loads(row["payload"]),
                     }
-                    for row in rows
-                ]
+                    candidate = commands + [command]
+                    encoded_size = len(
+                        json.dumps(
+                            {"commands": candidate, "polledAt": int(accepted_at)},
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    )
+                    if encoded_size > 64 * 1024:
+                        break
+                    commands.append(command)
+                    attempt = int(row["attempts"]) + 1
+                    delay = min(300, 2 ** min(attempt, 8))
+                    connection.execute(
+                        """UPDATE node_commands SET attempts = ?, delivered_at = ?,
+                            next_attempt_at = ?
+                        WHERE command_id = ? AND node_id = ? AND acked_at IS NULL""",
+                        (
+                            attempt,
+                            int(accepted_at),
+                            int(accepted_at) + delay,
+                            row["command_id"],
+                            node_id,
+                        ),
+                    )
+                return commands
         except (sqlite3.IntegrityError, ValueError, json.JSONDecodeError):
             return None
 
@@ -2942,7 +3107,7 @@ class Database:
                     )
                     return True
                 connection.execute(
-                    """UPDATE node_commands SET attempts = attempts + 1, last_error = ?
+                    """UPDATE node_commands SET last_error = ?
                     WHERE command_id = ? AND node_id = ?""",
                     (error_code or "FAILED", command_id, node_id),
                 )
@@ -2956,7 +3121,14 @@ class Database:
                 dict(row)
                 for row in connection.execute(
                     """SELECT n.*, e.enrollment_id, e.expires_at,
-                        e.consumed_at, e.revoked_at
+                        e.consumed_at, e.revoked_at,
+                        (SELECT COUNT(*) FROM node_commands AS c
+                            WHERE c.node_id = n.node_id AND c.acked_at IS NULL
+                        ) AS pending_commands,
+                        (SELECT COUNT(*) FROM node_commands AS c
+                            WHERE c.node_id = n.node_id AND c.acked_at IS NULL
+                                AND c.last_error IS NOT NULL
+                        ) AS failed_commands
                     FROM nodes AS n
                     LEFT JOIN node_enrollments AS e ON e.enrollment_id = (
                         SELECT enrollment_id FROM node_enrollments
@@ -3455,6 +3627,7 @@ class PanelApplication:
         health_monitor=None,
         node_enrollment_service=None,
         node_heartbeat_service=None,
+        node_control_service=None,
     ):
         self.database = database
         self.public_host = public_host
@@ -3480,6 +3653,7 @@ class PanelApplication:
         self.restore_controller = restore_controller or RestoreController()
         self.node_enrollment_service = node_enrollment_service
         self.node_heartbeat_service = node_heartbeat_service
+        self.node_control_service = node_control_service
         self.update_result = None
         self.update_lock = threading.Lock()
         self.node_name = node_name
@@ -4055,6 +4229,39 @@ class PanelHandler(JsonHandler):
                         )
                     )
                 )
+            policy_state = node.get("policy_state") or "standby"
+            if policy_state == "protocol_ready":
+                snapshot_fresh = bool(
+                    node.get("last_snapshot_at")
+                    and node.get("last_traffic_ack_at")
+                    and current_time - node["last_snapshot_at"] <= 5
+                    and current_time - node["last_traffic_ack_at"] <= 5
+                )
+                details.append(
+                    "协议就绪 · {}".format(
+                        "在线快照与流量检查点新鲜"
+                        if snapshot_fresh
+                        else "等待在线快照/流量队列确认"
+                    )
+                )
+                details.append(
+                    "待确认命令：{}{}".format(
+                        int(node.get("pending_commands") or 0),
+                        "（含失败重试 {}）".format(
+                            int(node.get("failed_commands") or 0)
+                        )
+                        if node.get("failed_commands")
+                        else "",
+                    )
+                )
+                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/disable" data-confirm="停用后该节点的中央认证、快照、流量和命令都会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">停用控制协议</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
+            elif verified and status == "pending_verification":
+                details.append("协议待命")
+                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这里只启用中央控制协议，不会部署 Hysteria 或修改 DNS，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">启用控制协议</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
             node_rows.append(
                 """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                     name=html.escape(node["name"]),
@@ -4290,6 +4497,35 @@ class PanelHandler(JsonHandler):
             return
         self.send_json(200, result)
 
+    def _handle_distributed_node_request(self, method_name, maximum):
+        service = self.app.node_control_service
+        if not self.app.secure_cookies or service is None:
+            self._send_api_error(404, "NOT_FOUND", "not found")
+            return
+        try:
+            payload = self._read_json(maximum=maximum)
+        except OverflowError:
+            self._send_api_error(413, "REQUEST_TOO_LARGE", "request body is too large")
+            return
+        except TypeError:
+            self._send_api_error(415, "UNSUPPORTED_MEDIA_TYPE", "application/json is required")
+            return
+        except ValueError:
+            self._send_api_error(400, "INVALID_REQUEST", "request body is invalid")
+            return
+        try:
+            result = getattr(service, method_name)(
+                payload, remote_ip=self.client_address[0]
+            )
+        except NodeRequestRejected:
+            self._send_api_error(
+                403,
+                "NODE_REQUEST_REJECTED",
+                "node request was rejected",
+            )
+            return
+        self.send_json(200, result)
+
     def _handle_create_node_enrollment(self, session, form):
         service = self.app.node_enrollment_service
         if not self.app.secure_cookies or service is None:
@@ -4362,6 +4598,27 @@ class PanelHandler(JsonHandler):
         else:
             self._redirect("/")
 
+    def _handle_node_protocol(self, session, node_id, action):
+        state = "protocol_ready" if action == "enable" else "standby"
+        changed = self.app.database.set_node_policy_state(
+            node_id,
+            state,
+            actor=session["username"],
+            changed_at=int(time.time()),
+        )
+        if not changed:
+            self.send_json(409, {"error": "节点必须已验证且心跳在线"})
+            return
+        self._audit_safely(
+            session["username"],
+            "node_protocol_enabled" if action == "enable" else "node_protocol_disabled",
+            node_id,
+        )
+        if "application/json" in self.headers.get("Accept", ""):
+            self.send_json(200, {"protocolReady": action == "enable"})
+        else:
+            self._redirect("/")
+
     def do_GET(self):
         path = self._path()
         if path == "/favicon.svg":
@@ -4423,6 +4680,17 @@ class PanelHandler(JsonHandler):
         if path == "/api/v1/node-heartbeats":
             self._handle_node_heartbeat()
             return
+        distributed_routes = {
+            "/api/v1/node-auth-decisions": ("authorize", 16 * 1024),
+            "/api/v1/node-online-snapshots": ("accept_online_snapshot", 128 * 1024),
+            "/api/v1/node-traffic-batches": ("apply_traffic_batch", 256 * 1024),
+            "/api/v1/node-commands/poll": ("poll_commands", 8 * 1024),
+            "/api/v1/node-commands/ack": ("ack_command", 16 * 1024),
+        }
+        distributed_route = distributed_routes.get(path)
+        if distributed_route:
+            self._handle_distributed_node_request(*distributed_route)
+            return
         if path == "/restore":
             self._handle_restore_upload()
             return
@@ -4468,6 +4736,14 @@ class PanelHandler(JsonHandler):
                 self._handle_verify_node(session, node_match.group(1), form)
             else:
                 self._handle_revoke_node(session, node_match.group(1))
+            return
+        protocol_match = re.fullmatch(
+            r"/nodes/([0-9a-f]{32})/protocol/(enable|disable)", path
+        )
+        if protocol_match:
+            self._handle_node_protocol(
+                session, protocol_match.group(1), protocol_match.group(2)
+            )
             return
         if path == "/users/reset-traffic":
             self._handle_reset_all_traffic(session)
@@ -5273,29 +5549,25 @@ class UsageManager:
             online = self._authorization_online_locked()
         if online is None:
             return False
-        user = self.database.get_proxy_user_by_name(name)
-        if not user or not user["enabled"]:
-            return False
-        if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
-            return False
-        with self._authorization_lock:
-            now = self.clock()
-            pending = [
-                timestamp
-                for timestamp in self.pending.get(name, [])
-                if now - timestamp < self.pending_ttl
-            ]
-            online_count = online.get(name, 0)
-            previous_online = self.last_online.get(name, online_count)
-            if online_count > previous_online:
-                pending = pending[min(len(pending), online_count - previous_online) :]
-            self.last_online[name] = online_count
-            if online_count + len(pending) >= user["device_limit"]:
-                self.pending[name] = pending
-                return False
-            pending.append(now)
-            self.pending[name] = pending
-            return True
+        return self.database.authorize_local_participant(
+            name,
+            online,
+            now=int(self.clock()),
+            freshness_seconds=5,
+            lease_seconds=self.pending_ttl,
+        )
+
+    def distributed_local_state(self):
+        """Return a fresh local participant checkpoint for central authorization."""
+        with self.lock:
+            self._collect_locked()
+            online = self.stats_client.online()
+            checkpoint = int(self.clock())
+            return {
+                "online": dict(online),
+                "observedAt": checkpoint,
+                "trafficAckedAt": checkpoint,
+            }
 
     def snapshot(self):
         with self.lock:
@@ -5895,6 +6167,7 @@ def run_service(settings):
     )
     node_enrollment_service = None
     node_heartbeat_service = None
+    node_control_service = None
     if settings.panel_scheme == "https":
         node_enrollment_service = NodeEnrollmentService(
             database,
@@ -5904,6 +6177,10 @@ def run_service(settings):
             panel_version=PANEL_VERSION,
         )
         node_heartbeat_service = NodeHeartbeatService(database)
+        node_control_service = DistributedControlService(
+            database,
+            local_state_provider=usage_manager.distributed_local_state,
+        )
     application = PanelApplication(
         database=database,
         public_host=settings.public_host,
@@ -5917,6 +6194,7 @@ def run_service(settings):
         health_monitor=health_monitor,
         node_enrollment_service=node_enrollment_service,
         node_heartbeat_service=node_heartbeat_service,
+        node_control_service=node_control_service,
     )
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
     if settings.panel_scheme == "https":

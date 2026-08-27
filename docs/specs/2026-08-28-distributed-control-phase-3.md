@@ -84,7 +84,9 @@ hy2panel-node-<purpose>-v1\n<canonical-json>
 快照包含单调递增 `sequence`、唯一 `snapshotId`、`observedAt`、最近成功流量 ACK
 检查点和完整替换语义；旧 sequence、重复 ID、负数、未知用户、过期流量检查点或
 超限条目失败关闭。控制面所在服务器的本机统计作为独立的 local participant 参与
-同一汇总，但不伪装成第二阶段远端节点。
+同一汇总，但不伪装成第二阶段远端节点。本机新认证也在同一个 SQLite 写事务中创建
+`local_auth_leases` 短租约；远端和本机授权都会同时计算本机租约、远端租约和全部
+在线快照，避免本机与远端并发认证分别通过局部检查。
 
 中央授权在一个 `BEGIN IMMEDIATE` 事务中：
 
@@ -116,6 +118,11 @@ hy2panel-node-<purpose>-v1\n<canonical-json>
 重复批次返回成功但不重复累计。服务器必须限制用户项数量、单项计数、总请求大小和
 SQLite 整数溢出。未知或已删除的认证 ID 不得阻塞其他用户结算：中央记录脱敏计数并
 把该项归入有界 tombstone 统计，不保存 token 或请求原文。
+
+节点 spool 同时限制条数、总字节数和磁盘预留；采集前还要为 JSON 信封预留额外空间。
+控制面最多接收采集时间在 7 天内的待重放批次，幂等账本至少多保留 1 天且达到 25 万
+条硬上限时拒绝新批次而不删除仍可能重放的键。超过离线窗口的节点保持 fail-closed，
+需要管理员先处理未结算 spool，不能静默丢弃后恢复认证。
 
 Hysteria 的清零响应和本地 spool 落盘之间仍存在掉电少计的极窄窗口；官方接口没有
 事务 ID，本阶段明确不宣称 exactly-once。spool 之后提供 at-least-once 传输，中央

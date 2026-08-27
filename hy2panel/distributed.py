@@ -32,6 +32,7 @@ COMMAND_POLL_FIELDS = COMMON_FIELDS | {"requestId"}
 COMMAND_ACK_FIELDS = COMMON_FIELDS | {"commandId", "ok", "errorCode"}
 MAX_CLOCK_SKEW_SECONDS = 120
 MAX_STATE_AGE_SECONDS = 5
+MAX_TRAFFIC_BATCH_AGE_SECONDS = 7 * 86400
 MAX_USERS_PER_PAYLOAD = 1000
 MAX_COUNTER = 2**63 - 1
 
@@ -111,7 +112,7 @@ class DistributedControlService:
         signature_verifier=None,
         local_state_provider=None,
         verification_slots=8,
-        requests_per_minute=600,
+        requests_per_minute=480,
     ):
         self.database = database
         self.clock = clock
@@ -290,7 +291,8 @@ class DistributedControlService:
         if (
             not _object_id(payload.get("batchId"))
             or not _timestamp(payload.get("observedAt"))
-            or abs(int(self.clock()) - payload["observedAt"]) > MAX_CLOCK_SKEW_SECONDS
+            or payload["observedAt"] > int(self.clock()) + MAX_CLOCK_SKEW_SECONDS
+            or payload["observedAt"] < int(self.clock()) - MAX_TRAFFIC_BATCH_AGE_SECONDS
             or not _traffic_mapping(payload.get("traffic"))
         ):
             self._reject()
