@@ -1780,6 +1780,14 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS node_enrollments_node_id_idx
                     ON node_enrollments(node_id);
+                CREATE TABLE IF NOT EXISTS node_heartbeat_nonces (
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    nonce_digest TEXT NOT NULL,
+                    accepted_at INTEGER NOT NULL,
+                    PRIMARY KEY (node_id, nonce_digest)
+                );
+                CREATE INDEX IF NOT EXISTS node_heartbeat_nonces_accepted_at_idx
+                    ON node_heartbeat_nonces(accepted_at);
                 """
             )
             columns = {
@@ -1799,6 +1807,18 @@ class Database:
             }
             for column, statement in migrations.items():
                 if column not in columns:
+                    connection.execute(statement)
+            node_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(nodes)")
+            }
+            node_migrations = {
+                "verified_at": "ALTER TABLE nodes ADD COLUMN verified_at INTEGER",
+                "verified_by": "ALTER TABLE nodes ADD COLUMN verified_by TEXT",
+                "last_heartbeat_at": "ALTER TABLE nodes ADD COLUMN last_heartbeat_at INTEGER",
+                "last_heartbeat_ip": "ALTER TABLE nodes ADD COLUMN last_heartbeat_ip TEXT",
+            }
+            for column, statement in node_migrations.items():
+                if column not in node_columns:
                     connection.execute(statement)
 
     def _fingerprint(self, token):
@@ -2289,6 +2309,93 @@ class Database:
                 return {"node_id": row["node_id"]}
         except sqlite3.IntegrityError:
             return None
+
+    def verify_node(self, node_id, public_key_fingerprint, actor, verified_at):
+        node_id = str(node_id or "")
+        public_key_fingerprint = str(public_key_fingerprint or "")
+        actor = str(actor or "").strip()
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", public_key_fingerprint)
+            or not actor
+            or len(actor) > 64
+        ):
+            return False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT public_key, status FROM nodes
+                WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if row is None or row["status"] != "pending_verification":
+                return False
+            try:
+                public_key_der = base64.b64decode(row["public_key"], validate=True)
+            except (TypeError, ValueError):
+                return False
+            actual_fingerprint = hashlib.sha256(public_key_der).hexdigest()
+            if not hmac.compare_digest(actual_fingerprint, public_key_fingerprint):
+                return False
+            updated = connection.execute(
+                """UPDATE nodes SET verified_at = ?, verified_by = ?
+                WHERE node_id = ? AND status = 'pending_verification'""",
+                (int(verified_at), actor, node_id),
+            )
+            return updated.rowcount == 1
+
+    def revoke_node(self, node_id, revoked_at):
+        del revoked_at
+        node_id = str(node_id or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id):
+            return False
+        with self._connect() as connection:
+            updated = connection.execute(
+                "UPDATE nodes SET status = 'revoked' WHERE node_id = ?",
+                (node_id,),
+            )
+            return updated.rowcount == 1
+
+    def get_node_for_heartbeat(self, node_id):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM nodes WHERE node_id = ?", (str(node_id or ""),)
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def accept_node_heartbeat(
+        self, node_id, nonce_digest, sent_at, accepted_at, remote_ip
+    ):
+        del sent_at
+        node_id = str(node_id or "")
+        nonce_digest = str(nonce_digest or "")
+        remote_ip = str(remote_ip or "")
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", nonce_digest)
+        ):
+            return False
+        try:
+            remote_ip = str(ipaddress.ip_address(remote_ip))
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """INSERT INTO node_heartbeat_nonces
+                    (node_id, nonce_digest, accepted_at) VALUES (?, ?, ?)""",
+                    (node_id, nonce_digest, int(accepted_at)),
+                )
+                updated = connection.execute(
+                    """UPDATE nodes SET last_heartbeat_at = ?, last_heartbeat_ip = ?,
+                        last_seen_at = ?
+                    WHERE node_id = ? AND status = 'pending_verification'
+                        AND verified_at IS NOT NULL""",
+                    (int(accepted_at), remote_ip, int(accepted_at), node_id),
+                )
+                if updated.rowcount != 1:
+                    raise sqlite3.IntegrityError("node heartbeat state conflict")
+                return True
+        except (sqlite3.IntegrityError, ValueError):
+            return False
 
     def list_nodes(self):
         with self._connect() as connection:
