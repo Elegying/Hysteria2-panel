@@ -2266,7 +2266,7 @@ class Database:
                 )
                 if updated.rowcount != 1:
                     return None
-                connection.execute(
+                node_updated = connection.execute(
                     """UPDATE nodes SET
                         observed_ip = ?, status = 'pending_verification',
                         public_key = ?, hostname = ?, platform = ?, architecture = ?,
@@ -2284,6 +2284,8 @@ class Database:
                         row["node_id"],
                     ),
                 )
+                if node_updated.rowcount != 1:
+                    raise sqlite3.IntegrityError("node enrollment state conflict")
                 return {"node_id": row["node_id"]}
         except sqlite3.IntegrityError:
             return None

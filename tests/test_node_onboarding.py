@@ -1,14 +1,19 @@
 import base64
 import hashlib
+import json
+import os
 import re
 import sqlite3
+import stat
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hy2panel.nodes import EnrollmentRejected, NodeEnrollmentService
 from hysteria2_panel import Database
+import node_agent
 
 
 def ed25519_public_key(value=7):
@@ -172,6 +177,27 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
 
         self.assertEqual(["rejected", "success"], sorted(outcomes))
 
+    def test_node_state_conflict_rolls_back_token_consumption(self):
+        issued = self.create(expected_ip="")
+        token = token_from_command(issued["deploymentCommand"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET status = 'revoked' WHERE node_id = ?",
+                (issued["nodeId"],),
+            )
+
+        with self.assertRaises(EnrollmentRejected):
+            self.service.register(
+                registration_payload(token), remote_ip="198.51.100.20"
+            )
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            consumed_at = connection.execute(
+                "SELECT consumed_at FROM node_enrollments WHERE enrollment_id = ?",
+                (issued["enrollmentId"],),
+            ).fetchone()[0]
+        self.assertIsNone(consumed_at)
+
     def test_creation_validates_name_ip_ttl_and_https_panel_url(self):
         for changes in (
             {"name": ""},
@@ -190,6 +216,141 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
                 panel_url="http://panel.ssrvpn.vip:19998",
                 panel_version="0.24.0",
             )
+
+
+class NodeAgentTests(unittest.TestCase):
+    class Response:
+        def __init__(self, payload, status=201):
+            self.payload = payload
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, maximum):
+            return self.payload[:maximum]
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.public_key = self.root / "node-public.der"
+        self.public_key.write_bytes(bytes.fromhex("302a300506032b6570032100") + b"k" * 32)
+        self.state_file = self.root / "state" / "registration.json"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_registration_sends_only_public_identity_and_writes_root_only_state(self):
+        captured = {}
+
+        def opener(request, timeout):
+            captured["url"] = request.full_url
+            captured["headers"] = dict(request.header_items())
+            captured["body"] = json.loads(request.data)
+            captured["timeout"] = timeout
+            return self.Response(
+                json.dumps(
+                    {"nodeId": "a" * 32, "status": "PENDING_VERIFICATION"}
+                ).encode()
+            )
+
+        result = node_agent.register(
+            panel_url="https://panel.ssrvpn.vip:19998",
+            token="T" * 43,
+            public_key_path=self.public_key,
+            state_path=self.state_file,
+            opener=opener,
+            hostname="edge-02.example.test",
+            architecture="amd64",
+            agent_version="0.24.0",
+        )
+
+        self.assertEqual("PENDING_VERIFICATION", result["status"])
+        self.assertEqual(
+            "https://panel.ssrvpn.vip:19998/api/v1/node-registrations",
+            captured["url"],
+        )
+        self.assertEqual(10, captured["timeout"])
+        self.assertEqual("T" * 43, captured["body"].pop("enrollmentToken"))
+        self.assertEqual(ed25519_public_key(107), captured["body"].pop("publicKey"))
+        self.assertEqual(
+            {
+                "hostname": "edge-02.example.test",
+                "platform": "linux",
+                "architecture": "amd64",
+                "agentVersion": "0.24.0",
+            },
+            captured["body"],
+        )
+        self.assertNotIn("server.crt", json.dumps(captured))
+        self.assertNotIn("HMAC", json.dumps(captured))
+        self.assertEqual(0o600, stat.S_IMODE(self.state_file.stat().st_mode))
+        state = json.loads(self.state_file.read_text())
+        self.assertEqual("a" * 32, state["nodeId"])
+        self.assertEqual("PENDING_VERIFICATION", state["status"])
+        self.assertEqual("https://panel.ssrvpn.vip:19998", state["panelUrl"])
+        self.assertNotIn("T" * 43, self.state_file.read_text())
+
+    def test_registration_rejects_http_bad_public_keys_and_oversized_responses(self):
+        with self.assertRaises(ValueError):
+            node_agent.register(
+                "http://panel.ssrvpn.vip:19998",
+                "T" * 43,
+                self.public_key,
+                self.state_file,
+            )
+
+        self.public_key.write_bytes(b"not-ed25519")
+        with self.assertRaises(ValueError):
+            node_agent.register(
+                "https://panel.ssrvpn.vip:19998",
+                "T" * 43,
+                self.public_key,
+                self.state_file,
+            )
+
+        self.public_key.write_bytes(bytes.fromhex("302a300506032b6570032100") + b"k" * 32)
+        with self.assertRaises(node_agent.RegistrationError):
+            node_agent.register(
+                "https://panel.ssrvpn.vip:19998",
+                "T" * 43,
+                self.public_key,
+                self.state_file,
+                opener=lambda *_args, **_kwargs: self.Response(b"x" * 8193),
+            )
+        self.assertFalse(self.state_file.exists())
+
+    def test_cli_requires_the_ephemeral_environment_token_and_removes_it_before_registration(self):
+        arguments = [
+            "register",
+            "--panel-url",
+            "https://panel.ssrvpn.vip:19998",
+            "--public-key",
+            str(self.public_key),
+            "--state-file",
+            str(self.state_file),
+        ]
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(2, node_agent.main(arguments))
+
+        observed = {}
+
+        def fake_register(**kwargs):
+            observed.update(kwargs)
+            observed["token_present_in_environment"] = (
+                "HY2PANEL_ENROLLMENT_TOKEN" in os.environ
+            )
+            return {"nodeId": "b" * 32, "status": "PENDING_VERIFICATION"}
+
+        with mock.patch.dict(
+            os.environ, {"HY2PANEL_ENROLLMENT_TOKEN": "T" * 43}, clear=True
+        ), mock.patch.object(node_agent, "register", side_effect=fake_register):
+            self.assertEqual(0, node_agent.main(arguments))
+        self.assertEqual("T" * 43, observed["token"])
+        self.assertFalse(observed["token_present_in_environment"])
 
 
 if __name__ == "__main__":

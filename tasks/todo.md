@@ -15,7 +15,7 @@
   - Verify: 面板 HTML 合同测试与真实浏览器 320/768/1440px。
   - Files: `hysteria2_panel.py`, `hy2panel/web_assets.py`, `tests/test_panel.py`
 
-- [ ] Agent 与受签名安装模式
+- [x] Agent 与受签名安装模式
   - Acceptance: 只安装 Agent、本地密钥和待验证状态，不安装 Hysteria 或修改网络。
   - Verify: `python3 -m unittest tests.test_node_onboarding tests.test_installer -v`
   - Files: `node_agent.py`, `install.sh`, `tests/test_node_onboarding.py`, `tests/test_installer.py`
