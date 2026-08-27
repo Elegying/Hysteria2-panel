@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-08-27
+
 ### HTTPS
 
 - 一键部署选择 HTTPS 时新增独立面板域名输入，使用系统 Certbot 与 Let’s Encrypt HTTP-01 自动签发，并由受管 systemd timer 每天检查两次续期。
