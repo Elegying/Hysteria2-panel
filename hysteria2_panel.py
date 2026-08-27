@@ -48,7 +48,12 @@ from hy2panel.certificate import (
     certificate_validity_timestamps,
 )
 from hy2panel.health import RuntimeHealth, is_loopback_address
-from hy2panel.nodes import EnrollmentRejected, NodeEnrollmentService
+from hy2panel.nodes import (
+    EnrollmentRejected,
+    HeartbeatRejected,
+    NodeEnrollmentService,
+    NodeHeartbeatService,
+)
 from hy2panel.operations import (
     EgressPolicyController,
     EgressPolicyManager,
@@ -2901,6 +2906,7 @@ class PanelApplication:
         restore_controller=None,
         health_monitor=None,
         node_enrollment_service=None,
+        node_heartbeat_service=None,
     ):
         self.database = database
         self.public_host = public_host
@@ -2925,6 +2931,7 @@ class PanelApplication:
         self.backup_manager = backup_manager
         self.restore_controller = restore_controller or RestoreController()
         self.node_enrollment_service = node_enrollment_service
+        self.node_heartbeat_service = node_heartbeat_service
         self.update_result = None
         self.update_lock = threading.Lock()
         self.node_name = node_name
@@ -3439,15 +3446,25 @@ class PanelHandler(JsonHandler):
                 and node.get("expires_at")
                 and node["expires_at"] <= current_time
             )
-            if status == "pending_verification":
-                status_label, status_class = "待验证", "warning"
-            elif status == "revoked":
+            verified = node.get("verified_at") is not None
+            heartbeat_fresh = bool(
+                verified
+                and node.get("last_heartbeat_at")
+                and current_time - node["last_heartbeat_at"] <= 150
+            )
+            if status == "revoked":
                 status_label, status_class = "已撤销", "bad"
+            elif heartbeat_fresh:
+                status_label, status_class = "在线", "ok"
+            elif verified:
+                status_label, status_class = "已验证 · 离线", "warning"
+            elif status == "pending_verification":
+                status_label, status_class = "待验证", "warning"
             elif expired:
                 status_label, status_class = "注册链接已过期", "bad"
             else:
                 status_label, status_class = "待注册", "warning"
-            revoke_action = ""
+            node_actions = ""
             if (
                 status == "pending_registration"
                 and not expired
@@ -3455,20 +3472,48 @@ class PanelHandler(JsonHandler):
                 and node.get("consumed_at") is None
                 and node.get("revoked_at") is None
             ):
-                revoke_action = """<form method="post" action="/node-enrollments/{enrollment_id}/revoke" data-confirm="确定作废该对接码吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">立即作废</button></form>""".format(
+                node_actions = """<form method="post" action="/node-enrollments/{enrollment_id}/revoke" data-confirm="确定作废该对接码吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">立即作废</button></form>""".format(
                     enrollment_id=node["enrollment_id"], csrf=csrf
                 )
+            fingerprint = ""
+            if node.get("public_key"):
+                try:
+                    fingerprint = hashlib.sha256(
+                        base64.b64decode(node["public_key"], validate=True)
+                    ).hexdigest()
+                except (TypeError, ValueError):
+                    fingerprint = ""
+            if status == "pending_verification" and not verified and fingerprint:
+                node_actions = """<form method="post" action="/nodes/{node_id}/verify"><input type="hidden" name="csrf" value="{csrf}"><label class="muted" for="fingerprint-{node_id}">输入核对后的完整指纹</label><input id="fingerprint-{node_id}" name="fingerprint" required minlength="64" maxlength="64" pattern="[0-9a-f]{{64}}" autocomplete="off"><button class="compact-button" type="submit">确认节点指纹</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
+            if status == "pending_verification":
+                node_actions += """<form method="post" action="/nodes/{node_id}/revoke" data-confirm="撤销后该节点的后续心跳会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">撤销节点</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
+            details = [
+                node.get("observed_ip")
+                or node.get("expected_ip")
+                or "尚未绑定公网 IP"
+            ]
+            if fingerprint:
+                details.append("公钥 SHA-256：{}".format(fingerprint))
+            if node.get("last_heartbeat_at"):
+                details.append(
+                    "最后心跳：{}".format(
+                        time.strftime(
+                            "%Y-%m-%d %H:%M:%S",
+                            time.localtime(node["last_heartbeat_at"]),
+                        )
+                    )
+                )
             node_rows.append(
-                """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span>{revoke_action}</article>""".format(
+                """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                     name=html.escape(node["name"]),
-                    detail=html.escape(
-                        node.get("observed_ip")
-                        or node.get("expected_ip")
-                        or "尚未绑定公网 IP"
-                    ),
+                    detail=html.escape(" · ".join(details)),
                     status_class=status_class,
                     status_label=status_label,
-                    revoke_action=revoke_action,
+                    node_actions=node_actions,
                 )
             )
         node_rows_html = "".join(node_rows) or '<p class="muted">尚未创建对接节点。</p>'
@@ -3500,7 +3545,7 @@ class PanelHandler(JsonHandler):
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
 <dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">生成短时、单用途的一键部署代码，新服务器先进入待验证状态。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
-<p class="notice"><strong>第一阶段安全边界：</strong>只安装节点 Agent 并生成本机身份，不会复制 Hysteria 证书、HMAC、用户数据，不会启动 VPN 入口或修改 <code>vpn.ssrvpn.vip</code> DNS。</p>
+<p class="notice"><strong>当前安全边界：</strong>只安装节点 Agent、核对节点公钥并接收签名心跳；不会复制 Hysteria 证书、HMAC、用户数据，不会启动 VPN 入口或修改 <code>vpn.ssrvpn.vip</code> DNS。</p>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">新服务器公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <div class="node-list-head"><h3>节点状态</h3><span class="muted">刷新页面可获取最新注册状态</span></div><div class="node-list">{node_rows}</div></div></dialog>
@@ -3670,6 +3715,33 @@ class PanelHandler(JsonHandler):
             return
         self.send_json(201, result)
 
+    def _handle_node_heartbeat(self):
+        service = self.app.node_heartbeat_service
+        if not self.app.secure_cookies or service is None:
+            self._send_api_error(404, "NOT_FOUND", "not found")
+            return
+        try:
+            payload = self._read_json(maximum=8192)
+        except OverflowError:
+            self._send_api_error(413, "REQUEST_TOO_LARGE", "request body is too large")
+            return
+        except TypeError:
+            self._send_api_error(415, "UNSUPPORTED_MEDIA_TYPE", "application/json is required")
+            return
+        except ValueError:
+            self._send_api_error(400, "INVALID_REQUEST", "request body is invalid")
+            return
+        try:
+            result = service.accept(payload, remote_ip=self.client_address[0])
+        except HeartbeatRejected:
+            self._send_api_error(
+                403,
+                "HEARTBEAT_REJECTED",
+                "node heartbeat was rejected",
+            )
+            return
+        self.send_json(200, result)
+
     def _handle_create_node_enrollment(self, session, form):
         service = self.app.node_enrollment_service
         if not self.app.secure_cookies or service is None:
@@ -3706,6 +3778,37 @@ class PanelHandler(JsonHandler):
             "node_enrollment_revoked",
             enrollment_id,
         )
+        if "application/json" in self.headers.get("Accept", ""):
+            self.send_json(200, {"revoked": True})
+        else:
+            self._redirect("/")
+
+    def _handle_verify_node(self, session, node_id, form):
+        fingerprint = str(form.get("fingerprint", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            self.send_json(400, {"error": "节点公钥指纹格式无效"})
+            return
+        verified = self.app.database.verify_node(
+            node_id,
+            fingerprint,
+            actor=session["username"],
+            verified_at=int(time.time()),
+        )
+        if not verified:
+            self.send_json(409, {"error": "节点状态或公钥指纹不匹配"})
+            return
+        self._audit_safely(session["username"], "node_verified", node_id)
+        if "application/json" in self.headers.get("Accept", ""):
+            self.send_json(200, {"verified": True})
+        else:
+            self._redirect("/")
+
+    def _handle_revoke_node(self, session, node_id):
+        revoked = self.app.database.revoke_node(node_id, revoked_at=int(time.time()))
+        if not revoked:
+            self.send_json(404, {"error": "节点不存在"})
+            return
+        self._audit_safely(session["username"], "node_revoked", node_id)
         if "application/json" in self.headers.get("Accept", ""):
             self.send_json(200, {"revoked": True})
         else:
@@ -3769,6 +3872,9 @@ class PanelHandler(JsonHandler):
         if path == "/api/v1/node-registrations":
             self._handle_node_registration()
             return
+        if path == "/api/v1/node-heartbeats":
+            self._handle_node_heartbeat()
+            return
         if path == "/restore":
             self._handle_restore_upload()
             return
@@ -3807,6 +3913,13 @@ class PanelHandler(JsonHandler):
         )
         if enrollment_match:
             self._handle_revoke_node_enrollment(session, enrollment_match.group(1))
+            return
+        node_match = re.fullmatch(r"/nodes/([0-9a-f]{32})/(verify|revoke)", path)
+        if node_match:
+            if node_match.group(2) == "verify":
+                self._handle_verify_node(session, node_match.group(1), form)
+            else:
+                self._handle_revoke_node(session, node_match.group(1))
             return
         if path == "/users/reset-traffic":
             self._handle_reset_all_traffic(session)
@@ -5233,6 +5346,7 @@ def run_service(settings):
         ),
     )
     node_enrollment_service = None
+    node_heartbeat_service = None
     if settings.panel_scheme == "https":
         node_enrollment_service = NodeEnrollmentService(
             database,
@@ -5241,6 +5355,7 @@ def run_service(settings):
             ),
             panel_version=PANEL_VERSION,
         )
+        node_heartbeat_service = NodeHeartbeatService(database)
     application = PanelApplication(
         database=database,
         public_host=settings.public_host,
@@ -5253,6 +5368,7 @@ def run_service(settings):
         backup_manager=backup_manager,
         health_monitor=health_monitor,
         node_enrollment_service=node_enrollment_service,
+        node_heartbeat_service=node_heartbeat_service,
     )
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
     if settings.panel_scheme == "https":
