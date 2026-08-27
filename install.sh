@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.23.1"
+PANEL_VERSION="0.24.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -17,17 +17,21 @@ HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_HEALTH_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/health.py"
 HY2PANEL_CERTIFICATE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/certificate.py"
 HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/systemd.py"
-PANEL_SHA256="7a1acc8b5677b614c48dbc27ed5e2fb8a495fba75eb499e710fd0036a1ebc3ab"
+HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
+NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
+PANEL_SHA256="1d7d5f7191a97100f1aa155a3bd174e99755e5910d5647736c8b39d0244c5dee"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="76664b47ddd13fb0e821916b7fb3eb5f9e471e0662199c6103ee29ee756aaf5d"
-HY2PANEL_WEB_ASSETS_SHA256="19eb3fd5ac5db322646327f06a516fc247a29a7777da2d254cf375a202ca1afa"
+HY2PANEL_VERSION_SHA256="11a7272b87fd10eb4b6b297927d190b13d4d32e91ccfcf691e0c3d9b52cbfda5"
+HY2PANEL_WEB_ASSETS_SHA256="468b9cf6be1a76a5586687187c3e2f31eb6e8a76b89153974aff597cb2a0a0c7"
 HY2PANEL_OPERATIONS_SHA256="5f410c32713796e3d3f86370f1a9574f357e0fd43f5c7cbeda5cc3265f3a493b"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
+HY2PANEL_NODES_SHA256="03d6dfeb6519ebfda126ab4b5ac4bdae311dd88b32a3eaf63b3e4245bd401e65"
+NODE_AGENT_SHA256="ce772d6d37ccf0d672edf76eb6e0cc30cb6bd51bfef220d2ec1edd903c49455c"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
@@ -51,6 +55,8 @@ TMPFILES_FILE=/etc/tmpfiles.d/hysteria2-panel.conf
 MAINTENANCE_RUNTIME_DIR=/run/hysteria2-panel-maintenance
 MAINTENANCE_LOCK_FILE=${MAINTENANCE_RUNTIME_DIR}/lock
 MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
+NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
+NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node
 FRESH_IN_PROGRESS_MARKER=/etc/.hysteria2-panel-installing-by-installer
 LEGACY_FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer
 FRESH_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FRESH_TRANSACTION_V1
@@ -108,6 +114,8 @@ VERIFY_RECOVERED_UPGRADE=0
 RECOVER_FRESH=0
 MAINTENANCE_LOCK_HELD=0
 ORIGINAL_ARGS=()
+JOIN_NODE=0
+JOIN_NODE_MUTATED=0
 
 usage() {
   cat <<'EOF'
@@ -115,6 +123,9 @@ Hysteria2-panel 一键部署
 
 用法：
   sudo bash install.sh
+
+对接节点（只安装节点 Agent，不安装或修改 Hysteria）：
+  sudo -E bash install.sh --join-node
 
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
@@ -885,12 +896,18 @@ cleanup() {
 finalize_install() {
   local status=$?
   local cleanup_status=0
+  local join_node_state="${JOIN_NODE:-0}"
+  local join_node_mutated="${JOIN_NODE_MUTATED:-0}"
   trap - EXIT ERR
   trap '' HUP INT TERM
   set +e
   (( INSTALL_FINALIZING == 0 )) || exit "${status}"
   INSTALL_FINALIZING=1
-  if (( status != 0 && INSTALL_COMMITTED == 0 )); then
+  if (( status != 0 && join_node_state == 1 )); then
+    if (( join_node_mutated == 1 )); then
+      rollback_join_node_install || status=1
+    fi
+  elif (( status != 0 && INSTALL_COMMITTED == 0 )); then
     rollback_existing_install "${status}"
   fi
   cleanup
@@ -914,6 +931,87 @@ select_python() {
     fi
   done
   return 1
+}
+
+rollback_join_node_install() {
+  local path
+  for path in "${NODE_AGENT_CONFIG_DIR}" "${NODE_AGENT_OPT_DIR}"; do
+    if [[ -e "${path}" || -L "${path}" ]]; then
+      [[ ! -L "${path}" && -d "${path}" ]] || return 1
+      rm -r -- "${path}" || return 1
+    fi
+  done
+  sync -f /etc || return 1
+  sync -f /opt || return 1
+  JOIN_NODE_MUTATED=0
+}
+
+install_join_node() {
+  local command_name enrollment_token panel_url path
+  local -a join_commands=(curl install mkdir mktemp openssl rm sha256sum sync uname)
+
+  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
+    || fail "节点对接只允许使用当前受签名正式版本 v${PANEL_VERSION}"
+  [[ -d /run/systemd/system ]] \
+    || fail "节点对接需要使用 systemd 的 Linux 服务器"
+  panel_url="${HY2PANEL_PANEL_URL:-}"
+  enrollment_token="${HY2PANEL_ENROLLMENT_TOKEN:-}"
+  unset HY2PANEL_ENROLLMENT_TOKEN
+  [[ "${panel_url}" =~ ^https://[^/?#[:space:]]+/?$ ]] \
+    || fail "节点对接要求有效的 HTTPS 面板地址"
+  [[ "${enrollment_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
+    || fail "缺少或无效的一次性节点对接凭据"
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "该服务器已安装完整面板，不能作为第一阶段对接节点"
+  for path in "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}"; do
+    [[ ! -e "${path}" && ! -L "${path}" ]] \
+      || fail "节点 Agent 路径已存在；为避免覆盖未知数据，对接已停止：${path}"
+  done
+  for command_name in "${join_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "节点对接缺少命令 ${command_name}；未修改系统"
+  done
+  select_python || fail "节点对接需要 Python 3.8 或更高版本；未修改系统"
+  case "$(uname -m)" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *) fail "节点对接仅支持 Linux amd64 和 arm64" ;;
+  esac
+
+  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
+  printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
+    | sha256sum --check --status \
+    || fail "节点 Agent SHA-256 校验失败"
+  "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" \
+    || fail "节点 Agent 语法检查失败"
+  umask 077
+  openssl genpkey -algorithm ED25519 -out "${TMP_DIR}/node.key" \
+    || fail "无法生成节点 Agent 私钥"
+  openssl pkey -in "${TMP_DIR}/node.key" -pubout -outform DER \
+    -out "${TMP_DIR}/node-public.der" \
+    || fail "无法生成节点 Agent 公钥"
+
+  JOIN_NODE_MUTATED=1
+  install -d -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}"
+  install -d -o root -g root -m 0700 "${NODE_AGENT_CONFIG_DIR}"
+  install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
+    "${NODE_AGENT_OPT_DIR}/node_agent.py"
+  install -o root -g root -m 0600 "${TMP_DIR}/node.key" \
+    "${NODE_AGENT_CONFIG_DIR}/node.key"
+  install -o root -g root -m 0644 "${TMP_DIR}/node-public.der" \
+    "${NODE_AGENT_CONFIG_DIR}/node-public.der"
+  if ! HY2PANEL_ENROLLMENT_TOKEN="${enrollment_token}" \
+    "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" register \
+      --panel-url "${panel_url}" \
+      --public-key "${NODE_AGENT_CONFIG_DIR}/node-public.der" \
+      --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json"; then
+    enrollment_token=""
+    fail "节点注册失败；已安排清理本次新增文件"
+  fi
+  enrollment_token=""
+  sync -f "${NODE_AGENT_OPT_DIR}"
+  sync -f "${NODE_AGENT_CONFIG_DIR}"
+  echo "节点 Agent 已安装；面板状态为待验证。第一阶段未安装 Hysteria，也未修改网络或 DNS。"
 }
 
 install_system_dependencies() {
@@ -3630,10 +3728,19 @@ elif [[ "${1:-}" == "--verify-recovered-upgrade" ]]; then
 elif [[ "${1:-}" == "--recover-fresh" ]]; then
   RECOVER_FRESH=1
   shift
+elif [[ "${1:-}" == "--join-node" ]]; then
+  JOIN_NODE=1
+  shift
 fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
+if (( JOIN_NODE == 1 )); then
+  install_join_node
+  INSTALL_COMMITTED=1
+  JOIN_NODE_MUTATED=0
+  exit 0
+fi
 [[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"
 AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"
 [[ "${AUTO_UPDATE}" == "0" || "${AUTO_UPDATE}" == "1" ]] \
@@ -4038,6 +4145,7 @@ download_file "${HY2PANEL_RELEASE_SOURCE_URL}" "${TMP_DIR}/hy2panel/release.py"
 download_file "${HY2PANEL_HEALTH_SOURCE_URL}" "${TMP_DIR}/hy2panel/health.py"
 download_file "${HY2PANEL_CERTIFICATE_SOURCE_URL}" "${TMP_DIR}/hy2panel/certificate.py"
 download_file "${HY2PANEL_SYSTEMD_SOURCE_URL}" "${TMP_DIR}/hy2panel/systemd.py"
+download_file "${HY2PANEL_NODES_SOURCE_URL}" "${TMP_DIR}/hy2panel/nodes.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
 printf '%s  %s\n' "${QRCODEGEN_SHA256}" "${TMP_DIR}/qrcodegen.py" | sha256sum --check --status \
@@ -4060,6 +4168,8 @@ printf '%s  %s\n' "${HY2PANEL_CERTIFICATE_SHA256}" "${TMP_DIR}/hy2panel/certific
   || fail "hy2panel/certificate.py SHA-256 校验失败"
 printf '%s  %s\n' "${HY2PANEL_SYSTEMD_SHA256}" "${TMP_DIR}/hy2panel/systemd.py" | sha256sum --check --status \
   || fail "hy2panel/systemd.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_NODES_SHA256}" "${TMP_DIR}/hy2panel/nodes.py" | sha256sum --check --status \
+  || fail "hy2panel/nodes.py SHA-256 校验失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hysteria2_panel.py" || fail "面板源码语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/qrcodegen.py" || fail "二维码编码器语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"

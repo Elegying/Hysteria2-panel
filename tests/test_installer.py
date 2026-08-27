@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.23.1"', source)
+        self.assertIn('PANEL_VERSION="0.24.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -535,6 +535,7 @@ esac
             "hy2panel/health.py": "HY2PANEL_HEALTH_SHA256",
             "hy2panel/certificate.py": "HY2PANEL_CERTIFICATE_SHA256",
             "hy2panel/systemd.py": "HY2PANEL_SYSTEMD_SHA256",
+            "hy2panel/nodes.py": "HY2PANEL_NODES_SHA256",
         }
 
         for relative_path, variable in modules.items():
@@ -547,6 +548,44 @@ esac
         self.assertIn('install -o root -g root -m 0755 "${TMP_DIR}/cosign" /opt/hysteria2-panel/bin/cosign', source)
         self.assertRegex(source, r'COSIGN_SHA_AMD64="[0-9a-f]{64}"')
         self.assertRegex(source, r'COSIGN_SHA_ARM64="[0-9a-f]{64}"')
+
+    def test_join_node_mode_is_isolated_from_hysteria_identity_and_network_mutations(self):
+        source = INSTALLER.read_text()
+        start = source.index("install_join_node()")
+        end = source.index("\n}\n", start) + 2
+        join_function = source[start:end]
+
+        self.assertIn('NODE_AGENT_SOURCE_URL=', source)
+        self.assertRegex(source, r'NODE_AGENT_SHA256="[0-9a-f]{64}"')
+        self.assertIn('JOIN_NODE=1', source)
+        self.assertIn('install_join_node', source)
+        self.assertIn('openssl genpkey -algorithm ED25519', join_function)
+        self.assertIn('/node_agent.py" register', join_function)
+        self.assertIn('HY2PANEL_ENROLLMENT_TOKEN', join_function)
+        self.assertIn('[[ -d /run/systemd/system ]]', join_function)
+        self.assertIn('NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node', source)
+        self.assertIn('NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node', source)
+        self.assertNotIn('hysteria cert', join_function)
+        self.assertNotIn('configure_firewall', join_function)
+        self.assertNotIn('server.crt', join_function)
+        self.assertNotIn('HY2PANEL_HMAC_KEY', join_function)
+        self.assertNotIn('vpn.ssrvpn.vip', join_function)
+
+        dispatch = source.index('if (( JOIN_NODE == 1 )); then')
+        full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
+        self.assertLess(dispatch, full_install)
+
+    def test_ci_static_analysis_covers_the_standalone_node_agent(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+        self.assertIn(
+            "ruff check hysteria2_panel.py tcp_probe.py node_agent.py hy2panel",
+            workflow,
+        )
+        self.assertIn(
+            "bandit -q -r hysteria2_panel.py tcp_probe.py node_agent.py hy2panel",
+            workflow,
+        )
 
     def test_tag_ci_requires_the_tag_to_match_both_source_versions(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()

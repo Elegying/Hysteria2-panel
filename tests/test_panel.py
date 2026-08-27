@@ -1,3 +1,4 @@
+import base64
 import gzip
 import contextlib
 import html
@@ -26,6 +27,7 @@ from unittest import mock
 
 import hysteria2_panel
 from hy2panel import operations as panel_operations
+from hy2panel.nodes import NodeEnrollmentService
 
 from hysteria2_panel import (
     BackupManager,
@@ -5123,6 +5125,11 @@ class PanelHttpTests(unittest.TestCase):
             restore_controller=self.restore_controller,
             update_controller=self.update_controller,
             reboot_controller=self.reboot_controller,
+            node_enrollment_service=NodeEnrollmentService(
+                self.db,
+                panel_url="https://panel.ssrvpn.vip:19998",
+                panel_version="0.24.0",
+            ),
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -5150,6 +5157,138 @@ class PanelHttpTests(unittest.TestCase):
     def authenticated_headers(self):
         raw_token, csrf_token = self.db.create_session(self.admin_id)
         return {"Cookie": "hy2panel_session={}".format(raw_token)}, csrf_token
+
+    @staticmethod
+    def enrollment_token(command):
+        match = re.search(r"HY2PANEL_ENROLLMENT_TOKEN='([^']+)'", command)
+        if not match:
+            raise AssertionError("deployment command does not include a token")
+        return match.group(1)
+
+    def test_dashboard_places_node_onboarding_after_refresh_and_renders_safe_statuses(self):
+        service = self.application.node_enrollment_service
+        pending = service.create("待注册 <节点>", "", 10, "Elegy")
+        token = self.enrollment_token(pending["deploymentCommand"])
+        service.register(
+            {
+                "enrollmentToken": token,
+                "publicKey": base64.b64encode(
+                    bytes.fromhex("302a300506032b6570032100") + b"d" * 32
+                ).decode("ascii"),
+                "hostname": "edge-02.example.test",
+                "platform": "linux",
+                "architecture": "amd64",
+                "agentVersion": "0.24.0",
+            },
+            remote_ip="198.51.100.20",
+        )
+        headers, _csrf = self.authenticated_headers()
+
+        response = self.request("/", headers=headers)
+        body = response.read().decode()
+
+        self.assertLess(body.index("刷新状态"), body.index("对接节点"))
+        self.assertIn('data-dialog-open="node-onboarding-dialog"', body)
+        self.assertIn('id="node-onboarding-dialog"', body)
+        self.assertIn('data-node-enrollment-form', body)
+        self.assertIn("待验证", body)
+        self.assertIn("待注册 &lt;节点&gt;", body)
+        self.assertNotIn("待注册 <节点>", body)
+        self.assertIn("不会复制 Hysteria 证书", body)
+
+    def test_node_enrollment_creation_and_revocation_require_session_and_csrf(self):
+        with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
+            self.request(
+                "/node-enrollments",
+                data={"name": "edge-02", "ttl_minutes": "10"},
+                follow_redirects=False,
+            )
+        self.assertEqual(303, unauthenticated.exception.code)
+
+        headers, csrf = self.authenticated_headers()
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request(
+                "/node-enrollments",
+                data={"name": "edge-02", "ttl_minutes": "10"},
+                headers={**headers, "Accept": "application/json"},
+            )
+        self.assertEqual(403, missing_csrf.exception.code)
+
+        response = self.request(
+            "/node-enrollments",
+            data={
+                "csrf": csrf,
+                "name": "edge-02",
+                "expected_ip": "203.0.113.10",
+                "ttl_minutes": "10",
+            },
+            headers={**headers, "Accept": "application/json"},
+        )
+        issued = json.loads(response.read())
+        self.assertEqual("PENDING_REGISTRATION", issued["status"])
+        self.assertIn("--join-node", issued["deploymentCommand"])
+        self.assertNotIn(
+            self.enrollment_token(issued["deploymentCommand"]),
+            json.dumps(self.db.list_nodes()),
+        )
+
+        revoke = self.request(
+            "/node-enrollments/{}/revoke".format(issued["enrollmentId"]),
+            data={"csrf": csrf},
+            headers={**headers, "Accept": "application/json"},
+        )
+        self.assertEqual({"revoked": True}, json.loads(revoke.read()))
+
+    def test_public_node_registration_is_https_only_bounded_and_has_stable_errors(self):
+        service = self.application.node_enrollment_service
+        issued = service.create("edge-02", "", 10, "Elegy")
+        token = self.enrollment_token(issued["deploymentCommand"])
+        payload = {
+            "enrollmentToken": token,
+            "publicKey": base64.b64encode(
+                bytes.fromhex("302a300506032b6570032100") + b"e" * 32
+            ).decode("ascii"),
+            "hostname": "edge-02.example.test",
+            "platform": "linux",
+            "architecture": "amd64",
+            "agentVersion": "0.24.0",
+        }
+
+        response = self.request(
+            "/api/v1/node-registrations",
+            raw_data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(201, response.status)
+        self.assertEqual("PENDING_VERIFICATION", json.loads(response.read())["status"])
+
+        with self.assertRaises(urllib.error.HTTPError) as replay:
+            self.request(
+                "/api/v1/node-registrations",
+                raw_data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(403, replay.exception.code)
+        replay_body = json.loads(replay.exception.read())
+        self.assertEqual("ENROLLMENT_REJECTED", replay_body["error"]["code"])
+        self.assertNotIn(token, json.dumps(replay_body))
+
+        with self.assertRaises(urllib.error.HTTPError) as oversized:
+            self.request(
+                "/api/v1/node-registrations",
+                raw_data=b"{" + b" " * 8192 + b"}",
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(413, oversized.exception.code)
+
+        self.application.secure_cookies = False
+        with self.assertRaises(urllib.error.HTTPError) as http_mode:
+            self.request(
+                "/api/v1/node-registrations",
+                raw_data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(404, http_mode.exception.code)
 
     def test_login_page_and_health_have_security_headers(self):
         with self.request("/healthz") as response:
@@ -6001,7 +6140,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.23.1", body)
+        self.assertIn("v0.24.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
