@@ -1,6 +1,6 @@
 # 节点对接第一阶段任务
 
-- [ ] 节点/令牌数据库迁移与原子消费
+- [x] 节点/令牌数据库迁移与原子消费
   - Acceptance: 原文不落库，并发、过期、撤销和 IP 绑定失败关闭。
   - Verify: `python3 -m unittest tests.test_node_onboarding.NodeEnrollmentDatabaseTests -v`
   - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_node_onboarding.py`

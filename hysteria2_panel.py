@@ -1750,6 +1750,35 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS applied_traffic_batches_applied_at_idx
                     ON applied_traffic_batches(applied_at);
+                CREATE TABLE IF NOT EXISTS nodes (
+                    node_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    expected_ip TEXT,
+                    observed_ip TEXT,
+                    status TEXT NOT NULL CHECK (
+                        status IN ('pending_registration', 'pending_verification', 'revoked')
+                    ),
+                    public_key TEXT UNIQUE,
+                    hostname TEXT,
+                    platform TEXT,
+                    architecture TEXT,
+                    agent_version TEXT,
+                    created_at INTEGER NOT NULL,
+                    registered_at INTEGER,
+                    last_seen_at INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS node_enrollments (
+                    enrollment_id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    token_digest TEXT NOT NULL UNIQUE,
+                    created_by TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    consumed_at INTEGER,
+                    revoked_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS node_enrollments_node_id_idx
+                    ON node_enrollments(node_id);
                 """
             )
             columns = {
@@ -2136,6 +2165,144 @@ class Database:
                 generation = generation + 1, updated_at = ?""",
                 (int(time.time()),),
             )
+
+    def create_node_enrollment(
+        self,
+        name,
+        expected_ip,
+        actor,
+        token_digest,
+        created_at,
+        expires_at,
+    ):
+        node_id = uuid.uuid4().hex
+        enrollment_id = uuid.uuid4().hex
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO nodes(
+                    node_id, name, expected_ip, status, created_at
+                ) VALUES (?, ?, ?, 'pending_registration', ?)""",
+                (node_id, name, expected_ip, created_at),
+            )
+            connection.execute(
+                """INSERT INTO node_enrollments(
+                    enrollment_id, node_id, token_digest, created_by,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    enrollment_id,
+                    node_id,
+                    token_digest,
+                    actor,
+                    created_at,
+                    expires_at,
+                ),
+            )
+        return {
+            "node_id": node_id,
+            "enrollment_id": enrollment_id,
+            "expires_at": expires_at,
+        }
+
+    def revoke_node_enrollment(self, enrollment_id, revoked_at):
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT node_id, consumed_at, revoked_at
+                FROM node_enrollments WHERE enrollment_id = ?""",
+                (enrollment_id,),
+            ).fetchone()
+            if row is None or row["consumed_at"] is not None:
+                return False
+            if row["revoked_at"] is None:
+                connection.execute(
+                    "UPDATE node_enrollments SET revoked_at = ? WHERE enrollment_id = ?",
+                    (revoked_at, enrollment_id),
+                )
+                connection.execute(
+                    "UPDATE nodes SET status = 'revoked' WHERE node_id = ?",
+                    (row["node_id"],),
+                )
+            return True
+
+    def consume_node_enrollment(
+        self,
+        token_digest,
+        public_key,
+        observed_ip,
+        hostname,
+        platform,
+        architecture,
+        agent_version,
+        registered_at,
+    ):
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """SELECT e.enrollment_id, e.node_id, e.expires_at,
+                        e.consumed_at, e.revoked_at, n.expected_ip
+                    FROM node_enrollments AS e
+                    JOIN nodes AS n ON n.node_id = e.node_id
+                    WHERE e.token_digest = ?""",
+                    (token_digest,),
+                ).fetchone()
+                if (
+                    row is None
+                    or row["consumed_at"] is not None
+                    or row["revoked_at"] is not None
+                    or row["expires_at"] <= registered_at
+                    or (
+                        row["expected_ip"] is not None
+                        and row["expected_ip"] != observed_ip
+                    )
+                ):
+                    return None
+                updated = connection.execute(
+                    """UPDATE node_enrollments SET consumed_at = ?
+                    WHERE enrollment_id = ? AND consumed_at IS NULL AND revoked_at IS NULL""",
+                    (registered_at, row["enrollment_id"]),
+                )
+                if updated.rowcount != 1:
+                    return None
+                connection.execute(
+                    """UPDATE nodes SET
+                        observed_ip = ?, status = 'pending_verification',
+                        public_key = ?, hostname = ?, platform = ?, architecture = ?,
+                        agent_version = ?, registered_at = ?, last_seen_at = ?
+                    WHERE node_id = ? AND status = 'pending_registration'""",
+                    (
+                        observed_ip,
+                        public_key,
+                        hostname,
+                        platform,
+                        architecture,
+                        agent_version,
+                        registered_at,
+                        registered_at,
+                        row["node_id"],
+                    ),
+                )
+                return {"node_id": row["node_id"]}
+        except sqlite3.IntegrityError:
+            return None
+
+    def list_nodes(self):
+        with self._connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT n.*, e.enrollment_id, e.expires_at,
+                        e.consumed_at, e.revoked_at
+                    FROM nodes AS n
+                    LEFT JOIN node_enrollments AS e ON e.enrollment_id = (
+                        SELECT enrollment_id FROM node_enrollments
+                        WHERE node_id = n.node_id
+                        ORDER BY created_at DESC, enrollment_id DESC LIMIT 1
+                    )
+                    ORDER BY n.created_at DESC, n.node_id DESC"""
+                )
+            ]
 
     def audit(self, actor, action, target, remote_ip):
         now = int(time.time())
