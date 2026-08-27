@@ -5,7 +5,7 @@
   - Verify: `python3 -m unittest tests.test_node_onboarding.NodeEnrollmentDatabaseTests -v`
   - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_node_onboarding.py`
 
-- [ ] 管理员与 Agent HTTP 合同
+- [x] 管理员与 Agent HTTP 合同
   - Acceptance: 管理接口有会话/CSRF；注册只在 HTTPS 配置开放且返回稳定 JSON。
   - Verify: `python3 -m unittest tests.test_panel.PanelHttpTests -v`
   - Files: `hysteria2_panel.py`, `tests/test_panel.py`

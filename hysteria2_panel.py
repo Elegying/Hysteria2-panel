@@ -48,6 +48,7 @@ from hy2panel.certificate import (
     certificate_validity_timestamps,
 )
 from hy2panel.health import RuntimeHealth, is_loopback_address
+from hy2panel.nodes import EnrollmentRejected, NodeEnrollmentService
 from hy2panel.operations import (
     EgressPolicyController,
     EgressPolicyManager,
@@ -2790,6 +2791,7 @@ class PanelApplication:
         backup_manager=None,
         restore_controller=None,
         health_monitor=None,
+        node_enrollment_service=None,
     ):
         self.database = database
         self.public_host = public_host
@@ -2813,6 +2815,7 @@ class PanelApplication:
         self.reboot_controller = reboot_controller or RebootController()
         self.backup_manager = backup_manager
         self.restore_controller = restore_controller or RestoreController()
+        self.node_enrollment_service = node_enrollment_service
         self.update_result = None
         self.update_lock = threading.Lock()
         self.node_name = node_name
@@ -2987,6 +2990,26 @@ class PanelHandler(JsonHandler):
             max_num_fields=10,
         )
         return {key: values[-1] for key, values in parsed.items()}
+
+    def _read_json(self, maximum=8192):
+        content_type = self.headers.get("Content-Type", "")
+        if content_type.split(";", 1)[0].strip().lower() != "application/json":
+            raise TypeError("unsupported content type")
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ValueError("invalid content length") from exc
+        if content_length < 0:
+            raise ValueError("invalid content length")
+        if content_length > maximum:
+            raise OverflowError("request body is too large")
+        try:
+            payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid JSON body") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("JSON body must be an object")
+        return payload
 
     def _session_token(self):
         cookie = http.cookies.SimpleCookie()
@@ -3298,6 +3321,53 @@ class PanelHandler(JsonHandler):
                 if certificate_status["level"] in {"critical", "warning", "expired"}
                 else "ok"
             )
+        node_rows = []
+        current_time = int(time.time())
+        for node in self.app.database.list_nodes():
+            status = node["status"]
+            expired = bool(
+                status == "pending_registration"
+                and node.get("expires_at")
+                and node["expires_at"] <= current_time
+            )
+            if status == "pending_verification":
+                status_label, status_class = "待验证", "warning"
+            elif status == "revoked":
+                status_label, status_class = "已撤销", "bad"
+            elif expired:
+                status_label, status_class = "注册链接已过期", "bad"
+            else:
+                status_label, status_class = "待注册", "warning"
+            revoke_action = ""
+            if (
+                status == "pending_registration"
+                and not expired
+                and node.get("enrollment_id")
+                and node.get("consumed_at") is None
+                and node.get("revoked_at") is None
+            ):
+                revoke_action = """<form method="post" action="/node-enrollments/{enrollment_id}/revoke" data-confirm="确定作废该对接码吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">立即作废</button></form>""".format(
+                    enrollment_id=node["enrollment_id"], csrf=csrf
+                )
+            node_rows.append(
+                """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span>{revoke_action}</article>""".format(
+                    name=html.escape(node["name"]),
+                    detail=html.escape(
+                        node.get("observed_ip")
+                        or node.get("expected_ip")
+                        or "尚未绑定公网 IP"
+                    ),
+                    status_class=status_class,
+                    status_label=status_label,
+                    revoke_action=revoke_action,
+                )
+            )
+        node_rows_html = "".join(node_rows) or '<p class="muted">尚未创建对接节点。</p>'
+        onboarding_disabled = (
+            ""
+            if self.app.secure_cookies and self.app.node_enrollment_service is not None
+            else " disabled title=\"请先为面板启用 HTTPS\""
+        )
         content = """<header class="topbar"><span class="eyebrow brand">HYSTERIA CONTROL CENTER</span><h1>Hysteria 2 用户管理面板</h1><span class="topbar-spacer"></span>
 <span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">最近刷新 <strong>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
 <button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
@@ -3311,7 +3381,7 @@ class PanelHandler(JsonHandler):
 <article class="card"><div class="section-head"><div><h2>服务控制</h2><p class="muted">启停、重启和版本检查集中在这里。</p></div><span class="service-badge{service_class}">{service_label}</span></div>
 <div class="button-row"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动 Hysteria</button></form>
 <form method="post" action="/service/restart" data-confirm="确定重启 Hysteria 服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启 Hysteria</button></form>
-<form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止 Hysteria</button></form><a class="button secondary" href="/">刷新状态</a></div>
+<form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止 Hysteria</button></form><a class="button secondary" href="/">刷新状态</a><button class="secondary" type="button" data-dialog-open="node-onboarding-dialog"{onboarding_disabled}>对接节点</button></div>
 <div class="service-details primary-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail port-detail"><div><span class="muted">服务端口</span><strong>UDP {port}</strong></div><form class="egress-control" method="post" action="/egress/{egress_target}" data-egress-form data-confirm="{egress_confirm}"><input type="hidden" name="csrf" value="{csrf}"><span class="egress-state{egress_state_class}" data-egress-state>{egress_state}</span><button class="egress-switch{egress_state_class}" type="submit" aria-pressed="{egress_checked}" aria-label="{egress_action} FULL 出口策略"><span class="egress-switch-track" aria-hidden="true"><span></span></span><span class="egress-switch-action">{egress_action}</span></button></form></div></div>
 <div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
@@ -3320,6 +3390,11 @@ class PanelHandler(JsonHandler):
 <div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong><small class="muted">180 / 90 / 30 天分级提醒</small></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
+<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">生成短时、单用途的一键部署代码，新服务器先进入待验证状态。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
+<p class="notice"><strong>第一阶段安全边界：</strong>只安装节点 Agent 并生成本机身份，不会复制 Hysteria 证书、HMAC、用户数据，不会启动 VPN 入口或修改 <code>vpn.ssrvpn.vip</code> DNS。</p>
+<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">新服务器公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
+<section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
+<div class="node-list-head"><h3>节点状态</h3><span class="muted">刷新页面可获取最新注册状态</span></div><div class="node-list">{node_rows}</div></div></dialog>
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">完整备份或恢复节点身份与全部用户数据。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">×</button></div>
 <p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS。当前面板管理员账号不会被替换。</p>
 <div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载完整备份</button></form></article>
@@ -3360,6 +3435,8 @@ class PanelHandler(JsonHandler):
             total_tx=_human_bytes(summary["total_tx"]),
             total_rx=_human_bytes(summary["total_rx"]),
             csrf=csrf,
+            onboarding_disabled=onboarding_disabled,
+            node_rows=node_rows_html,
             version=PANEL_VERSION,
             update_text=update_text,
             update_action=update_action,
@@ -3451,6 +3528,80 @@ class PanelHandler(JsonHandler):
         )
         self._send_html(status, self._page("操作失败", content))
 
+    def _send_api_error(self, status, code, message):
+        self.send_json(
+            status,
+            {"error": {"code": str(code), "message": str(message)}},
+        )
+
+    def _handle_node_registration(self):
+        service = self.app.node_enrollment_service
+        if not self.app.secure_cookies or service is None:
+            self._send_api_error(404, "NOT_FOUND", "not found")
+            return
+        try:
+            payload = self._read_json()
+        except OverflowError:
+            self._send_api_error(413, "REQUEST_TOO_LARGE", "request body is too large")
+            return
+        except TypeError:
+            self._send_api_error(415, "UNSUPPORTED_MEDIA_TYPE", "application/json is required")
+            return
+        except ValueError:
+            self._send_api_error(400, "INVALID_REQUEST", "request body is invalid")
+            return
+        try:
+            result = service.register(payload, remote_ip=self.client_address[0])
+        except EnrollmentRejected:
+            self._send_api_error(
+                403,
+                "ENROLLMENT_REJECTED",
+                "node enrollment was rejected",
+            )
+            return
+        self.send_json(201, result)
+
+    def _handle_create_node_enrollment(self, session, form):
+        service = self.app.node_enrollment_service
+        if not self.app.secure_cookies or service is None:
+            self.send_json(409, {"error": "请先为面板启用 HTTPS"})
+            return
+        try:
+            result = service.create(
+                name=form.get("name", ""),
+                expected_ip=form.get("expected_ip", ""),
+                ttl_minutes=form.get("ttl_minutes", "10"),
+                actor=session["username"],
+            )
+        except (TypeError, ValueError) as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        self._audit_safely(
+            session["username"],
+            "node_enrollment_created",
+            result["nodeId"],
+        )
+        self.send_json(201, result)
+
+    def _handle_revoke_node_enrollment(self, session, enrollment_id):
+        service = self.app.node_enrollment_service
+        revoked = bool(service and service.revoke(enrollment_id))
+        if not revoked:
+            if "application/json" in self.headers.get("Accept", ""):
+                self.send_json(404, {"error": "对接码不存在或已被使用"})
+            else:
+                self._error_page(404, "对接码不存在或已被使用")
+            return
+        self._audit_safely(
+            session["username"],
+            "node_enrollment_revoked",
+            enrollment_id,
+        )
+        if "application/json" in self.headers.get("Accept", ""):
+            self.send_json(200, {"revoked": True})
+        else:
+            self._redirect("/")
+
     def do_GET(self):
         path = self._path()
         if path == "/favicon.svg":
@@ -3506,6 +3657,9 @@ class PanelHandler(JsonHandler):
 
     def do_POST(self):
         path = self._path()
+        if path == "/api/v1/node-registrations":
+            self._handle_node_registration()
+            return
         if path == "/restore":
             self._handle_restore_upload()
             return
@@ -3535,6 +3689,15 @@ class PanelHandler(JsonHandler):
             return
         if path == "/users":
             self._handle_create_user(session, form)
+            return
+        if path == "/node-enrollments":
+            self._handle_create_node_enrollment(session, form)
+            return
+        enrollment_match = re.fullmatch(
+            r"/node-enrollments/([0-9a-f]{32})/revoke", path
+        )
+        if enrollment_match:
+            self._handle_revoke_node_enrollment(session, enrollment_match.group(1))
             return
         if path == "/users/reset-traffic":
             self._handle_reset_all_traffic(session)
@@ -4960,6 +5123,15 @@ def run_service(settings):
             certificate_validity_timestamps, settings.tls_cert
         ),
     )
+    node_enrollment_service = None
+    if settings.panel_scheme == "https":
+        node_enrollment_service = NodeEnrollmentService(
+            database,
+            panel_url="https://{}:{}".format(
+                settings.panel_public_host, settings.panel_port
+            ),
+            panel_version=PANEL_VERSION,
+        )
     application = PanelApplication(
         database=database,
         public_host=settings.public_host,
@@ -4971,6 +5143,7 @@ def run_service(settings):
         usage_manager=usage_manager,
         backup_manager=backup_manager,
         health_monitor=health_monitor,
+        node_enrollment_service=node_enrollment_service,
     )
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
     if settings.panel_scheme == "https":
