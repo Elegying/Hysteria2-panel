@@ -1793,6 +1793,65 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS node_heartbeat_nonces_accepted_at_idx
                     ON node_heartbeat_nonces(accepted_at);
+                CREATE TABLE IF NOT EXISTS node_request_nonces (
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    purpose TEXT NOT NULL,
+                    nonce_digest TEXT NOT NULL,
+                    accepted_at INTEGER NOT NULL,
+                    PRIMARY KEY (node_id, purpose, nonce_digest)
+                );
+                CREATE INDEX IF NOT EXISTS node_request_nonces_accepted_at_idx
+                    ON node_request_nonces(accepted_at);
+                CREATE TABLE IF NOT EXISTS node_online_snapshots (
+                    node_id TEXT PRIMARY KEY REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    snapshot_id TEXT NOT NULL UNIQUE,
+                    sequence INTEGER NOT NULL,
+                    observed_at INTEGER NOT NULL,
+                    traffic_acked_at INTEGER NOT NULL,
+                    accepted_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS node_online_counts (
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    user_name TEXT NOT NULL,
+                    count INTEGER NOT NULL CHECK (count > 0),
+                    PRIMARY KEY (node_id, user_name)
+                );
+                CREATE INDEX IF NOT EXISTS node_online_counts_user_idx
+                    ON node_online_counts(user_name);
+                CREATE TABLE IF NOT EXISTS node_auth_decisions (
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    request_id TEXT NOT NULL,
+                    decision_id TEXT NOT NULL UNIQUE,
+                    allowed INTEGER NOT NULL CHECK (allowed IN (0, 1)),
+                    user_name TEXT,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    absorbed_at INTEGER,
+                    PRIMARY KEY (node_id, request_id)
+                );
+                CREATE INDEX IF NOT EXISTS node_auth_decisions_user_idx
+                    ON node_auth_decisions(user_name, expires_at);
+                CREATE TABLE IF NOT EXISTS node_traffic_batches (
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    batch_id TEXT NOT NULL,
+                    unknown_users INTEGER NOT NULL DEFAULT 0,
+                    applied_at INTEGER NOT NULL,
+                    PRIMARY KEY (node_id, batch_id)
+                );
+                CREATE INDEX IF NOT EXISTS node_traffic_batches_applied_at_idx
+                    ON node_traffic_batches(applied_at);
+                CREATE TABLE IF NOT EXISTS node_commands (
+                    command_id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    acked_at INTEGER,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT
+                );
+                CREATE INDEX IF NOT EXISTS node_commands_pending_idx
+                    ON node_commands(node_id, acked_at, created_at);
                 """
             )
             columns = {
@@ -1821,6 +1880,11 @@ class Database:
                 "verified_by": "ALTER TABLE nodes ADD COLUMN verified_by TEXT",
                 "last_heartbeat_at": "ALTER TABLE nodes ADD COLUMN last_heartbeat_at INTEGER",
                 "last_heartbeat_ip": "ALTER TABLE nodes ADD COLUMN last_heartbeat_ip TEXT",
+                "policy_state": "ALTER TABLE nodes ADD COLUMN policy_state TEXT NOT NULL DEFAULT 'standby'",
+                "policy_enabled_at": "ALTER TABLE nodes ADD COLUMN policy_enabled_at INTEGER",
+                "policy_enabled_by": "ALTER TABLE nodes ADD COLUMN policy_enabled_by TEXT",
+                "last_snapshot_at": "ALTER TABLE nodes ADD COLUMN last_snapshot_at INTEGER",
+                "last_traffic_ack_at": "ALTER TABLE nodes ADD COLUMN last_traffic_ack_at INTEGER",
             }
             for column, statement in node_migrations.items():
                 if column not in node_columns:
@@ -2414,6 +2478,477 @@ class Database:
                 return True
         except (sqlite3.IntegrityError, ValueError):
             return False
+
+    @staticmethod
+    def _consume_node_request_nonce(
+        connection, node_id, purpose, nonce_digest, accepted_at
+    ):
+        connection.execute(
+            """INSERT INTO node_request_nonces
+            (node_id, purpose, nonce_digest, accepted_at) VALUES (?, ?, ?, ?)""",
+            (node_id, purpose, nonce_digest, int(accepted_at)),
+        )
+        connection.execute(
+            "DELETE FROM node_request_nonces WHERE accepted_at < ?",
+            (int(accepted_at) - 600,),
+        )
+        connection.execute(
+            """DELETE FROM node_request_nonces
+            WHERE node_id = ? AND purpose = ? AND rowid NOT IN (
+                SELECT rowid FROM node_request_nonces
+                WHERE node_id = ? AND purpose = ?
+                ORDER BY accepted_at DESC, rowid DESC LIMIT 1024
+            )""",
+            (node_id, purpose, node_id, purpose),
+        )
+
+    def set_node_policy_state(self, node_id, state, actor, changed_at):
+        node_id = str(node_id or "")
+        actor = str(actor or "").strip()
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or state not in {"standby", "protocol_ready"}
+            or not actor
+            or len(actor) > 64
+        ):
+            return False
+        with self._connect() as connection:
+            if state == "protocol_ready":
+                updated = connection.execute(
+                    """UPDATE nodes SET policy_state = ?, policy_enabled_at = ?,
+                        policy_enabled_by = ?
+                    WHERE node_id = ? AND status = 'pending_verification'
+                        AND verified_at IS NOT NULL AND last_heartbeat_at >= ?""",
+                    (state, int(changed_at), actor, node_id, int(changed_at) - 150),
+                )
+            else:
+                updated = connection.execute(
+                    """UPDATE nodes SET policy_state = 'standby',
+                        policy_enabled_at = NULL, policy_enabled_by = NULL
+                    WHERE node_id = ? AND status = 'pending_verification'""",
+                    (node_id,),
+                )
+            return updated.rowcount == 1
+
+    def accept_node_online_snapshot(
+        self,
+        node_id,
+        snapshot_id,
+        sequence,
+        observed_at,
+        traffic_acked_at,
+        online,
+        nonce_digest,
+        accepted_at,
+    ):
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._consume_node_request_nonce(
+                    connection, node_id, "online", nonce_digest, accepted_at
+                )
+                node = connection.execute(
+                    """SELECT policy_state FROM nodes
+                    WHERE node_id = ? AND status = 'pending_verification'
+                        AND verified_at IS NOT NULL""",
+                    (node_id,),
+                ).fetchone()
+                if node is None or node["policy_state"] != "protocol_ready":
+                    raise sqlite3.IntegrityError("node is not protocol ready")
+                previous_snapshot = connection.execute(
+                    "SELECT sequence FROM node_online_snapshots WHERE node_id = ?",
+                    (node_id,),
+                ).fetchone()
+                if previous_snapshot is not None and sequence <= previous_snapshot["sequence"]:
+                    raise sqlite3.IntegrityError("snapshot sequence is not monotonic")
+                known_names = {
+                    row["name"]
+                    for row in connection.execute("SELECT name FROM proxy_users")
+                }
+                if any(name not in known_names for name in online):
+                    raise sqlite3.IntegrityError("snapshot contains an unknown user")
+                previous_counts = {
+                    row["user_name"]: row["count"]
+                    for row in connection.execute(
+                        "SELECT user_name, count FROM node_online_counts WHERE node_id = ?",
+                        (node_id,),
+                    )
+                }
+                connection.execute(
+                    """INSERT INTO node_online_snapshots(
+                        node_id, snapshot_id, sequence, observed_at,
+                        traffic_acked_at, accepted_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(node_id) DO UPDATE SET
+                        snapshot_id = excluded.snapshot_id,
+                        sequence = excluded.sequence,
+                        observed_at = excluded.observed_at,
+                        traffic_acked_at = excluded.traffic_acked_at,
+                        accepted_at = excluded.accepted_at""",
+                    (
+                        node_id,
+                        snapshot_id,
+                        int(sequence),
+                        int(observed_at),
+                        int(traffic_acked_at),
+                        int(accepted_at),
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM node_online_counts WHERE node_id = ?", (node_id,)
+                )
+                connection.executemany(
+                    """INSERT INTO node_online_counts(node_id, user_name, count)
+                    VALUES (?, ?, ?)""",
+                    [(node_id, name, int(count)) for name, count in online.items()],
+                )
+                for name, count in online.items():
+                    increase = max(0, int(count) - int(previous_counts.get(name, 0)))
+                    if increase:
+                        connection.execute(
+                            """UPDATE node_auth_decisions SET absorbed_at = ?
+                            WHERE rowid IN (
+                                SELECT rowid FROM node_auth_decisions
+                                WHERE node_id = ? AND user_name = ? AND allowed = 1
+                                    AND absorbed_at IS NULL
+                                ORDER BY created_at, rowid LIMIT ?
+                            )""",
+                            (int(accepted_at), node_id, name, increase),
+                        )
+                connection.execute(
+                    """UPDATE nodes SET last_snapshot_at = ?, last_traffic_ack_at = ?
+                    WHERE node_id = ?""",
+                    (int(accepted_at), int(traffic_acked_at), node_id),
+                )
+                return True
+        except (sqlite3.IntegrityError, ValueError, OverflowError):
+            return False
+
+    def node_online_counts(self, node_id):
+        with self._connect() as connection:
+            return {
+                row["user_name"]: row["count"]
+                for row in connection.execute(
+                    """SELECT user_name, count FROM node_online_counts
+                    WHERE node_id = ? ORDER BY user_name COLLATE NOCASE""",
+                    (str(node_id or ""),),
+                )
+            }
+
+    def authorize_distributed_node(
+        self,
+        node_id,
+        request_id,
+        token,
+        require_udp_443,
+        local_online,
+        nonce_digest,
+        now,
+        freshness_seconds,
+    ):
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._consume_node_request_nonce(
+                    connection, node_id, "auth", nonce_digest, now
+                )
+                node = connection.execute(
+                    """SELECT policy_state FROM nodes
+                    WHERE node_id = ? AND status = 'pending_verification'
+                        AND verified_at IS NOT NULL""",
+                    (node_id,),
+                ).fetchone()
+                if node is None or node["policy_state"] != "protocol_ready":
+                    raise sqlite3.IntegrityError("node is not protocol ready")
+                existing = connection.execute(
+                    """SELECT decision_id, allowed, user_name, expires_at
+                    FROM node_auth_decisions
+                    WHERE node_id = ? AND request_id = ? AND expires_at >= ?""",
+                    (node_id, request_id, int(now)),
+                ).fetchone()
+                if existing is not None:
+                    return {
+                        "ok": bool(existing["allowed"]),
+                        "id": existing["user_name"] or "",
+                        "decisionId": existing["decision_id"],
+                        "expiresAt": existing["expires_at"],
+                    }
+                ready_count = connection.execute(
+                    """SELECT COUNT(*) FROM nodes
+                    WHERE policy_state = 'protocol_ready'
+                        AND status = 'pending_verification' AND verified_at IS NOT NULL"""
+                ).fetchone()[0]
+                fresh_count = connection.execute(
+                    """SELECT COUNT(*) FROM nodes AS n
+                    JOIN node_online_snapshots AS s ON s.node_id = n.node_id
+                    WHERE n.policy_state = 'protocol_ready'
+                        AND n.status = 'pending_verification' AND n.verified_at IS NOT NULL
+                        AND s.accepted_at >= ? AND s.observed_at >= ?
+                        AND s.traffic_acked_at >= ?""",
+                    (
+                        int(now) - int(freshness_seconds),
+                        int(now) - int(freshness_seconds),
+                        int(now) - int(freshness_seconds),
+                    ),
+                ).fetchone()[0]
+                if ready_count == 0 or fresh_count != ready_count:
+                    raise sqlite3.IntegrityError("node state is stale")
+                query = """SELECT name, enabled, device_limit, traffic_limit_bytes,
+                    tx_bytes, rx_bytes FROM proxy_users
+                    WHERE token_fingerprint = ? AND enabled = 1"""
+                if require_udp_443:
+                    query += " AND allow_udp_443 = 1"
+                user = connection.execute(query, (self._fingerprint(token),)).fetchone()
+                allowed = False
+                user_name = None
+                if user is not None:
+                    user_name = user["name"]
+                    remote_online = connection.execute(
+                        """SELECT COALESCE(SUM(c.count), 0)
+                        FROM node_online_counts AS c
+                        JOIN nodes AS n ON n.node_id = c.node_id
+                        WHERE c.user_name = ? COLLATE NOCASE
+                            AND n.policy_state = 'protocol_ready'
+                            AND n.status = 'pending_verification'""",
+                        (user_name,),
+                    ).fetchone()[0]
+                    pending = connection.execute(
+                        """SELECT COUNT(*) FROM node_auth_decisions
+                        WHERE user_name = ? COLLATE NOCASE AND allowed = 1
+                            AND absorbed_at IS NULL AND expires_at >= ?""",
+                        (user_name, int(now)),
+                    ).fetchone()[0]
+                    online_count = int(local_online.get(user_name, 0)) + int(remote_online)
+                    allowed = bool(
+                        user["tx_bytes"] + user["rx_bytes"]
+                        < user["traffic_limit_bytes"]
+                        and online_count + pending < user["device_limit"]
+                    )
+                decision_id = uuid.uuid4().hex
+                expires_at = int(now) + 5
+                connection.execute(
+                    """INSERT INTO node_auth_decisions(
+                        node_id, request_id, decision_id, allowed, user_name,
+                        created_at, expires_at, absorbed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        node_id,
+                        request_id,
+                        decision_id,
+                        int(allowed),
+                        user_name if allowed else None,
+                        int(now),
+                        expires_at,
+                        None,
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM node_auth_decisions WHERE expires_at < ?",
+                    (int(now) - 600,),
+                )
+                connection.execute(
+                    """DELETE FROM node_auth_decisions
+                    WHERE node_id = ? AND rowid NOT IN (
+                        SELECT rowid FROM node_auth_decisions WHERE node_id = ?
+                        ORDER BY created_at DESC, rowid DESC LIMIT 4096
+                    ) AND expires_at < ?""",
+                    (node_id, node_id, int(now)),
+                )
+                return {
+                    "ok": allowed,
+                    "id": user_name if allowed else "",
+                    "decisionId": decision_id,
+                    "expiresAt": expires_at,
+                }
+        except (sqlite3.IntegrityError, ValueError, OverflowError):
+            return None
+
+    def apply_node_traffic_batch(
+        self, node_id, batch_id, traffic, nonce_digest, accepted_at
+    ):
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._consume_node_request_nonce(
+                    connection, node_id, "traffic", nonce_digest, accepted_at
+                )
+                node = connection.execute(
+                    """SELECT policy_state FROM nodes
+                    WHERE node_id = ? AND status = 'pending_verification'
+                        AND verified_at IS NOT NULL""",
+                    (node_id,),
+                ).fetchone()
+                if node is None or node["policy_state"] != "protocol_ready":
+                    raise sqlite3.IntegrityError("node is not protocol ready")
+                existing = connection.execute(
+                    """SELECT unknown_users FROM node_traffic_batches
+                    WHERE node_id = ? AND batch_id = ?""",
+                    (node_id, batch_id),
+                ).fetchone()
+                if existing is not None:
+                    return {
+                        "batchId": batch_id,
+                        "committed": True,
+                        "duplicate": True,
+                        "unknownUsers": existing["unknown_users"],
+                    }
+                users = {
+                    row["name"]: row
+                    for row in connection.execute(
+                        "SELECT name, tx_bytes, rx_bytes FROM proxy_users"
+                    )
+                }
+                unknown_users = 0
+                for name, counters in traffic.items():
+                    user = users.get(name)
+                    if user is None:
+                        unknown_users += 1
+                        continue
+                    tx = int(counters["tx"])
+                    rx = int(counters["rx"])
+                    if user["tx_bytes"] > 2**63 - 1 - tx or user["rx_bytes"] > 2**63 - 1 - rx:
+                        raise OverflowError("traffic counter overflow")
+                    connection.execute(
+                        """UPDATE proxy_users SET tx_bytes = tx_bytes + ?,
+                            rx_bytes = rx_bytes + ?, updated_at = ?
+                        WHERE name = ? COLLATE NOCASE""",
+                        (tx, rx, int(accepted_at), name),
+                    )
+                connection.execute(
+                    """INSERT INTO node_traffic_batches(
+                        node_id, batch_id, unknown_users, applied_at
+                    ) VALUES (?, ?, ?, ?)""",
+                    (node_id, batch_id, unknown_users, int(accepted_at)),
+                )
+                connection.execute(
+                    """UPDATE nodes SET last_traffic_ack_at = ? WHERE node_id = ?""",
+                    (int(accepted_at), node_id),
+                )
+                connection.execute(
+                    "DELETE FROM node_traffic_batches WHERE applied_at < ?",
+                    (int(accepted_at) - 90 * 86400,),
+                )
+                connection.execute(
+                    """DELETE FROM node_traffic_batches WHERE rowid <= (
+                        SELECT MAX(rowid) - 100000 FROM node_traffic_batches
+                    )"""
+                )
+                return {
+                    "batchId": batch_id,
+                    "committed": True,
+                    "duplicate": False,
+                    "unknownUsers": unknown_users,
+                }
+        except (sqlite3.IntegrityError, ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def _validate_node_command(kind, payload):
+        if kind == "KICK_USERS":
+            return (
+                isinstance(payload, dict)
+                and set(payload) == {"users"}
+                and isinstance(payload["users"], list)
+                and 1 <= len(payload["users"]) <= 100
+                and len(set(payload["users"])) == len(payload["users"])
+                and all(NAME_PATTERN.fullmatch(str(name or "")) for name in payload["users"])
+            )
+        return kind in {"REFRESH_SNAPSHOT", "FLUSH_TRAFFIC"} and payload == {}
+
+    def queue_node_command(self, node_id, kind, payload, created_at):
+        node_id = str(node_id or "")
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not self._validate_node_command(kind, payload)
+        ):
+            raise ValueError("node command is invalid")
+        command_id = uuid.uuid4().hex
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self._connect() as connection:
+            node = connection.execute(
+                """SELECT 1 FROM nodes WHERE node_id = ?
+                AND policy_state = 'protocol_ready' AND status = 'pending_verification'""",
+                (node_id,),
+            ).fetchone()
+            if node is None:
+                raise ValueError("node is not protocol ready")
+            connection.execute(
+                """INSERT INTO node_commands(
+                    command_id, node_id, kind, payload, created_at
+                ) VALUES (?, ?, ?, ?, ?)""",
+                (command_id, node_id, kind, encoded, int(created_at)),
+            )
+        return {"commandId": command_id, "kind": kind, "payload": payload}
+
+    def poll_node_commands(self, node_id, nonce_digest, accepted_at):
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._consume_node_request_nonce(
+                    connection, node_id, "command-poll", nonce_digest, accepted_at
+                )
+                node = connection.execute(
+                    """SELECT 1 FROM nodes WHERE node_id = ?
+                    AND policy_state = 'protocol_ready' AND status = 'pending_verification'
+                    AND verified_at IS NOT NULL""",
+                    (node_id,),
+                ).fetchone()
+                if node is None:
+                    raise sqlite3.IntegrityError("node is not protocol ready")
+                rows = connection.execute(
+                    """SELECT command_id, kind, payload FROM node_commands
+                    WHERE node_id = ? AND acked_at IS NULL AND attempts < 10
+                    ORDER BY created_at, command_id LIMIT 32""",
+                    (node_id,),
+                ).fetchall()
+                return [
+                    {
+                        "commandId": row["command_id"],
+                        "kind": row["kind"],
+                        "payload": json.loads(row["payload"]),
+                    }
+                    for row in rows
+                ]
+        except (sqlite3.IntegrityError, ValueError, json.JSONDecodeError):
+            return None
+
+    def ack_node_command(
+        self, node_id, command_id, ok, error_code, nonce_digest, accepted_at
+    ):
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._consume_node_request_nonce(
+                    connection, node_id, "command-ack", nonce_digest, accepted_at
+                )
+                row = connection.execute(
+                    """SELECT acked_at FROM node_commands
+                    WHERE command_id = ? AND node_id = ?""",
+                    (command_id, node_id),
+                ).fetchone()
+                if row is None:
+                    raise sqlite3.IntegrityError("command does not belong to node")
+                if row["acked_at"] is not None:
+                    return True
+                if ok:
+                    connection.execute(
+                        """UPDATE node_commands SET acked_at = ?, last_error = NULL
+                        WHERE command_id = ? AND node_id = ?""",
+                        (int(accepted_at), command_id, node_id),
+                    )
+                    connection.execute(
+                        "DELETE FROM node_commands WHERE acked_at < ?",
+                        (int(accepted_at) - 30 * 86400,),
+                    )
+                    return True
+                connection.execute(
+                    """UPDATE node_commands SET attempts = attempts + 1, last_error = ?
+                    WHERE command_id = ? AND node_id = ?""",
+                    (error_code or "FAILED", command_id, node_id),
+                )
+                return False
+        except (sqlite3.IntegrityError, ValueError):
+            return None
 
     def list_nodes(self):
         with self._connect() as connection:

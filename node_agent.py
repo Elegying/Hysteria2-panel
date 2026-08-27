@@ -9,6 +9,7 @@ import pathlib
 import platform
 import re
 import secrets
+import shutil
 import socket
 import stat
 import subprocess  # nosec B404 -- fixed executable and argv, never a shell.
@@ -18,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 
 AGENT_VERSION = "0.25.0"
@@ -37,6 +39,10 @@ class RegistrationError(RuntimeError):
 
 class HeartbeatError(RuntimeError):
     """Heartbeat failed without exposing local node identity material."""
+
+
+class ProtocolError(RuntimeError):
+    """Distributed control failed without exposing credentials or node identity."""
 
 
 def _panel_url(value):
@@ -113,6 +119,180 @@ def _write_state(path, payload):
             os.unlink(staged_name)
         except FileNotFoundError:
             pass
+
+
+def _fsync_directory(path):
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def proxy_auth_payload(raw_body, authorize, entrypoint="main"):
+    """Map the fixed Hysteria HTTP auth contract to a fail-closed local proxy."""
+
+    denial = (200, {"ok": False, "id": ""})
+    if entrypoint not in {"main", "udp443"} or len(raw_body) > 4096:
+        return denial
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+        if not isinstance(payload, dict) or set(payload) != {"addr", "auth", "tx"}:
+            return denial
+        if (
+            not isinstance(payload["addr"], str)
+            or not 1 <= len(payload["addr"]) <= 512
+            or not isinstance(payload["auth"], str)
+            or not 1 <= len(payload["auth"]) <= 512
+            or isinstance(payload["tx"], bool)
+            or not isinstance(payload["tx"], int)
+            or not 0 <= payload["tx"] <= 2**63 - 1
+        ):
+            return denial
+        result = authorize(
+            {
+                "entrypoint": entrypoint,
+                "auth": payload["auth"],
+                "tx": payload["tx"],
+            }
+        )
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("ok"), bool)
+            or not isinstance(result.get("id"), str)
+            or len(result["id"]) > 64
+            or (result["ok"] and not result["id"])
+            or (not result["ok"] and result["id"])
+        ):
+            return denial
+        return 200, {"ok": result["ok"], "id": result["id"]}
+    except Exception:
+        return denial
+
+
+class DurableTrafficSpool:
+    """Root-only, fsync-backed traffic batches retained until central ACK."""
+
+    def __init__(self, path, max_bytes=16 * 1024 * 1024, reserve_bytes=1024 * 1024):
+        self.path = pathlib.Path(path)
+        self.max_bytes = max(4096, int(max_bytes))
+        self.reserve_bytes = max(0, int(reserve_bytes))
+        if self.path.exists():
+            metadata = self.path.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o077
+            ):
+                raise ProtocolError("traffic spool directory is unsafe")
+        else:
+            self.path.mkdir(parents=True, mode=0o700)
+            self.path.chmod(0o700)
+            _fsync_directory(self.path.parent)
+
+    @staticmethod
+    def _validate_traffic(traffic):
+        if (
+            not isinstance(traffic, dict)
+            or len(traffic) > 1000
+            or not all(
+                isinstance(name, str)
+                and 1 <= len(name) <= 64
+                and isinstance(counters, dict)
+                and set(counters) == {"tx", "rx"}
+                and all(
+                    not isinstance(value, bool)
+                    and isinstance(value, int)
+                    and 0 <= value <= 2**63 - 1
+                    for value in counters.values()
+                )
+                for name, counters in traffic.items()
+            )
+        ):
+            raise ProtocolError("traffic batch is invalid")
+
+    def _current_size(self):
+        total = 0
+        for path in self.path.iterdir():
+            if not path.name.endswith(".json") or path.is_symlink() or not path.is_file():
+                raise ProtocolError("traffic spool contains an unsafe entry")
+            total += path.stat().st_size
+        return total
+
+    def can_collect(self, maximum_response_bytes=256 * 1024):
+        maximum_response_bytes = max(1, int(maximum_response_bytes))
+        free = shutil.disk_usage(str(self.path)).free
+        return (
+            self._current_size() + maximum_response_bytes <= self.max_bytes
+            and free >= maximum_response_bytes + self.reserve_bytes
+        )
+
+    def enqueue(self, traffic, observed_at):
+        self._validate_traffic(traffic)
+        if isinstance(observed_at, bool) or not isinstance(observed_at, int):
+            raise ProtocolError("traffic observation time is invalid")
+        batch = {
+            "batchId": uuid.uuid4().hex,
+            "observedAt": observed_at,
+            "traffic": traffic,
+        }
+        encoded = json.dumps(
+            batch, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8") + b"\n"
+        if self._current_size() + len(encoded) > self.max_bytes:
+            raise ProtocolError("traffic spool is full")
+        descriptor, staged_name = tempfile.mkstemp(prefix=".traffic-", dir=str(self.path))
+        destination = self.path / (batch["batchId"] + ".json")
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(staged_name, str(destination))
+            _fsync_directory(self.path)
+        finally:
+            try:
+                os.unlink(staged_name)
+            except FileNotFoundError:
+                pass
+        return batch
+
+    def pending(self):
+        batches = []
+        for path in sorted(self.path.glob("*.json")):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 256 * 1024:
+                raise ProtocolError("traffic spool entry is invalid")
+            try:
+                batch = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ProtocolError("traffic spool entry is invalid") from exc
+            if (
+                not isinstance(batch, dict)
+                or set(batch) != {"batchId", "observedAt", "traffic"}
+                or not NODE_ID_PATTERN.fullmatch(str(batch["batchId"]))
+                or isinstance(batch["observedAt"], bool)
+                or not isinstance(batch["observedAt"], int)
+            ):
+                raise ProtocolError("traffic spool entry is invalid")
+            self._validate_traffic(batch["traffic"])
+            batches.append(batch)
+        return batches
+
+    def ack(self, batch_id):
+        if not NODE_ID_PATTERN.fullmatch(str(batch_id or "")):
+            raise ProtocolError("traffic batch id is invalid")
+        path = self.path / (batch_id + ".json")
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ProtocolError("traffic spool entry is unsafe")
+        path.unlink()
+        _fsync_directory(self.path)
+        return True
 
 
 def _read_root_only_file(path, label):
