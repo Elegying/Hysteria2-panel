@@ -5128,7 +5128,7 @@ class PanelHttpTests(unittest.TestCase):
             node_enrollment_service=NodeEnrollmentService(
                 self.db,
                 panel_url="https://panel.ssrvpn.vip:19998",
-                panel_version="0.24.0",
+                panel_version="0.25.0",
             ),
             node_heartbeat_service=NodeHeartbeatService(
                 self.db,
@@ -5692,6 +5692,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('.user-table tr{display:grid;', body)
         self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', body)
         self.assertIn('.user-table th{position:sticky;', body)
+        self.assertIn('.node-row small{margin-top:2px;overflow-wrap:anywhere}', body)
+        self.assertIn('.node-actions{grid-column:1/-1;display:grid}', body)
         self.assertIn('@media(prefers-reduced-motion:reduce)', body)
         self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
         self.assertNotIn('td::before{content:attr(data-label)', body)
@@ -6262,7 +6264,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.24.0", body)
+        self.assertIn("v0.25.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

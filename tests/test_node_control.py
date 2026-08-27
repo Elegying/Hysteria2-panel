@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -184,6 +185,7 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
             self.db,
             clock=lambda: self.now,
             signature_verifier=verifier,
+            verification_slots=1,
         )
 
     def payload(self, **changes):
@@ -254,10 +256,21 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
                     self.service.accept(payload, remote_ip="154.9.234.210")
                 self.assertEqual(before, len(self.verifications))
 
+    def test_signature_verification_capacity_fails_closed(self):
+        self.assertTrue(self.service._verification_gate.acquire(blocking=False))
+        try:
+            with self.assertRaises(HeartbeatRejected):
+                self.service.accept(self.payload(), remote_ip="154.9.234.210")
+        finally:
+            self.service._verification_gate.release()
+        self.assertEqual([], self.verifications)
+
 
 class OpenSSLSignatureVerifierTests(unittest.TestCase):
     def test_verifies_real_ed25519_signature_and_rejects_tampering(self):
-        openssl = "/opt/homebrew/opt/openssl@3/bin/openssl"
+        homebrew_openssl = Path("/opt/homebrew/opt/openssl@3/bin/openssl")
+        openssl = str(homebrew_openssl) if homebrew_openssl.exists() else shutil.which("openssl")
+        self.assertIsNotNone(openssl)
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             private_key = directory / "private.pem"

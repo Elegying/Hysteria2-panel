@@ -51,7 +51,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.service = NodeEnrollmentService(
             self.db,
             panel_url="https://panel.ssrvpn.vip:19998",
-            panel_version="0.24.0",
+            panel_version="0.25.0",
             clock=lambda: self.now[0],
         )
 
@@ -89,10 +89,10 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertEqual("203.0.113.10", node["expected_ip"])
         self.assertEqual(self.now[0] + 600, issued["expiresAt"])
         command = issued["deploymentCommand"]
-        self.assertIn("v0.24.0", command)
+        self.assertIn("v0.25.0", command)
         self.assertIn("install.sh.sigstore.json", command)
         self.assertIn("verify-blob", command)
-        self.assertIn("release-signature.yml@refs/tags/v0.24.0", command)
+        self.assertIn("release-signature.yml@refs/tags/v0.25.0", command)
         self.assertIn("--join-node", command)
         self.assertNotIn("vpn.ssrvpn.vip", command)
         self.assertNotIn("server.crt", command)
@@ -224,7 +224,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
             NodeEnrollmentService(
                 self.db,
                 panel_url="http://panel.ssrvpn.vip:19998",
-                panel_version="0.24.0",
+                panel_version="0.25.0",
             )
 
 
@@ -364,6 +364,90 @@ class NodeAgentTests(unittest.TestCase):
             self.assertEqual(0, node_agent.main(arguments))
         self.assertEqual("T" * 43, observed["token"])
         self.assertFalse(observed["token_present_in_environment"])
+
+    def test_heartbeat_signs_the_canonical_payload_and_accepts_only_exact_response(self):
+        self.state_file.parent.mkdir(mode=0o700)
+        self.state_file.write_text(
+            json.dumps(
+                {
+                    "nodeId": "c" * 32,
+                    "panelUrl": "https://panel.ssrvpn.vip:19998",
+                    "registeredAt": 1_999_999_000,
+                    "status": "PENDING_VERIFICATION",
+                }
+            )
+        )
+        self.state_file.chmod(0o600)
+        private_key = self.root / "node.key"
+        private_key.write_text("private key placeholder")
+        private_key.chmod(0o600)
+        captured = {}
+
+        def signer(path, message):
+            captured["key"] = path
+            captured["message"] = message
+            return b"s" * 64
+
+        def opener(request, timeout):
+            captured["url"] = request.full_url
+            captured["body"] = json.loads(request.data)
+            captured["timeout"] = timeout
+            return self.Response(
+                json.dumps(
+                    {
+                        "status": "ONLINE",
+                        "acceptedAt": 2_000_000_000,
+                        "nextHeartbeatSeconds": 60,
+                    }
+                ).encode(),
+                status=200,
+            )
+
+        result = node_agent.heartbeat(
+            state_path=self.state_file,
+            private_key_path=private_key,
+            opener=opener,
+            signer=signer,
+            hostname="edge-02.example.test",
+            clock=lambda: 2_000_000_000,
+            nonce_factory=lambda _size: "n" * 43,
+            agent_version="0.25.0",
+        )
+
+        self.assertEqual("ONLINE", result["status"])
+        self.assertEqual(
+            "https://panel.ssrvpn.vip:19998/api/v1/node-heartbeats",
+            captured["url"],
+        )
+        self.assertEqual(10, captured["timeout"])
+        signature = captured["body"].pop("signature")
+        self.assertEqual(base64.b64encode(b"s" * 64).decode("ascii"), signature)
+        expected_message = b"hy2panel-node-heartbeat-v1\n" + json.dumps(
+            captured["body"], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        self.assertEqual(expected_message, captured["message"])
+        self.assertEqual(private_key, captured["key"])
+
+    def test_heartbeat_cli_does_not_require_or_read_the_enrollment_token(self):
+        arguments = [
+            "heartbeat",
+            "--private-key",
+            str(self.root / "node.key"),
+            "--state-file",
+            str(self.state_file),
+        ]
+        observed = {}
+
+        def fake_heartbeat(**kwargs):
+            observed.update(kwargs)
+            observed["token_present"] = "HY2PANEL_ENROLLMENT_TOKEN" in os.environ
+            return {"status": "ONLINE", "acceptedAt": 1, "nextHeartbeatSeconds": 60}
+
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            node_agent, "heartbeat", side_effect=fake_heartbeat
+        ):
+            self.assertEqual(0, node_agent.main(arguments))
+        self.assertFalse(observed["token_present"])
 
 
 if __name__ == "__main__":

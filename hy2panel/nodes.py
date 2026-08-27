@@ -8,6 +8,7 @@ import re
 import secrets
 import subprocess  # nosec B404 -- fixed executable and argv, never a shell.
 import tempfile
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -169,10 +170,17 @@ class OpenSSLSignatureVerifier:
 class NodeHeartbeatService:
     """Validate signed node heartbeats before committing freshness state."""
 
-    def __init__(self, database, clock=time.time, signature_verifier=None):
+    def __init__(
+        self,
+        database,
+        clock=time.time,
+        signature_verifier=None,
+        verification_slots=8,
+    ):
         self.database = database
         self.clock = clock
         self.signature_verifier = signature_verifier or OpenSSLSignatureVerifier()
+        self._verification_gate = threading.BoundedSemaphore(verification_slots)
 
     @staticmethod
     def _reject():
@@ -227,10 +235,15 @@ class NodeHeartbeatService:
         if bound_ip is None or not secrets.compare_digest(bound_ip, remote_ip):
             self._reject()
         message = canonical_heartbeat(payload)
+        if not self._verification_gate.acquire(blocking=False):
+            self._reject()
         try:
-            verified = self.signature_verifier(node["public_key"], message, signature)
-        except Exception:
-            verified = False
+            try:
+                verified = self.signature_verifier(node["public_key"], message, signature)
+            except Exception:
+                verified = False
+        finally:
+            self._verification_gate.release()
         if not verified:
             self._reject()
         accepted = self.database.accept_node_heartbeat(

@@ -2389,6 +2389,19 @@ class Database:
                     (node_id, nonce_digest, accepted_at) VALUES (?, ?, ?)""",
                     (node_id, nonce_digest, int(accepted_at)),
                 )
+                connection.execute(
+                    "DELETE FROM node_heartbeat_nonces WHERE accepted_at < ?",
+                    (int(accepted_at) - 600,),
+                )
+                connection.execute(
+                    """DELETE FROM node_heartbeat_nonces
+                    WHERE node_id = ? AND rowid NOT IN (
+                        SELECT rowid FROM node_heartbeat_nonces
+                        WHERE node_id = ?
+                        ORDER BY accepted_at DESC, rowid DESC LIMIT 1024
+                    )""",
+                    (node_id, node_id),
+                )
                 updated = connection.execute(
                     """UPDATE nodes SET last_heartbeat_at = ?, last_heartbeat_ip = ?,
                         last_seen_at = ?

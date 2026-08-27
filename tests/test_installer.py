@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.24.0"', source)
+        self.assertIn('PANEL_VERSION="0.25.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -572,6 +572,32 @@ esac
         self.assertNotIn('vpn.ssrvpn.vip', join_function)
 
         dispatch = source.index('if (( JOIN_NODE == 1 )); then')
+        full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
+        self.assertLess(dispatch, full_install)
+
+    def test_node_agent_activation_installs_only_a_sandboxed_heartbeat_timer(self):
+        source = INSTALLER.read_text()
+        start = source.index("activate_node_agent()")
+        end = source.index("\n}\n", start) + 2
+        activation = source[start:end]
+
+        self.assertIn("--activate-node-agent", source)
+        self.assertIn("hysteria2-panel-node-heartbeat.service", activation)
+        self.assertIn("hysteria2-panel-node-heartbeat.timer", activation)
+        self.assertIn('node_agent.py\" heartbeat', activation)
+        self.assertIn("NoNewPrivileges=true", activation)
+        self.assertIn("ProtectSystem=strict", activation)
+        self.assertIn("PrivateDevices=true", activation)
+        self.assertIn("CapabilityBoundingSet=", activation)
+        self.assertIn("OnUnitActiveSec=60s", activation)
+        self.assertIn("openssl pkey", activation)
+        self.assertIn("sha256sum", activation)
+        self.assertNotIn("configure_firewall", activation)
+        self.assertNotIn("server.crt", activation)
+        self.assertNotIn("HY2PANEL_HMAC_KEY", activation)
+        self.assertNotIn("vpn.ssrvpn.vip", activation)
+
+        dispatch = source.index('if (( ACTIVATE_NODE_AGENT == 1 )); then')
         full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
         self.assertLess(dispatch, full_install)
 
