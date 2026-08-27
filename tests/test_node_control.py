@@ -1,11 +1,18 @@
 import base64
 import hashlib
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
-from hy2panel.nodes import NodeEnrollmentService
+from hy2panel.nodes import (
+    HeartbeatRejected,
+    NodeEnrollmentService,
+    NodeHeartbeatService,
+    OpenSSLSignatureVerifier,
+    canonical_heartbeat,
+)
 from hysteria2_panel import Database
 
 
@@ -154,6 +161,150 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 remote_ip="154.9.234.210",
             )
         )
+
+
+class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
+    def setUp(self):
+        super().setUp()
+        self.assertTrue(
+            self.db.verify_node(
+                self.node_id,
+                self.fingerprint,
+                actor="admin",
+                verified_at=self.now,
+            )
+        )
+        self.verifications = []
+
+        def verifier(public_key, message, signature):
+            self.verifications.append((public_key, message, signature))
+            return signature == b"s" * 64
+
+        self.service = NodeHeartbeatService(
+            self.db,
+            clock=lambda: self.now,
+            signature_verifier=verifier,
+        )
+
+    def payload(self, **changes):
+        values = {
+            "nodeId": self.node_id,
+            "sentAt": self.now,
+            "nonce": base64.urlsafe_b64encode(b"n" * 32).rstrip(b"=").decode("ascii"),
+            "hostname": "US9929",
+            "agentVersion": "0.25.0",
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        values.update(changes)
+        return values
+
+    def test_canonical_message_is_versioned_sorted_compact_utf8(self):
+        payload = self.payload()
+        expected = (
+            "hy2panel-node-heartbeat-v1\n"
+            '{"agentVersion":"0.25.0","hostname":"US9929",'
+            '"nodeId":"' + self.node_id + '","nonce":"' + payload["nonce"]
+            + '","sentAt":2000000000}'
+        ).encode("utf-8")
+        self.assertEqual(expected, canonical_heartbeat(payload))
+        self.assertNotIn(b"signature", canonical_heartbeat(payload))
+
+    def test_valid_signed_heartbeat_becomes_online_and_replay_fails(self):
+        payload = self.payload()
+        result = self.service.accept(payload, remote_ip="154.9.234.210")
+        self.assertEqual(
+            {
+                "status": "ONLINE",
+                "acceptedAt": self.now,
+                "nextHeartbeatSeconds": 60,
+            },
+            result,
+        )
+        self.assertEqual(ed25519_public_key(), self.verifications[0][0])
+        self.assertEqual(canonical_heartbeat(payload), self.verifications[0][1])
+        with self.assertRaises(HeartbeatRejected):
+            self.service.accept(payload, remote_ip="154.9.234.210")
+
+    def test_stale_wrong_ip_bad_signature_and_unknown_fields_fail_closed(self):
+        cases = (
+            self.payload(sentAt=self.now - 121),
+            self.payload(signature=base64.b64encode(b"x" * 64).decode("ascii")),
+            self.payload(extra="field"),
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                with self.assertRaises(HeartbeatRejected):
+                    self.service.accept(payload, remote_ip="154.9.234.210")
+        with self.assertRaises(HeartbeatRejected):
+            self.service.accept(self.payload(), remote_ip="154.9.234.211")
+
+    def test_malformed_values_fail_before_signature_verification(self):
+        cases = (
+            self.payload(nodeId="not-a-node"),
+            self.payload(sentAt=True),
+            self.payload(nonce="short"),
+            self.payload(hostname="bad host"),
+            self.payload(agentVersion="latest"),
+            self.payload(signature="not-base64"),
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                before = len(self.verifications)
+                with self.assertRaises(HeartbeatRejected):
+                    self.service.accept(payload, remote_ip="154.9.234.210")
+                self.assertEqual(before, len(self.verifications))
+
+
+class OpenSSLSignatureVerifierTests(unittest.TestCase):
+    def test_verifies_real_ed25519_signature_and_rejects_tampering(self):
+        openssl = "/opt/homebrew/opt/openssl@3/bin/openssl"
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            private_key = directory / "private.pem"
+            public_der = directory / "public.der"
+            signature = directory / "signature.bin"
+            message_path = directory / "message.bin"
+            message = b"signed heartbeat"
+            message_path.write_bytes(message)
+            subprocess.run(
+                [openssl, "genpkey", "-algorithm", "ED25519", "-out", private_key],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    openssl,
+                    "pkey",
+                    "-in",
+                    private_key,
+                    "-pubout",
+                    "-outform",
+                    "DER",
+                    "-out",
+                    public_der,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            signed = subprocess.run(
+                [
+                    openssl,
+                    "pkeyutl",
+                    "-sign",
+                    "-rawin",
+                    "-inkey",
+                    private_key,
+                    "-in",
+                    message_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            signature.write_bytes(signed.stdout)
+            verifier = OpenSSLSignatureVerifier(executable=openssl)
+            public_key = base64.b64encode(public_der.read_bytes()).decode("ascii")
+            self.assertTrue(verifier(public_key, message, signature.read_bytes()))
+            self.assertFalse(verifier(public_key, message + b"!", signature.read_bytes()))
 
 
 if __name__ == "__main__":
