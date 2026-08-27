@@ -27,7 +27,7 @@ from unittest import mock
 
 import hysteria2_panel
 from hy2panel import operations as panel_operations
-from hy2panel.nodes import NodeEnrollmentService
+from hy2panel.nodes import NodeEnrollmentService, NodeHeartbeatService
 
 from hysteria2_panel import (
     BackupManager,
@@ -5128,7 +5128,11 @@ class PanelHttpTests(unittest.TestCase):
             node_enrollment_service=NodeEnrollmentService(
                 self.db,
                 panel_url="https://panel.ssrvpn.vip:19998",
-                panel_version="0.24.0",
+                panel_version="0.25.0",
+            ),
+            node_heartbeat_service=NodeHeartbeatService(
+                self.db,
+                signature_verifier=lambda _public_key, _message, _signature: True,
             ),
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
@@ -5238,6 +5242,124 @@ class PanelHttpTests(unittest.TestCase):
             headers={**headers, "Accept": "application/json"},
         )
         self.assertEqual({"revoked": True}, json.loads(revoke.read()))
+
+    def test_node_verification_requires_admin_csrf_and_exact_fingerprint(self):
+        service = self.application.node_enrollment_service
+        issued = service.create("edge-verify", "", 10, "Elegy")
+        token = self.enrollment_token(issued["deploymentCommand"])
+        public_der = bytes.fromhex("302a300506032b6570032100") + b"v" * 32
+        service.register(
+            {
+                "enrollmentToken": token,
+                "publicKey": base64.b64encode(public_der).decode("ascii"),
+                "hostname": "edge-verify.example.test",
+                "platform": "linux",
+                "architecture": "amd64",
+                "agentVersion": "0.24.0",
+            },
+            remote_ip="127.0.0.1",
+        )
+        path = "/nodes/{}/verify".format(issued["nodeId"])
+        with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
+            self.request(
+                path,
+                data={"fingerprint": hashlib.sha256(public_der).hexdigest()},
+                follow_redirects=False,
+            )
+        self.assertEqual(303, unauthenticated.exception.code)
+
+        headers, csrf = self.authenticated_headers()
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request(
+                path,
+                data={"fingerprint": hashlib.sha256(public_der).hexdigest()},
+                headers={**headers, "Accept": "application/json"},
+            )
+        self.assertEqual(403, missing_csrf.exception.code)
+        with self.assertRaises(urllib.error.HTTPError) as mismatch:
+            self.request(
+                path,
+                data={"csrf": csrf, "fingerprint": "0" * 64},
+                headers={**headers, "Accept": "application/json"},
+            )
+        self.assertEqual(409, mismatch.exception.code)
+
+        response = self.request(
+            path,
+            data={
+                "csrf": csrf,
+                "fingerprint": hashlib.sha256(public_der).hexdigest(),
+            },
+            headers={**headers, "Accept": "application/json"},
+        )
+        self.assertEqual({"verified": True}, json.loads(response.read()))
+
+    def test_public_signed_heartbeat_is_https_only_bounded_and_stable(self):
+        service = self.application.node_enrollment_service
+        issued = service.create("edge-heartbeat", "", 10, "Elegy")
+        token = self.enrollment_token(issued["deploymentCommand"])
+        public_der = bytes.fromhex("302a300506032b6570032100") + b"h" * 32
+        service.register(
+            {
+                "enrollmentToken": token,
+                "publicKey": base64.b64encode(public_der).decode("ascii"),
+                "hostname": "edge-heartbeat.example.test",
+                "platform": "linux",
+                "architecture": "amd64",
+                "agentVersion": "0.24.0",
+            },
+            remote_ip="127.0.0.1",
+        )
+        self.assertTrue(
+            self.db.verify_node(
+                issued["nodeId"],
+                hashlib.sha256(public_der).hexdigest(),
+                actor="Elegy",
+                verified_at=int(time.time()),
+            )
+        )
+        payload = {
+            "nodeId": issued["nodeId"],
+            "sentAt": int(time.time()),
+            "nonce": base64.urlsafe_b64encode(b"q" * 32).rstrip(b"=").decode("ascii"),
+            "hostname": "edge-heartbeat.example.test",
+            "agentVersion": "0.25.0",
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        response = self.request(
+            "/api/v1/node-heartbeats",
+            raw_data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual("ONLINE", json.loads(response.read())["status"])
+        with self.assertRaises(urllib.error.HTTPError) as replay:
+            self.request(
+                "/api/v1/node-heartbeats",
+                raw_data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(403, replay.exception.code)
+        self.assertEqual(
+            "HEARTBEAT_REJECTED",
+            json.loads(replay.exception.read())["error"]["code"],
+        )
+
+        with self.assertRaises(urllib.error.HTTPError) as oversized:
+            self.request(
+                "/api/v1/node-heartbeats",
+                raw_data=b"{" + b" " * 8192 + b"}",
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(413, oversized.exception.code)
+
+        self.application.secure_cookies = False
+        with self.assertRaises(urllib.error.HTTPError) as http_mode:
+            self.request(
+                "/api/v1/node-heartbeats",
+                raw_data=json.dumps({**payload, "nonce": "r" * 43}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(404, http_mode.exception.code)
 
     def test_public_node_registration_is_https_only_bounded_and_has_stable_errors(self):
         service = self.application.node_enrollment_service
@@ -5570,6 +5692,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('.user-table tr{display:grid;', body)
         self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', body)
         self.assertIn('.user-table th{position:sticky;', body)
+        self.assertIn('.node-row small{margin-top:2px;overflow-wrap:anywhere}', body)
+        self.assertIn('.node-actions{grid-column:1/-1;display:grid}', body)
         self.assertIn('@media(prefers-reduced-motion:reduce)', body)
         self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
         self.assertNotIn('td::before{content:attr(data-label)', body)
@@ -6140,7 +6264,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.24.0", body)
+        self.assertIn("v0.25.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

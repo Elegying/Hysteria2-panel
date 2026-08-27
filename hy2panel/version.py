@@ -1,3 +1,3 @@
 """Release version shared by split modules."""
 
-PANEL_VERSION = "0.24.0"
+PANEL_VERSION = "0.25.0"

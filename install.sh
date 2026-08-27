@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.24.0"
+PANEL_VERSION="0.25.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -19,19 +19,19 @@ HY2PANEL_CERTIFICATE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyst
 HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/systemd.py"
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="1d7d5f7191a97100f1aa155a3bd174e99755e5910d5647736c8b39d0244c5dee"
+PANEL_SHA256="fe61e530bcef172bb2c56f945681ac3697e5e7f6118c2bf995a32011016e2afb"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="11a7272b87fd10eb4b6b297927d190b13d4d32e91ccfcf691e0c3d9b52cbfda5"
-HY2PANEL_WEB_ASSETS_SHA256="468b9cf6be1a76a5586687187c3e2f31eb6e8a76b89153974aff597cb2a0a0c7"
+HY2PANEL_VERSION_SHA256="681e4ad17fffe464075563befc510f5f9f5ad377a6d5cf4776cee91f8010aecb"
+HY2PANEL_WEB_ASSETS_SHA256="775fd5f19bafd35460e74b05e91be858ea7c2f3ad0fc0b17aa84cfc50c8b8e12"
 HY2PANEL_OPERATIONS_SHA256="5f410c32713796e3d3f86370f1a9574f357e0fd43f5c7cbeda5cc3265f3a493b"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="03d6dfeb6519ebfda126ab4b5ac4bdae311dd88b32a3eaf63b3e4245bd401e65"
-NODE_AGENT_SHA256="ce772d6d37ccf0d672edf76eb6e0cc30cb6bd51bfef220d2ec1edd903c49455c"
+HY2PANEL_NODES_SHA256="eeaa21f4e90f8d43f647940c06471f543cbda5359015b36af0c4acdb057fe82a"
+NODE_AGENT_SHA256="fef7cdbbbe4611fe92d37132549270e2ea499770e6b9924fa584c32e5709c1f8"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
@@ -57,6 +57,8 @@ MAINTENANCE_LOCK_FILE=${MAINTENANCE_RUNTIME_DIR}/lock
 MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
 NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
 NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node
+NODE_AGENT_HEARTBEAT_SERVICE=/etc/systemd/system/hysteria2-panel-node-heartbeat.service
+NODE_AGENT_HEARTBEAT_TIMER=/etc/systemd/system/hysteria2-panel-node-heartbeat.timer
 FRESH_IN_PROGRESS_MARKER=/etc/.hysteria2-panel-installing-by-installer
 LEGACY_FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer
 FRESH_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FRESH_TRANSACTION_V1
@@ -116,6 +118,9 @@ MAINTENANCE_LOCK_HELD=0
 ORIGINAL_ARGS=()
 JOIN_NODE=0
 JOIN_NODE_MUTATED=0
+ACTIVATE_NODE_AGENT=0
+ACTIVATE_NODE_AGENT_MUTATED=0
+NODE_AGENT_BACKUP_FILE=""
 
 usage() {
   cat <<'EOF'
@@ -126,6 +131,9 @@ Hysteria2-panel 一键部署
 
 对接节点（只安装节点 Agent，不安装或修改 Hysteria）：
   sudo -E bash install.sh --join-node
+
+验证后启用签名心跳（不安装或修改 Hysteria）：
+  sudo bash install.sh --activate-node-agent
 
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
@@ -898,12 +906,18 @@ finalize_install() {
   local cleanup_status=0
   local join_node_state="${JOIN_NODE:-0}"
   local join_node_mutated="${JOIN_NODE_MUTATED:-0}"
+  local activate_node_state="${ACTIVATE_NODE_AGENT:-0}"
+  local activate_node_mutated="${ACTIVATE_NODE_AGENT_MUTATED:-0}"
   trap - EXIT ERR
   trap '' HUP INT TERM
   set +e
   (( INSTALL_FINALIZING == 0 )) || exit "${status}"
   INSTALL_FINALIZING=1
-  if (( status != 0 && join_node_state == 1 )); then
+  if (( status != 0 && activate_node_state == 1 )); then
+    if (( activate_node_mutated == 1 )); then
+      rollback_node_agent_activation || status=1
+    fi
+  elif (( status != 0 && join_node_state == 1 )); then
     if (( join_node_mutated == 1 )); then
       rollback_join_node_install || status=1
     fi
@@ -1012,6 +1026,146 @@ install_join_node() {
   sync -f "${NODE_AGENT_OPT_DIR}"
   sync -f "${NODE_AGENT_CONFIG_DIR}"
   echo "节点 Agent 已安装；面板状态为待验证。第一阶段未安装 Hysteria，也未修改网络或 DNS。"
+}
+
+rollback_node_agent_activation() {
+  systemctl disable --now hysteria2-panel-node-heartbeat.timer >/dev/null 2>&1 || true
+  systemctl stop hysteria2-panel-node-heartbeat.service >/dev/null 2>&1 || true
+  if [[ -n "${NODE_AGENT_BACKUP_FILE}" && -f "${NODE_AGENT_BACKUP_FILE}" ]]; then
+    install -o root -g root -m 0755 "${NODE_AGENT_BACKUP_FILE}" \
+      "${NODE_AGENT_OPT_DIR}/node_agent.py" || return 1
+  fi
+  rm -f -- "${NODE_AGENT_HEARTBEAT_SERVICE}" "${NODE_AGENT_HEARTBEAT_TIMER}" \
+    || return 1
+  systemctl daemon-reload || return 1
+  sync -f "${NODE_AGENT_OPT_DIR}" || return 1
+  sync -f /etc/systemd/system || return 1
+  ACTIVATE_NODE_AGENT_MUTATED=0
+}
+
+require_node_agent_directory() {
+  local path="$1" expected_mode="$2"
+  [[ -d "${path}" && ! -L "${path}" ]] \
+    || fail "节点 Agent 目录缺失或不安全：${path}"
+  [[ "$(stat -c '%u:%g:%a' "${path}")" == "0:0:${expected_mode}" ]] \
+    || fail "节点 Agent 目录所有者或权限不符合要求：${path}"
+}
+
+require_node_agent_file() {
+  local path="$1" expected_mode="$2"
+  [[ -f "${path}" && ! -L "${path}" ]] \
+    || fail "节点 Agent 文件缺失或不安全：${path}"
+  [[ "$(stat -c '%u:%g:%a' "${path}")" == "0:0:${expected_mode}" ]] \
+    || fail "节点 Agent 文件所有者或权限不符合要求：${path}"
+}
+
+activate_node_agent() {
+  local command_name generated_public
+  local -a activation_commands=(cat cmp curl install mktemp openssl rm sha256sum stat sync systemctl)
+
+  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
+    || fail "节点心跳只允许使用当前受签名正式版本 v${PANEL_VERSION}"
+  [[ -d /run/systemd/system ]] \
+    || fail "节点心跳需要使用 systemd 的 Linux 服务器"
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "完整面板服务器不能启用分流节点 Agent"
+  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
+  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node-public.der" 644
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
+  [[ ! -e "${NODE_AGENT_HEARTBEAT_SERVICE}" && ! -L "${NODE_AGENT_HEARTBEAT_SERVICE}" ]] \
+    || fail "节点心跳 service 已存在；为避免覆盖未知配置，启用已停止"
+  [[ ! -e "${NODE_AGENT_HEARTBEAT_TIMER}" && ! -L "${NODE_AGENT_HEARTBEAT_TIMER}" ]] \
+    || fail "节点心跳 timer 已存在；为避免覆盖未知配置，启用已停止"
+  for command_name in "${activation_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "节点心跳缺少命令 ${command_name}；未修改系统"
+  done
+  select_python || fail "节点心跳需要 Python 3.8 或更高版本；未修改系统"
+
+  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
+  printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
+    | sha256sum --check --status \
+    || fail "节点 Agent SHA-256 校验失败"
+  "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" \
+    || fail "节点 Agent 语法检查失败"
+  generated_public="${TMP_DIR}/node-public.der"
+  openssl pkey -in "${NODE_AGENT_CONFIG_DIR}/node.key" -pubout -outform DER \
+    -out "${generated_public}" \
+    || fail "无法验证节点私钥"
+  cmp -s "${generated_public}" "${NODE_AGENT_CONFIG_DIR}/node-public.der" \
+    || fail "节点公钥与私钥不匹配；未修改系统"
+
+  NODE_AGENT_BACKUP_FILE="${TMP_DIR}/node_agent.py.previous"
+  install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
+    "${NODE_AGENT_BACKUP_FILE}"
+  cat > "${TMP_DIR}/hysteria2-panel-node-heartbeat.service" <<EOF
+[Unit]
+Description=Hysteria2-panel signed node heartbeat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=${PYTHON_BIN} "${NODE_AGENT_OPT_DIR}/node_agent.py" heartbeat --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json"
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
+UMask=0077
+TimeoutStartSec=20
+EOF
+  cat > "${TMP_DIR}/hysteria2-panel-node-heartbeat.timer" <<'EOF'
+[Unit]
+Description=Run the Hysteria2-panel signed node heartbeat every minute
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+RandomizedDelaySec=5s
+Persistent=true
+AccuracySec=1s
+Unit=hysteria2-panel-node-heartbeat.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  ACTIVATE_NODE_AGENT_MUTATED=1
+  install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
+    "${NODE_AGENT_OPT_DIR}/node_agent.py"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-heartbeat.service" \
+    "${NODE_AGENT_HEARTBEAT_SERVICE}"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-heartbeat.timer" \
+    "${NODE_AGENT_HEARTBEAT_TIMER}"
+  systemctl daemon-reload
+  systemctl start hysteria2-panel-node-heartbeat.service \
+    || fail "节点签名心跳未被面板接受；已安排回滚"
+  systemctl enable --now hysteria2-panel-node-heartbeat.timer
+  sync -f "${NODE_AGENT_OPT_DIR}"
+  sync -f /etc/systemd/system
+  ACTIVATE_NODE_AGENT_MUTATED=0
+  echo "节点签名心跳已启用；未安装 Hysteria，也未修改网络、DNS 或任何节点证书。"
 }
 
 install_system_dependencies() {
@@ -3731,6 +3885,9 @@ elif [[ "${1:-}" == "--recover-fresh" ]]; then
 elif [[ "${1:-}" == "--join-node" ]]; then
   JOIN_NODE=1
   shift
+elif [[ "${1:-}" == "--activate-node-agent" ]]; then
+  ACTIVATE_NODE_AGENT=1
+  shift
 fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
@@ -3739,6 +3896,12 @@ if (( JOIN_NODE == 1 )); then
   install_join_node
   INSTALL_COMMITTED=1
   JOIN_NODE_MUTATED=0
+  exit 0
+fi
+if (( ACTIVATE_NODE_AGENT == 1 )); then
+  activate_node_agent
+  INSTALL_COMMITTED=1
+  ACTIVATE_NODE_AGENT_MUTATED=0
   exit 0
 fi
 [[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"

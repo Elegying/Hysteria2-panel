@@ -1,26 +1,26 @@
-# 节点对接第一阶段任务
+# 节点控制第二阶段任务
 
-- [x] 节点/令牌数据库迁移与原子消费
-  - Acceptance: 原文不落库，并发、过期、撤销和 IP 绑定失败关闭。
-  - Verify: `python3 -m unittest tests.test_node_onboarding.NodeEnrollmentDatabaseTests -v`
-  - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_node_onboarding.py`
+- [x] 节点验证与心跳防重放数据合同
+  - Acceptance: 指纹核验、时间窗、IP、nonce 唯一和撤销失败关闭。
+  - Verify: `python3 -m unittest tests.test_node_control.NodeControlDatabaseTests -v`
+  - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_node_control.py`
 
-- [x] 管理员与 Agent HTTP 合同
-  - Acceptance: 管理接口有会话/CSRF；注册只在 HTTPS 配置开放且返回稳定 JSON。
-  - Verify: `python3 -m unittest tests.test_panel.PanelHttpTests -v`
+- [x] 管理员验证与签名心跳 HTTP 合同
+  - Acceptance: 管理接口有会话/CSRF；心跳 HTTPS-only、限长且错误稳定。
+  - Verify: `python3 -m unittest tests.test_node_control tests.test_panel -v`
   - Files: `hysteria2_panel.py`, `tests/test_panel.py`
 
-- [x] 对接按钮、弹窗和状态列表
-  - Acceptance: 可生成、复制、撤销；桌面和手机布局可用。
+- [x] 节点验证与在线状态 UI
+  - Acceptance: 展示指纹、验证/撤销操作和在线/离线状态，布局可用。
   - Verify: 面板 HTML 合同测试与真实浏览器 320/768/1440px。
   - Files: `hysteria2_panel.py`, `hy2panel/web_assets.py`, `tests/test_panel.py`
 
-- [x] Agent 与受签名安装模式
-  - Acceptance: 只安装 Agent、本地密钥和待验证状态，不安装 Hysteria 或修改网络。
-  - Verify: `python3 -m unittest tests.test_node_onboarding tests.test_installer -v`
-  - Files: `node_agent.py`, `install.sh`, `tests/test_node_onboarding.py`, `tests/test_installer.py`
+- [x] Agent 心跳与隔离激活模式
+  - Acceptance: Ed25519 签名心跳和 timer 可用，仍不安装 Hysteria 或修改网络。
+  - Verify: `python3 -m unittest tests.test_node_control tests.test_installer -v`
+  - Files: `node_agent.py`, `install.sh`, `tests/test_node_control.py`, `tests/test_installer.py`
 
-- [x] 全量质量门和身份不变量复审
-  - Acceptance: 全部质量门通过，diff 不含 Hysteria 身份和 DNS 写路径。
-  - Verify: 规格中的全量命令与 `git diff --check`。
+- [ ] 全量质量门、正式发布与真实服务器验收
+  - Acceptance: 全部 CI/签名门通过，新服务器心跳在线且身份不变量保持。
+  - Verify: 规格中的全量命令、GitHub 门禁和双服务器实时检查。
   - Files: 全部本阶段改动。

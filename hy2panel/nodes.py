@@ -3,10 +3,15 @@
 import base64
 import hashlib
 import ipaddress
+import json
 import re
 import secrets
+import subprocess  # nosec B404 -- fixed executable and argv, never a shell.
+import tempfile
+import threading
 import time
 import urllib.parse
+from pathlib import Path
 
 
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
@@ -17,10 +22,26 @@ HOSTNAME_PATTERN = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
 )
 ARCHITECTURES = {"amd64", "arm64"}
+HEARTBEAT_FIELDS = {
+    "nodeId",
+    "sentAt",
+    "nonce",
+    "hostname",
+    "agentVersion",
+    "signature",
+}
+HEARTBEAT_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
+HEARTBEAT_PREFIX = b"hy2panel-node-heartbeat-v1\n"
+HEARTBEAT_CLOCK_SKEW_SECONDS = 120
+HEARTBEAT_INTERVAL_SECONDS = 60
 
 
 class EnrollmentRejected(ValueError):
     """A public enrollment request failed without disclosing token state."""
+
+
+class HeartbeatRejected(ValueError):
+    """A public heartbeat failed without disclosing node state."""
 
 
 def _single_quote(value):
@@ -73,6 +94,172 @@ def _validate_ed25519_public_key(value):
     if len(decoded) != 44 or not decoded.startswith(ED25519_SPKI_PREFIX):
         raise EnrollmentRejected("node enrollment was rejected")
     return base64.b64encode(decoded).decode("ascii")
+
+
+def canonical_heartbeat(payload):
+    signed_fields = {
+        key: payload[key]
+        for key in ("nodeId", "sentAt", "nonce", "hostname", "agentVersion")
+    }
+    return HEARTBEAT_PREFIX + json.dumps(
+        signed_fields,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+class OpenSSLSignatureVerifier:
+    """Verify Ed25519 signatures using the platform OpenSSL binary."""
+
+    def __init__(self, executable="/usr/bin/openssl", timeout_seconds=5):
+        self.executable = executable
+        self.timeout_seconds = timeout_seconds
+
+    def __call__(self, public_key, message, signature):
+        try:
+            public_der = base64.b64decode(public_key, validate=True)
+        except (TypeError, ValueError):
+            return False
+        if (
+            len(public_der) != 44
+            or not public_der.startswith(ED25519_SPKI_PREFIX)
+            or not isinstance(message, bytes)
+            or not isinstance(signature, bytes)
+            or len(signature) != 64
+        ):
+            return False
+        try:
+            with tempfile.TemporaryDirectory(prefix="hy2panel-heartbeat-") as directory:
+                directory = Path(directory)
+                public_path = directory / "public.der"
+                message_path = directory / "message.bin"
+                signature_path = directory / "signature.bin"
+                public_path.write_bytes(public_der)
+                message_path.write_bytes(message)
+                signature_path.write_bytes(signature)
+                for path in (public_path, message_path, signature_path):
+                    path.chmod(0o600)
+                completed = subprocess.run(  # nosec B603 -- fixed argv, no shell.
+                    [
+                        self.executable,
+                        "pkeyutl",
+                        "-verify",
+                        "-pubin",
+                        "-inkey",
+                        str(public_path),
+                        "-keyform",
+                        "DER",
+                        "-sigfile",
+                        str(signature_path),
+                        "-rawin",
+                        "-in",
+                        str(message_path),
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                )
+                return completed.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+
+class NodeHeartbeatService:
+    """Validate signed node heartbeats before committing freshness state."""
+
+    def __init__(
+        self,
+        database,
+        clock=time.time,
+        signature_verifier=None,
+        verification_slots=8,
+    ):
+        self.database = database
+        self.clock = clock
+        self.signature_verifier = signature_verifier or OpenSSLSignatureVerifier()
+        self._verification_gate = threading.BoundedSemaphore(verification_slots)
+
+    @staticmethod
+    def _reject():
+        raise HeartbeatRejected("node heartbeat was rejected")
+
+    def accept(self, payload, remote_ip):
+        if not isinstance(payload, dict) or set(payload) != HEARTBEAT_FIELDS:
+            self._reject()
+        node_id = payload.get("nodeId")
+        sent_at = payload.get("sentAt")
+        nonce = payload.get("nonce")
+        hostname = payload.get("hostname")
+        agent_version = payload.get("agentVersion")
+        signature_text = payload.get("signature")
+        if not isinstance(node_id, str) or not re.fullmatch(r"[0-9a-f]{32}", node_id):
+            self._reject()
+        if isinstance(sent_at, bool) or not isinstance(sent_at, int):
+            self._reject()
+        now = int(self.clock())
+        if abs(now - sent_at) > HEARTBEAT_CLOCK_SKEW_SECONDS:
+            self._reject()
+        if not isinstance(nonce, str) or not HEARTBEAT_NONCE_PATTERN.fullmatch(nonce):
+            self._reject()
+        try:
+            nonce_bytes = base64.urlsafe_b64decode(nonce + "=")
+        except (ValueError, TypeError):
+            self._reject()
+        if len(nonce_bytes) != 32:
+            self._reject()
+        if not isinstance(hostname, str) or not HOSTNAME_PATTERN.fullmatch(hostname):
+            self._reject()
+        if not isinstance(agent_version, str) or not VERSION_PATTERN.fullmatch(agent_version):
+            self._reject()
+        if not isinstance(signature_text, str) or len(signature_text) > 128:
+            self._reject()
+        try:
+            signature = base64.b64decode(signature_text, validate=True)
+            remote_ip = _normalize_ip(remote_ip)
+        except (ValueError, TypeError):
+            self._reject()
+        if len(signature) != 64:
+            self._reject()
+        node = self.database.get_node_for_heartbeat(node_id)
+        if (
+            node is None
+            or node["status"] != "pending_verification"
+            or node["verified_at"] is None
+            or node["hostname"] != hostname
+        ):
+            self._reject()
+        bound_ip = node["expected_ip"] or node["observed_ip"]
+        if bound_ip is None or not secrets.compare_digest(bound_ip, remote_ip):
+            self._reject()
+        message = canonical_heartbeat(payload)
+        if not self._verification_gate.acquire(blocking=False):
+            self._reject()
+        try:
+            try:
+                verified = self.signature_verifier(node["public_key"], message, signature)
+            except Exception:
+                verified = False
+        finally:
+            self._verification_gate.release()
+        if not verified:
+            self._reject()
+        accepted = self.database.accept_node_heartbeat(
+            node_id,
+            nonce_digest=hashlib.sha256(nonce_bytes).hexdigest(),
+            sent_at=sent_at,
+            accepted_at=now,
+            remote_ip=remote_ip,
+        )
+        if not accepted:
+            self._reject()
+        return {
+            "status": "ONLINE",
+            "acceptedAt": now,
+            "nextHeartbeatSeconds": HEARTBEAT_INTERVAL_SECONDS,
+        }
 
 
 class NodeEnrollmentService:
