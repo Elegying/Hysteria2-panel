@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import stat
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -12,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from hy2panel.nodes import EnrollmentRejected, NodeEnrollmentService
+from hy2panel.version import PANEL_VERSION
 from hysteria2_panel import Database
 import node_agent
 
@@ -95,6 +97,14 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertNotIn("vpn.ssrvpn.vip", command)
         self.assertNotIn("server.crt", command)
         self.assertNotIn("HY2PANEL_HMAC_KEY", command)
+        syntax = subprocess.run(
+            ["bash", "-n"],
+            input=command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, syntax.returncode, syntax.stderr)
 
     def test_registration_consumes_the_token_once_and_moves_the_node_to_pending_verification(self):
         issued = self.create()
@@ -242,6 +252,9 @@ class NodeAgentTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_agent_protocol_version_matches_the_panel_release(self):
+        self.assertEqual(PANEL_VERSION, node_agent.AGENT_VERSION)
 
     def test_registration_sends_only_public_identity_and_writes_root_only_state(self):
         captured = {}

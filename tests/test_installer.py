@@ -562,6 +562,7 @@ esac
         self.assertIn('openssl genpkey -algorithm ED25519', join_function)
         self.assertIn('/node_agent.py" register', join_function)
         self.assertIn('HY2PANEL_ENROLLMENT_TOKEN', join_function)
+        self.assertIn('[[ -d /run/systemd/system ]]', join_function)
         self.assertIn('NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node', source)
         self.assertIn('NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node', source)
         self.assertNotIn('hysteria cert', join_function)
@@ -573,6 +574,18 @@ esac
         dispatch = source.index('if (( JOIN_NODE == 1 )); then')
         full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
         self.assertLess(dispatch, full_install)
+
+    def test_ci_static_analysis_covers_the_standalone_node_agent(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+
+        self.assertIn(
+            "ruff check hysteria2_panel.py tcp_probe.py node_agent.py hy2panel",
+            workflow,
+        )
+        self.assertIn(
+            "bandit -q -r hysteria2_panel.py tcp_probe.py node_agent.py hy2panel",
+            workflow,
+        )
 
     def test_tag_ci_requires_the_tag_to_match_both_source_versions(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()

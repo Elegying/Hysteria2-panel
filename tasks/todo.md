@@ -10,7 +10,7 @@
   - Verify: `python3 -m unittest tests.test_panel.PanelHttpTests -v`
   - Files: `hysteria2_panel.py`, `tests/test_panel.py`
 
-- [ ] 对接按钮、弹窗和状态列表
+- [x] 对接按钮、弹窗和状态列表
   - Acceptance: 可生成、复制、撤销；桌面和手机布局可用。
   - Verify: 面板 HTML 合同测试与真实浏览器 320/768/1440px。
   - Files: `hysteria2_panel.py`, `hy2panel/web_assets.py`, `tests/test_panel.py`
@@ -20,7 +20,7 @@
   - Verify: `python3 -m unittest tests.test_node_onboarding tests.test_installer -v`
   - Files: `node_agent.py`, `install.sh`, `tests/test_node_onboarding.py`, `tests/test_installer.py`
 
-- [ ] 全量质量门和身份不变量复审
+- [x] 全量质量门和身份不变量复审
   - Acceptance: 全部质量门通过，diff 不含 Hysteria 身份和 DNS 写路径。
   - Verify: 规格中的全量命令与 `git diff --check`。
   - Files: 全部本阶段改动。

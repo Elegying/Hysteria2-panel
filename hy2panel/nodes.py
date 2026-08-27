@@ -125,7 +125,7 @@ esac
 curl -q -fL --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$join_tmp/cosign"
-printf '%s  %s\n' "$cosign_sha" "$join_tmp/cosign" | sha256sum --check --status
+printf '%s  %s\\n' "$cosign_sha" "$join_tmp/cosign" | sha256sum --check --status
 chmod 0700 "$join_tmp/cosign"
 curl -q -fL --connect-timeout 10 --max-time 300 {installer} -o "$join_tmp/install.sh"
 curl -q -fL --connect-timeout 10 --max-time 300 {bundle} -o "$join_tmp/install.sh.sigstore.json"
