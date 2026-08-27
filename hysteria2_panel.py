@@ -4270,6 +4270,17 @@ def _parse_port(mapping, name, default):
     return value
 
 
+def _valid_panel_public_host(hostname):
+    if len(hostname) > 253 or "." not in hostname:
+        return False
+    labels = hostname.split(".")
+    return all(
+        1 <= len(label) <= 63
+        and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label)
+        for label in labels
+    )
+
+
 class Settings:
     def __init__(self, **values):
         self.__dict__.update(values)
@@ -4285,6 +4296,9 @@ class Settings:
         public_host = mapping.get("HY2PANEL_PUBLIC_HOST", "").strip()
         node_name = mapping.get("HY2PANEL_NODE_NAME", "Hysteria 2").strip()
         panel_scheme = mapping.get("HY2PANEL_PANEL_SCHEME", "http").strip().lower()
+        panel_public_host = mapping.get("HY2PANEL_PANEL_PUBLIC_HOST", "").strip().lower()
+        panel_tls_cert_value = mapping.get("HY2PANEL_PANEL_TLS_CERT", "").strip()
+        panel_tls_key_value = mapping.get("HY2PANEL_PANEL_TLS_KEY", "").strip()
         stats_secret = mapping.get("HY2PANEL_STATS_SECRET", "")
         cert_pin = mapping.get("HY2PANEL_CERT_PIN", "").strip()
         if not public_host:
@@ -4293,6 +4307,19 @@ class Settings:
             raise ValueError("HY2PANEL_NODE_NAME must contain 1 to 64 printable characters")
         if panel_scheme not in {"http", "https"}:
             raise ValueError("HY2PANEL_PANEL_SCHEME must be http or https")
+        if panel_scheme == "https":
+            if not _valid_panel_public_host(panel_public_host):
+                raise ValueError(
+                    "HY2PANEL_PANEL_PUBLIC_HOST must be a fully-qualified DNS name"
+                )
+            if not panel_tls_cert_value:
+                raise ValueError("HY2PANEL_PANEL_TLS_CERT is required for HTTPS")
+            if not panel_tls_key_value:
+                raise ValueError("HY2PANEL_PANEL_TLS_KEY is required for HTTPS")
+        else:
+            panel_public_host = panel_public_host or public_host
+            panel_tls_cert_value = panel_tls_cert_value or "/etc/hysteria2-panel/panel.crt"
+            panel_tls_key_value = panel_tls_key_value or "/etc/hysteria2-panel/panel.key"
         if len(stats_secret) < 8:
             raise ValueError("HY2PANEL_STATS_SECRET must contain at least 8 characters")
         if not cert_pin:
@@ -4323,6 +4350,9 @@ class Settings:
             panel_host=mapping.get("HY2PANEL_PANEL_HOST", "0.0.0.0"),  # nosec B104
             panel_port=panel_port,
             panel_scheme=panel_scheme,
+            panel_public_host=panel_public_host,
+            panel_tls_cert=Path(panel_tls_cert_value),
+            panel_tls_key=Path(panel_tls_key_value),
             auth_host=auth_host,
             auth_port=auth_port,
             stats_port=stats_port,
@@ -4780,7 +4810,9 @@ def run_service(settings):
         tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         if hasattr(ssl, "TLSVersion"):
             tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        tls_context.load_cert_chain(str(settings.tls_cert), str(settings.tls_key))
+        tls_context.load_cert_chain(
+            str(settings.panel_tls_cert), str(settings.panel_tls_key)
+        )
         panel_server.tls_context = tls_context
     auth_server = make_internal_server(
         (settings.auth_host, settings.auth_port), database, usage_manager

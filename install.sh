@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.22.3"
+PANEL_VERSION="0.23.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -17,11 +17,11 @@ HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_HEALTH_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/health.py"
 HY2PANEL_CERTIFICATE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/certificate.py"
 HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/systemd.py"
-PANEL_SHA256="339d5353b2460a25346d2108e20226e1b62b210b8da0f4da7d9ec39628e1595c"
+PANEL_SHA256="7a1acc8b5677b614c48dbc27ed5e2fb8a495fba75eb499e710fd0036a1ebc3ab"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="5de5ad389c57ad2f2a9a45fb86f924edee29371d36e85f98e863a25ef41c4e14"
+HY2PANEL_VERSION_SHA256="3316aa328728d193684ad1de30f88ec3bb790a143c4e12f9627f0aeb270c9365"
 HY2PANEL_WEB_ASSETS_SHA256="19eb3fd5ac5db322646327f06a516fc247a29a7777da2d254cf375a202ca1afa"
 HY2PANEL_OPERATIONS_SHA256="5f410c32713796e3d3f86370f1a9574f357e0fd43f5c7cbeda5cc3265f3a493b"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
@@ -39,6 +39,12 @@ DEFAULT_PANEL_PORT=19998
 DEFAULT_STATS_PORT=19997
 DEFAULT_AUTH_PORT=19996
 DEFAULT_STATS_443_PORT=19995
+PANEL_CERT_FILE=/etc/hysteria2-panel/panel.crt
+PANEL_KEY_FILE=/etc/hysteria2-panel/panel.key
+PANEL_TLS_ROOT=/etc/hysteria2-panel/panel-tls
+ACME_CONFIG_DIR=/etc/hysteria2-panel/acme
+ACME_WORK_DIR=/var/lib/hysteria2-panel/acme-work
+ACME_LOGS_DIR=/var/lib/hysteria2-panel/acme-logs
 MIN_QUIC_UDP_BUFFER=16777216
 SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel.conf
 TMPFILES_FILE=/etc/tmpfiles.d/hysteria2-panel.conf
@@ -120,8 +126,9 @@ Hysteria2-panel 一键部署
   RHEL/Rocky/Alma/CentOS Stream/Fedora（dnf 或 yum）
   Linux amd64/arm64、systemd、Python 3.8 或更高版本
 
-可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、EGRESS_POLICY、ADMIN_USER、ADMIN_PASSWORD、RESET_ADMIN
+可选环境变量：NODE_NAME、PUBLIC_HOST、HYSTERIA_PORT、PANEL_PORT、PANEL_SCHEME、PANEL_PUBLIC_HOST、EGRESS_POLICY、ADMIN_USER、ADMIN_PASSWORD、RESET_ADMIN
 安装程序会交互式询问未提供的值，密码输入不会回显。
+HTTPS 使用 Let’s Encrypt HTTP-01；面板域名须指向本机，公网 TCP 80 须持续可达。
 升级默认保留现有管理员；需要重置时设置 RESET_ADMIN=1。
 出站策略默认 full（放行公网目标的全部端口）；需要网页/视频端口白名单时设置 EGRESS_POLICY=web。
 EOF
@@ -732,6 +739,8 @@ rollback_existing_install() {
     }
   fi
   if ! stop_loaded_units \
+    hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-cert-renew.service \
     hysteria2-panel-tcp-probe-443.service \
     hysteria2-panel-server-443.service \
     hysteria2-panel-tcp-probe.service \
@@ -758,8 +767,12 @@ rollback_existing_install() {
   chown -R hy2panel:hy2panel /var/lib/hysteria2-panel
   chmod 0750 /var/lib/hysteria2-panel
   find /var/lib/hysteria2-panel -type f -exec chmod 0600 {} +
+  if [[ -d "${ACME_WORK_DIR}" && -d "${ACME_LOGS_DIR}" ]]; then
+    secure_acme_runtime_directories \
+      || { echo "警告：无法恢复 ACME 运行目录权限" >&2; return 1; }
+  fi
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -772,6 +785,13 @@ rollback_existing_install() {
   else
     systemctl disable hysteria2-panel-restore-resume.service >/dev/null 2>&1 || true
     rm -f -- /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants" ]]; then
+    systemctl enable hysteria2-panel-cert-renew.timer >/dev/null 2>&1 \
+      || echo "警告：无法恢复面板证书续期 timer 的启用状态" >&2
+  else
+    systemctl disable hysteria2-panel-cert-renew.timer >/dev/null 2>&1 || true
+    rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
   fi
   if [[ -f "${BACKUP_DIR}/99-hysteria2-panel.conf" ]]; then
     cp -a "${BACKUP_DIR}/99-hysteria2-panel.conf" "${SYSCTL_FILE}"
@@ -813,6 +833,10 @@ rollback_existing_install() {
   if ! verify_rollback_recovery; then
     echo "警告：文件已回滚，但旧服务或监听端口未完全恢复；已保留本次防火墙规则，请使用备份目录人工恢复：${BACKUP_DIR}" >&2
     return 1
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants" ]]; then
+    systemctl start hysteria2-panel-cert-renew.timer \
+      || echo "警告：旧面板已恢复，但证书续期 timer 未能立即启动" >&2
   fi
   rollback_firewall_after_service_recovery || true
   if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
@@ -935,6 +959,71 @@ install_system_dependencies() {
   fi
 }
 
+install_certbot_dependency() {
+  [[ -x /usr/bin/certbot ]] && return 0
+  echo "HTTPS 模式需要 Certbot，正在从系统软件源安装"
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y certbot
+  elif command -v dnf >/dev/null 2>&1; then
+    if ! dnf install -y certbot; then
+      echo "当前 RHEL 系仓库未提供 Certbot，正在通过包管理器启用 EPEL"
+      dnf install -y epel-release
+      dnf install -y certbot
+    fi
+  elif command -v yum >/dev/null 2>&1; then
+    if ! yum install -y certbot; then
+      echo "当前 RHEL 系仓库未提供 Certbot，正在通过包管理器启用 EPEL"
+      yum install -y epel-release
+      yum install -y certbot
+    fi
+  else
+    fail "无法安装 Certbot：当前系统没有受支持的包管理器"
+  fi
+  [[ -x /usr/bin/certbot ]] \
+    || fail "系统软件源未提供 /usr/bin/certbot；未执行任何远程 ACME 安装脚本"
+}
+
+validate_panel_public_host() {
+  local hostname="$1" label
+  local -a labels
+  [[ -n "${hostname}" && ${#hostname} -le 253 && "${hostname}" == *.* ]] \
+    || return 1
+  [[ "${hostname}" =~ ^[a-z0-9.-]+$ && "${hostname}" != *..* ]] || return 1
+  IFS='.' read -r -a labels <<< "${hostname}"
+  for label in "${labels[@]}"; do
+    [[ "${label}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+  done
+}
+
+issue_panel_acme_certificate() {
+  install -d -o root -g root -m 0700 \
+    "${ACME_CONFIG_DIR}" "${ACME_WORK_DIR}" "${ACME_LOGS_DIR}"
+  /usr/bin/certbot certonly \
+    --config-dir "${ACME_CONFIG_DIR}" \
+    --work-dir "${ACME_WORK_DIR}" \
+    --logs-dir "${ACME_LOGS_DIR}" \
+    --standalone \
+    --preferred-challenges http-01 \
+    --cert-name "${PANEL_PUBLIC_HOST}" \
+    -d "${PANEL_PUBLIC_HOST}" \
+    --non-interactive \
+    --agree-tos \
+    --register-unsafely-without-email \
+    --keep-until-expiring \
+    || fail "Let’s Encrypt 证书签发失败；请核对 DNS、公网 TCP 80 和签发频率限制"
+}
+
+secure_acme_runtime_directories() {
+  local directory
+  for directory in "${ACME_WORK_DIR}" "${ACME_LOGS_DIR}"; do
+    [[ ! -L "${directory}" && -d "${directory}" ]] || return 1
+    chown -R root:root "${directory}" || return 1
+    find "${directory}" -type d -exec chmod 0700 {} + || return 1
+    find "${directory}" -type f -exec chmod 0600 {} + || return 1
+  done
+}
+
 acquire_maintenance_lock() {
   local hy2panel_gid="" lock_metadata lock_status runtime_metadata
   if id -u hy2panel >/dev/null 2>&1; then
@@ -1046,6 +1135,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
     /etc/systemd/system/hysteria2-panel-update.service \
+    /etc/systemd/system/hysteria2-panel-cert-renew.service \
+    /etc/systemd/system/hysteria2-panel-cert-renew.timer \
     "${FRESH_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_DROPIN_DIR}" \
@@ -1054,7 +1145,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
-    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service; do
+    /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer; do
     [[ ! -e "${path}" && ! -L "${path}" ]] \
       || fail "发现非本安装器管理的同名路径或服务：${path}；为避免覆盖，安装已停止"
   done
@@ -1402,7 +1494,7 @@ remove_fresh_install_principals() {
 }
 
 verify_fresh_install_commit_payload() {
-  local expected_metadata path require_nonempty
+  local expected_metadata panel_scheme_value path require_nonempty
   local -a required_files=(
     '/opt/hysteria2-panel/bin/hysteria|root:root:755:1|1'
     '/opt/hysteria2-panel/bin/cosign|root:root:755:1|1'
@@ -1429,6 +1521,29 @@ verify_fresh_install_commit_payload() {
     [[ "$(stat -c '%U:%G:%a:%h' "${path}")" == "${expected_metadata}" ]] || return 1
     [[ "${require_nonempty}" != "1" || -s "${path}" ]] || return 1
   done
+  panel_scheme_value="$(awk -F= '$1 == "HY2PANEL_PANEL_SCHEME" {print $2}' \
+    /etc/hysteria2-panel/panel.env)" || return 1
+  if [[ "${panel_scheme_value}" == "https" ]]; then
+    for path in \
+      /opt/hysteria2-panel/acme-deploy.sh \
+      /opt/hysteria2-panel/acme-renew.sh \
+      /etc/systemd/system/hysteria2-panel-cert-renew.service \
+      /etc/systemd/system/hysteria2-panel-cert-renew.timer \
+      /etc/hysteria2-panel/panel-tls-current/fullchain.pem \
+      /etc/hysteria2-panel/panel-tls-current/privkey.pem; do
+      [[ -f "${path}" && -s "${path}" ]] || return 1
+    done
+    [[ -L "${PANEL_CERT_FILE}" && \
+      "$(readlink "${PANEL_CERT_FILE}")" == "panel-tls-current/fullchain.pem" ]] \
+      || return 1
+    [[ -L "${PANEL_KEY_FILE}" && \
+      "$(readlink "${PANEL_KEY_FILE}")" == "panel-tls-current/privkey.pem" ]] \
+      || return 1
+    [[ -L /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer ]] \
+      || return 1
+  elif [[ "${panel_scheme_value}" != "http" ]]; then
+    return 1
+  fi
 }
 
 flush_fresh_cleanup_before_disarm() {
@@ -1446,6 +1561,8 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/hysteria2-panel-restore-resume.service
     /etc/systemd/system/hysteria2-panel-restore-recover.service
     /etc/systemd/system/hysteria2-panel-update.service
+    /etc/systemd/system/hysteria2-panel-cert-renew.service
+    /etc/systemd/system/hysteria2-panel-cert-renew.timer
     /etc/systemd/system/hysteria2-panel-egress-full.service
     /etc/systemd/system/hysteria2-panel-egress-web.service
     /etc/systemd/system/hysteria2-panel-egress-recover.service
@@ -1456,6 +1573,7 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
     /etc/sudoers.d/hysteria2-panel
     "${SYSCTL_FILE}"
     "${TMPFILES_FILE}"
@@ -1648,6 +1766,8 @@ recover_interrupted_fresh_install() {
   echo "检测到上次未完成的首次部署，正在安全清理后重试…"
   stop_loaded_units \
     hysteria2-panel-upgrade-recover.service \
+    hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-cert-renew.service \
     hysteria2-panel-restore.service \
     hysteria2-panel-update.service \
     hysteria2-panel-egress-full.service \
@@ -1662,6 +1782,7 @@ recover_interrupted_fresh_install() {
     hysteria2-panel.service \
     || fail "上次部署遗留进程无法全部停止；请人工检查后重试"
   systemctl disable hysteria2-panel-upgrade-recover.service \
+    hysteria2-panel-cert-renew.timer \
     hysteria2-panel-server.service hysteria2-panel.service \
     >/dev/null 2>&1 || true
   if declare -F rollback_persisted_firewall_transaction >/dev/null 2>&1; then
@@ -1678,6 +1799,8 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/hysteria2-panel-restore-recover.service \
     /etc/systemd/system/hysteria2-panel-update.service \
+    /etc/systemd/system/hysteria2-panel-cert-renew.service \
+    /etc/systemd/system/hysteria2-panel-cert-renew.timer \
     /etc/systemd/system/hysteria2-panel-egress-full.service \
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
@@ -1687,6 +1810,7 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-upgrade-recover.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
     /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
   rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
   rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
@@ -1789,6 +1913,8 @@ assert_units_unclaimed() {
     hysteria2-panel-egress-full.service \
     hysteria2-panel-egress-web.service \
     hysteria2-panel-egress-recover.service \
+    hysteria2-panel-cert-renew.service \
+    hysteria2-panel-cert-renew.timer \
     hysteria2-panel-update.service; do
     output="$(systemctl show --no-pager \
       --property=LoadState --property=ActiveState \
@@ -1831,6 +1957,8 @@ assert_units_claimed_by_installer() {
     hysteria2-panel-egress-full.service \
     hysteria2-panel-egress-web.service \
     hysteria2-panel-egress-recover.service \
+    hysteria2-panel-cert-renew.service \
+    hysteria2-panel-cert-renew.timer \
     hysteria2-panel-update.service; do
     expected_path="/etc/systemd/system/${unit_file}"
     output="$(systemctl show --no-pager \
@@ -2662,7 +2790,9 @@ raise SystemExit(1)
 
 prepare_firewall() {
   local firewalld_active=0 query_status rule status ufw_active=0 zone zones
+  PANEL_SCHEME="${PANEL_SCHEME:-http}"
   FIREWALL_RULES=("${HYSTERIA_PORT}/tcp" "${HYSTERIA_PORT}/udp" "${PANEL_PORT}/tcp")
+  [[ "${PANEL_SCHEME}" != "https" ]] || FIREWALL_RULES+=("80/tcp")
   (( UDP_443_ENABLED == 0 )) || FIREWALL_RULES+=("443/tcp" "443/udp")
   FIREWALL_ZONES=()
   FIREWALL_PENDING=()
@@ -3403,6 +3533,7 @@ configure_firewall() {
   if [[ "${FIREWALL_MANAGER}" != "none" ]]; then
     remove_obsolete_managed_firewall_rules
     FIREWALL_RESULT="已自动开放 ${HYSTERIA_PORT}/tcp、${HYSTERIA_PORT}/udp、${PANEL_PORT}/tcp"
+    [[ "${PANEL_SCHEME}" != "https" ]] || FIREWALL_RESULT+=", 80/tcp"
     (( UDP_443_ENABLED == 0 )) || FIREWALL_RESULT+=", 443/tcp、443/udp"
   fi
 }
@@ -3557,7 +3688,7 @@ guard_legacy_restore_admission \
 assert_no_pending_restore_state
 assert_no_unmanaged_install_paths
 
-required_commands=(awk busctl cat chmod chown cmp cp curl date df du find flock getent grep groupadd groupdel id install ip ip6tables-save iptables-save mktemp mv nft openssl rm sed sha256sum sleep sort ss stat sudo sync sysctl systemctl systemd-run systemd-tmpfiles uname useradd userdel usermod visudo)
+required_commands=(awk busctl cat chmod chown cmp cp curl date df du find flock getent grep groupadd groupdel id install ip ip6tables-save iptables-save ln mktemp mv nft openssl readlink rm sed sha256sum sleep sort ss stat sudo sync sysctl systemctl systemd-run systemd-tmpfiles uname useradd userdel usermod visudo)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
@@ -3702,6 +3833,7 @@ if (( EXISTING_INSTALL == 1 )); then
   EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT}"
   EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME}"
+  EXISTING_PANEL_PUBLIC_HOST="${HY2PANEL_PANEL_PUBLIC_HOST:-}"
   EXISTING_EGRESS_POLICY="${HY2PANEL_EGRESS_POLICY:-full}"
   EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT}"
   EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT}"
@@ -3712,6 +3844,7 @@ else
   EXISTING_HYSTERIA_PORT="${DEFAULT_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${DEFAULT_PANEL_PORT}"
   EXISTING_PANEL_SCHEME="http"
+  EXISTING_PANEL_PUBLIC_HOST=""
   EXISTING_EGRESS_POLICY="full"
   EXISTING_AUTH_PORT="${DEFAULT_AUTH_PORT}"
   EXISTING_STATS_PORT="${DEFAULT_STATS_PORT}"
@@ -3735,6 +3868,10 @@ if [[ "${AUTO_UPDATE}" == "1" ]]; then
   HYSTERIA_PORT="${EXISTING_HYSTERIA_PORT}"
   PANEL_PORT="${EXISTING_PANEL_PORT}"
   PANEL_SCHEME="${EXISTING_PANEL_SCHEME}"
+  if [[ "${EXISTING_PANEL_SCHEME}" == "https" && -z "${EXISTING_PANEL_PUBLIC_HOST}" ]]; then
+    fail "现有 HTTPS 安装缺少独立面板域名；为避免继续复用节点证书，请人工运行安装器补充 PANEL_PUBLIC_HOST"
+  fi
+  PANEL_PUBLIC_HOST="${EXISTING_PANEL_PUBLIC_HOST}"
   EGRESS_POLICY="${EXISTING_EGRESS_POLICY}"
   AUTH_PORT="${EXISTING_AUTH_PORT}"
   STATS_PORT="${EXISTING_STATS_PORT}"
@@ -3779,6 +3916,20 @@ PANEL_SCHEME="${PANEL_SCHEME,,}"
 [[ "${PANEL_SCHEME}" == "http" || "${PANEL_SCHEME}" == "https" ]] || fail "面板协议只能是 http 或 https"
 if [[ "${PANEL_SCHEME}" == "http" ]]; then
   echo "警告：HTTP 不加密面板账号、密码和会话。仅在你明确接受风险时使用。" >&2
+  PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST:-${EXISTING_PANEL_PUBLIC_HOST:-${PUBLIC_HOST}}}"
+else
+  PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST:-}"
+  if [[ -z "${PANEL_PUBLIC_HOST}" ]]; then
+    read -r -p "面板公网域名${EXISTING_PANEL_PUBLIC_HOST:+ [${EXISTING_PANEL_PUBLIC_HOST}]}: " PANEL_PUBLIC_HOST </dev/tty
+    PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST:-${EXISTING_PANEL_PUBLIC_HOST}}"
+  fi
+  PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST,,}"
+  validate_panel_public_host "${PANEL_PUBLIC_HOST}" \
+    || fail "面板公网域名必须是完整的 ASCII DNS 名称，例如 panel.ssrvpn.vip"
+  install_certbot_dependency
+  if ss -H -ltn "sport = :80" | grep -q .; then
+    fail "ACME HTTP-01 需要独占 TCP 80，但该端口已被其他服务占用；安装器不会停止未知服务"
+  fi
 fi
 EGRESS_POLICY="${EGRESS_POLICY:-${EXISTING_EGRESS_POLICY}}"
 EGRESS_POLICY="${EGRESS_POLICY,,}"
@@ -3923,12 +4074,15 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] \
     || cp -a /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
       "${BACKUP_DIR}/hysteria2-panel-restore-resume.wants"
+  [[ ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer ]] \
+    || cp -a /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
+      "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants"
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
   [[ ! -f /etc/sudoers.d/hysteria2-panel ]] || cp -a /etc/sudoers.d/hysteria2-panel "${BACKUP_DIR}/hysteria2-panel.sudoers"
   [[ ! -f "${TMPFILES_FILE}" ]] || cp -a "${TMPFILES_FILE}" "${BACKUP_DIR}/hysteria2-panel.tmpfiles"
@@ -4027,6 +4181,11 @@ chmod 0640 "${CERT_FILE}" "${KEY_FILE}"
 CERT_PIN="$(openssl x509 -in "${CERT_FILE}" -outform DER | sha256sum | awk '{print $1}')"
 [[ ${#CERT_PIN} -eq 64 ]] || fail "无法计算证书指纹"
 
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  configure_firewall
+  issue_panel_acme_certificate
+fi
+
 ENV_FILE=/etc/hysteria2-panel/panel.env
 if [[ -f "${ENV_FILE}" ]]; then
   set -a
@@ -4046,6 +4205,9 @@ HY2PANEL_PUBLIC_HOST=${PUBLIC_HOST}
 HY2PANEL_HYSTERIA_PORT=${HYSTERIA_PORT}
 HY2PANEL_PANEL_PORT=${PANEL_PORT}
 HY2PANEL_PANEL_SCHEME=${PANEL_SCHEME}
+HY2PANEL_PANEL_PUBLIC_HOST=${PANEL_PUBLIC_HOST}
+HY2PANEL_PANEL_TLS_CERT=${PANEL_CERT_FILE}
+HY2PANEL_PANEL_TLS_KEY=${PANEL_KEY_FILE}
 HY2PANEL_EGRESS_POLICY=${EGRESS_POLICY}
 HY2PANEL_AUTH_PORT=${AUTH_PORT}
 HY2PANEL_STATS_PORT=${STATS_PORT}
@@ -4057,6 +4219,142 @@ HY2PANEL_CERT_PIN=${CERT_PIN}
 EOF
 chown root:hy2panel "${ENV_FILE}"
 chmod 0640 "${ENV_FILE}"
+
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  install -d -o root -g hy2panel -m 0750 "${PANEL_TLS_ROOT}"
+  cat > /opt/hysteria2-panel/acme-deploy.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C
+
+ENV_FILE=/etc/hysteria2-panel/panel.env
+PANEL_TLS_ROOT=/etc/hysteria2-panel/panel-tls
+PANEL_TLS_CURRENT=/etc/hysteria2-panel/panel-tls-current
+stage=""
+link_stage=""
+rollback_link=""
+
+cleanup() {
+  if [[ -n "${stage}" && -d "${stage}" ]]; then
+    rm -f -- "${stage}/fullchain.pem" "${stage}/privkey.pem"
+    rmdir -- "${stage}"
+  fi
+  [[ -z "${link_stage}" ]] || rm -f -- "${link_stage}"
+  [[ -z "${rollback_link}" ]] || rm -f -- "${rollback_link}"
+}
+trap cleanup EXIT
+
+validate_hostname() {
+  local hostname="$1" label
+  local -a labels
+  [[ -n "${hostname}" && ${#hostname} -le 253 && "${hostname}" == *.* ]]
+  [[ "${hostname}" =~ ^[a-z0-9.-]+$ && "${hostname}" != *..* ]]
+  IFS='.' read -r -a labels <<< "${hostname}"
+  for label in "${labels[@]}"; do
+    [[ "${label}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+  done
+}
+
+[[ ! -L "${ENV_FILE}" && -f "${ENV_FILE}" ]]
+[[ "$(stat -c '%U:%G:%a:%h' "${ENV_FILE}")" == "root:hy2panel:640:1" ]]
+set -a
+# shellcheck disable=SC1091
+source "${ENV_FILE}"
+set +a
+[[ "${HY2PANEL_PANEL_SCHEME}" == "https" ]]
+[[ "${HY2PANEL_PANEL_TLS_CERT}" == "/etc/hysteria2-panel/panel.crt" ]]
+[[ "${HY2PANEL_PANEL_TLS_KEY}" == "/etc/hysteria2-panel/panel.key" ]]
+validate_hostname "${HY2PANEL_PANEL_PUBLIC_HOST}"
+
+lineage="/etc/hysteria2-panel/acme/live/${HY2PANEL_PANEL_PUBLIC_HOST}"
+source_cert="${lineage}/fullchain.pem"
+source_key="${lineage}/privkey.pem"
+[[ -s "${source_cert}" && -s "${source_key}" ]]
+
+stage="$(mktemp -d "${PANEL_TLS_ROOT}/.deploy.XXXXXXXX")"
+chown root:hy2panel "${stage}"
+chmod 0750 "${stage}"
+install -o root -g hy2panel -m 0640 "${source_cert}" "${stage}/fullchain.pem"
+install -o root -g hy2panel -m 0640 "${source_key}" "${stage}/privkey.pem"
+openssl x509 -in "${stage}/fullchain.pem" -noout -checkhost \
+  "${HY2PANEL_PANEL_PUBLIC_HOST}" | grep -Fq "does match certificate"
+cert_public_key="$(openssl x509 -in "${stage}/fullchain.pem" -pubkey -noout | sha256sum | awk '{print $1}')"
+key_public_key="$(openssl pkey -in "${stage}/privkey.pem" -pubout | sha256sum | awk '{print $1}')"
+[[ -n "${cert_public_key}" && "${cert_public_key}" == "${key_public_key}" ]]
+serial="$(openssl x509 -in "${stage}/fullchain.pem" -noout -serial | sed 's/^serial=//')"
+[[ "${serial}" =~ ^[0-9A-Fa-f]+$ ]]
+final="${PANEL_TLS_ROOT}/${serial}"
+if [[ -d "${final}" ]]; then
+  cmp -s "${stage}/fullchain.pem" "${final}/fullchain.pem"
+  cmp -s "${stage}/privkey.pem" "${final}/privkey.pem"
+  cleanup
+  stage=""
+else
+  mv -T -- "${stage}" "${final}"
+  stage=""
+  sync -f "${PANEL_TLS_ROOT}"
+fi
+
+previous_target=""
+if [[ -e "${PANEL_TLS_CURRENT}" || -L "${PANEL_TLS_CURRENT}" ]]; then
+  [[ -L "${PANEL_TLS_CURRENT}" ]]
+  previous_target="$(readlink "${PANEL_TLS_CURRENT}")"
+  [[ "${previous_target}" =~ ^panel-tls/[0-9A-Fa-f]+$ ]]
+  [[ -d "/etc/hysteria2-panel/${previous_target}" ]]
+fi
+link_stage="$(mktemp "/etc/hysteria2-panel/.panel-tls-current.XXXXXXXX")"
+rm -f -- "${link_stage}"
+ln -s "panel-tls/${serial}" "${link_stage}"
+mv -Tf -- "${link_stage}" "${PANEL_TLS_CURRENT}"
+link_stage=""
+sync -f /etc/hysteria2-panel
+
+if systemctl is-active --quiet hysteria2-panel.service; then
+  if ! systemctl restart hysteria2-panel.service; then
+    if [[ -n "${previous_target}" ]]; then
+      rollback_link="$(mktemp "/etc/hysteria2-panel/.panel-tls-rollback.XXXXXXXX")"
+      rm -f -- "${rollback_link}"
+      ln -s "${previous_target}" "${rollback_link}"
+      mv -Tf -- "${rollback_link}" "${PANEL_TLS_CURRENT}"
+      rollback_link=""
+      sync -f /etc/hysteria2-panel
+      systemctl restart hysteria2-panel.service || true
+    fi
+    exit 1
+  fi
+fi
+EOF
+  chmod 0755 /opt/hysteria2-panel/acme-deploy.sh
+
+  cat > /opt/hysteria2-panel/acme-renew.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exec /usr/bin/certbot renew \
+  --config-dir /etc/hysteria2-panel/acme \
+  --work-dir /var/lib/hysteria2-panel/acme-work \
+  --logs-dir /var/lib/hysteria2-panel/acme-logs \
+  --cert-name "${HY2PANEL_PANEL_PUBLIC_HOST:?}" \
+  --quiet \
+  --deploy-hook /opt/hysteria2-panel/acme-deploy.sh
+EOF
+  chmod 0755 /opt/hysteria2-panel/acme-renew.sh
+
+  for alias_spec in \
+    "${PANEL_CERT_FILE}|panel-tls-current/fullchain.pem" \
+    "${PANEL_KEY_FILE}|panel-tls-current/privkey.pem"; do
+    IFS='|' read -r alias_path alias_target <<< "${alias_spec}"
+    if [[ -e "${alias_path}" || -L "${alias_path}" ]]; then
+      [[ -L "${alias_path}" && "$(readlink "${alias_path}")" == "${alias_target}" ]] \
+        || fail "面板 TLS 别名路径已被其他文件占用：${alias_path}"
+    else
+      ln -s "${alias_target}" "${alias_path}"
+    fi
+  done
+  /opt/hysteria2-panel/acme-deploy.sh \
+    || fail "Let’s Encrypt 证书部署校验失败；未启动面板"
+else
+  rm -f -- /opt/hysteria2-panel/acme-deploy.sh /opt/hysteria2-panel/acme-renew.sh
+fi
 
 cat > /etc/hysteria2-panel/hysteria.yaml <<EOF
 listen: :${HYSTERIA_PORT}
@@ -4520,6 +4818,57 @@ TasksMax=32
 MemoryMax=192M
 EOF
 
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  cat > /etc/systemd/system/hysteria2-panel-cert-renew.service <<'EOF'
+[Unit]
+Description=Renew the Hysteria 2 panel ACME certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=/usr/bin/flock --exclusive --nonblock /run/hysteria2-panel-maintenance/lock /opt/hysteria2-panel/acme-renew.sh
+TimeoutStartSec=30min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/etc/hysteria2-panel /var/lib/hysteria2-panel /run/hysteria2-panel-maintenance
+TasksMax=64
+MemoryMax=256M
+EOF
+
+  cat > /etc/systemd/system/hysteria2-panel-cert-renew.timer <<'EOF'
+[Unit]
+Description=Check the Hysteria 2 panel ACME certificate twice daily
+
+[Timer]
+OnCalendar=*-*-* 03,15:00:00
+RandomizedDelaySec=1h
+Persistent=true
+Unit=hysteria2-panel-cert-renew.service
+
+[Install]
+WantedBy=timers.target
+EOF
+else
+  systemctl disable --now hysteria2-panel-cert-renew.timer >/dev/null 2>&1 || true
+  rm -f -- \
+    /etc/systemd/system/hysteria2-panel-cert-renew.service \
+    /etc/systemd/system/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
+fi
+
 cat > /etc/systemd/system/hysteria2-panel-update.service <<EOF
 [Unit]
 Description=Install the latest formal Hysteria 2 panel release
@@ -4558,6 +4907,10 @@ unset HY2PANEL_ADMIN_PASSWORD ADMIN_PASSWORD
 chown -R hy2panel:hy2panel /var/lib/hysteria2-panel
 chmod 0750 /var/lib/hysteria2-panel
 find /var/lib/hysteria2-panel -type f -exec chmod 0600 {} +
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  secure_acme_runtime_directories \
+    || fail "无法收紧 ACME 运行目录权限；安装已停止"
+fi
 
 optimize_network_stack
 systemctl daemon-reload
@@ -4565,6 +4918,10 @@ assert_units_claimed_by_installer
 systemctl enable hysteria2-panel-restore-resume.service
 systemctl enable hysteria2-panel.service
 systemctl enable hysteria2-panel-server.service
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  systemctl enable hysteria2-panel-cert-renew.timer
+  systemctl start hysteria2-panel-cert-renew.timer
+fi
 if (( EXISTING_INSTALL == 1 )); then
   systemctl is-active --quiet hysteria2-panel.service \
     && fail "切换新版本前面板写入意外恢复；旧版本将自动恢复"
@@ -4620,7 +4977,9 @@ ss -H -ltn "sport = :${PANEL_PORT}" | grep -q . || fail "面板端口未监听"
 "${PYTHON_BIN}" /opt/hysteria2-panel/hysteria2_panel.py \
   record-egress-policy-state "${EGRESS_POLICY}" \
   || fail "无法记录可验证的出站策略状态"
-configure_firewall
+if [[ "${PANEL_SCHEME}" != "https" ]]; then
+  configure_firewall
+fi
 flush_install_payload_for_commit \
   || fail "无法在提交前持久化首次部署文件；正在恢复部署前状态"
 durable_replace_file /dev/null "${MANAGED_MARKER}" 0644 \
@@ -4645,7 +5004,7 @@ fi
 
 echo
 echo "部署完成"
-echo "面板地址：${PANEL_SCHEME}://${PUBLIC_HOST}:${PANEL_PORT}/"
+echo "面板地址：${PANEL_SCHEME}://${PANEL_PUBLIC_HOST}:${PANEL_PORT}/"
 echo "Hysteria 端口：TCP/UDP ${HYSTERIA_PORT}"
 if (( UDP_443_ENABLED == 1 )); then
   echo "账号专属 Hysteria 入口：UDP 443（需在编辑用户中单独开启）"
@@ -4663,7 +5022,8 @@ echo "主机防火墙：${FIREWALL_RESULT}"
 echo "云平台安全组仍需放行 TCP/UDP ${HYSTERIA_PORT} 与 TCP ${PANEL_PORT}。"
 (( UDP_443_ENABLED == 0 )) || echo "云平台安全组还需放行 TCP/UDP 443。"
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
-  echo "首次打开自签名 HTTPS 地址时，浏览器会显示证书警告。"
+  echo "云平台安全组还需持续放行 TCP 80 用于 ACME HTTP-01 续期。"
+  echo "面板 HTTPS：Let’s Encrypt 已签发，systemd 将每天检查两次续期。"
 else
   echo "安全提示：面板当前使用明文 HTTP，请限制可信来源访问。"
   if [[ -n "${detected_host}" && "${PUBLIC_HOST}" != "${detected_host}" ]]; then

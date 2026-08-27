@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.22.3"', source)
+        self.assertIn('PANEL_VERSION="0.23.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -564,6 +564,7 @@ esac
         self.assertNotRegex(source, r'ADMIN_PASSWORD="[^"$]{8,}"')
         self.assertIn("NODE_NAME", source)
         self.assertIn("PUBLIC_HOST", source)
+        self.assertIn("PANEL_PUBLIC_HOST", source)
         self.assertIn("HYSTERIA_PORT", source)
         self.assertIn("PANEL_SCHEME", source)
         self.assertNotIn("--if-missing", source)
@@ -590,6 +591,7 @@ esac
         self.assertIn('HYSTERIA_PORT="${EXISTING_HYSTERIA_PORT}"', source)
         self.assertIn('PANEL_PORT="${EXISTING_PANEL_PORT}"', source)
         self.assertIn('PANEL_SCHEME="${EXISTING_PANEL_SCHEME}"', source)
+        self.assertIn('PANEL_PUBLIC_HOST="${EXISTING_PANEL_PUBLIC_HOST}"', source)
         self.assertIn('EGRESS_POLICY="${EXISTING_EGRESS_POLICY}"', source)
         self.assertIn('RESET_ADMIN="0"', source)
 
@@ -602,6 +604,10 @@ esac
         self.assertIn('EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT}"', source)
         self.assertIn('EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT}"', source)
         self.assertIn('EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME}"', source)
+        self.assertIn(
+            'EXISTING_PANEL_PUBLIC_HOST="${HY2PANEL_PANEL_PUBLIC_HOST:-}"',
+            source,
+        )
         self.assertIn('EXISTING_AUTH_PORT="${HY2PANEL_AUTH_PORT}"', source)
         self.assertIn('EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT}"', source)
         self.assertIn("required_identity_variables=(", source)
@@ -615,6 +621,111 @@ esac
         self.assertIn('管理面板:   HTTP TCP 19998（可选 HTTPS）', source)
         self.assertIn('域名的明文 HTTP 被网络重置', source)
         self.assertIn('${PANEL_SCHEME}://${detected_host}:${PANEL_PORT}/', source)
+
+    def test_https_uses_a_validated_panel_domain_and_never_the_node_certificate(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn(
+            'read -r -p "面板公网域名',
+            source,
+        )
+        self.assertIn('PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST,,}"', source)
+        self.assertIn("validate_panel_public_host", source)
+        self.assertIn(
+            "HY2PANEL_PANEL_PUBLIC_HOST=${PANEL_PUBLIC_HOST}",
+            source,
+        )
+        self.assertIn(
+            "HY2PANEL_PANEL_TLS_CERT=${PANEL_CERT_FILE}",
+            source,
+        )
+        self.assertIn(
+            "HY2PANEL_PANEL_TLS_KEY=${PANEL_KEY_FILE}",
+            source,
+        )
+        self.assertIn("HY2PANEL_TLS_CERT=${CERT_FILE}", source)
+        self.assertIn("HY2PANEL_TLS_KEY=${KEY_FILE}", source)
+        self.assertIn("cert: ${CERT_FILE}", source)
+        self.assertIn("key: ${KEY_FILE}", source)
+
+        acme_block = source.split("issue_panel_acme_certificate()", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertNotIn("${CERT_FILE}", acme_block)
+        self.assertNotIn("${KEY_FILE}", acme_block)
+        self.assertNotIn("server.crt", acme_block)
+        self.assertNotIn("server.key", acme_block)
+
+    def test_https_uses_certbot_http01_and_a_panel_only_renewal_timer(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn("certbot certonly", source)
+        self.assertIn("--standalone", source)
+        self.assertIn("--preferred-challenges http-01", source)
+        self.assertIn('--cert-name "${PANEL_PUBLIC_HOST}"', source)
+        self.assertIn('-d "${PANEL_PUBLIC_HOST}"', source)
+        self.assertIn("--non-interactive", source)
+        self.assertIn("--agree-tos", source)
+        self.assertIn("--register-unsafely-without-email", source)
+        self.assertIn("dnf install -y epel-release", source)
+        self.assertIn("yum install -y epel-release", source)
+        self.assertIn("-noout -checkhost", source)
+        self.assertIn('chown root:hy2panel "${stage}"', source)
+        self.assertIn('chmod 0750 "${stage}"', source)
+        self.assertIn("hysteria2-panel-cert-renew.service", source)
+        self.assertIn("hysteria2-panel-cert-renew.timer", source)
+        self.assertIn("OnCalendar=*-*-* 03,15:00:00", source)
+        self.assertIn("RandomizedDelaySec=1h", source)
+        self.assertIn("Persistent=true", source)
+
+        deploy_script = source.split(
+            "cat > /opt/hysteria2-panel/acme-deploy.sh <<'EOF'", 1
+        )[1].split("\nEOF", 1)[0]
+        self.assertIn('previous_target="$(readlink "${PANEL_TLS_CURRENT}")"', deploy_script)
+        self.assertIn('if ! systemctl restart hysteria2-panel.service; then', deploy_script)
+        self.assertIn('ln -s "${previous_target}" "${rollback_link}"', deploy_script)
+        self.assertNotIn("hysteria2-panel-server.service", deploy_script)
+        self.assertNotIn("server.crt", deploy_script)
+        self.assertNotIn("server.key", deploy_script)
+
+        renew_unit = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-cert-renew.service <<'EOF'",
+            1,
+        )[1].split("\nEOF", 1)[0]
+        self.assertIn("/opt/hysteria2-panel/acme-renew.sh", renew_unit)
+        self.assertNotIn("hysteria2-panel-server.service", renew_unit)
+        self.assertNotIn("server.crt", renew_unit)
+        self.assertNotIn("server.key", renew_unit)
+
+    def test_https_opens_http01_port_and_reports_the_acme_panel_address(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn(
+            '[[ "${PANEL_SCHEME}" != "https" ]] || FIREWALL_RULES+=("80/tcp")',
+            source,
+        )
+        self.assertIn('ss -H -ltn "sport = :80"', source)
+        self.assertIn(
+            'echo "面板地址：${PANEL_SCHEME}://${PANEL_PUBLIC_HOST}:${PANEL_PORT}/"',
+            source,
+        )
+        self.assertIn("云平台安全组还需持续放行 TCP 80 用于 ACME HTTP-01 续期", source)
+        self.assertNotIn("首次打开自签名 HTTPS 地址", source)
+
+    def test_generated_acme_scripts_have_valid_shell_syntax(self):
+        source = INSTALLER.read_text()
+
+        for script_path in (
+            "/opt/hysteria2-panel/acme-deploy.sh",
+            "/opt/hysteria2-panel/acme-renew.sh",
+        ):
+            with self.subTest(script_path=script_path):
+                marker = f"cat > {script_path} <<'EOF'"
+                script = source.split(marker, 1)[1].split("\nEOF", 1)[0]
+                result = subprocess.run(
+                    ["bash", "-n"], input=script, capture_output=True, text=True
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
 
     def test_installer_supports_debian_and_rhel_package_managers(self):
         source = INSTALLER.read_text()
@@ -2183,7 +2294,7 @@ rollback_firewall_changes
         self.assertIn('hysteria2-panel-restore-resume.wants', source)
         self.assertIn('systemctl disable hysteria2-panel-restore-resume.service', source)
         self.assertIn('/etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service', source)
-        configure = source.rindex("\nconfigure_firewall\n")
+        configure = source.rindex("configure_firewall\n")
         marker = source.index(
             'durable_replace_file /dev/null "${MANAGED_MARKER}" 0644',
             configure,
