@@ -280,6 +280,65 @@ class DistributedAuthorizationTests(DistributedControlCase):
 
         self.assertTrue(result["ok"])
 
+    def test_new_panel_runtime_epoch_invalidates_persisted_auth_and_snapshot_leases(self):
+        request_id = "e" * 32
+        allowed = self.service.authorize(
+            self.auth_payload(self.nodes[0], 45, request_id=request_id),
+            remote_ip="203.0.113.1",
+        )
+        self.assertTrue(allowed["ok"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE proxy_users SET tx_bytes = 123, rx_bytes = 456 WHERE name = 'alice'"
+            )
+            connection.execute(
+                """INSERT INTO local_auth_leases(
+                    decision_id, user_name, created_at, expires_at
+                ) VALUES (?, 'alice', ?, ?)""",
+                ("d" * 32, self.now[0], self.now[0] + 5),
+            )
+
+        self.db.begin_runtime_epoch()
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            self.assertEqual(
+                (0, 0, 0, 0),
+                tuple(
+                    connection.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                    for table in (
+                        "node_online_snapshots",
+                        "node_online_counts",
+                        "node_auth_decisions",
+                        "local_auth_leases",
+                    )
+                ),
+            )
+            timestamps = connection.execute(
+                """SELECT COUNT(*) FROM nodes
+                WHERE policy_state = 'protocol_ready'
+                    AND (last_snapshot_at IS NOT NULL
+                        OR last_traffic_ack_at IS NOT NULL)"""
+            ).fetchone()[0]
+        self.assertEqual(0, timestamps)
+        user = self.db.get_proxy_user_by_name("alice")
+        self.assertEqual((123, 456), (user["tx_bytes"], user["rx_bytes"]))
+
+        with self.assertRaises(NodeRequestRejected):
+            self.service.authorize(
+                self.auth_payload(self.nodes[0], 46, request_id=request_id),
+                remote_ip="203.0.113.1",
+            )
+
+        for index, node_id in enumerate(self.nodes, 47):
+            self.service.accept_online_snapshot(
+                self.snapshot(node_id, index, sequence=2),
+                remote_ip="203.0.113.{}".format(int(node_id, 16)),
+            )
+        refreshed = self.service.authorize(
+            self.auth_payload(self.nodes[0], 49), remote_ip="203.0.113.1"
+        )
+        self.assertTrue(refreshed["ok"])
+
     def test_local_auth_accepts_remote_snapshots_within_control_retry_budget(self):
         class Stats:
             def collect_and_clear(self):
@@ -458,6 +517,59 @@ class DistributedTrafficTests(DistributedControlCase):
         user = self.db.get_proxy_user_by_name("alice")
         self.assertEqual((1, 2), (user["tx_bytes"], user["rx_bytes"]))
 
+    def test_quota_crossing_queues_one_fixed_kick_for_every_ready_node(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE proxy_users SET traffic_limit_bytes = 25 WHERE name = 'alice'"
+            )
+        batch_id = "c" * 32
+
+        self.service.apply_traffic_batch(
+            self.traffic_payload(self.nodes[0], 55, batch_id=batch_id),
+            remote_ip="203.0.113.1",
+        )
+        self.service.apply_traffic_batch(
+            self.traffic_payload(self.nodes[0], 56, batch_id=batch_id),
+            remote_ip="203.0.113.1",
+        )
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            commands = connection.execute(
+                """SELECT node_id, kind, payload FROM node_commands
+                ORDER BY node_id"""
+            ).fetchall()
+        self.assertEqual(
+            [
+                (self.nodes[0], "KICK_USERS", '{"users":["alice"]}'),
+                (self.nodes[1], "KICK_USERS", '{"users":["alice"]}'),
+            ],
+            commands,
+        )
+
+    def test_local_traffic_quota_crossing_also_kicks_every_ready_node(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE proxy_users SET traffic_limit_bytes = 25 WHERE name = 'alice'"
+            )
+
+        self.assertTrue(
+            self.db.apply_traffic_batch(
+                "d" * 32, {"alice": {"tx": 10, "rx": 20}}
+            )
+        )
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            commands = connection.execute(
+                "SELECT node_id, kind, payload FROM node_commands ORDER BY node_id"
+            ).fetchall()
+        self.assertEqual(
+            [
+                (self.nodes[0], "KICK_USERS", '{"users":["alice"]}'),
+                (self.nodes[1], "KICK_USERS", '{"users":["alice"]}'),
+            ],
+            commands,
+        )
+
     def test_spooled_batch_survives_a_control_plane_outage(self):
         observed_at = self.now[0]
         self.now[0] += 600
@@ -471,6 +583,16 @@ class DistributedTrafficTests(DistributedControlCase):
 
 
 class NodeCommandTests(DistributedControlCase):
+    def test_broadcast_kick_rejects_invalid_names_without_partial_commands(self):
+        for names in (None, [object()], ["user-{:03d}".format(i) for i in range(101)]):
+            with self.subTest(names=names):
+                with self.assertRaises(ValueError):
+                    self.db.queue_kick_users_on_ready_nodes(names, self.now[0])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            self.assertEqual(
+                0, connection.execute("SELECT COUNT(*) FROM node_commands").fetchone()[0]
+            )
+
     def test_only_fixed_commands_can_be_polled_and_acknowledged_idempotently(self):
         command = self.db.queue_node_command(
             self.nodes[0], "KICK_USERS", {"users": ["alice"]}, self.now[0]

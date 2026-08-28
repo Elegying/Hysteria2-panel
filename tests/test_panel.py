@@ -6545,7 +6545,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.27.4", body)
+        self.assertIn("v0.27.5", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
@@ -6829,6 +6829,10 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_dashboard_escapes_names_and_disabling_kicks_user(self):
         created = self.db.create_proxy_user("<script>alert(1)</script>")
+        distributed_kicks = []
+        self.db.queue_kick_users_on_ready_nodes = (
+            lambda names: distributed_kicks.append(list(names))
+        )
         headers, csrf_token = self.authenticated_headers()
 
         with self.request("/", headers=headers) as response:
@@ -6845,6 +6849,7 @@ class PanelHttpTests(unittest.TestCase):
             )
         self.assertEqual(303, raised.exception.code)
         self.assertEqual(["<script>alert(1)</script>"], self.stats.kicked)
+        self.assertEqual([["<script>alert(1)</script>"]], distributed_kicks)
         self.assertIsNone(self.db.authenticate_token(created["token"]))
 
     def test_audit_failure_does_not_hide_new_credentials(self):

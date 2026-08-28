@@ -1948,6 +1948,20 @@ class Database:
                 if column not in command_columns:
                     connection.execute(statement)
 
+    def begin_runtime_epoch(self):
+        """Invalidate short-lived distributed state before serving new auth."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM node_online_counts")
+            connection.execute("DELETE FROM node_online_snapshots")
+            connection.execute("DELETE FROM node_auth_decisions")
+            connection.execute("DELETE FROM local_auth_leases")
+            connection.execute(
+                """UPDATE nodes SET last_snapshot_at = NULL,
+                    last_traffic_ack_at = NULL
+                WHERE policy_state = 'protocol_ready'"""
+            )
+
     def _fingerprint(self, token):
         return hmac.new(self.hmac_key, token.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -2262,6 +2276,7 @@ class Database:
                 "SELECT 1 FROM applied_traffic_batches WHERE batch_id = ?", (batch_id,)
             ).fetchone():
                 return False
+            exhausted_users = set()
             for name, traffic in traffic_by_user.items():
                 if not isinstance(name, str) or not isinstance(traffic, dict):
                     raise ValueError("traffic entry is invalid")
@@ -2269,11 +2284,25 @@ class Database:
                 rx = traffic.get("rx", 0)
                 if not isinstance(tx, int) or not isinstance(rx, int) or tx < 0 or rx < 0:
                     raise ValueError("traffic counters must be non-negative integers")
+                user = connection.execute(
+                    """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes
+                    FROM proxy_users WHERE name = ? COLLATE NOCASE""",
+                    (name,),
+                ).fetchone()
+                if user is not None and (
+                    int(user["tx_bytes"]) + int(user["rx_bytes"])
+                    < int(user["traffic_limit_bytes"])
+                    <= int(user["tx_bytes"]) + int(user["rx_bytes"]) + tx + rx
+                ):
+                    exhausted_users.add(user["name"])
                 connection.execute(
                     """UPDATE proxy_users SET tx_bytes = tx_bytes + ?, rx_bytes = rx_bytes + ?,
                     updated_at = ? WHERE name = ? COLLATE NOCASE""",
                     (tx, rx, now, name),
                 )
+            self._queue_kick_users_on_ready_nodes(
+                connection, exhausted_users, now
+            )
             connection.execute(
                 "INSERT INTO applied_traffic_batches(batch_id, applied_at) VALUES (?, ?)",
                 (batch_id, now),
@@ -2598,7 +2627,13 @@ class Database:
                     or node["verified_at"] is None
                     or node["policy_state"] != "protocol_ready"
                     or node["data_plane_state"]
-                    not in {"not_issued", "bootstrap_issued"}
+                    not in {
+                        "not_issued",
+                        "bootstrap_issued",
+                        "data_plane_installed",
+                        "direct_canary_passed",
+                        "dns_admitted",
+                    }
                     or (node["expected_ip"] or node["observed_ip"]) != bound_ip
                 ):
                     return None
@@ -2626,11 +2661,18 @@ class Database:
                     ),
                 )
                 updated = connection.execute(
-                    """UPDATE nodes SET data_plane_state = 'bootstrap_issued'
+                    """UPDATE nodes SET data_plane_state = CASE
+                        WHEN data_plane_state IN ('not_issued', 'bootstrap_issued')
+                            THEN 'bootstrap_issued'
+                        ELSE data_plane_state END
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL
                         AND policy_state = 'protocol_ready'
-                        AND data_plane_state IN ('not_issued', 'bootstrap_issued')""",
+                        AND data_plane_state IN (
+                            'not_issued', 'bootstrap_issued',
+                            'data_plane_installed', 'direct_canary_passed',
+                            'dns_admitted'
+                        )""",
                     (node_id,),
                 )
                 if updated.rowcount != 1:
@@ -2671,7 +2713,10 @@ class Database:
                         AND n.status = 'pending_verification'
                         AND n.verified_at IS NOT NULL
                         AND n.policy_state = 'protocol_ready'
-                        AND n.data_plane_state = 'bootstrap_issued'""",
+                        AND n.data_plane_state IN (
+                            'bootstrap_issued', 'data_plane_installed',
+                            'direct_canary_passed', 'dns_admitted'
+                        )""",
                     (node_id, token_digest, fetched_at),
                 ).fetchone()
                 if grant is None or grant["bound_ip"] != remote_ip:
@@ -2728,7 +2773,10 @@ class Database:
                         AND n.status = 'pending_verification'
                         AND n.verified_at IS NOT NULL
                         AND n.policy_state = 'protocol_ready'
-                        AND n.data_plane_state = 'bootstrap_issued'""",
+                        AND n.data_plane_state IN (
+                            'bootstrap_issued', 'data_plane_installed',
+                            'direct_canary_passed', 'dns_admitted'
+                        )""",
                     (node_id, token_digest, acknowledged_at),
                 ).fetchone()
                 if grant is None or grant["bound_ip"] != remote_ip:
@@ -2749,9 +2797,15 @@ class Database:
                 )
                 node_updated = connection.execute(
                     """UPDATE nodes SET
-                        data_plane_state = 'data_plane_installed',
+                        data_plane_state = CASE
+                            WHEN data_plane_state = 'bootstrap_issued'
+                                THEN 'data_plane_installed'
+                            ELSE data_plane_state END,
                         data_plane_installed_at = ?
-                    WHERE node_id = ? AND data_plane_state = 'bootstrap_issued'
+                    WHERE node_id = ? AND data_plane_state IN (
+                            'bootstrap_issued', 'data_plane_installed',
+                            'direct_canary_passed', 'dns_admitted'
+                        )
                         AND status = 'pending_verification'
                         AND verified_at IS NOT NULL
                         AND policy_state = 'protocol_ready'""",
@@ -3227,10 +3281,12 @@ class Database:
                 users = {
                     row["name"]: row
                     for row in connection.execute(
-                        "SELECT name, tx_bytes, rx_bytes FROM proxy_users"
+                        """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes
+                        FROM proxy_users"""
                     )
                 }
                 unknown_users = 0
+                exhausted_users = set()
                 for name, counters in traffic.items():
                     user = users.get(name)
                     if user is None:
@@ -3240,12 +3296,21 @@ class Database:
                     rx = int(counters["rx"])
                     if user["tx_bytes"] > 2**63 - 1 - tx or user["rx_bytes"] > 2**63 - 1 - rx:
                         raise OverflowError("traffic counter overflow")
+                    if (
+                        int(user["tx_bytes"]) + int(user["rx_bytes"])
+                        < int(user["traffic_limit_bytes"])
+                        <= int(user["tx_bytes"]) + int(user["rx_bytes"]) + tx + rx
+                    ):
+                        exhausted_users.add(user["name"])
                     connection.execute(
                         """UPDATE proxy_users SET tx_bytes = tx_bytes + ?,
                             rx_bytes = rx_bytes + ?, updated_at = ?
                         WHERE name = ? COLLATE NOCASE""",
                         (tx, rx, int(accepted_at), name),
                     )
+                self._queue_kick_users_on_ready_nodes(
+                    connection, exhausted_users, int(accepted_at)
+                )
                 connection.execute(
                     """INSERT INTO node_traffic_batches(
                         node_id, batch_id, unknown_users, applied_at
@@ -3277,6 +3342,63 @@ class Database:
                 and all(NAME_PATTERN.fullmatch(str(name or "")) for name in payload["users"])
             )
         return kind in {"REFRESH_SNAPSHOT", "FLUSH_TRAFFIC"} and payload == {}
+
+    def _queue_kick_users_on_ready_nodes(self, connection, names, created_at):
+        if (
+            not isinstance(names, (list, tuple, set))
+            or len(names) > 100
+            or not all(
+                isinstance(name, str) and NAME_PATTERN.fullmatch(name)
+                for name in names
+            )
+        ):
+            raise ValueError("kick user list is invalid")
+        names = sorted(set(names), key=str.casefold)
+        if not names:
+            return 0
+        payload = json.dumps(
+            {"users": names},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        queued = 0
+        for row in connection.execute(
+            """SELECT node_id FROM nodes
+            WHERE policy_state = 'protocol_ready'
+                AND status = 'pending_verification' AND verified_at IS NOT NULL
+            ORDER BY node_id"""
+        ):
+            existing = connection.execute(
+                """SELECT 1 FROM node_commands
+                WHERE node_id = ? AND kind = 'KICK_USERS' AND payload = ?
+                    AND acked_at IS NULL AND attempts < 10""",
+                (row["node_id"], payload),
+            ).fetchone()
+            if existing is not None:
+                continue
+            connection.execute(
+                """INSERT INTO node_commands(
+                    command_id, node_id, kind, payload, created_at, next_attempt_at
+                ) VALUES (?, ?, 'KICK_USERS', ?, ?, ?)""",
+                (
+                    uuid.uuid4().hex,
+                    row["node_id"],
+                    payload,
+                    int(created_at),
+                    int(created_at),
+                ),
+            )
+            queued += 1
+        return queued
+
+    def queue_kick_users_on_ready_nodes(self, names, created_at=None):
+        created_at = int(time.time()) if created_at is None else int(created_at)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self._queue_kick_users_on_ready_nodes(
+                connection, names, created_at
+            )
 
     def queue_node_command(self, node_id, kind, payload, created_at):
         node_id = str(node_id or "")
@@ -4520,8 +4642,10 @@ class PanelHandler(JsonHandler):
                 snapshot_fresh = bool(
                     node.get("last_snapshot_at")
                     and node.get("last_traffic_ack_at")
-                    and current_time - node["last_snapshot_at"] <= 5
-                    and current_time - node["last_traffic_ack_at"] <= 5
+                    and current_time - node["last_snapshot_at"]
+                    <= MAX_STATE_AGE_SECONDS
+                    and current_time - node["last_traffic_ack_at"]
+                    <= MAX_STATE_AGE_SECONDS
                 )
                 details.append(
                     "协议就绪 · {}".format(
@@ -4564,19 +4688,27 @@ class PanelHandler(JsonHandler):
             )
             if (
                 data_plane_eligible
-                and data_plane_state in {"not_issued", "bootstrap_issued"}
+                and data_plane_state
+                in {
+                    "not_issued",
+                    "bootstrap_issued",
+                    "data_plane_installed",
+                    "direct_canary_passed",
+                    "dns_admitted",
+                }
                 and self.app.secure_cookies
                 and self.app.data_plane_bootstrap_service is not None
             ):
-                data_plane_action = (
-                    "部署数据面"
-                    if data_plane_state == "not_issued"
-                    else "重新生成部署码"
-                )
+                if data_plane_state == "not_issued":
+                    data_plane_action = "部署数据面"
+                elif data_plane_state == "bootstrap_issued":
+                    data_plane_action = "重新生成部署码"
+                else:
+                    data_plane_action = "生成数据面升级码"
                 node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/bootstrap" data-data-plane-bootstrap-form><input type="hidden" name="csrf" value="{csrf}"><button class="success compact-button" type="submit">{action}</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf, action=data_plane_action
                 )
-            elif data_plane_eligible and data_plane_state == "data_plane_installed":
+            if data_plane_eligible and data_plane_state == "data_plane_installed":
                 node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/canary/pass" data-data-plane-canary-form data-confirm="只记录该节点直连灰度通过，不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认直连灰度通过</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
@@ -5327,6 +5459,8 @@ class PanelHandler(JsonHandler):
                     allow_udp_443=allow_udp_443,
                     expected_generation=generation,
                 )
+                if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
+                    self._kick_safely(user["name"])
         except (TypeError, ValueError) as exc:
             if inline:
                 self.send_json(400, {"error": str(exc)})
@@ -5366,11 +5500,18 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("audit write failed")
 
     def _kick_safely(self, name):
+        self._queue_remote_kick_safely(name)
         try:
             self.app.stats_client.kick(name)
         except Exception:
             self.app.usage_manager._record_health(False)
             LOGGER.exception("disconnecting active user failed")
+
+    def _queue_remote_kick_safely(self, name):
+        try:
+            self.app.database.queue_kick_users_on_ready_nodes([name])
+        except Exception:
+            LOGGER.exception("queueing distributed user disconnect failed")
 
     def _handle_user_action(self, session, user_id, action, form):
         try:
@@ -5433,6 +5574,7 @@ class PanelHandler(JsonHandler):
                     self.app.usage_manager.reset_user(
                         user_id, expected_generation=generation
                     )
+                    self._queue_remote_kick_safely(user["name"])
                     self._audit_safely(
                         session["username"], "proxy_traffic_reset", user["name"]
                     )
@@ -6557,6 +6699,10 @@ def run_service(settings):
     database.initialize()
     if not database.has_admin():
         raise RuntimeError("no administrator exists; run init-admin first")
+    # Runtime leases and online snapshots describe one live panel process. A
+    # restarted panel must fail new authentication closed until every ready
+    # node has published a new traffic checkpoint and online snapshot.
+    database.begin_runtime_epoch()
     stats_client = make_stats_client(settings)
     usage_manager = UsageManager(database, stats_client)
     backup_manager = BackupManager(
