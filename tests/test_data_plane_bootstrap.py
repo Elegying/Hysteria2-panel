@@ -978,6 +978,29 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         self.assertEqual(32 * 1024 + 1, captured["maximum"])
         self.assertEqual(10, captured["timeout"])
 
+        expected_ack = {
+            "nodeId": "8" * 32,
+            "status": "DATA_PLANE_INSTALLED",
+        }
+        Response.response = expected_ack
+        self.assertEqual(expected_ack, client.ack("bootstrap_" + "T" * 40, {}))
+        self.assertEqual(8 * 1024 + 1, captured["maximum"])
+
+        for invalid_ack in (
+            {"status": "DATA_PLANE_INSTALLED"},
+            {"nodeId": "9" * 32, "status": "DATA_PLANE_INSTALLED"},
+            {"nodeId": "8" * 32, "status": "BOOTSTRAP_ISSUED"},
+            {
+                "nodeId": "8" * 32,
+                "status": "DATA_PLANE_INSTALLED",
+                "unexpected": True,
+            },
+        ):
+            with self.subTest(invalid_ack=invalid_ack):
+                Response.response = invalid_ack
+                with self.assertRaises(ProtocolError):
+                    client.ack("bootstrap_" + "T" * 40, {})
+
     def test_prepare_bundle_is_atomic_root_only_and_never_persists_token(self):
         destination = Path(self.temp_dir.name) / "data-plane"
         token = "bootstrap_" + "T" * 40
