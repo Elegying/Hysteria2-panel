@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.27.2"
+PANEL_VERSION="0.27.3"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -20,20 +20,20 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="86497777610165cd17d5a3e380d84882e060642d1d69510acc95265475ee5d5e"
+PANEL_SHA256="70ee0f872182bc418cfd3da6467918fbbe5f62533e8c56b8d9ac2c3be7af078d"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="4d2d45f3ca0a5e5355ef7b9102656cd7aa2a3a393337358da6ebf6ca07c55692"
+HY2PANEL_VERSION_SHA256="0962f1132e096a8d2565d9b2d67a9c6ffbe0851a2cdbf9ac7f8a154d68486f13"
 HY2PANEL_WEB_ASSETS_SHA256="333e186315f8b0f81e755ca8e71c60f4ea753ba6255eab9282fff8feb83f6110"
-HY2PANEL_OPERATIONS_SHA256="5f410c32713796e3d3f86370f1a9574f357e0fd43f5c7cbeda5cc3265f3a493b"
+HY2PANEL_OPERATIONS_SHA256="3b8974f3a90af2e06d24e895e521723d819411b2673011db87e70a15699e442e"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="71724c20a8b792fb78156901e08b501f82435666aa2ef7ea141c6dd3d86bfafc"
 HY2PANEL_DISTRIBUTED_SHA256="59699bef3ddcf260ce47e339d8bf557f08df3b6695bd89615fdcb1c4d9d09f63"
-NODE_AGENT_SHA256="97a7ae3ae502fa547dc560a82d0d78bf59b3fb958504270647d958bf02da5652"
+NODE_AGENT_SHA256="fc297cd38fe8ec267f4ef73b2dd63310acc81951b71d2b88052c4cd482e551a2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -57,6 +57,7 @@ SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel.conf
 TMPFILES_FILE=/etc/tmpfiles.d/hysteria2-panel.conf
 MAINTENANCE_RUNTIME_DIR=/run/hysteria2-panel-maintenance
 MAINTENANCE_LOCK_FILE=${MAINTENANCE_RUNTIME_DIR}/lock
+EGRESS_SWITCH_ACTIVE_MARKER=${MAINTENANCE_RUNTIME_DIR}/egress-switch-active
 MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
 NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
 NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node
@@ -5729,7 +5730,9 @@ Requires=hysteria2-panel.service
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStartPre=/usr/bin/touch ${EGRESS_SWITCH_ACTIVE_MARKER}
 ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy full
+ExecStopPost=-/bin/rm -f ${EGRESS_SWITCH_ACTIVE_MARKER}
 TimeoutStartSec=5min
 TimeoutStopSec=15s
 KillSignal=SIGTERM
@@ -5759,7 +5762,9 @@ Requires=hysteria2-panel.service
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStartPre=/usr/bin/touch ${EGRESS_SWITCH_ACTIVE_MARKER}
 ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-egress-policy web
+ExecStopPost=-/bin/rm -f ${EGRESS_SWITCH_ACTIVE_MARKER}
 TimeoutStartSec=5min
 TimeoutStopSec=15s
 KillSignal=SIGTERM
@@ -5786,6 +5791,7 @@ Description=Recover an interrupted Hysteria 2 egress policy transaction
 After=local-fs.target systemd-tmpfiles-setup.service
 Before=hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service
 ConditionPathExists=${EGRESS_TRANSACTION_MARKER}
+ConditionPathExists=!${EGRESS_SWITCH_ACTIVE_MARKER}
 
 [Service]
 Type=oneshot

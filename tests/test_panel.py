@@ -1594,6 +1594,99 @@ class OperationsTests(unittest.TestCase):
                 [command for command, _kwargs in calls],
             )
 
+    def test_egress_policy_controller_does_not_report_success_while_switch_unit_is_running(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            state_path = Path(directory) / "egress-state.json"
+            self.write_egress_state(
+                state_path, "web", (env_path, primary, secondary)
+            )
+
+            def runner(command, **kwargs):
+                if command[:2] == ["/usr/bin/sudo", "-n"]:
+                    env_path.write_text(env_path.read_text().replace("=web", "=full"))
+                    for path in (primary, secondary):
+                        path.write_bytes(
+                            panel_operations.EgressPolicyManager._replace_acl(
+                                path.read_bytes(), "full", 19998
+                            )
+                        )
+                    self.write_egress_state(
+                        state_path, "full", (env_path, primary, secondary)
+                    )
+                    raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                if command[-1] == "hysteria2-panel-egress-full.service":
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=(
+                            "LoadState=loaded\nActiveState=activating\n"
+                            "SubState=start\nResult=success\nExecMainStatus=0\n"
+                        ),
+                        stderr="",
+                    )
+                return mock.Mock(
+                    returncode=0,
+                    stdout="LoadState=loaded\nActiveState=active\n",
+                    stderr="",
+                )
+
+            controller = panel_operations.EgressPolicyController(
+                runner=runner,
+                env_path=env_path,
+                config_paths=(primary, secondary),
+                state_path=state_path,
+                expected_uid=os.geteuid(),
+            )
+
+            with self.assertRaises(panel_operations.EgressPolicyStateError):
+                controller.switch("full")
+
+    def test_egress_policy_controller_accepts_a_completed_switch_after_client_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env_path, primary, secondary = self.write_egress_fixture(directory)
+            state_path = Path(directory) / "egress-state.json"
+            self.write_egress_state(
+                state_path, "web", (env_path, primary, secondary)
+            )
+
+            def runner(command, **kwargs):
+                if command[:2] == ["/usr/bin/sudo", "-n"]:
+                    env_path.write_text(env_path.read_text().replace("=web", "=full"))
+                    for path in (primary, secondary):
+                        path.write_bytes(
+                            panel_operations.EgressPolicyManager._replace_acl(
+                                path.read_bytes(), "full", 19998
+                            )
+                        )
+                    self.write_egress_state(
+                        state_path, "full", (env_path, primary, secondary)
+                    )
+                    raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                if command[-1] == "hysteria2-panel-egress-full.service":
+                    return mock.Mock(
+                        returncode=0,
+                        stdout=(
+                            "LoadState=loaded\nActiveState=inactive\n"
+                            "SubState=dead\nResult=success\nExecMainStatus=0\n"
+                        ),
+                        stderr="",
+                    )
+                return mock.Mock(
+                    returncode=0,
+                    stdout="LoadState=loaded\nActiveState=active\n",
+                    stderr="",
+                )
+
+            controller = panel_operations.EgressPolicyController(
+                runner=runner,
+                env_path=env_path,
+                config_paths=(primary, secondary),
+                state_path=state_path,
+                expected_uid=os.geteuid(),
+            )
+
+            self.assertEqual("full", controller.switch("full"))
+
     def test_egress_policy_manager_switches_both_configs_and_persists_state(self):
         with tempfile.TemporaryDirectory() as directory:
             env_path, primary, secondary = self.write_egress_fixture(directory)
@@ -6424,7 +6517,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.27.2", body)
+        self.assertIn("v0.27.3", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
