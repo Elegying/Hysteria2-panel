@@ -128,6 +128,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 sent_at=self.now + 2,
                 accepted_at=self.now + 3,
                 remote_ip="154.9.234.210",
+                agent_version="0.25.0",
             )
         )
         self.assertFalse(
@@ -137,11 +138,13 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 sent_at=self.now + 4,
                 accepted_at=self.now + 5,
                 remote_ip="154.9.234.210",
+                agent_version="0.26.0",
             )
         )
         node = self.db.get_node_for_heartbeat(self.node_id)
         self.assertEqual(self.now + 3, node["last_heartbeat_at"])
         self.assertEqual("154.9.234.210", node["last_heartbeat_ip"])
+        self.assertEqual("0.25.0", node["agent_version"])
 
     def test_revoked_node_cannot_be_verified_or_accept_heartbeats(self):
         self.assertTrue(self.db.revoke_node(self.node_id, revoked_at=self.now + 1))
@@ -160,6 +163,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 sent_at=self.now + 2,
                 accepted_at=self.now + 2,
                 remote_ip="154.9.234.210",
+                agent_version="0.25.0",
             )
         )
 
@@ -224,6 +228,9 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
         )
         self.assertEqual(ed25519_public_key(), self.verifications[0][0])
         self.assertEqual(canonical_heartbeat(payload), self.verifications[0][1])
+        self.assertEqual(
+            "0.25.0", self.db.get_node_for_heartbeat(self.node_id)["agent_version"]
+        )
         with self.assertRaises(HeartbeatRejected):
             self.service.accept(payload, remote_ip="154.9.234.210")
 
