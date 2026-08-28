@@ -15,9 +15,12 @@ from pathlib import Path
 
 from hysteria2_panel import Database, PanelApplication, make_panel_server
 from node_agent import (
+    collect_data_plane_attestation,
     DataPlaneBootstrapClient,
     ProtocolError,
+    prepare_data_plane_bundle,
     render_data_plane_configs,
+    run_hysteria_from_template,
     validate_data_plane_identity,
 )
 from hy2panel.nodes import (
@@ -813,7 +816,8 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         for config in configs.values():
             self.assertIn("cert: /etc/hysteria2-panel-node/server.crt", config)
             self.assertIn("key: /etc/hysteria2-panel-node/server.key", config)
-            self.assertIn("secret: {}".format("S" * 48), config)
+            self.assertIn("secret: __HY2PANEL_STATS_SECRET__", config)
+            self.assertNotIn("S" * 48, config)
             self.assertIn('    - "reject(10.0.0.0/8)"', config)
             self.assertIn('    - "direct(all, tcp/443)"', config)
             self.assertTrue(config.endswith('    statusCode: 404\n'))
@@ -891,6 +895,267 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         )
         self.assertEqual(32 * 1024 + 1, captured["maximum"])
         self.assertEqual(10, captured["timeout"])
+
+    def test_prepare_bundle_is_atomic_root_only_and_never_persists_token(self):
+        destination = Path(self.temp_dir.name) / "data-plane"
+        token = "bootstrap_" + "T" * 40
+
+        class Client:
+            def fetch(_self, actual_token):
+                self.assertEqual(token, actual_token)
+                return dict(self.response)
+
+        result = prepare_data_plane_bundle(
+            Client(),
+            token,
+            destination,
+            architecture="amd64",
+            secret_factory=lambda _size: "S" * 48,
+        )
+
+        self.assertEqual(destination, result)
+        self.assertEqual(0o700, destination.stat().st_mode & 0o777)
+        expected_modes = {
+            "server.crt": 0o600,
+            "server.key": 0o600,
+            "hysteria-main.yaml": 0o600,
+            "hysteria-udp443.yaml": 0o600,
+            "stats.env": 0o600,
+            "bootstrap.json": 0o600,
+        }
+        self.assertEqual(expected_modes, {
+            path.name: path.stat().st_mode & 0o777
+            for path in destination.iterdir()
+        })
+        self.assertEqual(self.cert_path.read_bytes(), (destination / "server.crt").read_bytes())
+        self.assertEqual(self.key_path.read_bytes(), (destination / "server.key").read_bytes())
+        self.assertEqual(
+            "HY2PANEL_STATS_SECRET={}\n".format("S" * 48),
+            (destination / "stats.env").read_text(encoding="ascii"),
+        )
+        metadata = json.loads((destination / "bootstrap.json").read_text())
+        self.assertEqual(
+            {
+                "certificateDerSha256",
+                "certificateFileSha256",
+                "configProtocolVersion",
+                "egressPolicy",
+                "hysteriaSha256",
+                "hysteriaVersion",
+                "privateKeyPublicSha256",
+            },
+            set(metadata),
+        )
+        persisted = b"".join(path.read_bytes() for path in destination.iterdir())
+        self.assertNotIn(token.encode("ascii"), persisted)
+        self.assertNotIn(b"vpn.ssrvpn.vip", persisted)
+
+    def test_prepare_bundle_rejects_unsafe_destination_and_leaves_no_partial_files(self):
+        token = "bootstrap_" + "T" * 40
+
+        class InvalidClient:
+            def fetch(_self, _token):
+                response = dict(self.response)
+                response["certificateFileSha256"] = "0" * 64
+                return response
+
+        destination = Path(self.temp_dir.name) / "data-plane"
+        with self.assertRaises(ProtocolError):
+            prepare_data_plane_bundle(
+                InvalidClient(), token, destination, architecture="amd64"
+            )
+        self.assertFalse(destination.exists())
+        self.assertEqual([], list(Path(self.temp_dir.name).glob(".data-plane-*")))
+
+        destination.mkdir(mode=0o700)
+        with self.assertRaises(ProtocolError):
+            prepare_data_plane_bundle(
+                InvalidClient(), token, destination, architecture="amd64"
+            )
+
+    def test_hysteria_wrapper_substitutes_stats_secret_only_in_anonymous_memory(self):
+        template = Path(self.temp_dir.name) / "hysteria.yaml"
+        template.write_text(
+            "trafficStats:\n  secret: __HY2PANEL_STATS_SECRET__\n",
+            encoding="ascii",
+        )
+        captured = {}
+
+        class Executed(Exception):
+            pass
+
+        def execve(path, arguments, environment):
+            captured["path"] = path
+            captured["arguments"] = arguments
+            captured["environment"] = environment
+            descriptor = int(arguments[-1].rsplit("/", 1)[1])
+            captured["config"] = os.pread(descriptor, 65536, 0).decode("ascii")
+            raise Executed
+
+        anonymous = Path(self.temp_dir.name) / "anonymous-memory-test"
+
+        environment = {
+            "HY2PANEL_STATS_SECRET": "S" * 48,
+            "HYSTERIA_DISABLE_UPDATE_CHECK": "1",
+        }
+        with self.assertRaises(Executed):
+            run_hysteria_from_template(
+                "/opt/hysteria2-panel-node/bin/hysteria",
+                template,
+                environment=environment,
+                execve=execve,
+                memfd_factory=lambda: os.open(
+                    anonymous, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
+                ),
+            )
+
+        self.assertEqual(
+            "/opt/hysteria2-panel-node/bin/hysteria", captured["path"]
+        )
+        self.assertEqual(
+            [
+                "/opt/hysteria2-panel-node/bin/hysteria",
+                "server",
+                "-c",
+                captured["arguments"][-1],
+            ],
+            captured["arguments"],
+        )
+        self.assertTrue(captured["arguments"][-1].startswith("/proc/self/fd/"))
+        self.assertIn("secret: {}".format("S" * 48), captured["config"])
+        self.assertNotIn("HY2PANEL_STATS_SECRET", captured["environment"])
+        self.assertNotIn("S" * 48, template.read_text(encoding="ascii"))
+
+    def test_hysteria_wrapper_rejects_missing_duplicate_or_unsafe_templates(self):
+        template = Path(self.temp_dir.name) / "hysteria.yaml"
+        for content in (
+            "listen: :19999\n",
+            "__HY2PANEL_STATS_SECRET__\n__HY2PANEL_STATS_SECRET__\n",
+        ):
+            template.write_text(content, encoding="ascii")
+            with self.assertRaises(ProtocolError):
+                run_hysteria_from_template(
+                    "/opt/hysteria2-panel-node/bin/hysteria",
+                    template,
+                    environment={"HY2PANEL_STATS_SECRET": "S" * 48},
+                    execve=lambda *_args: None,
+                    memfd_factory=lambda: -1,
+                )
+
+
+class DataPlaneAttestationTests(unittest.TestCase):
+    def setUp(self):
+        HysteriaIdentityProviderTests.setUp(self)
+        provider = HysteriaIdentityProvider(
+            self.cert_path,
+            self.key_path,
+            egress_policy_provider=lambda: "web",
+        )
+        identity = provider()
+        self.root = Path(self.temp_dir.name)
+        self.metadata_path = self.root / "bootstrap.json"
+        self.metadata_path.write_text(
+            json.dumps(
+                {
+                    "certificateFileSha256": identity["certificateFileSha256"],
+                    "certificateDerSha256": identity["certificateDerSha256"],
+                    "privateKeyPublicSha256": identity["privateKeyPublicSha256"],
+                    "hysteriaVersion": "2.12.1",
+                    "hysteriaSha256": "f" * 64,
+                    "egressPolicy": "web",
+                    "configProtocolVersion": 1,
+                }
+            ),
+            encoding="ascii",
+        )
+        os.chmod(self.metadata_path, 0o600)
+        os.chmod(self.cert_path, 0o600)
+        os.chmod(self.key_path, 0o600)
+
+    def tearDown(self):
+        HysteriaIdentityProviderTests.tearDown(self)
+
+    def test_attestation_requires_every_fixed_service_listener_and_stats_endpoint(self):
+        services = []
+        listeners = []
+        stats = []
+
+        result = collect_data_plane_attestation(
+            self.metadata_path,
+            self.cert_path,
+            self.key_path,
+            "S" * 48,
+            service_checker=lambda unit: services.append(unit) or True,
+            listener_checker=lambda kind, port: listeners.append((kind, port)) or True,
+            stats_checker=lambda url, secret: stats.append((url, secret)) or True,
+        )
+
+        self.assertEqual(
+            {
+                "certificateFileSha256",
+                "certificateDerSha256",
+                "privateKeyPublicSha256",
+                "hysteriaVersion",
+                "configProtocolVersion",
+                "servicesHealthy",
+                "statsHealthy",
+                "udp19999Listening",
+                "udp443Listening",
+                "tcp19999Listening",
+                "tcp443Listening",
+            },
+            set(result),
+        )
+        self.assertTrue(all(value is True for key, value in result.items() if key.endswith("Healthy") or key.endswith("Listening")))
+        self.assertEqual(6, len(services))
+        self.assertEqual(
+            [("udp", 19999), ("udp", 443), ("tcp", 19999), ("tcp", 443)],
+            listeners,
+        )
+        self.assertEqual(
+            [
+                ("http://127.0.0.1:19997", "S" * 48),
+                ("http://127.0.0.1:19995", "S" * 48),
+            ],
+            stats,
+        )
+
+    def test_attestation_fails_closed_before_ack_on_identity_or_health_failure(self):
+        cases = (
+            {"service_checker": lambda _unit: False},
+            {"listener_checker": lambda _kind, _port: False},
+            {"stats_checker": lambda _url, _secret: False},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=tuple(overrides)):
+                arguments = {
+                    "service_checker": lambda _unit: True,
+                    "listener_checker": lambda _kind, _port: True,
+                    "stats_checker": lambda _url, _secret: True,
+                }
+                arguments.update(overrides)
+                with self.assertRaises(ProtocolError):
+                    collect_data_plane_attestation(
+                        self.metadata_path,
+                        self.cert_path,
+                        self.key_path,
+                        "S" * 48,
+                        **arguments
+                    )
+
+        metadata = json.loads(self.metadata_path.read_text())
+        metadata["certificateFileSha256"] = "0" * 64
+        self.metadata_path.write_text(json.dumps(metadata), encoding="ascii")
+        with self.assertRaises(ProtocolError):
+            collect_data_plane_attestation(
+                self.metadata_path,
+                self.cert_path,
+                self.key_path,
+                "S" * 48,
+                service_checker=lambda _unit: True,
+                listener_checker=lambda _kind, _port: True,
+                stats_checker=lambda _url, _secret: True,
+            )
 
 
 if __name__ == "__main__":

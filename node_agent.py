@@ -200,7 +200,12 @@ class NodeAuthProxyHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
-        entrypoint = {"/auth": "main", "/auth/udp-443": "udp443"}.get(self.path)
+        entrypoint = {
+            "/auth": "main",
+            "/auth/main": "main",
+            "/auth/udp-443": "udp443",
+            "/auth/udp443": "udp443",
+        }.get(self.path)
         if entrypoint is None:
             self._send_json(404, {"ok": False, "id": ""})
             return
@@ -909,7 +914,7 @@ congestion:
 ignoreClientBandwidth: true
 trafficStats:
   listen: 127.0.0.1:{stats_port}
-  secret: {stats_secret}
+  secret: __HY2PANEL_STATS_SECRET__
 acl:
   inline:
 {acl}
@@ -922,7 +927,6 @@ masquerade:
             port=port,
             auth_path=auth_path,
             stats_port=stats_port,
-            stats_secret=stats_secret,
             acl="\n".join(acl),
         )
 
@@ -1015,6 +1019,340 @@ class DataPlaneBootstrapClient:
         if not isinstance(attestation, dict):
             raise ProtocolError("data-plane attestation is invalid")
         return self._post("ack", token, attestation)
+
+
+def _write_private_bundle_file(directory, name, value):
+    if name not in {
+        "server.crt",
+        "server.key",
+        "hysteria-main.yaml",
+        "hysteria-udp443.yaml",
+        "stats.env",
+        "bootstrap.json",
+    }:
+        raise ProtocolError("data-plane bundle filename is invalid")
+    descriptor = os.open(
+        str(directory / name),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+    )
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+
+
+def prepare_data_plane_bundle(
+    client,
+    token,
+    destination,
+    architecture=None,
+    secret_factory=secrets.token_urlsafe,
+):
+    """Atomically prepare a root-only bundle without persisting the grant token."""
+
+    destination = pathlib.Path(destination)
+    parent = destination.parent
+    if (
+        destination.exists()
+        or destination.is_symlink()
+        or not parent.is_dir()
+        or parent.is_symlink()
+    ):
+        raise ProtocolError("data-plane bundle destination is unsafe")
+    staged = pathlib.Path(
+        tempfile.mkdtemp(prefix=".{}-".format(destination.name), dir=str(parent))
+    )
+    try:
+        os.chmod(str(staged), 0o700)
+        response = client.fetch(token)
+        identity = validate_data_plane_identity(response, architecture)
+        stats_secret = str(secret_factory(36))
+        configs = render_data_plane_configs(identity, stats_secret)
+        metadata = {
+            "certificateFileSha256": identity["certificate_file_sha256"],
+            "certificateDerSha256": identity["certificate_der_sha256"],
+            "privateKeyPublicSha256": identity["private_key_public_sha256"],
+            "hysteriaVersion": identity["hysteria_version"],
+            "hysteriaSha256": identity["hysteria_sha256"],
+            "egressPolicy": identity["egress_policy"],
+            "configProtocolVersion": 1,
+        }
+        files = {
+            "server.crt": identity["certificate"],
+            "server.key": identity["private_key"],
+            "hysteria-main.yaml": configs["main"].encode("utf-8"),
+            "hysteria-udp443.yaml": configs["udp443"].encode("utf-8"),
+            "stats.env": "HY2PANEL_STATS_SECRET={}\n".format(stats_secret).encode(
+                "ascii"
+            ),
+            "bootstrap.json": json.dumps(
+                metadata, sort_keys=True, separators=(",", ":")
+            ).encode("ascii")
+            + b"\n",
+        }
+        for name, value in files.items():
+            _write_private_bundle_file(staged, name, value)
+        _fsync_directory(staged)
+        os.replace(str(staged), str(destination))
+        _fsync_directory(parent)
+        return destination
+    except Exception as exc:
+        shutil.rmtree(str(staged), ignore_errors=True)
+        if isinstance(exc, ProtocolError):
+            raise
+        raise ProtocolError("data-plane bundle preparation failed") from exc
+
+
+def _linux_memfd():
+    if not hasattr(os, "memfd_create"):
+        raise ProtocolError("anonymous Hysteria configuration is unavailable")
+    try:
+        return os.memfd_create("hy2panel-hysteria-config", flags=0)
+    except OSError as exc:
+        raise ProtocolError("anonymous Hysteria configuration is unavailable") from exc
+
+
+def run_hysteria_from_template(
+    binary,
+    template_path,
+    *,
+    environment=None,
+    execve=os.execve,
+    memfd_factory=_linux_memfd,
+):
+    """Exec Hysteria with the stats secret substituted only in anonymous memory."""
+
+    if str(binary) != "/opt/hysteria2-panel-node/bin/hysteria":
+        raise ProtocolError("data-plane Hysteria binary path is invalid")
+    environment = dict(os.environ if environment is None else environment)
+    secret = environment.pop("HY2PANEL_STATS_SECRET", "")
+    if not isinstance(secret, str) or TOKEN_PATTERN.fullmatch(secret) is None:
+        raise ProtocolError("local traffic stats secret is invalid")
+    template_path = pathlib.Path(template_path)
+    try:
+        descriptor = os.open(str(template_path), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 64 * 1024:
+                raise ProtocolError("Hysteria configuration template is invalid")
+            template = os.read(descriptor, 64 * 1024 + 1)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ProtocolError("Hysteria configuration template is unavailable") from exc
+    placeholder = b"__HY2PANEL_STATS_SECRET__"
+    if len(template) > 64 * 1024 or template.count(placeholder) != 1:
+        raise ProtocolError("Hysteria configuration template is invalid")
+    try:
+        rendered = template.replace(placeholder, secret.encode("ascii"))
+    except UnicodeError as exc:
+        raise ProtocolError("local traffic stats secret is invalid") from exc
+    anonymous = memfd_factory()
+    try:
+        if not isinstance(anonymous, int) or anonymous < 0:
+            raise ProtocolError("anonymous Hysteria configuration is unavailable")
+        os.set_inheritable(anonymous, True)
+        offset = 0
+        while offset < len(rendered):
+            written = os.write(anonymous, rendered[offset:])
+            if written <= 0:
+                raise OSError("short anonymous configuration write")
+            offset += written
+        os.lseek(anonymous, 0, os.SEEK_SET)
+        arguments = [str(binary), "server", "-c", "/proc/self/fd/{}".format(anonymous)]
+        execve(str(binary), arguments, environment)
+        raise ProtocolError("Hysteria execution returned unexpectedly")
+    except OSError as exc:
+        raise ProtocolError("cannot execute the data-plane Hysteria service") from exc
+    finally:
+        if isinstance(anonymous, int) and anonymous >= 0:
+            try:
+                os.close(anonymous)
+            except OSError:
+                pass
+
+
+def _read_private_regular_file(path, maximum):
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_size < 1
+                or metadata.st_size > maximum
+            ):
+                raise ProtocolError("data-plane identity file is unsafe")
+            value = os.read(descriptor, maximum + 1)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ProtocolError("data-plane identity file is unavailable") from exc
+    if len(value) > maximum:
+        raise ProtocolError("data-plane identity file is unsafe")
+    return value
+
+
+def _systemd_service_active(unit):
+    if unit not in {
+        "hysteria2-panel-node-auth.service",
+        "hysteria2-panel-node-control.service",
+        "hysteria2-panel-node-hysteria-main.service",
+        "hysteria2-panel-node-hysteria-udp443.service",
+        "hysteria2-panel-node-tcp-probe-main.service",
+        "hysteria2-panel-node-tcp-probe-udp443.service",
+    }:
+        return False
+    try:
+        completed = subprocess.run(  # nosec B603 -- fixed executable and unit allowlist.
+            ["/bin/systemctl", "is-active", "--quiet", unit],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
+def _socket_is_listening(kind, port):
+    if kind not in {"tcp", "udp"} or port not in {443, 19999}:
+        return False
+    flag = "-ltn" if kind == "tcp" else "-lun"
+    try:
+        completed = subprocess.run(  # nosec B603 -- fixed executable and argv.
+            ["/usr/bin/ss", "-H", flag, "sport", "=", ":{}".format(port)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0 and bool(completed.stdout.strip())
+
+
+def _stats_endpoint_healthy(url, secret):
+    try:
+        return isinstance(LocalStatsClient(url, secret).online(), dict)
+    except (OSError, ProtocolError, ValueError):
+        return False
+
+
+def collect_data_plane_attestation(
+    metadata_path,
+    certificate_path,
+    private_key_path,
+    stats_secret,
+    *,
+    service_checker=_systemd_service_active,
+    listener_checker=_socket_is_listening,
+    stats_checker=_stats_endpoint_healthy,
+):
+    """Recompute local identity and require every fixed health signal."""
+
+    if not isinstance(stats_secret, str) or TOKEN_PATTERN.fullmatch(stats_secret) is None:
+        raise ProtocolError("local traffic stats secret is invalid")
+    try:
+        metadata = json.loads(
+            _read_private_regular_file(metadata_path, 8 * 1024).decode("ascii")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProtocolError("data-plane metadata is invalid") from exc
+    expected_fields = {
+        "certificateFileSha256",
+        "certificateDerSha256",
+        "privateKeyPublicSha256",
+        "hysteriaVersion",
+        "hysteriaSha256",
+        "egressPolicy",
+        "configProtocolVersion",
+    }
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != expected_fields
+        or metadata.get("hysteriaVersion") != "2.12.1"
+        or metadata.get("configProtocolVersion") != 1
+        or metadata.get("egressPolicy") not in {"web", "full"}
+        or any(
+            not isinstance(metadata.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", metadata[field]) is None
+            for field in (
+                "certificateFileSha256",
+                "certificateDerSha256",
+                "privateKeyPublicSha256",
+                "hysteriaSha256",
+            )
+        )
+    ):
+        raise ProtocolError("data-plane metadata is invalid")
+    certificate = _read_private_regular_file(certificate_path, 16 * 1024)
+    private_key = _read_private_regular_file(private_key_path, 16 * 1024)
+    response = {
+        "grantId": "0" * 32,
+        "expiresAt": 1,
+        "fetchAttempt": 1,
+        "maxFetchAttempts": 3,
+        "configProtocolVersion": 1,
+        "hysteriaVersion": metadata["hysteriaVersion"],
+        "hysteriaSha256": {
+            "amd64": metadata["hysteriaSha256"],
+            "arm64": metadata["hysteriaSha256"],
+        },
+        "ports": {"main": 19999, "udp443": 443},
+        "certificatePem": certificate.decode("ascii"),
+        "privateKeyPem": private_key.decode("ascii"),
+        "certificateFileSha256": metadata["certificateFileSha256"],
+        "certificateDerSha256": metadata["certificateDerSha256"],
+        "privateKeyPublicSha256": metadata["privateKeyPublicSha256"],
+        "egressPolicy": metadata["egressPolicy"],
+    }
+    identity = validate_data_plane_identity(response, "amd64")
+    units = (
+        "hysteria2-panel-node-auth.service",
+        "hysteria2-panel-node-control.service",
+        "hysteria2-panel-node-hysteria-main.service",
+        "hysteria2-panel-node-hysteria-udp443.service",
+        "hysteria2-panel-node-tcp-probe-main.service",
+        "hysteria2-panel-node-tcp-probe-udp443.service",
+    )
+    services_healthy = all(service_checker(unit) is True for unit in units)
+    stats_healthy = all(
+        stats_checker(url, stats_secret) is True
+        for url in ("http://127.0.0.1:19997", "http://127.0.0.1:19995")
+    )
+    listener_results = {
+        "udp19999Listening": listener_checker("udp", 19999) is True,
+        "udp443Listening": listener_checker("udp", 443) is True,
+        "tcp19999Listening": listener_checker("tcp", 19999) is True,
+        "tcp443Listening": listener_checker("tcp", 443) is True,
+    }
+    if not services_healthy or not stats_healthy or not all(listener_results.values()):
+        raise ProtocolError("data-plane health attestation failed")
+    attestation = {
+        "certificateFileSha256": identity["certificate_file_sha256"],
+        "certificateDerSha256": identity["certificate_der_sha256"],
+        "privateKeyPublicSha256": identity["private_key_public_sha256"],
+        "hysteriaVersion": identity["hysteria_version"],
+        "configProtocolVersion": 1,
+        "servicesHealthy": True,
+        "statsHealthy": True,
+    }
+    attestation.update(listener_results)
+    return attestation
 
 
 class NodeProtocolClient:
@@ -1233,6 +1571,51 @@ class LocalStatsClient:
         ):
             raise ProtocolError("kick user list is invalid")
         self._request("/kick", users)
+
+
+class CombinedLocalStatsClient:
+    """Treat the fixed main and UDP-443 stats APIs as one local data plane."""
+
+    def __init__(self, primary, secondary):
+        self.clients = (primary, secondary)
+
+    def online(self):
+        combined = {}
+        for client in self.clients:
+            current = client.online()
+            if not isinstance(current, dict):
+                raise ProtocolError("local online response is invalid")
+            for name, count in current.items():
+                value = combined.get(name, 0) + count
+                if value > 2**63 - 1:
+                    raise ProtocolError("local online response is invalid")
+                combined[name] = value
+        return combined
+
+    def collect_and_clear(self):
+        combined = {}
+        for client in self.clients:
+            current = client.collect_and_clear()
+            DurableTrafficSpool._validate_traffic(current)
+            for name, counters in current.items():
+                target = combined.setdefault(name, {"tx": 0, "rx": 0})
+                for field in ("tx", "rx"):
+                    value = target[field] + counters[field]
+                    if value > 2**63 - 1:
+                        raise ProtocolError("traffic batch is invalid")
+                    target[field] = value
+        DurableTrafficSpool._validate_traffic(combined)
+        return combined
+
+    def kick(self, users):
+        error = None
+        for client in self.clients:
+            try:
+                client.kick(users)
+            except Exception as exc:
+                error = exc
+        if error is not None:
+            raise ProtocolError("local traffic stats request failed") from error
 
 
 def execute_control_command(
@@ -1513,13 +1896,25 @@ def _parser():
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
     command.add_argument("--port", type=int, default=19996)
+    command = subcommands.add_parser("prepare-data-plane")
+    command.add_argument("--private-key", required=True)
+    command.add_argument("--state-file", required=True)
+    command.add_argument("--output-dir", required=True)
+    command = subcommands.add_parser("run-hysteria")
+    command.add_argument("--template", required=True)
+    command = subcommands.add_parser("ack-data-plane")
+    command.add_argument("--private-key", required=True)
+    command.add_argument("--state-file", required=True)
+    command.add_argument("--metadata", required=True)
+    command.add_argument("--certificate", required=True)
+    command.add_argument("--hysteria-key", required=True)
     for name in ("control-once", "control-loop"):
         command = subcommands.add_parser(name)
         command.add_argument("--private-key", required=True)
         command.add_argument("--state-file", required=True)
         command.add_argument("--protocol-state", required=True)
         command.add_argument("--spool-dir", required=True)
-        command.add_argument("--stats-url", required=True)
+        command.add_argument("--stats-url", required=True, action="append")
     return parser
 
 
@@ -1530,7 +1925,15 @@ def _make_control_cycle(options):
     protocol_client = NodeProtocolClient(
         pathlib.Path(options.state_file), pathlib.Path(options.private_key)
     )
-    stats_client = LocalStatsClient(options.stats_url, secret)
+    stats_urls = options.stats_url
+    if isinstance(stats_urls, str):
+        stats_urls = [stats_urls]
+    if not isinstance(stats_urls, list) or len(stats_urls) not in {1, 2}:
+        raise ValueError("one or two traffic stats URLs are required")
+    stats_clients = [LocalStatsClient(url, secret) for url in stats_urls]
+    stats_client = stats_clients[0]
+    if len(stats_clients) == 2:
+        stats_client = CombinedLocalStatsClient(*stats_clients)
     spool = DurableTrafficSpool(pathlib.Path(options.spool_dir))
     state = ProtocolState(pathlib.Path(options.protocol_state))
     return NodeControlCycle(protocol_client, stats_client, spool, state)
@@ -1557,6 +1960,60 @@ def main(arguments=None):
             print("错误：{}".format(exc), file=sys.stderr)
             return 1
         print("节点 {} 已注册，状态：待验证".format(result["nodeId"]))
+        return 0
+    if options.command == "prepare-data-plane":
+        token = os.environ.pop("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", "")
+        if not token:
+            print("错误：缺少一次性数据面部署凭据", file=sys.stderr)
+            return 2
+        try:
+            client = DataPlaneBootstrapClient(
+                pathlib.Path(options.state_file), pathlib.Path(options.private_key)
+            )
+            prepare_data_plane_bundle(client, token, pathlib.Path(options.output_dir))
+        except (OSError, ProtocolError, ValueError) as exc:
+            print("错误：{}".format(exc), file=sys.stderr)
+            return 1
+        finally:
+            del token
+        print("数据面身份与配置已验证并准备完成")
+        return 0
+    if options.command == "run-hysteria":
+        try:
+            run_hysteria_from_template(
+                "/opt/hysteria2-panel-node/bin/hysteria",
+                pathlib.Path(options.template),
+            )
+        except (OSError, ProtocolError, ValueError) as exc:
+            print("错误：{}".format(exc), file=sys.stderr)
+            return 1
+        return 1
+    if options.command == "ack-data-plane":
+        token = os.environ.pop("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", "")
+        stats_secret = os.environ.pop("HY2PANEL_STATS_SECRET", "")
+        if not token or not stats_secret:
+            print("错误：缺少数据面确认凭据", file=sys.stderr)
+            return 2
+        try:
+            attestation = collect_data_plane_attestation(
+                pathlib.Path(options.metadata),
+                pathlib.Path(options.certificate),
+                pathlib.Path(options.hysteria_key),
+                stats_secret,
+            )
+            client = DataPlaneBootstrapClient(
+                pathlib.Path(options.state_file), pathlib.Path(options.private_key)
+            )
+            result = client.ack(token, attestation)
+            if result != {"status": "DATA_PLANE_INSTALLED"}:
+                raise ProtocolError("the panel returned an invalid data-plane ACK")
+        except (OSError, ProtocolError, ValueError) as exc:
+            print("错误：{}".format(exc), file=sys.stderr)
+            return 1
+        finally:
+            del token
+            del stats_secret
+        print("数据面已通过本地健康证明并由中央面板确认")
         return 0
     if options.command == "serve-auth-proxy":
         try:
