@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.27.1"
+AGENT_VERSION = "0.27.2"
 MAX_RESPONSE_BYTES = 8192
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
@@ -1018,7 +1018,14 @@ class DataPlaneBootstrapClient:
     def ack(self, token, attestation):
         if not isinstance(attestation, dict):
             raise ProtocolError("data-plane attestation is invalid")
-        return self._post("ack", token, attestation)
+        result = self._post("ack", token, attestation)
+        state = _registration_state(self.state_path)
+        if result != {
+            "nodeId": state["nodeId"],
+            "status": "DATA_PLANE_INSTALLED",
+        }:
+            raise ProtocolError("the panel returned an invalid data-plane ACK")
+        return result
 
 
 def _write_private_bundle_file(directory, name, value):
@@ -2048,9 +2055,7 @@ def main(arguments=None):
             client = DataPlaneBootstrapClient(
                 pathlib.Path(options.state_file), pathlib.Path(options.private_key)
             )
-            result = client.ack(token, attestation)
-            if result != {"status": "DATA_PLANE_INSTALLED"}:
-                raise ProtocolError("the panel returned an invalid data-plane ACK")
+            client.ack(token, attestation)
         except (OSError, ProtocolError, ValueError) as exc:
             print("错误：{}".format(exc), file=sys.stderr)
             return 1
