@@ -37,14 +37,14 @@ class NodeControlDatabaseTests(unittest.TestCase):
         self.now = 2_000_000_000
         service = NodeEnrollmentService(
             self.db,
-            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_url="https://panel.example.com:19998",
             panel_version="0.24.0",
             clock=lambda: self.now,
             token_factory=lambda: "a" * 43,
         )
         issued = service.create(
             name="US9929",
-            expected_ip="154.9.234.210",
+            expected_ip="8.8.8.8",
             ttl_minutes=10,
             actor="admin",
         )
@@ -58,7 +58,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 "architecture": "amd64",
                 "agentVersion": "0.24.0",
             },
-            remote_ip="154.9.234.210",
+            remote_ip="8.8.8.8",
         )
         self.node_id = issued["nodeId"]
         self.fingerprint = hashlib.sha256(
@@ -127,7 +127,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 nonce_digest=nonce_digest,
                 sent_at=self.now + 2,
                 accepted_at=self.now + 3,
-                remote_ip="154.9.234.210",
+                remote_ip="8.8.8.8",
                 agent_version="0.25.0",
             )
         )
@@ -137,13 +137,13 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 nonce_digest=nonce_digest,
                 sent_at=self.now + 4,
                 accepted_at=self.now + 5,
-                remote_ip="154.9.234.210",
+                remote_ip="8.8.8.8",
                 agent_version="0.26.0",
             )
         )
         node = self.db.get_node_for_heartbeat(self.node_id)
         self.assertEqual(self.now + 3, node["last_heartbeat_at"])
-        self.assertEqual("154.9.234.210", node["last_heartbeat_ip"])
+        self.assertEqual("8.8.8.8", node["last_heartbeat_ip"])
         self.assertEqual("0.25.0", node["agent_version"])
 
     def test_revoked_node_cannot_be_verified_or_accept_heartbeats(self):
@@ -162,7 +162,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
                 nonce_digest=hashlib.sha256(b"nonce").hexdigest(),
                 sent_at=self.now + 2,
                 accepted_at=self.now + 2,
-                remote_ip="154.9.234.210",
+                remote_ip="8.8.8.8",
                 agent_version="0.25.0",
             )
         )
@@ -217,7 +217,7 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
 
     def test_valid_signed_heartbeat_becomes_online_and_replay_fails(self):
         payload = self.payload()
-        result = self.service.accept(payload, remote_ip="154.9.234.210")
+        result = self.service.accept(payload, remote_ip="8.8.8.8")
         self.assertEqual(
             {
                 "status": "ONLINE",
@@ -232,7 +232,7 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
             "0.25.0", self.db.get_node_for_heartbeat(self.node_id)["agent_version"]
         )
         with self.assertRaises(HeartbeatRejected):
-            self.service.accept(payload, remote_ip="154.9.234.210")
+            self.service.accept(payload, remote_ip="8.8.8.8")
 
     def test_stale_wrong_ip_bad_signature_and_unknown_fields_fail_closed(self):
         cases = (
@@ -243,9 +243,9 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
         for payload in cases:
             with self.subTest(payload=payload):
                 with self.assertRaises(HeartbeatRejected):
-                    self.service.accept(payload, remote_ip="154.9.234.210")
+                    self.service.accept(payload, remote_ip="8.8.8.8")
         with self.assertRaises(HeartbeatRejected):
-            self.service.accept(self.payload(), remote_ip="154.9.234.211")
+            self.service.accept(self.payload(), remote_ip="8.8.4.4")
 
     def test_malformed_values_fail_before_signature_verification(self):
         cases = (
@@ -260,14 +260,14 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
             with self.subTest(payload=payload):
                 before = len(self.verifications)
                 with self.assertRaises(HeartbeatRejected):
-                    self.service.accept(payload, remote_ip="154.9.234.210")
+                    self.service.accept(payload, remote_ip="8.8.8.8")
                 self.assertEqual(before, len(self.verifications))
 
     def test_signature_verification_capacity_fails_closed(self):
         self.assertTrue(self.service._verification_gate.acquire(blocking=False))
         try:
             with self.assertRaises(HeartbeatRejected):
-                self.service.accept(self.payload(), remote_ip="154.9.234.210")
+                self.service.accept(self.payload(), remote_ip="8.8.8.8")
         finally:
             self.service._verification_gate.release()
         self.assertEqual([], self.verifications)

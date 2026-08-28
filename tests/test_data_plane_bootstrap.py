@@ -287,7 +287,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         self._insert_node(self.node_id, policy_state="protocol_ready")
         self.service = DataPlaneBootstrapService(
             self.db,
-            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_url="https://panel.example.com:19998",
             panel_version="0.27.0",
             clock=lambda: self.now[0],
             token_factory=lambda: self.token,
@@ -416,7 +416,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         self.assertNotIn("server.crt", command)
         self.assertNotIn("server.key", command)
         self.assertNotIn("HY2PANEL_HMAC_KEY", command)
-        self.assertNotIn("vpn.ssrvpn.vip", command)
+        self.assertNotIn("vpn.example.com", command)
         syntax = subprocess.run(
             ["bash", "-n"],
             input=command,
@@ -736,7 +736,7 @@ class AutoBootstrapClaimTests(unittest.TestCase):
         self.signed_messages = []
         self.service = DataPlaneBootstrapService(
             self.db,
-            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_url="https://panel.example.com:19998",
             panel_version="0.30.0",
             clock=lambda: self.now[0],
             token_factory=lambda: next(self.tokens),
@@ -987,7 +987,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
         }
         self.service = DataPlaneBootstrapService(
             self.db,
-            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_url="https://panel.example.com:19998",
             panel_version="0.27.0",
             clock=lambda: self.now[0],
             token_factory=lambda: self.token,
@@ -1198,7 +1198,7 @@ class HysteriaIdentityProviderTests(unittest.TestCase):
                 "-days",
                 "30",
                 "-subj",
-                "/CN=vpn.ssrvpn.vip",
+                "/CN=vpn.example.com",
             ],
             capture_output=True,
             text=True,
@@ -1295,7 +1295,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         }
         self.service = DataPlaneBootstrapService(
             self.db,
-            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_url="https://panel.example.com:19998",
             panel_version="0.27.0",
             clock=lambda: self.now[0],
             token_factory=lambda: self.token,
@@ -1304,7 +1304,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         )
         self.application = PanelApplication(
             database=self.db,
-            public_host="vpn.ssrvpn.vip",
+            public_host="vpn.example.com",
             hysteria_port=19999,
             pin_sha256="AA:BB",
             stats_client=object(),
@@ -1659,8 +1659,8 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             self.assertIn('    - "reject(10.0.0.0/8)"', config)
             self.assertIn('    - "direct(all, tcp/443)"', config)
             self.assertTrue(config.endswith('    statusCode: 404\n'))
-            self.assertNotIn("vpn.ssrvpn.vip", config)
-            self.assertNotIn("panel.ssrvpn.vip", config)
+            self.assertNotIn("vpn.example.com", config)
+            self.assertNotIn("panel.example.com", config)
 
     def test_full_policy_is_applied_to_both_data_node_entrypoints(self):
         response = dict(self.response)
@@ -1853,7 +1853,7 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         self.assertEqual(24443, metadata["mainPort"])
         persisted = b"".join(path.read_bytes() for path in destination.iterdir())
         self.assertNotIn(token.encode("ascii"), persisted)
-        self.assertNotIn(b"vpn.ssrvpn.vip", persisted)
+        self.assertNotIn(b"vpn.example.com", persisted)
 
     def test_prepare_bundle_rejects_unsafe_destination_and_leaves_no_partial_files(self):
         token = "bootstrap_" + "T" * 40

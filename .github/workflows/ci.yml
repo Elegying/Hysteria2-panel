@@ -127,8 +127,11 @@ jobs:
               "https://raw.githubusercontent.com/"
               "Elegying/Hysteria2-panel/main/install.sh"
           )
-          if versionless_url in readme:
-              raise SystemExit("README must not execute an unsigned main-branch installer")
+          quick_command = "bash <(curl -fsSL {})".format(versionless_url)
+          if quick_command not in readme:
+              raise SystemExit("README one-line main installer is missing")
+          if "首次信任入口" not in readme or "GitHub HTTPS" not in readme:
+              raise SystemExit("README must explain the one-line installer trust boundary")
           required_bootstrap_markers = (
               "releases/download/v",
               "install.sh.sigstore.json",

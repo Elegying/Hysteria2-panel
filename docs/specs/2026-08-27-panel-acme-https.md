@@ -1,5 +1,7 @@
 # 规格：面板独立 ACME/Let’s Encrypt HTTPS
 
+> 公开版本中的域名是示例值，不代表实际生产拓扑。
+
 ## 目标
 
 在一键部署流程中增加面板公网域名输入。选择 HTTPS 时，安装器使用
@@ -11,7 +13,7 @@ systemd 定时续期。面板浏览器连接使用受信任证书，节点数据
 - `HY2PANEL_PUBLIC_HOST`、`server.crt`、`server.key` 和
   `HY2PANEL_CERT_PIN` 永远只属于 Hysteria 节点身份。
 - 安装、升级、签发、续期、回滚和恢复都不得改变 Hysteria 节点证书、
-  `vpn.ssrvpn.vip`、任何用户链接或证书指纹。
+  `vpn.example.com`、任何用户链接或证书指纹。
 - 面板域名使用独立的 `HY2PANEL_PANEL_PUBLIC_HOST`；面板 TLS 使用独立的
   `HY2PANEL_PANEL_TLS_CERT` 与 `HY2PANEL_PANEL_TLS_KEY`。
 - 本次不改变用户、流量、订阅、节点 URI 或 Hysteria 服务配置语义。
@@ -69,12 +71,12 @@ certbot certonly --standalone --cert-name "${PANEL_PUBLIC_HOST}" \
 
 ## 成功标准
 
-1. 新安装选择 HTTPS 后会要求填写 `panel.ssrvpn.vip` 一类的完整域名。
+1. 新安装选择 HTTPS 后会要求填写 `panel.example.com` 一类的完整域名。
 2. 面板只加载独立 Let’s Encrypt 证书，浏览器不再出现自签名警告。
 3. 自动续期 timer 已启用；未到期时不重启，续期成功时只重启面板。
 4. HTTP 安装和既有配置保持兼容；旧 HTTPS 配置必须人工补充面板域名，不能静默
    继续复用节点证书。
-5. Hysteria 节点证书、`vpn.ssrvpn.vip`、用户 URI 和证书指纹在所有路径中保持
+5. Hysteria 节点证书、`vpn.example.com`、用户 URI 和证书指纹在所有路径中保持
    字节级/值级不变。
 6. 全量测试与静态质量门通过。
 

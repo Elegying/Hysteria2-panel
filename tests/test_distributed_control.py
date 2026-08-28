@@ -953,7 +953,7 @@ class NodeAgentProtocolTests(unittest.TestCase):
             json.dumps(
                 {
                     "nodeId": "d" * 32,
-                    "panelUrl": "https://panel.ssrvpn.vip:19998",
+                    "panelUrl": "https://panel.example.com:19998",
                     "registeredAt": 1,
                     "status": "PENDING_VERIFICATION",
                 }
@@ -996,7 +996,7 @@ class NodeAgentProtocolTests(unittest.TestCase):
         result = client.authorize({"entrypoint": "main", "auth": "secret", "tx": 10})
         self.assertTrue(result["ok"])
         self.assertEqual(
-            "https://panel.ssrvpn.vip:19998/api/v1/node-auth-decisions",
+            "https://panel.example.com:19998/api/v1/node-auth-decisions",
             captured["url"],
         )
         self.assertEqual(10, captured["timeout"])
