@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.28.1"
+AGENT_VERSION = "0.28.2"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 CONTROL_LOOP_INTERVAL_SECONDS = 2
@@ -237,7 +237,7 @@ class NodeAuthProxyHandler(BaseHTTPRequestHandler):
 
 class NodeAuthProxyServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False
+    allow_reuse_address = True
     request_queue_size = 128
 
     def __init__(
