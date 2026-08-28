@@ -3,6 +3,7 @@
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -12,6 +13,7 @@ import secrets
 import shutil
 import signal
 import socket
+import ssl
 import stat
 import subprocess  # nosec B404 -- fixed executable and argv, never a shell.
 import sys
@@ -694,6 +696,325 @@ def _canonical_node_request(purpose, payload):
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _canonical_data_plane_request(purpose, payload):
+    if purpose not in {"bootstrap", "ack"}:
+        raise ProtocolError("data-plane request purpose is invalid")
+    return "hy2panel-data-plane-{}-v1\n".format(purpose).encode(
+        "ascii"
+    ) + json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _openssl_filter(arguments, value, executable="/usr/bin/openssl"):
+    try:
+        completed = subprocess.run(  # nosec B603 -- fixed executable and argv.
+            [executable] + list(arguments),
+            input=value,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProtocolError("data-plane identity validation failed") from exc
+    if completed.returncode != 0 or not completed.stdout:
+        raise ProtocolError("data-plane identity validation failed")
+    return completed.stdout
+
+
+def validate_data_plane_identity(response, architecture):
+    expected_fields = {
+        "grantId",
+        "expiresAt",
+        "fetchAttempt",
+        "maxFetchAttempts",
+        "configProtocolVersion",
+        "hysteriaVersion",
+        "hysteriaSha256",
+        "ports",
+        "certificatePem",
+        "privateKeyPem",
+        "certificateFileSha256",
+        "certificateDerSha256",
+        "privateKeyPublicSha256",
+        "egressPolicy",
+    }
+    digest_fields = (
+        "certificateFileSha256",
+        "certificateDerSha256",
+        "privateKeyPublicSha256",
+    )
+    if (
+        not isinstance(response, dict)
+        or set(response) != expected_fields
+        or not NODE_ID_PATTERN.fullmatch(str(response.get("grantId", "")))
+        or isinstance(response.get("expiresAt"), bool)
+        or not isinstance(response.get("expiresAt"), int)
+        or isinstance(response.get("fetchAttempt"), bool)
+        or not isinstance(response.get("fetchAttempt"), int)
+        or not 1 <= response["fetchAttempt"] <= 3
+        or response.get("maxFetchAttempts") != 3
+        or response.get("configProtocolVersion") != 1
+        or response.get("hysteriaVersion") != "2.12.1"
+        or response.get("ports") != {"main": 19999, "udp443": 443}
+        or response.get("egressPolicy") not in {"web", "full"}
+        or any(
+            not isinstance(response.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", response[field]) is None
+            for field in digest_fields
+        )
+    ):
+        raise ProtocolError("the panel returned an invalid data-plane identity")
+    try:
+        architecture = _architecture(architecture)
+    except ValueError as exc:
+        raise ProtocolError("the local architecture is not supported") from exc
+    hysteria_hashes = response.get("hysteriaSha256")
+    if (
+        not isinstance(hysteria_hashes, dict)
+        or set(hysteria_hashes) != {"amd64", "arm64"}
+        or any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in hysteria_hashes.values()
+        )
+    ):
+        raise ProtocolError("the panel returned invalid Hysteria release metadata")
+    certificate_text = response.get("certificatePem")
+    private_key_text = response.get("privateKeyPem")
+    if (
+        not isinstance(certificate_text, str)
+        or not certificate_text.startswith("-----BEGIN CERTIFICATE-----\n")
+        or not isinstance(private_key_text, str)
+        or re.match(
+            r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----\n", private_key_text
+        )
+        is None
+    ):
+        raise ProtocolError("the panel returned an invalid data-plane identity")
+    try:
+        certificate = certificate_text.encode("ascii")
+        private_key = private_key_text.encode("ascii")
+        certificate_der = ssl.PEM_cert_to_DER_cert(certificate_text)
+    except (UnicodeError, ValueError) as exc:
+        raise ProtocolError("the panel returned an invalid data-plane identity") from exc
+    if not 1 <= len(certificate) <= 16 * 1024 or not 1 <= len(private_key) <= 16 * 1024:
+        raise ProtocolError("the panel returned an invalid data-plane identity")
+    certificate_public_pem = _openssl_filter(
+        ["x509", "-pubkey", "-noout"], certificate
+    )
+    certificate_public_der = _openssl_filter(
+        ["pkey", "-pubin", "-outform", "DER"], certificate_public_pem
+    )
+    private_key_public_der = _openssl_filter(
+        ["pkey", "-pubout", "-outform", "DER"], private_key
+    )
+    if not secrets.compare_digest(certificate_public_der, private_key_public_der):
+        raise ProtocolError("the Hysteria certificate and private key do not match")
+    actual = {
+        "certificateFileSha256": hashlib.sha256(certificate).hexdigest(),
+        "certificateDerSha256": hashlib.sha256(certificate_der).hexdigest(),
+        "privateKeyPublicSha256": hashlib.sha256(private_key_public_der).hexdigest(),
+    }
+    if any(
+        not secrets.compare_digest(actual[field], response[field])
+        for field in digest_fields
+    ):
+        raise ProtocolError("the Hysteria identity digest does not match")
+    return {
+        "certificate": certificate,
+        "private_key": private_key,
+        "certificate_file_sha256": actual["certificateFileSha256"],
+        "certificate_der_sha256": actual["certificateDerSha256"],
+        "private_key_public_sha256": actual["privateKeyPublicSha256"],
+        "hysteria_version": response["hysteriaVersion"],
+        "hysteria_sha256": hysteria_hashes[architecture],
+        "egress_policy": response["egressPolicy"],
+    }
+
+
+def render_data_plane_configs(identity, stats_secret):
+    expected_identity = {
+        "certificate",
+        "private_key",
+        "certificate_file_sha256",
+        "certificate_der_sha256",
+        "private_key_public_sha256",
+        "hysteria_version",
+        "hysteria_sha256",
+        "egress_policy",
+    }
+    if (
+        not isinstance(identity, dict)
+        or set(identity) != expected_identity
+        or identity.get("egress_policy") not in {"web", "full"}
+        or not isinstance(stats_secret, str)
+        or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", stats_secret) is None
+    ):
+        raise ProtocolError("data-plane configuration input is invalid")
+    blocked = (
+        "0.0.0.0/8",
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "::/128",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+    )
+    acl = ['    - "reject({})"'.format(network) for network in blocked]
+    if identity["egress_policy"] == "web":
+        acl.extend(
+            '    - "{}"'.format(rule)
+            for rule in (
+                "direct(all, tcp/22)",
+                "direct(all, tcp/19998)",
+                "direct(all, tcp/53)",
+                "direct(all, udp/53)",
+                "direct(all, tcp/80)",
+                "direct(all, tcp/443)",
+                "direct(all, udp/443)",
+                "direct(all, udp/123)",
+                "reject(all)",
+            )
+        )
+    else:
+        acl.append('    - "direct(all)"')
+
+    def render(port, auth_path, stats_port):
+        return """listen: :{port}
+tls:
+  cert: /etc/hysteria2-panel-node/server.crt
+  key: /etc/hysteria2-panel-node/server.key
+auth:
+  type: http
+  http:
+    url: http://127.0.0.1:19996/{auth_path}
+    insecure: false
+congestion:
+  type: bbr
+  bbrProfile: standard
+ignoreClientBandwidth: true
+trafficStats:
+  listen: 127.0.0.1:{stats_port}
+  secret: {stats_secret}
+acl:
+  inline:
+{acl}
+masquerade:
+  type: string
+  string:
+    content: "404 page not found"
+    statusCode: 404
+""".format(
+            port=port,
+            auth_path=auth_path,
+            stats_port=stats_port,
+            stats_secret=stats_secret,
+            acl="\n".join(acl),
+        )
+
+    return {
+        "main": render(19999, "auth/main", 19997),
+        "udp443": render(443, "auth/udp443", 19995),
+    }
+
+
+class DataPlaneBootstrapClient:
+    """Fetch and acknowledge a bounded identity response over signed HTTPS."""
+
+    PATHS = {
+        "bootstrap": ("/api/v1/node-data-plane/bootstrap", 32 * 1024),
+        "ack": ("/api/v1/node-data-plane/ack", 8 * 1024),
+    }
+
+    def __init__(
+        self,
+        state_path,
+        private_key_path,
+        opener=urllib.request.urlopen,
+        signer=_openssl_sign,
+        clock=time.time,
+        nonce_factory=None,
+    ):
+        self.state_path = pathlib.Path(state_path)
+        self.private_key_path = pathlib.Path(private_key_path)
+        self.opener = opener
+        self.signer = signer
+        self.clock = clock
+        self.nonce_factory = nonce_factory or secrets.token_urlsafe
+
+    def _post(self, purpose, token, fields):
+        if not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token):
+            raise ProtocolError("the data-plane bootstrap credential is invalid")
+        state = _registration_state(self.state_path)
+        nonce = str(self.nonce_factory(32))
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", nonce):
+            raise ProtocolError("secure node request nonce generation failed")
+        payload = {
+            "nodeId": state["nodeId"],
+            "sentAt": int(self.clock()),
+            "nonce": nonce,
+            "bootstrapToken": token,
+            "requestId": uuid.uuid4().hex,
+        }
+        payload.update(fields)
+        signature = self.signer(
+            self.private_key_path, _canonical_data_plane_request(purpose, payload)
+        )
+        if not isinstance(signature, bytes) or len(signature) != 64:
+            raise ProtocolError("cannot sign the data-plane request")
+        payload["signature"] = base64.b64encode(signature).decode("ascii")
+        path, maximum = self.PATHS[purpose]
+        request = urllib.request.Request(
+            state["panelUrl"] + path,
+            data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(
+                "utf-8"
+            ),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with self.opener(request, timeout=10) as response:
+                status = getattr(
+                    response,
+                    "status",
+                    response.getcode() if hasattr(response, "getcode") else 0,
+                )
+                body = response.read(maximum + 1)
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            raise ProtocolError(
+                "the panel rejected or could not receive the data-plane request"
+            ) from exc
+        if status != 200 or len(body) > maximum:
+            raise ProtocolError("the panel returned an invalid data-plane response")
+        try:
+            result = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProtocolError("the panel returned an invalid data-plane response") from exc
+        if not isinstance(result, dict):
+            raise ProtocolError("the panel returned an invalid data-plane response")
+        return result
+
+    def fetch(self, token):
+        return self._post("bootstrap", token, {})
+
+    def ack(self, token, attestation):
+        if not isinstance(attestation, dict):
+            raise ProtocolError("data-plane attestation is invalid")
+        return self._post("ack", token, attestation)
 
 
 class NodeProtocolClient:

@@ -14,6 +14,12 @@ import urllib.request
 from pathlib import Path
 
 from hysteria2_panel import Database, PanelApplication, make_panel_server
+from node_agent import (
+    DataPlaneBootstrapClient,
+    ProtocolError,
+    render_data_plane_configs,
+    validate_data_plane_identity,
+)
 from hy2panel.nodes import (
     DataPlaneBootstrapRejected,
     DataPlaneBootstrapService,
@@ -728,6 +734,163 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             .decode("utf-8")
         )
         self.assertEqual("DATA_PLANE_INSTALLED", result["status"])
+
+
+class NodeDataPlaneConfigTests(unittest.TestCase):
+    def setUp(self):
+        HysteriaIdentityProviderTests.setUp(self)
+        provider = HysteriaIdentityProvider(
+            self.cert_path,
+            self.key_path,
+            egress_policy_provider=lambda: "web",
+        )
+        self.response = {
+            "grantId": "7" * 32,
+            "expiresAt": 2_000_000_600,
+            "fetchAttempt": 1,
+            "maxFetchAttempts": 3,
+            "configProtocolVersion": 1,
+            "hysteriaVersion": "2.12.1",
+            "hysteriaSha256": {
+                "amd64": "ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7",
+                "arm64": "c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792",
+            },
+            "ports": {"main": 19999, "udp443": 443},
+        }
+        self.response.update(provider())
+
+    def tearDown(self):
+        HysteriaIdentityProviderTests.tearDown(self)
+
+    def test_identity_validation_preserves_bytes_and_verifies_all_digests(self):
+        identity = validate_data_plane_identity(self.response, architecture="amd64")
+
+        self.assertEqual(self.cert_path.read_bytes(), identity["certificate"])
+        self.assertEqual(self.key_path.read_bytes(), identity["private_key"])
+        self.assertEqual(
+            self.response["hysteriaSha256"]["amd64"],
+            identity["hysteria_sha256"],
+        )
+        self.assertEqual("web", identity["egress_policy"])
+
+    def test_identity_validation_rejects_tampering_and_unknown_contract_values(self):
+        cases = (
+            {"certificateFileSha256": "0" * 64},
+            {"certificateDerSha256": "0" * 64},
+            {"privateKeyPublicSha256": "0" * 64},
+            {"hysteriaVersion": "2.12.0"},
+            {"configProtocolVersion": 2},
+            {"ports": {"main": 19998, "udp443": 443}},
+            {"egressPolicy": "unknown"},
+            {"unexpected": True},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                response = dict(self.response)
+                response.update(changes)
+                with self.assertRaises(ProtocolError):
+                    validate_data_plane_identity(response, architecture="amd64")
+
+        response = dict(self.response)
+        response["privateKeyPem"] = response["privateKeyPem"].replace("A", "B", 1)
+        with self.assertRaises(ProtocolError):
+            validate_data_plane_identity(response, architecture="amd64")
+
+    def test_config_renderer_emits_only_fixed_two_entrypoint_contracts(self):
+        identity = validate_data_plane_identity(self.response, architecture="arm64")
+
+        configs = render_data_plane_configs(identity, "S" * 48)
+
+        self.assertEqual({"main", "udp443"}, set(configs))
+        main = configs["main"]
+        udp443 = configs["udp443"]
+        self.assertIn("listen: :19999", main)
+        self.assertIn("url: http://127.0.0.1:19996/auth/main", main)
+        self.assertIn("listen: 127.0.0.1:19997", main)
+        self.assertIn("listen: :443", udp443)
+        self.assertIn("url: http://127.0.0.1:19996/auth/udp443", udp443)
+        self.assertIn("listen: 127.0.0.1:19995", udp443)
+        for config in configs.values():
+            self.assertIn("cert: /etc/hysteria2-panel-node/server.crt", config)
+            self.assertIn("key: /etc/hysteria2-panel-node/server.key", config)
+            self.assertIn("secret: {}".format("S" * 48), config)
+            self.assertIn('    - "reject(10.0.0.0/8)"', config)
+            self.assertIn('    - "direct(all, tcp/443)"', config)
+            self.assertTrue(config.endswith('    statusCode: 404\n'))
+            self.assertNotIn("vpn.ssrvpn.vip", config)
+            self.assertNotIn("panel.ssrvpn.vip", config)
+
+    def test_config_renderer_rejects_short_secret_and_invalid_identity(self):
+        identity = validate_data_plane_identity(self.response, architecture="amd64")
+        for secret in ("short", "bad\nsecret", "x" * 129):
+            with self.subTest(secret=secret):
+                with self.assertRaises(ProtocolError):
+                    render_data_plane_configs(identity, secret)
+        identity["egress_policy"] = "invalid"
+        with self.assertRaises(ProtocolError):
+            render_data_plane_configs(identity, "S" * 48)
+
+    def test_bootstrap_client_signs_domain_separated_request_and_bounds_response(self):
+        state_path = Path(self.temp_dir.name) / "registration.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "nodeId": "8" * 32,
+                    "panelUrl": "https://panel.example.test:19998",
+                    "registeredAt": 1,
+                    "status": "PENDING_VERIFICATION",
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.chmod(state_path, 0o600)
+        captured = {}
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, maximum):
+                captured["maximum"] = maximum
+                return json.dumps(self.response).encode("utf-8")
+
+        Response.response = self.response
+
+        def opener(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return Response()
+
+        def signer(_private_key, message):
+            captured["message"] = message
+            return b"s" * 64
+
+        client = DataPlaneBootstrapClient(
+            state_path,
+            Path(self.temp_dir.name) / "private.pem",
+            opener=opener,
+            signer=signer,
+            clock=lambda: 2_000_000_000,
+            nonce_factory=lambda _size: "N" * 43,
+        )
+
+        result = client.fetch("bootstrap_" + "T" * 40)
+
+        self.assertEqual(self.response, result)
+        self.assertTrue(
+            captured["message"].startswith(b"hy2panel-data-plane-bootstrap-v1\n")
+        )
+        self.assertEqual(
+            "https://panel.example.test:19998/api/v1/node-data-plane/bootstrap",
+            captured["request"].full_url,
+        )
+        self.assertEqual(32 * 1024 + 1, captured["maximum"])
+        self.assertEqual(10, captured["timeout"])
 
 
 if __name__ == "__main__":
