@@ -256,7 +256,12 @@ class DistributedAuthorizationTests(DistributedControlCase):
             def online(self):
                 return {}
 
-        manager = UsageManager(self.db, Stats(), clock=lambda: self.now[0])
+        manager = UsageManager(
+            self.db,
+            Stats(),
+            clock=lambda: self.now[0],
+            wall_clock=lambda: self.now[0],
+        )
         service = DistributedControlService(
             self.db,
             clock=lambda: self.now[0],
@@ -297,6 +302,30 @@ class DistributedAuthorizationTests(DistributedControlCase):
         self.assertEqual(1, results.count(False))
         self.now[0] += 6
         self.assertFalse(manager.authorize("alice"))
+
+    def test_distributed_local_state_uses_wall_clock_for_protocol_timestamps(self):
+        class Stats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {}
+
+        manager = UsageManager(
+            self.db,
+            Stats(),
+            clock=lambda: 123.0,
+            wall_clock=lambda: self.now[0],
+        )
+
+        self.assertEqual(
+            {
+                "online": {},
+                "observedAt": self.now[0],
+                "trafficAckedAt": self.now[0],
+            },
+            manager.distributed_local_state(),
+        )
 
     def test_auth_secrets_and_signed_envelopes_are_not_persisted(self):
         payload = self.auth_payload(self.nodes[0], 80)

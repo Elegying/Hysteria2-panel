@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.27.2"
+AGENT_VERSION = "0.27.3"
 MAX_RESPONSE_BYTES = 8192
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")

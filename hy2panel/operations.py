@@ -291,6 +291,41 @@ class EgressPolicyController:
             "failed",
         }
 
+    def _switch_unit_completed(self, unit):
+        result = self.runner(
+            [
+                "/bin/systemctl",
+                "show",
+                "--no-pager",
+                "--property=LoadState",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=ExecMainStatus",
+                unit,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=_systemctl_environment(),
+        )
+        if result.returncode != 0:
+            return False
+        values = {}
+        for line in result.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or key in values:
+                return False
+            values[key] = value
+        return values == {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "Result": "success",
+            "ExecMainStatus": "0",
+        }
+
     def inspect(self):
         try:
             env_payload, _metadata = _read_managed_file(
@@ -356,7 +391,10 @@ class EgressPolicyController:
                 env=_systemctl_environment(),
             )
         except subprocess.TimeoutExpired as exc:
-            if self.status() == policy:
+            if (
+                self._switch_unit_completed(self.UNITS[policy])
+                and self.status() == policy
+            ):
                 return policy
             raise EgressPolicyStateError(
                 "egress policy switch timed out; state is inconsistent"

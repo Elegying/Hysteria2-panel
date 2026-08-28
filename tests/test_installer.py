@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.27.2"', source)
+        self.assertIn('PANEL_VERSION="0.27.3"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -3232,6 +3232,54 @@ fi
         self.assertIn("${FRESH_RECOVERY_DROPIN}", gate)
         self.assertIn("${FRESH_RECOVERY_SERVER_DROPIN}", gate)
         self.assertIn("${FRESH_RECOVERY_SERVER_443_DROPIN}", gate)
+
+    def test_hysteria_restart_does_not_reenter_transaction_recovery(self):
+        source = INSTALLER.read_text()
+        panel = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel.service <<EOF", 1
+        )[1].split("\nEOF", 1)[0]
+        primary = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-server.service <<EOF", 1
+        )[1].split("\nEOF", 1)[0]
+        secondary = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-server-443.service <<'EOF'", 1
+        )[1].split("\nEOF", 1)[0]
+
+        recovery_requires = (
+            "Requires=hysteria2-panel-upgrade-recover.service "
+            "hysteria2-panel-restore-recover.service "
+            "hysteria2-panel-egress-recover.service"
+        )
+        self.assertIn(recovery_requires, panel)
+        for server_unit in (primary, secondary):
+            self.assertIn(recovery_requires, server_unit)
+            self.assertIn("Wants=hysteria2-panel.service", server_unit)
+            after = next(
+                line for line in server_unit.splitlines() if line.startswith("After=")
+            )
+            self.assertIn("hysteria2-panel.service", after)
+
+        self.assertIn(
+            "EGRESS_SWITCH_ACTIVE_MARKER=${MAINTENANCE_RUNTIME_DIR}/egress-switch-active",
+            source,
+        )
+        active_marker = "${EGRESS_SWITCH_ACTIVE_MARKER}"
+        full = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-egress-full.service <<EOF",
+            1,
+        )[1].split("\nEOF", 1)[0]
+        web = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-egress-web.service <<EOF",
+            1,
+        )[1].split("\nEOF", 1)[0]
+        recover = source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-egress-recover.service <<EOF",
+            1,
+        )[1].split("\nEOF", 1)[0]
+        for switch_unit in (full, web):
+            self.assertIn("ExecStartPre=/usr/bin/touch {}".format(active_marker), switch_unit)
+            self.assertIn("ExecStopPost=-/bin/rm -f {}".format(active_marker), switch_unit)
+        self.assertIn("ConditionPathExists=!{}".format(active_marker), recover)
 
     def test_installer_e2e_exercises_watchdog_hang_without_restarting_data_plane(self):
         e2e = (ROOT / "tests" / "installer_e2e.sh").read_text()

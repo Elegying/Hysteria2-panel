@@ -5729,11 +5729,13 @@ class UsageManager:
         clock=time.monotonic,
         health_monitor=None,
         auth_stats_ttl=1,
+        wall_clock=time.time,
     ):
         self.database = database
         self.stats_client = stats_client
         self.pending_ttl = max(1, int(pending_ttl))
         self.clock = clock
+        self.wall_clock = wall_clock
         self.lock = threading.Lock()
         self._authorization_lock = threading.Lock()
         self.auth_stats_ttl = max(0, float(auth_stats_ttl))
@@ -5967,7 +5969,7 @@ class UsageManager:
         with self.lock:
             self._collect_locked()
             online = self.stats_client.online()
-            checkpoint = int(self.clock())
+            checkpoint = int(self.wall_clock())
             return {
                 "online": dict(online),
                 "observedAt": checkpoint,

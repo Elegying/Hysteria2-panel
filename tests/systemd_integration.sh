@@ -16,17 +16,29 @@ SERVER_UNIT="hysteria2-panel-ci-server.service"
 RECOVER_UNIT="hysteria2-panel-ci-restore-recover.service"
 RESUME_UNIT="hysteria2-panel-ci-restore-resume.service"
 LEGACY_RESTORE_UNIT="hysteria2-panel-ci-legacy-restore.service"
+EGRESS_PANEL_UNIT="hysteria2-panel-ci-egress-panel.service"
+EGRESS_SERVER_UNIT="hysteria2-panel-ci-egress-server.service"
+EGRESS_SWITCH_UNIT="hysteria2-panel-ci-egress-switch.service"
+EGRESS_RECOVER_UNIT="hysteria2-panel-ci-egress-recover.service"
 PANEL_PATH="/etc/systemd/system/${PANEL_UNIT}"
 SERVER_PATH="/etc/systemd/system/${SERVER_UNIT}"
 RECOVER_PATH="/etc/systemd/system/${RECOVER_UNIT}"
 RESUME_PATH="/etc/systemd/system/${RESUME_UNIT}"
 LEGACY_RESTORE_PATH="/etc/systemd/system/${LEGACY_RESTORE_UNIT}"
+EGRESS_PANEL_PATH="/etc/systemd/system/${EGRESS_PANEL_UNIT}"
+EGRESS_SERVER_PATH="/etc/systemd/system/${EGRESS_SERVER_UNIT}"
+EGRESS_SWITCH_PATH="/etc/systemd/system/${EGRESS_SWITCH_UNIT}"
+EGRESS_RECOVER_PATH="/etc/systemd/system/${EGRESS_RECOVER_UNIT}"
 LEGACY_RESTORE_GUARD_DIR="/run/systemd/system/${LEGACY_RESTORE_UNIT}.d"
 LEGACY_RESTORE_GUARD_DROPIN="${LEGACY_RESTORE_GUARD_DIR}/50-hysteria2-panel-install-guard.conf"
 LEGACY_RESTORE_CAPTURE="/run/hysteria2-panel-ci-legacy-restore-started"
 RESUME_MARKER="/run/hysteria2-panel-ci-restore-active"
 RESUME_CAPTURE="/run/hysteria2-panel-ci-resume-capture"
 RECOVER_FAILURE="/run/hysteria2-panel-ci-recover-failure"
+EGRESS_LOCK="/run/hysteria2-panel-ci-egress-lock"
+EGRESS_TRANSACTION="/run/hysteria2-panel-ci-egress-transaction"
+EGRESS_SWITCH_ACTIVE="/run/hysteria2-panel-ci-egress-switch-active"
+EGRESS_RECOVER_CAPTURE="/run/hysteria2-panel-ci-egress-recovered"
 
 report_error() {
   local status="$1" line="$2"
@@ -35,10 +47,14 @@ report_error() {
   echo "systemd integration failed at line ${line} (status ${status})" >&2
   systemctl --no-pager --full status \
     "${RECOVER_UNIT}" "${PANEL_UNIT}" "${SERVER_UNIT}" "${RESUME_UNIT}" \
-    "${LEGACY_RESTORE_UNIT}" >&2
+    "${LEGACY_RESTORE_UNIT}" "${EGRESS_PANEL_UNIT}" "${EGRESS_SERVER_UNIT}" \
+    "${EGRESS_SWITCH_UNIT}" "${EGRESS_RECOVER_UNIT}" >&2
   journalctl --no-pager -n 120 \
     -u "${RECOVER_UNIT}" -u "${PANEL_UNIT}" -u "${SERVER_UNIT}" \
     -u "${RESUME_UNIT}" -u "${LEGACY_RESTORE_UNIT}" >&2
+  journalctl --no-pager -n 120 \
+    -u "${EGRESS_PANEL_UNIT}" -u "${EGRESS_SERVER_UNIT}" \
+    -u "${EGRESS_SWITCH_UNIT}" -u "${EGRESS_RECOVER_UNIT}" >&2
   exit "${status}"
 }
 
@@ -48,10 +64,14 @@ cleanup() {
   set +e
   systemctl disable "${RESUME_UNIT}" >/dev/null 2>&1
   systemctl stop "${RESUME_UNIT}" "${SERVER_UNIT}" "${PANEL_UNIT}" "${RECOVER_UNIT}" \
-    "${LEGACY_RESTORE_UNIT}" >/dev/null 2>&1
+    "${LEGACY_RESTORE_UNIT}" "${EGRESS_SWITCH_UNIT}" "${EGRESS_SERVER_UNIT}" \
+    "${EGRESS_PANEL_UNIT}" "${EGRESS_RECOVER_UNIT}" >/dev/null 2>&1
   rm -f -- "${SERVER_PATH}" "${PANEL_PATH}" "${RECOVER_PATH}" "${RESUME_PATH}" \
     "${LEGACY_RESTORE_PATH}" "${LEGACY_RESTORE_GUARD_DROPIN}" \
-    "${LEGACY_RESTORE_CAPTURE}" "${RESUME_MARKER}" "${RESUME_CAPTURE}" "${RECOVER_FAILURE}"
+    "${EGRESS_PANEL_PATH}" "${EGRESS_SERVER_PATH}" "${EGRESS_SWITCH_PATH}" \
+    "${EGRESS_RECOVER_PATH}" "${LEGACY_RESTORE_CAPTURE}" "${RESUME_MARKER}" \
+    "${RESUME_CAPTURE}" "${RECOVER_FAILURE}" "${EGRESS_LOCK}" \
+    "${EGRESS_TRANSACTION}" "${EGRESS_SWITCH_ACTIVE}" "${EGRESS_RECOVER_CAPTURE}"
   rmdir -- "${LEGACY_RESTORE_GUARD_DIR}" >/dev/null 2>&1 || true
   systemctl daemon-reload >/dev/null 2>&1
   exit "${status}"
@@ -117,7 +137,58 @@ ExecStart=/bin/sh -c 'printf started > ${LEGACY_RESTORE_CAPTURE}'
 RemainAfterExit=yes
 EOF
 
-chmod 0644 "${PANEL_PATH}" "${SERVER_PATH}" "${RECOVER_PATH}" "${RESUME_PATH}"
+cat >"${EGRESS_PANEL_PATH}" <<EOF
+[Unit]
+Description=Hysteria2 egress panel dependency probe
+Requires=${EGRESS_RECOVER_UNIT}
+After=${EGRESS_RECOVER_UNIT}
+
+[Service]
+Type=simple
+ExecStart=/bin/sleep infinity
+EOF
+
+cat >"${EGRESS_SERVER_PATH}" <<EOF
+[Unit]
+Description=Hysteria2 egress server dependency probe
+Requires=${EGRESS_RECOVER_UNIT}
+After=${EGRESS_PANEL_UNIT} ${EGRESS_RECOVER_UNIT}
+Wants=${EGRESS_PANEL_UNIT}
+
+[Service]
+Type=simple
+ExecStart=/bin/sleep infinity
+EOF
+
+cat >"${EGRESS_SWITCH_PATH}" <<EOF
+[Unit]
+Description=Hysteria2 live egress switch probe
+Requires=${EGRESS_PANEL_UNIT}
+After=${EGRESS_PANEL_UNIT}
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/touch ${EGRESS_SWITCH_ACTIVE}
+ExecStart=/bin/bash -c 'exec 9>${EGRESS_LOCK}; flock 9; : >${EGRESS_TRANSACTION}; systemctl restart ${EGRESS_SERVER_UNIT}; rm -f ${EGRESS_TRANSACTION}'
+ExecStopPost=-/bin/rm -f ${EGRESS_SWITCH_ACTIVE}
+TimeoutStartSec=10s
+EOF
+
+cat >"${EGRESS_RECOVER_PATH}" <<EOF
+[Unit]
+Description=Hysteria2 egress recovery reentry probe
+Before=${EGRESS_PANEL_UNIT} ${EGRESS_SERVER_UNIT}
+ConditionPathExists=${EGRESS_TRANSACTION}
+ConditionPathExists=!${EGRESS_SWITCH_ACTIVE}
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec 9>${EGRESS_LOCK}; flock 9; printf recovered >${EGRESS_RECOVER_CAPTURE}; rm -f ${EGRESS_TRANSACTION}'
+EOF
+
+chmod 0644 "${PANEL_PATH}" "${SERVER_PATH}" "${RECOVER_PATH}" "${RESUME_PATH}" \
+  "${EGRESS_PANEL_PATH}" "${EGRESS_SERVER_PATH}" "${EGRESS_SWITCH_PATH}" \
+  "${EGRESS_RECOVER_PATH}"
 chmod 0600 "${LEGACY_RESTORE_PATH}"
 systemctl daemon-reload
 systemctl show "${PANEL_UNIT}" --property=Requires --value \
@@ -128,6 +199,27 @@ systemctl enable "${RESUME_UNIT}"
 systemctl start "${SERVER_UNIT}"
 systemctl is-active --quiet "${PANEL_UNIT}"
 systemctl is-active --quiet "${SERVER_UNIT}"
+
+# A live egress switch writes its durable transaction while holding the shared
+# maintenance lock. Restarting the data plane must not re-enter recovery and
+# wait on that same lock. After the transient /run marker disappears, a later
+# startup with a durable transaction must still recover before the server.
+systemctl start "${EGRESS_SERVER_UNIT}"
+timeout 10s systemctl start "${EGRESS_SWITCH_UNIT}"
+[[ ! -e "${EGRESS_TRANSACTION}" ]]
+[[ ! -e "${EGRESS_SWITCH_ACTIVE}" ]]
+[[ ! -e "${EGRESS_RECOVER_CAPTURE}" ]]
+systemctl is-active --quiet "${EGRESS_SERVER_UNIT}"
+
+systemctl stop "${EGRESS_SERVER_UNIT}" "${EGRESS_PANEL_UNIT}" "${EGRESS_RECOVER_UNIT}"
+systemctl reset-failed "${EGRESS_SERVER_UNIT}" "${EGRESS_PANEL_UNIT}" \
+  "${EGRESS_RECOVER_UNIT}" >/dev/null 2>&1 || true
+: >"${EGRESS_TRANSACTION}"
+rm -f -- "${EGRESS_SWITCH_ACTIVE}" "${EGRESS_RECOVER_CAPTURE}"
+timeout 10s systemctl start "${EGRESS_SERVER_UNIT}"
+[[ "$(cat "${EGRESS_RECOVER_CAPTURE}")" == "recovered" ]]
+[[ ! -e "${EGRESS_TRANSACTION}" ]]
+systemctl is-active --quiet "${EGRESS_SERVER_UNIT}"
 
 # A runtime RefuseManualStart drop-in can guard an /etc local unit without
 # replacing its persistent fragment. The refusal must create neither a process
@@ -216,3 +308,5 @@ echo "systemd dependency-preserving panel shutdown: PASS"
 echo "systemd two-phase interrupted-restore ordering: PASS"
 echo "systemd failed pre-recovery blocks public services: PASS"
 echo "systemd legacy restore admission guard: PASS"
+echo "systemd live egress switch avoids recovery lock reentry: PASS"
+echo "systemd boot egress recovery remains fail-closed: PASS"
