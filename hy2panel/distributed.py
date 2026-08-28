@@ -31,7 +31,9 @@ TRAFFIC_FIELDS = COMMON_FIELDS | {"batchId", "observedAt", "traffic"}
 COMMAND_POLL_FIELDS = COMMON_FIELDS | {"requestId"}
 COMMAND_ACK_FIELDS = COMMON_FIELDS | {"commandId", "ok", "errorCode"}
 MAX_CLOCK_SKEW_SECONDS = 120
-MAX_STATE_AGE_SECONDS = 5
+# One 10-second protocol request, the bounded 30-second retry backoff and the
+# maximum 5-second control-loop interval must fit before new auth fails closed.
+MAX_STATE_AGE_SECONDS = 45
 MAX_TRAFFIC_BATCH_AGE_SECONDS = 7 * 86400
 MAX_USERS_PER_PAYLOAD = 1000
 MAX_COUNTER = 2**63 - 1
