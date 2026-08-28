@@ -55,8 +55,8 @@
 
 - [x] 面板向导展示“等待确认/自动部署/可添加 DNS/已准入”
 - [x] API、部署、恢复与安全边界文档同步
-- [ ] 全量测试、Ruff、Bandit、Bash、ShellCheck 和差异门通过
-- [ ] 五轴代码审查无剩余 P0-P2
+- [x] 全量测试、Ruff、Bandit、Bash、ShellCheck 和差异门通过
+- [x] 五轴代码审查无剩余 P0-P2
 
 ## 风险与缓解
 

@@ -190,6 +190,8 @@ class HysteriaCanaryRunner:
                         "5",
                         "--max-time",
                         "15",
+                        "--max-filesize",
+                        "8192",
                         "--proxy",
                         "socks5h://127.0.0.1:{}".format(local_port),
                         self.TRACE_URL,
@@ -215,7 +217,7 @@ class HysteriaCanaryRunner:
                         process.kill()
                         process.wait(timeout=3)
 
-    def __call__(self, *, node_ip, token, pin_sha256):
+    def __call__(self, *, node_ip, main_port, token, pin_sha256):
         try:
             address = ipaddress.ip_address(node_ip)
         except ValueError as exc:
@@ -223,11 +225,18 @@ class HysteriaCanaryRunner:
         if not address.is_global:
             raise ValueError("canary node address must be public")
         node_ip = str(address)
+        if (
+            isinstance(main_port, bool)
+            or not isinstance(main_port, int)
+            or not 1 <= main_port <= 65535
+            or main_port == 443
+        ):
+            raise ValueError("canary main port is invalid")
         if not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token):
             raise ValueError("canary token is invalid")
         if not isinstance(pin_sha256, str) or not SHA256_PATTERN.fullmatch(pin_sha256):
             raise ValueError("canary certificate pin is invalid")
-        for port in (19999, 443):
+        for port in (main_port, 443):
             self._check_entrypoint(node_ip, port, token, pin_sha256)
 
 
@@ -847,6 +856,7 @@ class DataPlaneBootstrapService:
         signature_verifier=None,
         identity_provider=None,
         canary_runner=None,
+        hysteria_port=19999,
         verification_slots=8,
     ):
         self.database = database
@@ -859,6 +869,14 @@ class DataPlaneBootstrapService:
         self.signature_verifier = signature_verifier or OpenSSLSignatureVerifier()
         self.identity_provider = identity_provider
         self.canary_runner = canary_runner
+        if (
+            isinstance(hysteria_port, bool)
+            or not isinstance(hysteria_port, int)
+            or not 1 <= hysteria_port <= 65535
+            or hysteria_port in {443, 19995, 19996, 19997}
+        ):
+            raise ValueError("Hysteria main port is invalid")
+        self.hysteria_port = hysteria_port
         self._verification_gate = threading.BoundedSemaphore(verification_slots)
 
     @staticmethod
@@ -1169,7 +1187,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             "configProtocolVersion": 1,
             "hysteriaVersion": self.HYSTERIA_VERSION,
             "hysteriaSha256": dict(self.HYSTERIA_SHA256),
-            "ports": {"main": 19999, "udp443": 443},
+            "ports": {"main": self.hysteria_port, "udp443": 443},
         }
         result.update(identity)
         if len(
@@ -1235,6 +1253,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             try:
                 self.canary_runner(
                     node_ip=remote_ip,
+                    main_port=self.hysteria_port,
                     token=payload["bootstrapToken"],
                     pin_sha256=identity["certificateDerSha256"],
                 )

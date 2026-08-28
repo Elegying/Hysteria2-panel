@@ -85,11 +85,13 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )(
                 node_ip="8.8.8.8",
+                main_port=24443,
                 token="canary_" + "T" * 40,
                 pin_sha256="ab" * 32,
             )
 
-        self.assertEqual([19999, 443], [int(c["server"].rsplit(":", 1)[1]) for c in configs])
+        self.assertEqual([24443, 443], [int(c["server"].rsplit(":", 1)[1]) for c in configs])
+        self.assertTrue(all("--max-filesize" in command for command in curl_calls))
         self.assertTrue(all(c["auth"].startswith("canary_") for c in configs))
         self.assertTrue(all(c["tls"]["insecure"] is True for c in configs))
         self.assertTrue(
@@ -104,9 +106,18 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner(
                 node_ip="127.0.0.1",
+                main_port=19999,
                 token="canary_" + "T" * 40,
                 pin_sha256="ab" * 32,
             )
+        for invalid_port in (0, 443, 65536, True, "19999"):
+            with self.subTest(invalid_port=invalid_port), self.assertRaises(ValueError):
+                runner(
+                    node_ip="8.8.8.8",
+                    main_port=invalid_port,
+                    token="canary_" + "T" * 40,
+                    pin_sha256="ab" * 32,
+                )
 
         with mock.patch("hy2panel.nodes.subprocess.Popen") as popen:
             with self.assertRaises(RuntimeError):
@@ -827,6 +838,19 @@ class AutoBootstrapClaimTests(unittest.TestCase):
                 with self.assertRaises(DataPlaneBootstrapRejected):
                     self.service.claim(payload, remote_ip=remote_ip)
 
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET data_plane_state = 'direct_canary_passed' "
+                "WHERE node_id = ?",
+                (self.node_id,),
+            )
+        recovered = self.service.claim(
+            self._payload(9), remote_ip=self.remote_ip
+        )
+        self.assertEqual("AUTO_BOOTSTRAP_ISSUED", recovered["status"])
+        node = self.db.get_node_for_heartbeat(self.node_id)
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+
     def test_claim_token_is_a_reserved_node_bound_canary_not_a_user(self):
         result = self.service.claim(self._payload(), remote_ip=self.remote_ip)
         digest = hashlib.sha256(
@@ -969,6 +993,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
             token_factory=lambda: self.token,
             signature_verifier=lambda _key, _message, _signature: True,
             identity_provider=lambda: dict(self.identity),
+            hysteria_port=24443,
         )
         self.service.issue(self.node_id, actor="admin")
 
@@ -1051,7 +1076,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
         self.assertEqual(3, result["maxFetchAttempts"])
         self.assertEqual(1, result["configProtocolVersion"])
         self.assertEqual("2.12.1", result["hysteriaVersion"])
-        self.assertEqual({"main": 19999, "udp443": 443}, result["ports"])
+        self.assertEqual({"main": 24443, "udp443": 443}, result["ports"])
         self.assertEqual(self.identity["certificatePem"], result["certificatePem"])
         self.assertEqual(self.identity["privateKeyPem"], result["privateKeyPem"])
         self.assertEqual("web", result["egressPolicy"])
@@ -1141,6 +1166,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
         self.assertEqual(self.remote_ip, calls[0]["node_ip"])
         self.assertEqual(self.token, calls[0]["token"])
         self.assertEqual(self.identity["certificateDerSha256"], calls[0]["pin_sha256"])
+        self.assertEqual(24443, calls[0]["main_port"])
 
         self.service.canary_runner = lambda **kwargs: calls.append(kwargs)
         result = self.service.ack(
@@ -1379,6 +1405,14 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
 
     def test_public_fetch_and_ack_return_the_fixed_contract(self):
         self.service.issue(self.node_id, actor="admin")
+        extended_requests = []
+        original_begin_canary = self.server.begin_node_canary_request
+
+        def begin_canary(request):
+            extended_requests.append(request)
+            return original_begin_canary(request)
+
+        self.server.begin_node_canary_request = begin_canary
 
         fetched = json.loads(
             self._post_json(
@@ -1388,6 +1422,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             .decode("utf-8")
         )
         self.assertEqual(self.identity["privateKeyPem"], fetched["privateKeyPem"])
+        self.assertEqual([], extended_requests)
 
         ack = self._common(2)
         ack.update(
@@ -1414,6 +1449,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             .decode("utf-8")
         )
         self.assertEqual("DATA_PLANE_INSTALLED", result["status"])
+        self.assertEqual(1, len(extended_requests))
 
     def test_public_auto_claim_uses_the_same_https_and_signature_boundary(self):
         with sqlite3.connect(str(self.db_path)) as connection:
@@ -1556,7 +1592,7 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
                 "amd64": "ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7",
                 "arm64": "c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792",
             },
-            "ports": {"main": 19999, "udp443": 443},
+            "ports": {"main": 24443, "udp443": 443},
         }
         self.response.update(provider())
 
@@ -1581,7 +1617,11 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             {"privateKeyPublicSha256": "0" * 64},
             {"hysteriaVersion": "2.12.0"},
             {"configProtocolVersion": 2},
-            {"ports": {"main": 19998, "udp443": 443}},
+            {"ports": {"main": 0, "udp443": 443}},
+            {"ports": {"main": 443, "udp443": 443}},
+            {"ports": {"main": 19996, "udp443": 443}},
+            {"ports": {"main": 65536, "udp443": 443}},
+            {"ports": {"main": True, "udp443": 443}},
             {"egressPolicy": "unknown"},
             {"unexpected": True},
         )
@@ -1605,7 +1645,7 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         self.assertEqual({"main", "udp443"}, set(configs))
         main = configs["main"]
         udp443 = configs["udp443"]
-        self.assertIn("listen: :19999", main)
+        self.assertIn("listen: :24443", main)
         self.assertIn("url: http://127.0.0.1:19996/auth/main", main)
         self.assertIn("listen: 127.0.0.1:19997", main)
         self.assertIn("listen: :443", udp443)
@@ -1805,10 +1845,12 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
                 "egressPolicy",
                 "hysteriaSha256",
                 "hysteriaVersion",
+                "mainPort",
                 "privateKeyPublicSha256",
             },
             set(metadata),
         )
+        self.assertEqual(24443, metadata["mainPort"])
         persisted = b"".join(path.read_bytes() for path in destination.iterdir())
         self.assertNotIn(token.encode("ascii"), persisted)
         self.assertNotIn(b"vpn.ssrvpn.vip", persisted)
@@ -2008,6 +2050,7 @@ class DataPlaneAttestationTests(unittest.TestCase):
                     "hysteriaVersion": "2.12.1",
                     "hysteriaSha256": "f" * 64,
                     "egressPolicy": "web",
+                    "mainPort": 24443,
                     "configProtocolVersion": 1,
                 }
             ),
@@ -2055,7 +2098,7 @@ class DataPlaneAttestationTests(unittest.TestCase):
         self.assertTrue(all(value is True for key, value in result.items() if key.endswith("Healthy") or key.endswith("Listening")))
         self.assertEqual(6, len(services))
         self.assertEqual(
-            [("udp", 19999), ("udp", 443), ("tcp", 19999), ("tcp", 443)],
+            [("udp", 24443), ("udp", 443), ("tcp", 24443), ("tcp", 443)],
             listeners,
         )
         self.assertEqual(

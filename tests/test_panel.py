@@ -3593,6 +3593,45 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual([True], extension_granted)
         self.assertFalse(serving.is_alive())
 
+    def test_handler_can_extend_only_the_current_request_for_node_canaries(self):
+        extension_granted = []
+
+        class CanaryHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                extension_granted.append(
+                    self.server.begin_node_canary_request(self.connection)
+                )
+                time.sleep(1.2)
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            CanaryHandler,
+            max_workers=1,
+            request_deadline=1,
+            node_canary_request_deadline=3,
+        )
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:{}/canary".format(server.server_address[1]),
+                timeout=2,
+            ) as response:
+                self.assertEqual(204, response.status)
+        finally:
+            server.shutdown()
+            server.shutdown_active_requests()
+            server.server_close()
+            serving.join(2)
+
+        self.assertEqual([True], extension_granted)
+        self.assertFalse(serving.is_alive())
+
     def test_shutdown_interrupts_a_slow_request_before_waiting_for_threads(self):
         request_started = threading.Event()
 

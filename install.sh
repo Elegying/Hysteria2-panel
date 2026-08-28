@@ -20,7 +20,7 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="9d1c12e5d25dc04a01d2c62565e2b966c97d44d1552fe3dae358f4810876f4b7"
+PANEL_SHA256="d19ff41ceea66f041b01724520f0e0d2b242f46609e5a5d403d55021b772517d"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
@@ -31,9 +31,9 @@ HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="c764ce66f0178c7e991adf4574d2b1b156ffeb55446553c8e457c60062a91149"
+HY2PANEL_NODES_SHA256="25bb04215e3a78b25061b8a5d5fb5de8a05358d88b87bc38739d9da4e3705346"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="01cd43f36e958b13aa708b72063d1fc14740e93cf995cf45ad10c577aebb94cf"
+NODE_AGENT_SHA256="e38f5d3e3a7c93ea5d7b271246568fb8cc32b023f9894d897f59f8de7e256d84"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -147,6 +147,7 @@ DATA_PLANE_MUTATED=0
 DATA_PLANE_EXISTING=0
 DATA_PLANE_BACKUP_DIR=""
 DATA_PLANE_NODE_AGENT_BACKUP_FILE=""
+DATA_PLANE_MAIN_PORT=19999
 DATA_PLANE_OWNED_FILES=()
 DATA_PLANE_OWNED_UNITS=()
 
@@ -1354,6 +1355,23 @@ complete_node_onboarding() {
     || fail "节点自动收尾标记无效；拒绝继续"
   select_python || fail "节点自动收尾需要 Python 3.8 或更高版本"
 
+  # A successful activation removes its durable data-plane transaction only
+  # after the central ACK.  If the process then dies before removing the
+  # onboarding marker, the fully healthy local installation is authoritative
+  # evidence that only the timer cleanup remains.
+  if [[ ! -e "${NODE_DATA_PLANE_TRANSACTION}" \
+    && ! -L "${NODE_DATA_PLANE_TRANSACTION}" ]]; then
+    inspect_existing_data_plane
+    if (( DATA_PLANE_EXISTING == 1 )); then
+      rm -f -- "${NODE_ONBOARDING_MARKER}"
+      systemctl disable --now --no-block \
+        hysteria2-panel-node-onboarding.timer >/dev/null 2>&1 || true
+      sync -f "${NODE_AGENT_CONFIG_DIR}" /etc/systemd/system
+      echo "节点自动对接此前已完成；本次仅清理持久完成器。"
+      return 0
+    fi
+  fi
+
   install -d -o root -g root -m 0700 "${NODE_ONBOARDING_RUNTIME_DIR}"
   rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
   if ! "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" claim-data-plane \
@@ -1682,6 +1700,27 @@ assert_data_plane_paths_unclaimed() {
   done
 }
 
+read_data_plane_main_port() {
+  local metadata="$1" compatibility="${2:-strict}"
+  "${PYTHON_BIN}" - "${metadata}" "${compatibility}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+raw = path.read_bytes()
+if not raw or len(raw) > 8192:
+    raise SystemExit(1)
+record = json.loads(raw.decode("ascii"))
+port = record.get("mainPort") if isinstance(record, dict) else None
+if port is None and sys.argv[2] == "legacy-19999":
+    port = 19999
+if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535 or port in {443, 19995, 19996, 19997}:
+    raise SystemExit(1)
+print(port)
+PY
+}
+
 assert_existing_data_plane_healthy() {
   local mode path unit
   initialize_data_plane_owned_paths
@@ -1718,6 +1757,9 @@ assert_existing_data_plane_healthy() {
     || fail "已安装数据面状态目录包含符号链接"
   [[ -z "$(find /var/lib/hysteria2-panel-node -xdev ! -type d ! -type f -print -quit)" ]] \
     || fail "已安装数据面状态目录包含特殊文件"
+  DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
+    "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" \
+    || fail "已安装数据面主端口元数据异常"
   while IFS= read -r -d '' path; do
     [[ "$(stat -c '%u:%g' "${path}")" == "0:0" ]] \
       || fail "已安装数据面状态项 owner 异常：${path}"
@@ -1729,9 +1771,11 @@ assert_existing_data_plane_healthy() {
         || fail "已安装数据面状态文件权限异常：${path}"
     fi
   done < <(find /var/lib/hysteria2-panel-node -xdev \( -type d -o -type f \) -print0)
-  ss -H -lun "sport = :19999" | grep -q . || fail "既有数据面 UDP 19999 未监听"
+  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "既有数据面 UDP ${DATA_PLANE_MAIN_PORT} 未监听"
   ss -H -lun "sport = :443" | grep -q . || fail "既有数据面 UDP 443 未监听"
-  ss -H -ltn "sport = :19999" | grep -q . || fail "既有数据面 TCP 19999 未监听"
+  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "既有数据面 TCP ${DATA_PLANE_MAIN_PORT} 未监听"
   ss -H -ltn "sport = :443" | grep -q . || fail "既有数据面 TCP 443 未监听"
 }
 
@@ -1753,11 +1797,20 @@ inspect_existing_data_plane() {
 assert_data_plane_ports_available() {
   local kind port
   for kind in -lun -ltn; do
-    for port in 443 19995 19996 19997 19999; do
+    for port in 443 19995 19996 19997 "${DATA_PLANE_MAIN_PORT}"; do
       if ss -H "${kind}" "sport = :${port}" | grep -q .; then
         fail "数据面端口已被占用；未修改系统：${port}"
       fi
     done
+  done
+}
+
+assert_data_plane_main_port_available() {
+  local kind
+  for kind in -lun -ltn; do
+    if ss -H "${kind}" "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q .; then
+      fail "数据面主端口已被占用；未修改系统：${DATA_PLANE_MAIN_PORT}"
+    fi
   done
 }
 
@@ -1869,7 +1922,7 @@ recover_interrupted_data_plane() {
 
 record_data_plane_firewall_change() {
   local line="$1" stage="${TMP_DIR}/data-plane-firewall.state"
-  [[ "${line}" =~ ^(ufw|firewalld-runtime|firewalld-permanent)\|[-A-Za-z0-9_.]+\|(443|19999)\|(tcp|udp)$ ]] \
+  [[ "${line}" =~ ^(ufw|firewalld-runtime|firewalld-permanent)\|[-A-Za-z0-9_.]+\|([0-9]{1,5})\|(tcp|udp)$ ]] \
     || return 1
   if [[ -f "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" ]]; then
     cp -- "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" "${stage}"
@@ -1926,7 +1979,7 @@ configure_data_plane_firewall() {
             || fail "无法读取 firewalld ${zone} rich rules；数据面已安排回滚"
         fi
         for protocol in tcp udp; do
-          for port in 443 19999; do
+          for port in 443 "${DATA_PLANE_MAIN_PORT}"; do
             rule="${port}/${protocol}"
             if [[ "${scope}" == "permanent" ]]; then
               if firewall-cmd --quiet --permanent --zone="${zone}" \
@@ -1983,7 +2036,7 @@ configure_data_plane_firewall() {
     UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" \
       || fail "无法读取 UFW 规则；数据面已安排回滚"
     for protocol in tcp udp; do
-      for port in 443 19999; do
+      for port in 443 "${DATA_PLANE_MAIN_PORT}"; do
         rule="${port}/${protocol}"
         if ufw_rule_is_denied "${rule}"; then
           fail "UFW 已存在拒绝 ${rule} 的规则；数据面已安排回滚"
@@ -2015,34 +2068,116 @@ configure_data_plane_firewall() {
   echo "主机未启用 UFW/firewalld 且无自定义入站限制；数据面未修改防火墙。"
 }
 
-rollback_data_plane_firewall() {
-  local manager zone port protocol
-  local state="${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+validate_data_plane_firewall_state() {
+  local manager zone port protocol extra state="$1"
   [[ -e "${state}" || -L "${state}" ]] || return 0
   [[ -f "${state}" && ! -L "${state}" ]] || return 1
-  while IFS='|' read -r manager zone port protocol; do
-    [[ "${port}" =~ ^(443|19999)$ && "${protocol}" =~ ^(tcp|udp)$ ]] \
+  while IFS='|' read -r manager zone port protocol extra; do
+    [[ -z "${extra}" && "${port}" =~ ^[0-9]{1,5}$ \
+      && "${port}" -ge 1 && "${port}" -le 65535 \
+      && "${protocol}" =~ ^(tcp|udp)$ ]] \
       || return 1
     case "${manager}" in
-      firewalld-runtime)
+      firewalld-runtime|firewalld-permanent)
         [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
-        firewall-cmd --zone="${zone}" --remove-port="${port}/${protocol}" \
-          >/dev/null 2>&1 || true
-        ;;
-      firewalld-permanent)
-        [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
-        firewall-cmd --permanent --zone="${zone}" \
-          --remove-port="${port}/${protocol}" >/dev/null 2>&1 || true
         ;;
       ufw)
         [[ "${zone}" == "-" ]] || return 1
-        ufw --force delete allow proto "${protocol}" from any to any \
-          port "${port}" >/dev/null 2>&1 || true
         ;;
       *) return 1 ;;
     esac
   done < "${state}"
+}
+
+remove_data_plane_firewall_rule() {
+  local manager="$1" zone="$2" port="$3" protocol="$4" rule status
+  rule="${port}/${protocol}"
+  case "${manager}" in
+    firewalld-runtime)
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        firewall-cmd --quiet --zone="${zone}" --remove-port="${rule}" \
+          || return 1
+      else
+        status=$?
+        (( status == 1 )) && return 0
+        return 1
+      fi
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        return 1
+      else
+        status=$?
+        (( status == 1 ))
+      fi
+      ;;
+    firewalld-permanent)
+      if firewall-cmd --quiet --permanent --zone="${zone}" \
+        --query-port="${rule}"; then
+        firewall-cmd --quiet --permanent --zone="${zone}" \
+          --remove-port="${rule}" || return 1
+      else
+        status=$?
+        (( status == 1 )) && return 0
+        return 1
+      fi
+      if firewall-cmd --quiet --permanent --zone="${zone}" \
+        --query-port="${rule}"; then
+        return 1
+      else
+        status=$?
+        (( status == 1 ))
+      fi
+      ;;
+    ufw)
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      if ufw_rule_is_recorded "${rule}"; then
+        ufw --force delete allow proto "${protocol}" from any to any \
+          port "${port}" >/dev/null || return 1
+      else
+        status=$?
+        (( status == 1 )) && return 0
+        return 1
+      fi
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      if ufw_rule_is_recorded "${rule}"; then
+        return 1
+      else
+        status=$?
+        (( status == 1 ))
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+rollback_data_plane_firewall() {
+  local failed=0 manager zone port protocol
+  local state="${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+  validate_data_plane_firewall_state "${state}" || return 1
+  [[ -e "${state}" ]] || return 0
+  while IFS='|' read -r manager zone port protocol; do
+    remove_data_plane_firewall_rule \
+      "${manager}" "${zone}" "${port}" "${protocol}" || failed=1
+  done < "${state}"
+  (( failed == 0 )) || return 1
   rm -f -- "${state}"
+}
+
+rollback_new_data_plane_firewall_rules() {
+  local backup_state failed=0 manager zone port protocol rule
+  local state="${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+  backup_state="${DATA_PLANE_BACKUP_DIR}/config/data-plane-firewall.state"
+  validate_data_plane_firewall_state "${state}" || return 1
+  validate_data_plane_firewall_state "${backup_state}" || return 1
+  [[ -e "${state}" ]] || return 0
+  while IFS='|' read -r manager zone port protocol; do
+    rule="${manager}|${zone}|${port}|${protocol}"
+    if [[ -f "${backup_state}" ]] && grep -Fqx -- "${rule}" "${backup_state}"; then
+      continue
+    fi
+    remove_data_plane_firewall_rule \
+      "${manager}" "${zone}" "${port}" "${protocol}" || failed=1
+  done < "${state}"
+  (( failed == 0 ))
 }
 
 stop_existing_data_plane() {
@@ -2062,6 +2197,7 @@ restore_existing_data_plane() {
     cd "${DATA_PLANE_BACKUP_DIR}"
     sha256sum --check --status manifest.sha256
   ) || return 1
+  rollback_new_data_plane_firewall_rules || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
     systemctl disable --now "${unit}" >/dev/null 2>&1 || true
@@ -2097,9 +2233,11 @@ restore_existing_data_plane() {
     systemctl enable --now "${unit}" || return 1
     systemctl is-active --quiet "${unit}" || return 1
   done
-  ss -H -lun "sport = :19999" | grep -q . || return 1
+  DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
+    "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" || return 1
+  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
   ss -H -lun "sport = :443" | grep -q . || return 1
-  ss -H -ltn "sport = :19999" | grep -q . || return 1
+  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
   ss -H -ltn "sport = :443" | grep -q . || return 1
   rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
   sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
@@ -2147,7 +2285,7 @@ rollback_data_plane_activation() {
 }
 
 activate_data_plane() {
-  local bootstrap_token command_name hysteria_arch hysteria_sha hysteria_url path unit
+  local bootstrap_token command_name existing_main_port="" hysteria_arch hysteria_sha hysteria_url main_capability="" path unit
   local -a data_plane_commands=(awk cat chmod cp curl date df find grep install mkdir mktemp mv openssl rm rmdir sha256sum sort ss stat sync sysctl systemctl)
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
@@ -2168,20 +2306,20 @@ activate_data_plane() {
     || fail "节点签名心跳 timer 未运行；未修改系统"
   systemctl start hysteria2-panel-node-heartbeat.service \
     || fail "节点签名心跳未被中央面板接受；未修改系统"
-  recover_interrupted_data_plane
-  assert_data_plane_network_stack_claimable
-  inspect_existing_data_plane
-  if (( DATA_PLANE_EXISTING == 1 )); then
-    assert_existing_data_plane_healthy
-  else
-    assert_data_plane_paths_unclaimed
-    assert_data_plane_ports_available
-  fi
   for command_name in "${data_plane_commands[@]}"; do
     command -v "${command_name}" >/dev/null 2>&1 \
       || fail "数据面部署缺少命令 ${command_name}；未修改系统"
   done
   select_python || fail "数据面部署需要 Python 3.8 或更高版本；未修改系统"
+  recover_interrupted_data_plane
+  assert_data_plane_network_stack_claimable
+  inspect_existing_data_plane
+  if (( DATA_PLANE_EXISTING == 1 )); then
+    assert_existing_data_plane_healthy
+    existing_main_port="${DATA_PLANE_MAIN_PORT}"
+  else
+    assert_data_plane_paths_unclaimed
+  fi
   (( $(df -Pk "${NODE_AGENT_OPT_DIR}" | awk 'NR == 2 {print $4}') >= 131072 )) \
     || fail "数据面部署至少需要 128 MiB 可用磁盘；未修改系统"
   bootstrap_token="${HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN:-}"
@@ -2220,6 +2358,17 @@ activate_data_plane() {
       --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
       --output-dir "${TMP_DIR}/data-plane" \
     || fail "数据面身份取件或本地摘要验证失败；未修改系统"
+  DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
+    "${TMP_DIR}/data-plane/bootstrap.json")" \
+    || fail "中央返回的数据面主端口无效；未修改系统"
+  if (( DATA_PLANE_EXISTING == 0 )); then
+    assert_data_plane_ports_available
+  elif [[ "${DATA_PLANE_MAIN_PORT}" != "${existing_main_port}" ]]; then
+    assert_data_plane_main_port_available
+  fi
+  if (( DATA_PLANE_MAIN_PORT < 1024 )); then
+    main_capability=CAP_NET_BIND_SERVICE
+  fi
 
   write_data_plane_backup_manifest \
     || fail "无法创建数据面 root-only 回滚快照；未修改系统"
@@ -2330,7 +2479,7 @@ EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-hysteria-main.service" <<EOF
 [Unit]
-Description=Hysteria2-panel data node main UDP 19999
+Description=Hysteria2-panel data node main UDP ${DATA_PLANE_MAIN_PORT}
 After=network-online.target hysteria2-panel-node-auth.service hysteria2-panel-node-control.service
 Wants=network-online.target
 
@@ -2356,8 +2505,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=${main_capability}
+AmbientCapabilities=${main_capability}
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
 TasksMax=256
@@ -2410,14 +2559,14 @@ EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-tcp-probe-main.service" <<EOF
 [Unit]
-Description=Hysteria2-panel data node TCP 19999 probe
+Description=Hysteria2-panel data node TCP ${DATA_PLANE_MAIN_PORT} probe
 After=hysteria2-panel-node-hysteria-main.service
 Requires=hysteria2-panel-node-hysteria-main.service
 
 [Service]
 Type=simple
 DynamicUser=true
-ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/tcp_probe.py 19999
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/tcp_probe.py ${DATA_PLANE_MAIN_PORT}
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -2431,8 +2580,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=${main_capability}
+AmbientCapabilities=${main_capability}
 RestrictAddressFamilies=AF_INET AF_INET6
 TasksMax=16
 MemoryMax=64M
@@ -2492,9 +2641,11 @@ EOF
   done
   systemctl is-active --quiet hysteria2-panel-node-control.service \
     || fail "数据面控制循环未运行"
-  ss -H -lun "sport = :19999" | grep -q . || fail "Hysteria UDP 19999 未监听"
+  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "Hysteria UDP ${DATA_PLANE_MAIN_PORT} 未监听"
   ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 未监听"
-  ss -H -ltn "sport = :19999" | grep -q . || fail "TCP 19999 probe 未监听"
+  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "TCP ${DATA_PLANE_MAIN_PORT} probe 未监听"
   ss -H -ltn "sport = :443" | grep -q . || fail "TCP 443 probe 未监听"
   configure_data_plane_firewall
   (

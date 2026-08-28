@@ -35,7 +35,7 @@
   - Files: `hy2panel/web_assets.py`, `docs/API.md`, `docs/DEPLOYMENT.md`, `README.md`, `CHANGELOG.md`
   - Scope: Medium
 
-- [ ] 完整质量门和对抗审查
+- [x] 完整质量门和对抗审查
   - Acceptance: 行为测试与静态门全绿；无任意 root 命令、秘密泄漏、自动证书轮换或用户配置变化。
   - Verify: 仓库全量测试与静态检查；`git diff --check`
   - Dependencies: 全部实现

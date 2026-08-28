@@ -4064,6 +4064,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         max_workers=64,
         request_timeout=10,
         request_deadline=30,
+        node_canary_request_deadline=70,
         maintenance_request_deadline=15 * 60,
         worker_queue_timeout=0,
         request_queue_size=64,
@@ -4071,6 +4072,9 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self.max_workers = max(1, int(max_workers))
         self.request_timeout = max(1, int(request_timeout))
         self.request_deadline = max(1, int(request_deadline))
+        self.node_canary_request_deadline = max(
+            self.request_deadline, min(120, int(node_canary_request_deadline))
+        )
         self.maintenance_request_deadline = max(
             self.request_deadline, int(maintenance_request_deadline)
         )
@@ -4229,6 +4233,11 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def begin_maintenance_request(self, request):
         return self._arm_request_deadline(request, self.maintenance_request_deadline)
+
+    def begin_node_canary_request(self, request):
+        return self._arm_request_deadline(
+            request, self.node_canary_request_deadline
+        )
 
     @staticmethod
     def _expire_request(request):
@@ -5016,7 +5025,9 @@ class PanelHandler(JsonHandler):
                 "not_issued": "等待节点自动领取部署凭据",
                 "bootstrap_issued": "自动部署中 · 正在配置 FULL/双入口/网络优化",
                 "data_plane_installed": "数据面已安装 · 待直连灰度",
-                "direct_canary_passed": "UDP 19999/443 真实验收通过 · 请手工添加 DNS",
+                "direct_canary_passed": "主 UDP {}/443 真实验收通过 · 请手工添加 DNS".format(
+                    self.app.hysteria_port
+                ),
                 "dns_admitted": "DNS 已检测并自动准入 · 节点可用",
             }
             details.append(data_plane_labels.get(data_plane_state, "数据面状态异常"))
@@ -5097,7 +5108,7 @@ class PanelHandler(JsonHandler):
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
 <dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">一条签名部署代码；随后只需核对短码并手工添加 DNS。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
-<p class="notice"><strong>自动流程：</strong>在新服务器运行下方代码 → 回到节点卡片核对 16 位指纹短码 → 等待自动完成签名心跳、FULL、UDP 19999/443、fq/BBR、16 MiB UDP 缓冲和双入口真实出口验收 → 按提示手工添加 <code>{public_host}</code> DNS。面板只读检测 DNS，不会写入或删除 DNS；Hysteria 长期身份只会原样复制，不会自动轮换。</p>
+<p class="notice"><strong>自动流程：</strong>在新服务器运行下方代码 → 回到节点卡片核对 16 位指纹短码 → 等待自动完成签名心跳、FULL、主 UDP {port}/443、fq/BBR、16 MiB UDP 缓冲和双入口真实出口验收 → 按提示手工添加 <code>{public_host}</code> DNS。面板只读检测 DNS，不会写入或删除 DNS；Hysteria 长期身份只会原样复制，不会自动轮换。</p>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">节点公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-mode">操作类型</label><select id="node-enrollment-mode" name="mode"><option value="join" selected>全新节点对接</option><option value="rebind">已有数据节点安全重绑定</option></select></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <section class="enrollment-result" data-data-plane-bootstrap-result hidden><label for="data-plane-deployment-code">数据面一键部署代码</label><textarea id="data-plane-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="data-plane-deployment-code">复制数据面部署代码</button></div><p class="muted" data-data-plane-bootstrap-expiry role="status"></p><p class="notice"><strong>安全边界：</strong>代码只携带绑定节点与来源 IP 的短时授权；不会携带 Hysteria 证书私钥、HMAC、统计密钥、用户数据，也不会修改 DNS。</p></section>
@@ -5342,6 +5353,8 @@ class PanelHandler(JsonHandler):
         except ValueError:
             self._send_api_error(400, "INVALID_REQUEST", "request body is invalid")
             return
+        if method_name == "ack":
+            self.server.begin_node_canary_request(self.connection)
         try:
             result = getattr(service, method_name)(
                 payload, remote_ip=self.client_address[0]
@@ -7155,6 +7168,7 @@ def run_service(settings):
                 ],
             ),
             canary_runner=HysteriaCanaryRunner(settings.public_host),
+            hysteria_port=settings.hysteria_port,
         )
     application = PanelApplication(
         database=database,

@@ -776,7 +776,13 @@ def validate_data_plane_identity(response, architecture):
         or response.get("maxFetchAttempts") != 3
         or response.get("configProtocolVersion") != 1
         or response.get("hysteriaVersion") != "2.12.1"
-        or response.get("ports") != {"main": 19999, "udp443": 443}
+        or not isinstance(response.get("ports"), dict)
+        or set(response["ports"]) != {"main", "udp443"}
+        or isinstance(response["ports"].get("main"), bool)
+        or not isinstance(response["ports"].get("main"), int)
+        or not 1 <= response["ports"]["main"] <= 65535
+        or response["ports"]["main"] in {443, 19995, 19996, 19997}
+        or response["ports"].get("udp443") != 443
         or response.get("egressPolicy") not in {"web", "full"}
         or any(
             not isinstance(response.get(field), str)
@@ -850,6 +856,7 @@ def validate_data_plane_identity(response, architecture):
         "hysteria_version": response["hysteriaVersion"],
         "hysteria_sha256": hysteria_hashes[architecture],
         "egress_policy": response["egressPolicy"],
+        "main_port": response["ports"]["main"],
     }
 
 
@@ -863,6 +870,7 @@ def render_data_plane_configs(identity, stats_secret):
         "hysteria_version",
         "hysteria_sha256",
         "egress_policy",
+        "main_port",
     }
     if (
         not isinstance(identity, dict)
@@ -940,7 +948,7 @@ masquerade:
         )
 
     return {
-        "main": render(19999, "auth/main", 19997),
+        "main": render(identity["main_port"], "auth/main", 19997),
         "udp443": render(443, "auth/udp443", 19995),
     }
 
@@ -1180,6 +1188,7 @@ def prepare_data_plane_bundle(
             "hysteriaVersion": identity["hysteria_version"],
             "hysteriaSha256": identity["hysteria_sha256"],
             "egressPolicy": identity["egress_policy"],
+            "mainPort": identity["main_port"],
             "configProtocolVersion": 1,
         }
         files = {
@@ -1416,6 +1425,7 @@ def collect_data_plane_attestation(
         "hysteriaVersion",
         "hysteriaSha256",
         "egressPolicy",
+        "mainPort",
         "configProtocolVersion",
     }
     if (
@@ -1424,6 +1434,10 @@ def collect_data_plane_attestation(
         or metadata.get("hysteriaVersion") != "2.12.1"
         or metadata.get("configProtocolVersion") != 1
         or metadata.get("egressPolicy") not in {"web", "full"}
+        or isinstance(metadata.get("mainPort"), bool)
+        or not isinstance(metadata.get("mainPort"), int)
+        or not 1 <= metadata["mainPort"] <= 65535
+        or metadata["mainPort"] in {443, 19995, 19996, 19997}
         or any(
             not isinstance(metadata.get(field), str)
             or re.fullmatch(r"[0-9a-f]{64}", metadata[field]) is None
@@ -1449,7 +1463,7 @@ def collect_data_plane_attestation(
             "amd64": metadata["hysteriaSha256"],
             "arm64": metadata["hysteriaSha256"],
         },
-        "ports": {"main": 19999, "udp443": 443},
+        "ports": {"main": metadata["mainPort"], "udp443": 443},
         "certificatePem": certificate.decode("ascii"),
         "privateKeyPem": private_key.decode("ascii"),
         "certificateFileSha256": metadata["certificateFileSha256"],
@@ -1472,9 +1486,9 @@ def collect_data_plane_attestation(
         for url in ("http://127.0.0.1:19997", "http://127.0.0.1:19995")
     )
     listener_results = {
-        "udp19999Listening": listener_checker("udp", 19999) is True,
+        "udp19999Listening": listener_checker("udp", metadata["mainPort"]) is True,
         "udp443Listening": listener_checker("udp", 443) is True,
-        "tcp19999Listening": listener_checker("tcp", 19999) is True,
+        "tcp19999Listening": listener_checker("tcp", metadata["mainPort"]) is True,
         "tcp443Listening": listener_checker("tcp", 443) is True,
     }
     if not services_healthy or not stats_healthy or not all(listener_results.values()):
