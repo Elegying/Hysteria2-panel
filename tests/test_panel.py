@@ -27,6 +27,7 @@ from unittest import mock
 
 import hysteria2_panel
 from hy2panel import operations as panel_operations
+from hy2panel.distributed import DistributedControlService
 from hy2panel.nodes import NodeEnrollmentService, NodeHeartbeatService
 
 from hysteria2_panel import (
@@ -5134,6 +5135,15 @@ class PanelHttpTests(unittest.TestCase):
                 self.db,
                 signature_verifier=lambda _public_key, _message, _signature: True,
             ),
+            node_control_service=DistributedControlService(
+                self.db,
+                signature_verifier=lambda _public_key, _message, _signature: True,
+                local_state_provider=lambda: {
+                    "online": {},
+                    "observedAt": int(time.time()),
+                    "trafficAckedAt": int(time.time()),
+                },
+            ),
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -5360,6 +5370,156 @@ class PanelHttpTests(unittest.TestCase):
                 headers={"Content-Type": "application/json"},
             )
         self.assertEqual(404, http_mode.exception.code)
+
+    def test_protocol_enable_and_signed_snapshot_require_admin_and_verified_node(self):
+        service = self.application.node_enrollment_service
+        issued = service.create("edge-protocol", "", 10, "Elegy")
+        token = self.enrollment_token(issued["deploymentCommand"])
+        public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
+        service.register(
+            {
+                "enrollmentToken": token,
+                "publicKey": base64.b64encode(public_der).decode("ascii"),
+                "hostname": "edge-protocol.example.test",
+                "platform": "linux",
+                "architecture": "amd64",
+                "agentVersion": "0.25.0",
+            },
+            remote_ip="127.0.0.1",
+        )
+        now = int(time.time())
+        self.assertTrue(
+            self.db.verify_node(
+                issued["nodeId"],
+                hashlib.sha256(public_der).hexdigest(),
+                actor="Elegy",
+                verified_at=now,
+            )
+        )
+        heartbeat = {
+            "nodeId": issued["nodeId"],
+            "sentAt": now,
+            "nonce": base64.urlsafe_b64encode(b"h" * 32).rstrip(b"=").decode("ascii"),
+            "hostname": "edge-protocol.example.test",
+            "agentVersion": "0.25.0",
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        self.application.node_heartbeat_service.accept(heartbeat, "127.0.0.1")
+        headers, csrf = self.authenticated_headers()
+        dashboard = self.request("/", headers=headers).read().decode()
+        self.assertIn("协议待命", dashboard)
+        self.assertIn(
+            "/nodes/{}/protocol/enable".format(issued["nodeId"]), dashboard
+        )
+
+        response = self.request(
+            "/nodes/{}/protocol/enable".format(issued["nodeId"]),
+            data={"csrf": csrf},
+            headers={**headers, "Accept": "application/json"},
+        )
+        self.assertEqual({"protocolReady": True}, json.loads(response.read()))
+        node = next(item for item in self.db.list_nodes() if item["node_id"] == issued["nodeId"])
+        self.assertEqual("protocol_ready", node["policy_state"])
+
+        snapshot = {
+            "nodeId": issued["nodeId"],
+            "sentAt": int(time.time()),
+            "nonce": base64.urlsafe_b64encode(b"n" * 32).rstrip(b"=").decode("ascii"),
+            "snapshotId": "1" * 32,
+            "sequence": 1,
+            "observedAt": int(time.time()),
+            "trafficAckedAt": int(time.time()),
+            "online": {},
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        accepted = self.request(
+            "/api/v1/node-online-snapshots",
+            raw_data=json.dumps(snapshot).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(1, json.loads(accepted.read())["sequence"])
+        with self.assertRaises(urllib.error.HTTPError) as replay:
+            self.request(
+                "/api/v1/node-online-snapshots",
+                raw_data=json.dumps(snapshot).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(403, replay.exception.code)
+        self.assertEqual(
+            "NODE_REQUEST_REJECTED",
+            json.loads(replay.exception.read())["error"]["code"],
+        )
+
+        proxy_user = self.db.create_proxy_user("distributed-alice")
+        auth = {
+            "nodeId": issued["nodeId"],
+            "sentAt": int(time.time()),
+            "nonce": base64.urlsafe_b64encode(b"a" * 32).rstrip(b"=").decode("ascii"),
+            "requestId": "2" * 32,
+            "entrypoint": "main",
+            "auth": proxy_user["token"],
+            "tx": 1024,
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        decision = self.request(
+            "/api/v1/node-auth-decisions",
+            raw_data=json.dumps(auth).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual("distributed-alice", json.loads(decision.read())["id"])
+
+        traffic = {
+            "nodeId": issued["nodeId"],
+            "sentAt": int(time.time()),
+            "nonce": base64.urlsafe_b64encode(b"t" * 32).rstrip(b"=").decode("ascii"),
+            "batchId": "3" * 32,
+            "observedAt": int(time.time()),
+            "traffic": {"distributed-alice": {"tx": 7, "rx": 9}},
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        committed = self.request(
+            "/api/v1/node-traffic-batches",
+            raw_data=json.dumps(traffic).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertTrue(json.loads(committed.read())["committed"])
+
+        command = self.db.queue_node_command(
+            issued["nodeId"], "KICK_USERS", {"users": ["distributed-alice"]}, int(time.time())
+        )
+        dashboard = self.request("/", headers=headers).read().decode()
+        self.assertIn("待确认命令：1", dashboard)
+        self.assertIn("在线快照与流量检查点新鲜", dashboard)
+        poll = {
+            "nodeId": issued["nodeId"],
+            "sentAt": int(time.time()),
+            "nonce": base64.urlsafe_b64encode(b"c" * 32).rstrip(b"=").decode("ascii"),
+            "requestId": "4" * 32,
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        polled = self.request(
+            "/api/v1/node-commands/poll",
+            raw_data=json.dumps(poll).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(command["commandId"], json.loads(polled.read())["commands"][0]["commandId"])
+        ack = {
+            "nodeId": issued["nodeId"],
+            "sentAt": int(time.time()),
+            "nonce": base64.urlsafe_b64encode(b"k" * 32).rstrip(b"=").decode("ascii"),
+            "commandId": command["commandId"],
+            "ok": True,
+            "errorCode": "",
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        acknowledged = self.request(
+            "/api/v1/node-commands/ack",
+            raw_data=json.dumps(ack).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertTrue(json.loads(acknowledged.read())["acked"])
+        dashboard = self.request("/", headers=headers).read().decode()
+        self.assertIn("待确认命令：0", dashboard)
 
     def test_public_node_registration_is_https_only_bounded_and_has_stable_errors(self):
         service = self.application.node_enrollment_service
@@ -6264,7 +6424,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.25.0", body)
+        self.assertIn("v0.26.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
