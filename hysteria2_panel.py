@@ -2529,15 +2529,17 @@ class Database:
             return dict(row) if row is not None else None
 
     def accept_node_heartbeat(
-        self, node_id, nonce_digest, sent_at, accepted_at, remote_ip
+        self, node_id, nonce_digest, sent_at, accepted_at, remote_ip, agent_version
     ):
         del sent_at
         node_id = str(node_id or "")
         nonce_digest = str(nonce_digest or "")
         remote_ip = str(remote_ip or "")
+        agent_version = str(agent_version or "")
         if (
             not re.fullmatch(r"[0-9a-f]{32}", node_id)
             or not re.fullmatch(r"[0-9a-f]{64}", nonce_digest)
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", agent_version)
         ):
             return False
         try:
@@ -2564,10 +2566,16 @@ class Database:
                 )
                 updated = connection.execute(
                     """UPDATE nodes SET last_heartbeat_at = ?, last_heartbeat_ip = ?,
-                        last_seen_at = ?
+                        last_seen_at = ?, agent_version = ?
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
-                    (int(accepted_at), remote_ip, int(accepted_at), node_id),
+                    (
+                        int(accepted_at),
+                        remote_ip,
+                        int(accepted_at),
+                        agent_version,
+                        node_id,
+                    ),
                 )
                 if updated.rowcount != 1:
                     raise sqlite3.IntegrityError("node heartbeat state conflict")

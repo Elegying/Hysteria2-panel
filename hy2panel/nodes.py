@@ -427,6 +427,7 @@ class NodeHeartbeatService:
             sent_at=sent_at,
             accepted_at=now,
             remote_ip=remote_ip,
+            agent_version=agent_version,
         )
         if not accepted:
             self._reject()
