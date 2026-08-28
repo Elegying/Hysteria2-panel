@@ -502,7 +502,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.31.1"', source)
+        self.assertIn('PANEL_VERSION="0.31.2"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -4345,6 +4345,42 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
         ]
         self.assertIn("DATA_PLANE_EXISTING", rollback)
         self.assertIn("restore_existing_data_plane", rollback)
+
+    def test_existing_data_plane_tolerates_only_a_drained_spool_file(self):
+        start = self.source.index("inspect_data_plane_state_item()")
+        helper = self.source[start:self.source.index("\n}\n", start) + 2]
+        script = f"""
+set -u
+{helper}
+NODE_AGENT_STATE_DIR="$WORK/state"
+mkdir -p "$NODE_AGENT_STATE_DIR/spool"
+touch "$WORK/target"
+ln -s "$WORK/target" "$NODE_AGENT_STATE_DIR/spool/replaced.json"
+inspect_data_plane_state_item "$NODE_AGENT_STATE_DIR/spool/drained.json"
+printf 'drained:%s\n' "$?"
+inspect_data_plane_state_item "$NODE_AGENT_STATE_DIR/spool/replaced.json"
+printf 'symlink:%s\n' "$?"
+inspect_data_plane_state_item "$NODE_AGENT_STATE_DIR/missing.json"
+printf 'missing:%s\n' "$?"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env={**os.environ, "WORK": directory},
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("drained:2", result.stdout)
+        self.assertIn("symlink:1", result.stdout)
+        self.assertIn("missing:1", result.stdout)
+        health_start = self.source.index("assert_existing_data_plane_healthy()")
+        health = self.source[
+            health_start:self.source.index("\n}\n", health_start) + 2
+        ]
+        self.assertIn("inspect_data_plane_state_item", health)
 
     def test_six_services_are_sandboxed_and_stats_secret_is_not_persisted_in_yaml(self):
         units = (
