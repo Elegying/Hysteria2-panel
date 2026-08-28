@@ -1218,6 +1218,36 @@ class NodeAgentProtocolTests(unittest.TestCase):
             server.server_close()
             thread.join(2)
 
+    def test_auth_server_can_rebind_immediately_after_a_served_connection(self):
+        class Client:
+            def authorize(self, _payload):
+                return {
+                    "ok": False,
+                    "id": "",
+                    "decisionId": "a" * 32,
+                    "expiresAt": 0,
+                }
+
+        first = node_agent.make_node_auth_proxy_server(
+            ("127.0.0.1", 0), Client()
+        )
+        address = first.server_address
+        thread = threading.Thread(target=first.serve_forever, daemon=True)
+        thread.start()
+        with urllib.request.urlopen(
+            "http://127.0.0.1:{}/healthz".format(address[1]), timeout=1
+        ) as response:
+            self.assertEqual(200, response.status)
+        first.shutdown()
+        first.server_close()
+        thread.join(2)
+
+        second = node_agent.make_node_auth_proxy_server(address, Client())
+        try:
+            self.assertTrue(second.allow_reuse_address)
+        finally:
+            second.server_close()
+
     def test_control_loop_uses_fixed_polling_and_bounded_failure_backoff(self):
         calls = []
         stopped = threading.Event()
