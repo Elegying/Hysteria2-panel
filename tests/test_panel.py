@@ -845,6 +845,41 @@ class UsageManagerTests(unittest.TestCase):
         self.assertEqual((7, 11), (origins["local:" + "a" * 32]["tx_bytes"], origins["local:" + "a" * 32]["rx_bytes"]))
         self.assertEqual("主面板", origins["local:" + "a" * 32]["display_name"])
 
+    def test_stable_local_identity_folds_the_placeholder_into_legacy_history(self):
+        self.db.create_proxy_user("alice")
+        self.db.apply_traffic_batch(
+            "1" * 32,
+            {"alice": {"tx": 7, "rx": 11}},
+            origin_id="local:" + "0" * 32,
+            origin_kind="local",
+            origin_name="面板本机",
+        )
+
+        UsageManager(
+            self.db,
+            PolicyStatsClient(),
+            local_origin_id="local:" + "a" * 32,
+            local_origin_name="主面板",
+        )
+        UsageManager(
+            self.db,
+            PolicyStatsClient(),
+            local_origin_id="local:" + "a" * 32,
+            local_origin_name="主面板",
+        )
+
+        origins = self.db.list_usage_origins()
+        local = [row for row in origins if row["kind"] == "local"]
+        legacy = [row for row in origins if row["kind"] == "legacy"]
+        user = self.db.list_proxy_users_for_usage()[0]
+        self.assertEqual(1, len(local))
+        self.assertEqual(1, len(legacy))
+        self.assertEqual("local:" + "a" * 32, local[0]["origin_id"])
+        self.assertEqual("主面板", local[0]["display_name"])
+        self.assertEqual((0, 0), (local[0]["tx_bytes"], local[0]["rx_bytes"]))
+        self.assertEqual((7, 11), (legacy[0]["tx_bytes"], legacy[0]["rx_bytes"]))
+        self.assertEqual((7, 11), (user["tx_bytes"], user["rx_bytes"]))
+
     def test_dashboard_keeps_fresh_local_online_counts_when_only_traffic_sync_fails(self):
         self.db.create_proxy_user("alice")
         stats = PolicyStatsClient(online={"alice": 2})
@@ -1032,6 +1067,35 @@ class UsageManagerTests(unittest.TestCase):
             secondary_only=False,
             quiesce=True,
         )
+
+    def test_maintenance_sync_attributes_traffic_to_the_stable_local_origin(self):
+        settings = mock.Mock(
+            database_path=Path("/var/lib/hysteria2-panel/panel.db"),
+            hmac_key=b"h" * 32,
+            local_origin_id="local:" + "a" * 32,
+            node_name="主面板",
+        )
+        database = mock.Mock()
+        stats_client = mock.Mock()
+        usage_manager = mock.Mock()
+
+        with mock.patch.object(
+            hysteria2_panel, "Database", return_value=database
+        ), mock.patch.object(
+            hysteria2_panel, "make_stats_client", return_value=stats_client
+        ), mock.patch.object(
+            hysteria2_panel, "UsageManager", return_value=usage_manager
+        ) as manager_factory:
+            hysteria2_panel.sync_traffic(settings)
+
+        database.initialize.assert_called_once_with()
+        manager_factory.assert_called_once_with(
+            database,
+            stats_client,
+            local_origin_id=settings.local_origin_id,
+            local_origin_name=settings.node_name,
+        )
+        usage_manager.collect_once.assert_called_once_with()
 
     def test_maintenance_sync_defers_termination_until_the_critical_section_finishes(self):
         installed = {}
@@ -7091,7 +7155,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.31.0", body)
+        self.assertIn("v0.31.1", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
