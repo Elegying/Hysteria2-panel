@@ -16,6 +16,7 @@ from unittest import mock
 import node_agent
 from hy2panel.distributed import (
     DistributedControlService,
+    MAX_STATE_AGE_SECONDS,
     NodeRequestRejected,
     canonical_node_request,
 )
@@ -171,8 +172,16 @@ class OnlineSnapshotTests(DistributedControlCase):
 
     def test_stale_checkpoint_unknown_user_and_invalid_counts_are_rejected(self):
         cases = (
-            self.snapshot(self.nodes[0], 14, observedAt=self.now[0] - 6),
-            self.snapshot(self.nodes[0], 15, trafficAckedAt=self.now[0] - 6),
+            self.snapshot(
+                self.nodes[0],
+                14,
+                observedAt=self.now[0] - MAX_STATE_AGE_SECONDS - 1,
+            ),
+            self.snapshot(
+                self.nodes[0],
+                15,
+                trafficAckedAt=self.now[0] - MAX_STATE_AGE_SECONDS - 1,
+            ),
             self.snapshot(self.nodes[0], 16, online={"unknown": 1}),
             self.snapshot(self.nodes[0], 17, online={"bad": -1}),
         )
@@ -182,6 +191,20 @@ class OnlineSnapshotTests(DistributedControlCase):
                     self.service.accept_online_snapshot(
                         payload, remote_ip="203.0.113.1"
                     )
+
+    def test_snapshot_within_bounded_control_retry_budget_is_accepted(self):
+        delayed = self.snapshot(
+            self.nodes[0],
+            18,
+            observedAt=self.now[0] - 40,
+            trafficAckedAt=self.now[0] - 40,
+        )
+
+        result = self.service.accept_online_snapshot(
+            delayed, remote_ip="203.0.113.1"
+        )
+
+        self.assertEqual(1, result["sequence"])
 
 
 class DistributedAuthorizationTests(DistributedControlCase):
@@ -236,7 +259,7 @@ class DistributedAuthorizationTests(DistributedControlCase):
             remote_ip="203.0.113.1",
         )
         self.assertEqual(first, second)
-        self.now[0] += 6
+        self.now[0] += MAX_STATE_AGE_SECONDS + 1
         with self.assertRaises(NodeRequestRejected):
             self.service.authorize(
                 self.auth_payload(self.nodes[1], 42), remote_ip="203.0.113.2"
@@ -247,6 +270,48 @@ class DistributedAuthorizationTests(DistributedControlCase):
             self.service.authorize(
                 self.auth_payload(self.nodes[1], 43), remote_ip="203.0.113.2"
             )
+
+    def test_auth_accepts_snapshots_within_bounded_control_retry_budget(self):
+        self.now[0] += 40
+
+        result = self.service.authorize(
+            self.auth_payload(self.nodes[0], 44), remote_ip="203.0.113.1"
+        )
+
+        self.assertTrue(result["ok"])
+
+    def test_local_auth_accepts_remote_snapshots_within_control_retry_budget(self):
+        class Stats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {}
+
+        manager = UsageManager(
+            self.db,
+            Stats(),
+            clock=lambda: 123.0,
+            wall_clock=lambda: self.now[0],
+        )
+        self.now[0] += 40
+
+        self.assertTrue(manager.authorize("alice"))
+
+    def test_pending_remote_auth_covers_the_full_snapshot_freshness_window(self):
+        for index in range(3):
+            result = self.service.authorize(
+                self.auth_payload(self.nodes[index % 2], 90 + index),
+                remote_ip="203.0.113.{}".format((index % 2) + 1),
+            )
+            self.assertTrue(result["ok"])
+        self.now[0] += 40
+
+        fourth = self.service.authorize(
+            self.auth_payload(self.nodes[0], 93), remote_ip="203.0.113.1"
+        )
+
+        self.assertFalse(fourth["ok"])
 
     def test_local_and_remote_auth_share_one_global_device_limit(self):
         class Stats:
@@ -300,7 +365,7 @@ class DistributedAuthorizationTests(DistributedControlCase):
 
         self.assertEqual(3, results.count(True))
         self.assertEqual(1, results.count(False))
-        self.now[0] += 6
+        self.now[0] += MAX_STATE_AGE_SECONDS + 1
         self.assertFalse(manager.authorize("alice"))
 
     def test_distributed_local_state_uses_wall_clock_for_protocol_timestamps(self):
@@ -1051,6 +1116,38 @@ class NodeAgentProtocolTests(unittest.TestCase):
         node_agent.run_control_loop(Cycle(), stopped, sleeper=sleeper)
         self.assertEqual([("cycle",), ("cycle",)], calls)
         self.assertEqual([2, 2], delays)
+
+    def test_snapshot_refresh_allows_the_bounded_control_retry_budget(self):
+        now = 2_000_000_000
+
+        class State:
+            def traffic_acked_at(self):
+                return now - 40
+
+            def next_sequence(self):
+                return 1
+
+        class Protocol:
+            def send_online(self, sequence, online, traffic_acked_at):
+                self.sent = (sequence, online, traffic_acked_at)
+                return {"sequence": sequence}
+
+        class Stats:
+            def online(self):
+                return {"alice": 1}
+
+        protocol = Protocol()
+        cycle = node_agent.NodeControlCycle(
+            protocol,
+            Stats(),
+            spool=None,
+            state=State(),
+            clock=lambda: now,
+        )
+
+        self.assertEqual({"sequence": 1}, cycle.refresh_snapshot())
+        self.assertEqual((1, {"alice": 1}, now - 40), protocol.sent)
+        self.assertEqual(MAX_STATE_AGE_SECONDS, node_agent.MAX_STATE_AGE_SECONDS)
 
     def test_control_once_reads_local_stats_secret_only_from_environment(self):
         cycle = mock.Mock()

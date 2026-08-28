@@ -1267,6 +1267,34 @@ class UsageManagerTests(unittest.TestCase):
         self.assertTrue(manager.authorize("alice"))
         self.assertFalse(manager.authorize("alice"))
 
+    def test_restart_discards_prior_boot_monotonic_local_auth_leases(self):
+        self.db.create_proxy_user("alice", device_limit=1)
+        with sqlite3.connect(str(self.db.path)) as connection:
+            connection.execute(
+                """INSERT INTO local_auth_leases(
+                    decision_id, user_name, created_at, expires_at
+                ) VALUES (?, ?, ?, ?)""",
+                ("prior-boot", "alice", 735_000, 735_005),
+            )
+        wall_now = 2_000_000_000
+        manager = UsageManager(
+            self.db,
+            PolicyStatsClient(online={"alice": 0}),
+            pending_ttl=5,
+            clock=lambda: 4_000.0,
+            wall_clock=lambda: float(wall_now),
+        )
+
+        self.assertTrue(manager.authorize("alice"))
+        with sqlite3.connect(str(self.db.path)) as connection:
+            leases = connection.execute(
+                """SELECT decision_id, created_at, expires_at
+                FROM local_auth_leases ORDER BY created_at"""
+            ).fetchall()
+        self.assertEqual(1, len(leases))
+        self.assertNotEqual("prior-boot", leases[0][0])
+        self.assertEqual((wall_now, wall_now + 5), leases[0][1:])
+
     def test_authorization_burst_reuses_fresh_stats_and_still_fails_closed_when_stale(self):
         self.db.create_proxy_user("alice", device_limit=10)
 
@@ -6517,7 +6545,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.27.3", body)
+        self.assertIn("v0.27.4", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

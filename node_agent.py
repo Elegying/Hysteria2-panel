@@ -27,8 +27,17 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.27.3"
+AGENT_VERSION = "0.27.4"
 MAX_RESPONSE_BYTES = 8192
+CONTROL_REQUEST_TIMEOUT_SECONDS = 10
+CONTROL_LOOP_INTERVAL_SECONDS = 2
+CONTROL_LOOP_MAX_INTERVAL_SECONDS = 5
+CONTROL_LOOP_MAX_BACKOFF_SECONDS = 30
+MAX_STATE_AGE_SECONDS = (
+    CONTROL_REQUEST_TIMEOUT_SECONDS
+    + CONTROL_LOOP_MAX_BACKOFF_SECONDS
+    + CONTROL_LOOP_MAX_INTERVAL_SECONDS
+)
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 NODE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -991,7 +1000,9 @@ class DataPlaneBootstrapClient:
             method="POST",
         )
         try:
-            with self.opener(request, timeout=10) as response:
+            with self.opener(
+                request, timeout=CONTROL_REQUEST_TIMEOUT_SECONDS
+            ) as response:
                 status = getattr(
                     response,
                     "status",
@@ -1458,7 +1469,9 @@ class NodeProtocolClient:
             method="POST",
         )
         try:
-            with self.opener(request, timeout=10) as response:
+            with self.opener(
+                request, timeout=CONTROL_REQUEST_TIMEOUT_SECONDS
+            ) as response:
                 status = getattr(
                     response,
                     "status",
@@ -1869,7 +1882,7 @@ class NodeControlCycle:
 
     def refresh_snapshot(self):
         traffic_acked_at = self.state.traffic_acked_at()
-        if int(self.clock()) - traffic_acked_at > 5:
+        if int(self.clock()) - traffic_acked_at > MAX_STATE_AGE_SECONDS:
             raise ProtocolError("traffic checkpoint is stale")
         result = self.protocol_client.send_online(
             self.state.next_sequence(),
@@ -1908,12 +1921,12 @@ class NodeControlCycle:
 def run_control_loop(
     cycle,
     stop_event,
-    interval_seconds=2,
-    maximum_backoff_seconds=30,
+    interval_seconds=CONTROL_LOOP_INTERVAL_SECONDS,
+    maximum_backoff_seconds=CONTROL_LOOP_MAX_BACKOFF_SECONDS,
     sleeper=None,
 ):
     """Run fixed short polling while backing off boundedly on control failures."""
-    interval = max(1, min(5, int(interval_seconds)))
+    interval = max(1, min(CONTROL_LOOP_MAX_INTERVAL_SECONDS, int(interval_seconds)))
     maximum_backoff = max(interval, min(300, int(maximum_backoff_seconds)))
     delay = interval
     while not stop_event.is_set():

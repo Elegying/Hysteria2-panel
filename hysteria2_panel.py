@@ -48,7 +48,11 @@ from hy2panel.certificate import (
     certificate_validity_timestamps,
 )
 from hy2panel.health import RuntimeHealth, is_loopback_address
-from hy2panel.distributed import DistributedControlService, NodeRequestRejected
+from hy2panel.distributed import (
+    DistributedControlService,
+    MAX_STATE_AGE_SECONDS,
+    NodeRequestRejected,
+)
 from hy2panel.nodes import (
     DataPlaneBootstrapRejected,
     DataPlaneBootstrapService,
@@ -3035,7 +3039,7 @@ class Database:
                         < user["device_limit"]
                     )
                 decision_id = uuid.uuid4().hex
-                expires_at = int(now) + 5
+                expires_at = int(now) + MAX_STATE_AGE_SECONDS
                 connection.execute(
                     """INSERT INTO node_auth_decisions(
                         node_id, request_id, decision_id, allowed, user_name,
@@ -5959,8 +5963,8 @@ class UsageManager:
         return self.database.authorize_local_participant(
             name,
             online,
-            now=int(self.clock()),
-            freshness_seconds=5,
+            now=int(self.wall_clock()),
+            freshness_seconds=MAX_STATE_AGE_SECONDS,
             lease_seconds=self.pending_ttl,
         )
 
