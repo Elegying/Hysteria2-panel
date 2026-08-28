@@ -16,7 +16,7 @@
 
 ```bash
 set -euo pipefail
-version=0.28.4
+version=0.29.0
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -70,7 +70,7 @@ sudo bash "${workdir}/install.sh"
 
 服务器使用带 IP/域名 SAN 的 10 年自签名证书保护 Hysteria 连接。面板生成的 Hysteria URI 同时包含 `insecure=1` 和证书 SHA-256 固定指纹。面板使用 HTTP 并不影响 Hysteria 数据通道的 TLS 和证书固定。
 
-全新安装默认使用 HTTPS；显式选择 HTTP 时仍不会设置 Secure Cookie 或 HSTS，管理员密码、会话以及备份上传下载内容都会在网络中明文传输。安装器从系统软件源安装 Certbot（RHEL/Rocky/Alma/CentOS 在当前仓库缺包时通过包管理器启用 EPEL），使用 standalone HTTP-01 为 `PANEL_PUBLIC_HOST` 申请 Let’s Encrypt 证书，并启用 `hysteria2-panel-cert-renew.timer` 每天检查两次。首次签发和后续续期都要求该域名解析到当前服务器，公网 TCP `80` 持续可达且不能被其他本机服务占用。续期成功后只重启面板服务，不重启 Hysteria；失败时保留旧面板证书并写入 journal。升级会原样保留现有面板协议，不会把历史 HTTP 安装静默迁移到 HTTPS，也不会触碰 Hysteria 客户端 URI、证书或固定指纹。
+全新安装默认使用 HTTPS；显式选择 HTTP 时仍不会设置 Secure Cookie 或 HSTS，管理员密码、会话以及备份上传下载内容都会在网络中明文传输。安装器从系统软件源安装 Certbot（RHEL/Rocky/Alma/CentOS 在当前仓库缺包时通过包管理器启用 EPEL），使用 standalone HTTP-01 为 `PANEL_PUBLIC_HOST` 申请 Let’s Encrypt 证书，并启用 `hysteria2-panel-cert-renew.timer` 每天检查两次。首次签发前会先解析面板域名，并拒绝没有公网 A/AAAA 结果的域名；首次签发和后续续期都要求该域名解析到当前服务器，公网 TCP `80` 持续可达且不能被其他本机服务占用。DNS 未配置好时安装器会在调用 Certbot 前停止，不会自动降级到 HTTP；因此“完全空白且没有预先 DNS”的服务器不能一次完成公网 HTTPS 部署。续期成功后只重启面板服务，不重启 Hysteria；失败时保留旧面板证书并写入 journal。升级会原样保留现有面板协议，不会把历史 HTTP 安装静默迁移到 HTTPS，也不会触碰 Hysteria 客户端 URI、证书或固定指纹。
 
 面板证书采用版本目录加单一 `panel-tls-current` 链接切换，证书和私钥先完成域名及公钥配对校验再一起生效。`/etc/hysteria2-panel/panel.crt` 与 `panel.key` 只用于面板；Hysteria 永远继续使用独立的 `server.crt` 与 `server.key`。从旧版本的自签名 HTTPS 升级时必须人工运行一次安装器补填 `PANEL_PUBLIC_HOST`；在线自动更新会安全拒绝缺少该字段的旧 HTTPS 配置，避免静默继续复用节点证书。
 
@@ -84,8 +84,9 @@ TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后
 
 登录面板后可以：
 
-- 从“对接节点”生成短时一次性注册代码；新服务器注册后须由管理员逐字核对 Ed25519 公钥 SHA-256 指纹，验证通过后才能启用每分钟一次的签名心跳与中央控制协议；
-- 对已验证且控制协议就绪的节点生成第二段数据面一键部署代码。授权绑定节点身份、来源 IP 和 Ed25519 签名，10 分钟内最多获取 3 次，安装 ACK 后立即失效。数据节点仅运行 Hysteria、回环认证代理、控制循环和 TCP 探针，不安装管理面板、用户数据库或 HMAC；安装不会修改 DNS、`vpn.ssrvpn.vip`、用户链接或证书指纹；
+- 从“对接节点”生成短时一次性注册代码；全新服务器选择“全新节点对接”，已有数据节点改绑中央面板时选择“安全重绑定”。新服务器注册后须由管理员逐字核对 Ed25519 公钥 SHA-256 指纹，验证通过后才能启用每分钟一次的签名心跳与中央控制协议；
+- 安全重绑定会复用已有 Ed25519 私钥/公钥，仅原子替换中央注册状态；Hysteria 证书/私钥、数据面服务、现有会话与 durable traffic spool 均保持不动。重绑定失败或主机中断会从 root-only 清单回滚。切换中央后，新认证在管理员逐字核对原指纹并启用协议前安全失败，已建立的数据面会话继续运行；不再要求手工删除任何节点目录；
+- 对已验证且控制协议就绪的节点生成第二段数据面一键部署代码。授权绑定节点身份、来源 IP 和 Ed25519 签名，10 分钟内最多获取 3 次，安装 ACK 后立即失效。数据节点仅运行 Hysteria、回环认证代理、控制循环和 TCP 探针，不安装管理面板、用户数据库或 HMAC；安装不会修改 DNS、`vpn.ssrvpn.vip`、用户链接或证书指纹。部署会把主入口和账号专属 UDP `443` 一并配置为中央当前出站策略；全新恢复后的面板默认是 `FULL`；
 - 数据面安装成功后仍须人工完成直连灰度，再在面板单独记录“直连灰度已通过”。面板提供 DNS 准入/移除按钮与 API，用于记录管理员决策；它们不会修改外部 DNS，也不会自动把节点加入用户流量池；
 - 创建、编辑、启用、禁用和删除用户，并设置客户端实例数与总流量限制（默认 `3` 个实例、`250 GiB`）；编辑用户可单独开放 UDP `443`，不会修改用户 token 或分享 URI；用户列表可按用户名搜索，并组合筛选启用状态、在线状态和 UDP `443` 授权，筛选后仍可按在线设备数或总流量排序；
 - 在同一页查看全部用户，并通过用户名即时搜索；添加用户使用弹窗，不占用列表空间；
@@ -120,7 +121,7 @@ Hysteria 的 `/kick` 对同一用户名使用一次性断开标记。禁用、�
 
 ## YouTube、网页与网络优化
 
-一键部署会采用 Hysteria 官方的非 Brutal `bbr` 拥塞控制和 `standard` profile，并忽略客户端上报带宽，减少用户填错带宽造成的体验波动；同时根据 [Hysteria 性能指南](https://v2.hysteria.network/docs/advanced/Performance/) 把 Linux UDP 收发缓冲上限提高到至少 16 MiB、设置 Hysteria 服务 `Nice=-5` 和高文件描述符上限。若内核支持，还会为服务器访问 YouTube/CDN/网页源站时产生的 TCP 出站连接启用 `fq` + 内核 BBR；内核不支持时会安全跳过，不阻断部署。
+面板本机一键部署会采用 Hysteria 官方的非 Brutal `bbr` 拥塞控制和 `standard` profile，并忽略客户端上报带宽，减少用户填错带宽造成的体验波动；同时根据 [Hysteria 性能指南](https://v2.hysteria.network/docs/advanced/Performance/) 把 Linux UDP 收发缓冲上限提高到至少 16 MiB、设置 Hysteria 服务 `Nice=-5` 和高文件描述符上限。面板本机在内核支持时还会为服务器访问 YouTube/CDN/网页源站时产生的 TCP 出站连接启用 `fq` + 内核 BBR；不支持时安全跳过，不阻断面板部署。数据节点的一键数据面部署采用更严格的事务门禁：必须实际达到至少 16 MiB、`fq` 与内核 `bbr`，否则恢复原运行时 sysctl 和原受管文件并停止，不能把未优化的节点误报为部署成功。
 
 Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两层不同的优化：前者管理客户端到服务器的 UDP/QUIC 隧道，后者只影响服务器到以 TCP/HTTPS 提供内容的源站。项目不会自动估算线路带宽或启用 Brutal，也不会写入缺少官方依据的“万能 sysctl”。线路拥塞、跨境路由、丢包、客户端核心和源站限速仍会决定最终体验。
 
@@ -143,17 +144,19 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 推荐迁移顺序：
 
 1. 在旧服务器下载备份，不要删除旧服务器；
-2. 在新服务器用与旧节点完全相同的 `PUBLIC_HOST` 和 `HYSTERIA_PORT` 完成一键部署；
-3. 先在云平台安全组放行新服务器对应 TCP/UDP 端口（受管主机 UFW/firewalld 由安装器处理），通过新服务器 IP 打开面板并上传 ZIP；不要提前把 DNS 指向尚未恢复用户身份的新服务器；
-4. 恢复服务会再次独立校验、结算未落盘流量、自动备份新服务器当前身份，再以持久事务标记恢复代理用户/流量/签名密钥/证书。启动前的 `restore-recover` 阶段只负责把文件收口为完整的新身份或完整的回滚身份；服务启动后的 `restore-resume` 阶段连续复核 systemd、HTTP、统计和 TCP 健康后才删除标记。进程退出或主机重启会从标记继续，失败 ZIP 会隔离保存且不会堵塞下一次上传；
-5. 确认新面板用户数、证书指纹和服务状态正确后再切换 DNS，用已有客户端旧配置完成 Hysteria 握手和网页/视频测试；
-6. 至少保留旧服务器一个 DNS TTL 回退窗口，确认稳定后再停用。
+2. 为新服务器准备一个独立的 `PANEL_PUBLIC_HOST`，先把其 DNS 指向新服务器并放行公网 TCP `80` 与面板端口；这不会改变用户配置中的 Hysteria `PUBLIC_HOST`；
+3. 在新服务器用与旧节点完全相同的 Hysteria `PUBLIC_HOST` 和 `HYSTERIA_PORT`、以及新的面板域名完成一键 HTTPS 部署；此时不要把用户使用的 Hysteria 域名切向新服务器；
+4. 先在云平台安全组放行新服务器对应 TCP/UDP `19999`、TCP/UDP `443` 等端口（受管主机 UFW/firewalld 由安装器处理），通过新的 HTTPS 面板域名登录并上传 ZIP；
+5. 恢复服务会再次独立校验、结算未落盘流量、自动备份新服务器当前身份，再以持久事务标记恢复代理用户/流量/签名密钥/证书。启动前的 `restore-recover` 阶段只负责把文件收口为完整的新身份或完整的回滚身份；服务启动后的 `restore-resume` 阶段连续复核 systemd、HTTP、统计和 TCP 健康后才删除标记。进程退出或主机重启会从标记继续，失败 ZIP 会隔离保存且不会堵塞下一次上传；
+6. 如需接入额外数据节点，恢复后再创建“全新节点对接”或“安全重绑定”代码，逐字核对 Ed25519 指纹、启用协议，再签发并执行数据面部署码。新节点会直接取得恢复后的用户、设备限制与流量额度的中央鉴权，不复制用户数据库；必须完成直连灰度并由外部 DNS/流量入口纳管后，用户旧配置才会实际到达该节点；
+7. 确认新面板用户数、Hysteria 证书指纹和服务状态正确后，再把用户使用的 Hysteria DNS 切到新面板节点或已验收的数据节点，用已有客户端旧配置完成主端口与获准 UDP `443` 的握手、网页/视频、设备数和流量测试；
+8. 至少保留旧服务器一个 DNS TTL 回退窗口，确认稳定后再停用。
 
 恢复不会覆盖新服务器当前的面板管理员账号、统计 API secret、面板端口、协议或出站策略。全部旧面板会话都会失效。代理用户会由备份整体替换，因此新服务器恢复前临时创建的代理用户会被移除。
 
 为保证旧连接 URI 不变，恢复会拒绝源域名或 UDP 端口与当前部署不一致的 ZIP。使用域名时只需更新 DNS；如果旧 URI 直接写的是旧服务器 IP，或迁移时必须改端口，客户端地址已发生变化，无法做到无感恢复，必须重新分享配置。
 
-证书指纹固定的是叶子证书。安装器升级和备份恢复都会保留原证书/私钥，不自动续签或重签；当前自签名证书默认生成 10 年有效期。证书到期后续签、重签或主动轮换会产生新指纹，旧 URI 必须更新后重新分享。Hysteria 官方说明服务端在每次 TLS 握手读取证书文件，客户端 `pinSHA256` 校验服务端证书指纹：[服务端 TLS 配置](https://v2.hysteria.network/docs/advanced/Full-Server-Config/#tls)、[客户端 TLS 配置](https://v2.hysteria.network/docs/advanced/Full-Client-Config/#tls)。
+证书指纹固定的是叶子证书。安装器升级和备份恢复都会逐字节保留原 Hysteria 证书/私钥；项目只做 180/90/30 天到期告警，绝不自动续签、重签或轮换；当前自签名证书默认生成 10 年有效期。证书到期后的人工续签、重签或主动轮换会产生新指纹，旧 URI 必须更新后重新分享。Hysteria 官方说明服务端在每次 TLS 握手读取证书文件，客户端 `pinSHA256` 校验服务端证书指纹：[服务端 TLS 配置](https://v2.hysteria.network/docs/advanced/Full-Server-Config/#tls)、[客户端 TLS 配置](https://v2.hysteria.network/docs/advanced/Full-Client-Config/#tls)。
 
 ## 运维
 
@@ -177,6 +180,8 @@ curl http://127.0.0.1:19998/metrics
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署和恢复前的自动备份 |
 | `/etc/sysctl.d/99-hysteria2-panel.conf` | 16 MiB QUIC UDP 缓冲，以及内核支持时的 `fq`/TCP BBR |
+| `/etc/sysctl.d/99-hysteria2-panel-node.conf` | 数据节点事务化纳管的 16 MiB UDP 缓冲、`fq` 与内核 BBR |
+| `/var/backups/hysteria2-panel-node/rebind/` | 数据节点安全重绑定的 root-only Agent/注册状态回滚副本；不含也不移动私钥、Hysteria TLS 或 traffic spool |
 | `/etc/sudoers.d/hysteria2-panel` | 仅允许固定服务控制、整机重启，以及启动一次性恢复/更新服务 |
 | `/etc/tmpfiles.d/hysteria2-panel.conf` | 每次开机重建维护锁目录；root 任务持排他锁，面板仅能只读取得恢复上传准入共享锁 |
 

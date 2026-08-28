@@ -1080,6 +1080,20 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             self.assertNotIn("vpn.ssrvpn.vip", config)
             self.assertNotIn("panel.ssrvpn.vip", config)
 
+    def test_full_policy_is_applied_to_both_data_node_entrypoints(self):
+        response = dict(self.response)
+        response["egressPolicy"] = "full"
+        identity = validate_data_plane_identity(response, architecture="amd64")
+
+        configs = render_data_plane_configs(identity, "S" * 48)
+
+        self.assertEqual({"main", "udp443"}, set(configs))
+        for config in configs.values():
+            self.assertIn('    - "direct(all)"', config)
+            self.assertNotIn('    - "reject(all)"', config)
+            self.assertIn("type: bbr", config)
+            self.assertIn("bbrProfile: standard", config)
+
     def test_config_renderer_rejects_short_secret_and_invalid_identity(self):
         identity = validate_data_plane_identity(self.response, architecture="amd64")
         for secret in ("short", "bad\nsecret", "x" * 129):

@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -479,7 +480,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.28.4"', source)
+        self.assertIn('PANEL_VERSION="0.29.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -580,6 +581,105 @@ esac
         dispatch = source.index('if (( JOIN_NODE == 1 )); then')
         full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
         self.assertLess(dispatch, full_install)
+
+    def test_existing_data_node_rebind_is_durable_and_preserves_identity_and_spool(self):
+        source = INSTALLER.read_text()
+        start = source.index("rebind_node()")
+        rebind = source[start:source.index("\n}\n", start) + 2]
+        rollback_start = source.index("rollback_node_rebind()")
+        rollback = source[
+            rollback_start:source.index("\n}\n", rollback_start) + 2
+        ]
+
+        self.assertIn("--rebind-node", source)
+        self.assertIn("REBIND_NODE=1", source)
+        self.assertIn("NODE_REBIND_TRANSACTION", source)
+        self.assertIn("NODE_REBIND_TRANSACTION_MAGIC", source)
+        self.assertIn("recover_interrupted_node_rebind", rebind)
+        self.assertLess(
+            rebind.index("recover_interrupted_node_rebind"),
+            rebind.index(
+                "systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer"
+            ),
+        )
+        self.assertIn("write_node_rebind_backup", rebind)
+        self.assertIn("arm_node_rebind_transaction", rebind)
+        self.assertIn('openssl pkey -in "${NODE_AGENT_CONFIG_DIR}/node.key"', rebind)
+        self.assertIn('cmp -s "${generated_public}"', rebind)
+        self.assertIn('node_agent.py" register', rebind)
+        self.assertIn('"${TMP_DIR}/registration.json"', rebind)
+        self.assertIn("durable_replace_file", rebind)
+        self.assertIn("hysteria2-panel-node-heartbeat.service", rebind)
+        self.assertNotIn(
+            "systemctl start hysteria2-panel-node-heartbeat.service", rebind
+        )
+        self.assertIn(
+            "systemctl enable --now hysteria2-panel-node-heartbeat.timer", rebind
+        )
+        self.assertNotIn("hysteria2-panel-node-hysteria-main.service", rebind)
+        self.assertNotIn("hysteria2-panel-node-hysteria-udp443.service", rebind)
+        for preserved in (
+            "node.key",
+            "node-public.der",
+            "server.crt",
+            "server.key",
+            "spool",
+        ):
+            self.assertNotRegex(rebind + rollback, r"rm[^\n]*" + re.escape(preserved))
+        self.assertIn("registration.json", rollback)
+        self.assertIn("node_agent.py", rollback)
+        self.assertNotIn("rm -r -- /var/lib/hysteria2-panel-node", rollback)
+
+    def test_node_rebind_rollback_restores_registration_without_touching_spool(self):
+        source = INSTALLER.read_text()
+        start = source.index("rollback_node_rebind()")
+        rollback = source[start:source.index("\n}\n", start) + 2]
+        script = f"""
+set -euo pipefail
+{rollback}
+REBIND_NODE_BACKUP_DIR="$WORK/backup"
+NODE_AGENT_OPT_DIR="$WORK/opt"
+NODE_AGENT_CONFIG_DIR="$WORK/config"
+NODE_REBIND_TRANSACTION="$WORK/config/.rebind-transaction"
+mkdir -p "$REBIND_NODE_BACKUP_DIR" "$NODE_AGENT_OPT_DIR" "$NODE_AGENT_CONFIG_DIR" "$WORK/state/spool"
+printf 'old-agent\n' > "$REBIND_NODE_BACKUP_DIR/node_agent.py"
+printf 'old-registration\n' > "$REBIND_NODE_BACKUP_DIR/registration.json"
+(
+  cd "$REBIND_NODE_BACKUP_DIR"
+  sha256sum node_agent.py registration.json > manifest.sha256
+)
+printf 'new-agent\n' > "$NODE_AGENT_OPT_DIR/node_agent.py"
+printf 'new-registration\n' > "$NODE_AGENT_CONFIG_DIR/registration.json"
+printf 'pending-traffic\n' > "$WORK/state/spool/batch.json"
+printf 'transaction\n' > "$NODE_REBIND_TRANSACTION"
+durable_replace_file() {{
+  command cp "$1" "$2"
+  command chmod "$3" "$2"
+}}
+systemctl() {{ :; }}
+sync() {{ :; }}
+REBIND_NODE_MUTATED=1
+rollback_node_rebind
+printf '%s:%s:%s:%s\n' \
+  "$(cat "$NODE_AGENT_OPT_DIR/node_agent.py")" \
+  "$(cat "$NODE_AGENT_CONFIG_DIR/registration.json")" \
+  "$(cat "$WORK/state/spool/batch.json")" \
+  "$(test ! -e "$NODE_REBIND_TRANSACTION" && echo marker-cleared)"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env={**os.environ, "WORK": directory},
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(
+            "old-agent:old-registration:pending-traffic:marker-cleared",
+            result.stdout,
+        )
 
     def test_node_agent_activation_installs_only_a_sandboxed_heartbeat_timer(self):
         source = INSTALLER.read_text()
@@ -784,6 +884,37 @@ esac
         )
         self.assertIn("云平台安全组还需持续放行 TCP 80 用于 ACME HTTP-01 续期", source)
         self.assertNotIn("首次打开自签名 HTTPS 地址", source)
+
+    def test_https_fails_before_certbot_when_panel_dns_has_no_public_address(self):
+        source = INSTALLER.read_text()
+        start = source.index("preflight_panel_acme_dns()")
+        end = source.index("\n\nissue_panel_acme_certificate()", start)
+        helper = source[start:end]
+        script = f"""
+set -euo pipefail
+{helper}
+PYTHON_BIN={sys.executable!r}
+PANEL_PUBLIC_HOST=panel-does-not-exist.invalid
+fail() {{ printf 'FAIL:%s\n' "$*" >&2; exit 97; }}
+preflight_panel_acme_dns
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=script,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(97, result.returncode)
+        self.assertIn("DNS", result.stderr)
+        acme = source.split("issue_panel_acme_certificate()", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertLess(
+            acme.index("preflight_panel_acme_dns"),
+            acme.index("/usr/bin/certbot certonly"),
+        )
+        self.assertNotIn("PANEL_SCHEME=http", acme)
 
     def test_generated_acme_scripts_have_valid_shell_syntax(self):
         source = INSTALLER.read_text()
@@ -3938,6 +4069,120 @@ class DataPlaneInstallerContractTests(unittest.TestCase):
         self.assertIn("recover_interrupted_data_plane()", self.source)
         self.assertIn('sha256sum --check --status manifest.sha256', self.source)
         self.assertIn("recover_interrupted_data_plane", self.activation)
+
+    def test_network_optimization_is_inside_the_durable_data_plane_transaction(self):
+        self.assertIn(
+            "NODE_SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel-node.conf",
+            self.source,
+        )
+        self.assertIn("write_data_plane_network_snapshot", self.source)
+        self.assertIn("restore_data_plane_network_snapshot", self.source)
+        self.assertIn("optimize_data_plane_network_stack", self.activation)
+        snapshot = self.activation.index("write_data_plane_backup_manifest")
+        armed = self.activation.index("arm_data_plane_transaction")
+        mutated = self.activation.index("DATA_PLANE_MUTATED=1")
+        optimized = self.activation.index("optimize_data_plane_network_stack")
+        self.assertLess(snapshot, armed)
+        self.assertLess(armed, mutated)
+        self.assertLess(mutated, optimized)
+
+        optimizer_start = self.source.index("optimize_data_plane_network_stack()")
+        optimizer = self.source[
+            optimizer_start:self.source.index("\n}\n", optimizer_start) + 2
+        ]
+        for contract in (
+            "net.core.rmem_max",
+            "net.core.wmem_max",
+            "MIN_QUIC_UDP_BUFFER",
+            "net.core.default_qdisc=fq",
+            "net.ipv4.tcp_congestion_control=bbr",
+            "# Managed by Hysteria2-panel data node",
+        ):
+            self.assertIn(contract, optimizer)
+        self.assertIn("MIN_QUIC_UDP_BUFFER=16777216", self.source)
+
+        rollback_start = self.source.index("rollback_data_plane_activation()")
+        rollback = self.source[
+            rollback_start:self.source.index("\n}\n", rollback_start) + 2
+        ]
+        restore_start = self.source.index("restore_existing_data_plane()")
+        restore = self.source[
+            restore_start:self.source.index("\n}\n", restore_start) + 2
+        ]
+        self.assertIn("restore_data_plane_network_snapshot", rollback)
+        self.assertIn("restore_data_plane_network_snapshot", restore)
+
+    def test_network_snapshot_restores_runtime_values_and_removes_a_new_sysctl_file(self):
+        start = self.source.index("assert_data_plane_network_stack_claimable()")
+        end = self.source.index("\n\nassert_data_plane_paths_unclaimed()", start)
+        helpers = self.source[start:end]
+        script = f"""
+set -euo pipefail
+{helpers}
+MIN_QUIC_UDP_BUFFER=16777216
+DATA_PLANE_BACKUP_DIR="$WORK/backup"
+NODE_SYSCTL_FILE="$WORK/99-hysteria2-panel-node.conf"
+TMP_DIR="$WORK/tmp"
+mkdir -p "$DATA_PLANE_BACKUP_DIR" "$TMP_DIR"
+mock_rmem=4194304
+mock_wmem=8388608
+mock_qdisc=pfifo_fast
+mock_cc=cubic
+sysctl() {{
+  if [[ "$1" == "-n" ]]; then
+    case "$2" in
+      net.core.rmem_max) echo "$mock_rmem" ;;
+      net.core.wmem_max) echo "$mock_wmem" ;;
+      net.core.default_qdisc) echo "$mock_qdisc" ;;
+      net.ipv4.tcp_congestion_control) echo "$mock_cc" ;;
+      net.ipv4.tcp_available_congestion_control) echo "cubic bbr" ;;
+      *) return 1 ;;
+    esac
+    return
+  fi
+  [[ "$1" == "-w" ]] || return 1
+  case "$2" in
+    net.core.rmem_max=*) mock_rmem="${{2#*=}}" ;;
+    net.core.wmem_max=*) mock_wmem="${{2#*=}}" ;;
+    net.core.default_qdisc=*) mock_qdisc="${{2#*=}}" ;;
+    net.ipv4.tcp_congestion_control=*) mock_cc="${{2#*=}}" ;;
+    *) return 1 ;;
+  esac
+}}
+install() {{
+  local source_file="${{@: -2:1}}" destination="${{@: -1}}"
+  command cp "$source_file" "$destination"
+  command chmod 0644 "$destination"
+}}
+sync() {{ :; }}
+modprobe() {{ :; }}
+if ! command -v mapfile >/dev/null 2>&1; then
+  mapfile() {{
+    local _option="$1" _name="$2" _line
+    eval "${{_name}}=()"
+    while IFS= read -r _line; do
+      eval "${{_name}}+=(\"\${{_line}}\")"
+    done
+  }}
+fi
+write_data_plane_network_snapshot
+optimize_data_plane_network_stack
+printf 'optimized:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$mock_cc" "$(test -f "$NODE_SYSCTL_FILE" && echo present)"
+restore_data_plane_network_snapshot
+printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$mock_cc" "$(test ! -e "$NODE_SYSCTL_FILE" && echo absent)"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env={**os.environ, "WORK": directory},
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("optimized:16777216:16777216:fq:bbr:present", result.stdout)
+        self.assertIn("restored:4194304:8388608:pfifo_fast:cubic:absent", result.stdout)
 
     def test_existing_managed_data_plane_uses_full_transactional_upgrade(self):
         self.assertIn("inspect_existing_data_plane", self.source)
