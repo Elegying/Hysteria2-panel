@@ -5501,7 +5501,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("待验证", body)
         self.assertIn("待注册 &lt;节点&gt;", body)
         self.assertNotIn("待注册 <节点>", body)
-        self.assertIn("不会复制 Hysteria 证书", body)
+        self.assertIn("Hysteria 长期身份只会原样复制", body)
 
     def test_node_enrollment_creation_and_revocation_require_session_and_csrf(self):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
@@ -5580,6 +5580,16 @@ class PanelHttpTests(unittest.TestCase):
             remote_ip="127.0.0.1",
         )
         path = "/nodes/{}/verify".format(issued["nodeId"])
+        headers, csrf = self.authenticated_headers()
+        fingerprint = hashlib.sha256(public_der).hexdigest()
+        dashboard = self.request("/", headers=headers).read().decode("utf-8")
+        self.assertIn(fingerprint[:16], dashboard)
+        self.assertIn(
+            'type="hidden" name="fingerprint" value="{}"'.format(fingerprint),
+            dashboard,
+        )
+        self.assertIn("短码一致，开始自动部署", dashboard)
+        self.assertNotIn("输入核对后的完整指纹", dashboard)
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
             self.request(
                 path,
@@ -5588,7 +5598,6 @@ class PanelHttpTests(unittest.TestCase):
             )
         self.assertEqual(303, unauthenticated.exception.code)
 
-        headers, csrf = self.authenticated_headers()
         with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
             self.request(
                 path,
@@ -5717,7 +5726,8 @@ class PanelHttpTests(unittest.TestCase):
         self.application.node_heartbeat_service.accept(heartbeat, "127.0.0.1")
         headers, csrf = self.authenticated_headers()
         dashboard = self.request("/", headers=headers).read().decode()
-        self.assertIn("协议待命", dashboard)
+        self.assertIn("自动部署等待中", dashboard)
+        self.assertIn("旧节点手动启用", dashboard)
         self.assertIn(
             "/nodes/{}/protocol/enable".format(issued["nodeId"]), dashboard
         )
@@ -6852,7 +6862,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.29.0", body)
+        self.assertIn("v0.30.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

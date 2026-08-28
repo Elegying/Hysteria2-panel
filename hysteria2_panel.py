@@ -3821,7 +3821,15 @@ class Database:
                         (SELECT COUNT(*) FROM node_commands AS c
                             WHERE c.node_id = n.node_id AND c.acked_at IS NULL
                                 AND c.last_error IS NOT NULL
-                        ) AS failed_commands
+                        ) AS failed_commands,
+                        (SELECT g.automatic_canary
+                            FROM node_data_plane_bootstrap_grants AS g
+                            WHERE g.node_id = n.node_id
+                                AND g.acknowledged_at IS NULL
+                                AND g.revoked_at IS NULL
+                                AND g.expires_at > CAST(strftime('%s','now') AS INTEGER)
+                            ORDER BY g.created_at DESC, g.grant_id DESC LIMIT 1
+                        ) AS active_automatic_canary
                     FROM nodes AS n
                     LEFT JOIN node_enrollments AS e ON e.enrollment_id = (
                         SELECT enrollment_id FROM node_enrollments
@@ -4942,8 +4950,11 @@ class PanelHandler(JsonHandler):
                 except (TypeError, ValueError):
                     fingerprint = ""
             if status == "pending_verification" and not verified and fingerprint:
-                node_actions = """<form method="post" action="/nodes/{node_id}/verify"><input type="hidden" name="csrf" value="{csrf}"><label class="muted" for="fingerprint-{node_id}">输入核对后的完整指纹</label><input id="fingerprint-{node_id}" name="fingerprint" required minlength="64" maxlength="64" pattern="[0-9a-f]{{64}}" autocomplete="off"><button class="compact-button" type="submit">确认节点指纹</button></form>""".format(
-                    node_id=node["node_id"], csrf=csrf
+                node_actions = """<form method="post" action="/nodes/{node_id}/verify" data-confirm="请确认服务器显示的指纹短码也是 {short_fingerprint}；确认后节点将自动完成部署。"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="fingerprint" value="{fingerprint}"><span class="muted">与服务器输出核对短码</span><strong><code>{short_fingerprint}</code></strong><button class="compact-button" type="submit">短码一致，开始自动部署</button></form>""".format(
+                    node_id=node["node_id"],
+                    csrf=csrf,
+                    fingerprint=fingerprint,
+                    short_fingerprint=fingerprint[:16],
                 )
             if status == "pending_verification":
                 node_actions += """<form method="post" action="/nodes/{node_id}/revoke" data-confirm="撤销后该节点的后续心跳会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">撤销节点</button></form>""".format(
@@ -4996,17 +5007,17 @@ class PanelHandler(JsonHandler):
                     node_id=node["node_id"], csrf=csrf
                 )
             elif verified and status == "pending_verification":
-                details.append("协议待命")
-                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这里只启用中央控制协议，不会部署 Hysteria 或修改 DNS，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">启用控制协议</button></form>""".format(
+                details.append("自动部署等待中（通常 30 秒内开始）")
+                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这是旧节点故障恢复入口，只启用中央控制协议，不会部署 Hysteria 或修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">旧节点手动启用</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
             data_plane_state = node.get("data_plane_state") or "not_issued"
             data_plane_labels = {
-                "not_issued": "数据面未部署",
-                "bootstrap_issued": "数据面部署码已签发 · 尚未确认安装",
+                "not_issued": "等待节点自动领取部署凭据",
+                "bootstrap_issued": "自动部署中 · 正在配置 FULL/双入口/网络优化",
                 "data_plane_installed": "数据面已安装 · 待直连灰度",
-                "direct_canary_passed": "直连灰度已通过 · 尚未加入 DNS",
-                "dns_admitted": "DNS 已准入",
+                "direct_canary_passed": "UDP 19999/443 真实验收通过 · 请手工添加 DNS",
+                "dns_admitted": "DNS 已检测并自动准入 · 节点可用",
             }
             details.append(data_plane_labels.get(data_plane_state, "数据面状态异常"))
             data_plane_eligible = bool(
@@ -5026,9 +5037,13 @@ class PanelHandler(JsonHandler):
                 }
                 and self.app.secure_cookies
                 and self.app.data_plane_bootstrap_service is not None
+                and not (
+                    data_plane_state == "bootstrap_issued"
+                    and node.get("active_automatic_canary")
+                )
             ):
                 if data_plane_state == "not_issued":
-                    data_plane_action = "部署数据面"
+                    data_plane_action = "旧节点手动部署"
                 elif data_plane_state == "bootstrap_issued":
                     data_plane_action = "重新生成部署码"
                 else:
@@ -5038,10 +5053,6 @@ class PanelHandler(JsonHandler):
                 )
             if data_plane_eligible and data_plane_state == "data_plane_installed":
                 node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/canary/pass" data-data-plane-canary-form data-confirm="只记录该节点直连灰度通过，不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认直连灰度通过</button></form>""".format(
-                    node_id=node["node_id"], csrf=csrf
-                )
-            if data_plane_eligible and data_plane_state == "direct_canary_passed":
-                node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/dns/admit" data-node-dns-action-form data-confirm="请仅在外部 DNS 已加入该节点且真实 Hysteria 验收通过后记录准入；此操作本身不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认 DNS 准入完成</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
             if data_plane_eligible and data_plane_state == "dns_admitted":
@@ -5085,8 +5096,8 @@ class PanelHandler(JsonHandler):
 <div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong><small class="muted">180 / 90 / 30 天分级提醒</small></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
-<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">生成短时、单用途的一键部署代码，新服务器先进入待验证状态。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
-<p class="notice"><strong>注册阶段安全边界：</strong>首次对接只安装节点 Agent、核对节点公钥并接收签名心跳；不会复制 Hysteria 证书、HMAC、用户数据，不会启动 VPN 入口或修改 <code>vpn.ssrvpn.vip</code> DNS。数据面部署必须在节点验证和控制协议就绪后另行生成第二段代码。</p>
+<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">一条签名部署代码；随后只需核对短码并手工添加 DNS。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
+<p class="notice"><strong>自动流程：</strong>在新服务器运行下方代码 → 回到节点卡片核对 16 位指纹短码 → 等待自动完成签名心跳、FULL、UDP 19999/443、fq/BBR、16 MiB UDP 缓冲和双入口真实出口验收 → 按提示手工添加 <code>{public_host}</code> DNS。面板只读检测 DNS，不会写入或删除 DNS；Hysteria 长期身份只会原样复制，不会自动轮换。</p>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">节点公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-mode">操作类型</label><select id="node-enrollment-mode" name="mode"><option value="join" selected>全新节点对接</option><option value="rebind">已有数据节点安全重绑定</option></select></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <section class="enrollment-result" data-data-plane-bootstrap-result hidden><label for="data-plane-deployment-code">数据面一键部署代码</label><textarea id="data-plane-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="data-plane-deployment-code">复制数据面部署代码</button></div><p class="muted" data-data-plane-bootstrap-expiry role="status"></p><p class="notice"><strong>安全边界：</strong>代码只携带绑定节点与来源 IP 的短时授权；不会携带 Hysteria 证书私钥、HMAC、统计密钥、用户数据，也不会修改 DNS。</p></section>

@@ -1434,6 +1434,18 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertEqual(self.node_id, result["nodeId"])
         self.assertEqual(self.token, result["bootstrapToken"])
         self.assertNotIn("deploymentCommand", result)
+        raw_session, _csrf = self.db.create_session(self.admin_id)
+        dashboard = urllib.request.urlopen(
+            urllib.request.Request(
+                self.base_url + "/",
+                headers={"Cookie": "hy2panel_session={}".format(raw_session)},
+            ),
+            timeout=2,
+        ).read().decode("utf-8")
+        self.assertIn("自动部署中", dashboard)
+        self.assertNotIn(
+            "/nodes/{}/data-plane/bootstrap".format(self.node_id), dashboard
+        )
 
     def test_dashboard_exposes_only_eligible_deploy_and_separate_canary_controls(self):
         raw_session, csrf = self.db.create_session(self.admin_id)
@@ -1445,8 +1457,8 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertIn(
             '/nodes/{}/data-plane/bootstrap'.format(self.node_id), body
         )
-        self.assertIn("部署数据面", body)
-        self.assertIn("数据面未部署", body)
+        self.assertIn("旧节点手动部署", body)
+        self.assertIn("等待节点自动领取部署凭据", body)
         self.assertIn("data-data-plane-bootstrap-form", body)
         self.assertNotIn("data-plane/canary/pass", body)
         self.assertNotIn("dns/admit", body)
@@ -1492,10 +1504,10 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
                 (self.now[0], self.now[0], self.now[0], self.node_id),
             )
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertIn(
+        self.assertNotIn(
             '/nodes/{}/data-plane/dns/admit'.format(self.node_id), body
         )
-        self.assertIn("确认 DNS 准入完成", body)
+        self.assertIn("请手工添加 DNS", body)
 
         admit_request = urllib.request.Request(
             self.base_url + "/nodes/{}/data-plane/dns/admit".format(self.node_id),
@@ -1508,7 +1520,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         )
         self.assertEqual({"dnsAdmitted": True}, result)
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertIn("DNS 已准入", body)
+        self.assertIn("DNS 已检测并自动准入", body)
         self.assertIn(
             '/nodes/{}/data-plane/dns/remove'.format(self.node_id), body
         )
