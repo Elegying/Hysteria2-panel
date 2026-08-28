@@ -408,6 +408,27 @@ document.addEventListener('submit', async function(event) {
   }
 });
 document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-node-dns-action-form]');
+  if (!form || event.defaultPrevented) return;
+  event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = '记录中…';
+  try {
+    const payload = await submitInlineForm(form);
+    if (!payload || (payload.dnsAdmitted !== true && payload.dnsRemoved !== true)) {
+      throw new Error('DNS 准入状态未更新');
+    }
+    notify(payload.dnsAdmitted ? '已记录节点 DNS 准入' : '已记录节点撤出 DNS', false);
+    window.setTimeout(function() { window.location.reload(); }, 700);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = original;
+    notify(error.message || 'DNS 准入状态更新失败，请重试', true);
+  }
+});
+document.addEventListener('submit', async function(event) {
   const form = event.target.closest('[data-restore-form]');
   if (!form || event.defaultPrevented) return;
   event.preventDefault();
