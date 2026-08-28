@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.28.4] - 2026-08-28
+
 ### 安全与修复
 
 - 全新安装的管理面默认改为独立 Let’s Encrypt HTTPS；显式 HTTP 和所有现有安装协议仍受支持，升级不会修改任何 Hysteria 用户 URI、token、节点证书或固定指纹。
