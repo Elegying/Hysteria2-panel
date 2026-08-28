@@ -50,8 +50,11 @@ from hy2panel.certificate import (
 from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.distributed import DistributedControlService, NodeRequestRejected
 from hy2panel.nodes import (
+    DataPlaneBootstrapRejected,
+    DataPlaneBootstrapService,
     EnrollmentRejected,
     HeartbeatRejected,
+    HysteriaIdentityProvider,
     NodeEnrollmentService,
     NodeHeartbeatService,
 )
@@ -1863,6 +1866,22 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS node_commands_pending_idx
                     ON node_commands(node_id, acked_at, created_at);
+                CREATE TABLE IF NOT EXISTS node_data_plane_bootstrap_grants (
+                    grant_id TEXT PRIMARY KEY,
+                    node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    token_digest TEXT NOT NULL UNIQUE,
+                    bound_ip TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    fetch_attempts INTEGER NOT NULL DEFAULT 0
+                        CHECK (fetch_attempts BETWEEN 0 AND 3),
+                    last_fetched_at INTEGER,
+                    acknowledged_at INTEGER,
+                    revoked_at INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS node_data_plane_bootstrap_node_idx
+                    ON node_data_plane_bootstrap_grants(node_id, created_at);
                 """
             )
             columns = {
@@ -1896,6 +1915,17 @@ class Database:
                 "policy_enabled_by": "ALTER TABLE nodes ADD COLUMN policy_enabled_by TEXT",
                 "last_snapshot_at": "ALTER TABLE nodes ADD COLUMN last_snapshot_at INTEGER",
                 "last_traffic_ack_at": "ALTER TABLE nodes ADD COLUMN last_traffic_ack_at INTEGER",
+                "data_plane_state": (
+                    "ALTER TABLE nodes ADD COLUMN data_plane_state "
+                    "TEXT NOT NULL DEFAULT 'not_issued'"
+                ),
+                "data_plane_installed_at": (
+                    "ALTER TABLE nodes ADD COLUMN data_plane_installed_at INTEGER"
+                ),
+                "direct_canary_passed_at": (
+                    "ALTER TABLE nodes ADD COLUMN direct_canary_passed_at INTEGER"
+                ),
+                "dns_admitted_at": "ALTER TABLE nodes ADD COLUMN dns_admitted_at INTEGER",
             }
             for column, statement in node_migrations.items():
                 if column not in node_columns:
@@ -2525,6 +2555,209 @@ class Database:
             )""",
             (node_id, purpose, node_id, purpose),
         )
+
+    def create_data_plane_bootstrap_grant(
+        self,
+        node_id,
+        token_digest,
+        bound_ip,
+        actor,
+        created_at,
+        expires_at,
+    ):
+        node_id = str(node_id or "")
+        token_digest = str(token_digest or "")
+        actor = str(actor or "").strip()
+        created_at = int(created_at)
+        expires_at = int(expires_at)
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", token_digest)
+            or not actor
+            or len(actor) > 64
+            or expires_at != created_at + 600
+        ):
+            return None
+        try:
+            bound_ip = str(ipaddress.ip_address(bound_ip))
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                node = connection.execute(
+                    """SELECT status, verified_at, policy_state, data_plane_state,
+                        expected_ip, observed_ip
+                    FROM nodes WHERE node_id = ?""",
+                    (node_id,),
+                ).fetchone()
+                if (
+                    node is None
+                    or node["status"] != "pending_verification"
+                    or node["verified_at"] is None
+                    or node["policy_state"] != "protocol_ready"
+                    or node["data_plane_state"]
+                    not in {"not_issued", "bootstrap_issued"}
+                    or (node["expected_ip"] or node["observed_ip"]) != bound_ip
+                ):
+                    return None
+                connection.execute(
+                    """UPDATE node_data_plane_bootstrap_grants
+                    SET revoked_at = ?
+                    WHERE node_id = ? AND acknowledged_at IS NULL
+                        AND revoked_at IS NULL""",
+                    (created_at, node_id),
+                )
+                grant_id = uuid.uuid4().hex
+                connection.execute(
+                    """INSERT INTO node_data_plane_bootstrap_grants(
+                        grant_id, node_id, token_digest, bound_ip, created_by,
+                        created_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        grant_id,
+                        node_id,
+                        token_digest,
+                        bound_ip,
+                        actor,
+                        created_at,
+                        expires_at,
+                    ),
+                )
+                updated = connection.execute(
+                    """UPDATE nodes SET data_plane_state = 'bootstrap_issued'
+                    WHERE node_id = ? AND status = 'pending_verification'
+                        AND verified_at IS NOT NULL
+                        AND policy_state = 'protocol_ready'
+                        AND data_plane_state IN ('not_issued', 'bootstrap_issued')""",
+                    (node_id,),
+                )
+                if updated.rowcount != 1:
+                    raise sqlite3.IntegrityError("data-plane bootstrap state conflict")
+                return {
+                    "grant_id": grant_id,
+                    "node_id": node_id,
+                    "expires_at": expires_at,
+                }
+        except (sqlite3.IntegrityError, ValueError):
+            return None
+
+    def fetch_data_plane_bootstrap(
+        self, node_id, token_digest, remote_ip, nonce_digest, fetched_at
+    ):
+        node_id = str(node_id or "")
+        token_digest = str(token_digest or "")
+        nonce_digest = str(nonce_digest or "")
+        fetched_at = int(fetched_at)
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", token_digest)
+            or not re.fullmatch(r"[0-9a-f]{64}", nonce_digest)
+        ):
+            return None
+        try:
+            remote_ip = str(ipaddress.ip_address(remote_ip))
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                grant = connection.execute(
+                    """SELECT g.grant_id, g.expires_at, g.fetch_attempts,
+                        g.bound_ip
+                    FROM node_data_plane_bootstrap_grants AS g
+                    JOIN nodes AS n ON n.node_id = g.node_id
+                    WHERE g.node_id = ? AND g.token_digest = ?
+                        AND g.acknowledged_at IS NULL AND g.revoked_at IS NULL
+                        AND g.expires_at > ? AND g.fetch_attempts < 3
+                        AND n.status = 'pending_verification'
+                        AND n.verified_at IS NOT NULL
+                        AND n.policy_state = 'protocol_ready'
+                        AND n.data_plane_state = 'bootstrap_issued'""",
+                    (node_id, token_digest, fetched_at),
+                ).fetchone()
+                if grant is None or grant["bound_ip"] != remote_ip:
+                    return None
+                self._consume_node_request_nonce(
+                    connection,
+                    node_id,
+                    "data-plane-bootstrap",
+                    nonce_digest,
+                    fetched_at,
+                )
+                updated = connection.execute(
+                    """UPDATE node_data_plane_bootstrap_grants
+                    SET fetch_attempts = fetch_attempts + 1, last_fetched_at = ?
+                    WHERE grant_id = ? AND acknowledged_at IS NULL
+                        AND revoked_at IS NULL AND expires_at > ?
+                        AND fetch_attempts < 3""",
+                    (fetched_at, grant["grant_id"], fetched_at),
+                )
+                if updated.rowcount != 1:
+                    raise sqlite3.IntegrityError("data-plane fetch state conflict")
+                return {
+                    "grant_id": grant["grant_id"],
+                    "expires_at": grant["expires_at"],
+                    "fetch_attempts": grant["fetch_attempts"] + 1,
+                }
+        except (sqlite3.IntegrityError, ValueError):
+            return None
+
+    def acknowledge_data_plane_bootstrap(
+        self, node_id, token_digest, remote_ip, nonce_digest, acknowledged_at
+    ):
+        node_id = str(node_id or "")
+        token_digest = str(token_digest or "")
+        nonce_digest = str(nonce_digest or "")
+        acknowledged_at = int(acknowledged_at)
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", token_digest)
+            or not re.fullmatch(r"[0-9a-f]{64}", nonce_digest)
+        ):
+            return False
+        try:
+            remote_ip = str(ipaddress.ip_address(remote_ip))
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                grant = connection.execute(
+                    """SELECT g.grant_id, g.bound_ip
+                    FROM node_data_plane_bootstrap_grants AS g
+                    JOIN nodes AS n ON n.node_id = g.node_id
+                    WHERE g.node_id = ? AND g.token_digest = ?
+                        AND g.acknowledged_at IS NULL AND g.revoked_at IS NULL
+                        AND g.expires_at > ? AND g.fetch_attempts BETWEEN 1 AND 3
+                        AND n.status = 'pending_verification'
+                        AND n.verified_at IS NOT NULL
+                        AND n.policy_state = 'protocol_ready'
+                        AND n.data_plane_state = 'bootstrap_issued'""",
+                    (node_id, token_digest, acknowledged_at),
+                ).fetchone()
+                if grant is None or grant["bound_ip"] != remote_ip:
+                    return False
+                self._consume_node_request_nonce(
+                    connection,
+                    node_id,
+                    "data-plane-ack",
+                    nonce_digest,
+                    acknowledged_at,
+                )
+                grant_updated = connection.execute(
+                    """UPDATE node_data_plane_bootstrap_grants
+                    SET acknowledged_at = ?
+                    WHERE grant_id = ? AND acknowledged_at IS NULL
+                        AND revoked_at IS NULL""",
+                    (acknowledged_at, grant["grant_id"]),
+                )
+                node_updated = connection.execute(
+                    """UPDATE nodes SET
+                        data_plane_state = 'data_plane_installed',
+                        data_plane_installed_at = ?
+                    WHERE node_id = ? AND data_plane_state = 'bootstrap_issued'
+                        AND status = 'pending_verification'
+                        AND verified_at IS NOT NULL
+                        AND policy_state = 'protocol_ready'""",
+                    (acknowledged_at, node_id),
+                )
+                if grant_updated.rowcount != 1 or node_updated.rowcount != 1:
+                    raise sqlite3.IntegrityError("data-plane ack state conflict")
+                return True
+        except (sqlite3.IntegrityError, ValueError):
+            return False
 
     def set_node_policy_state(self, node_id, state, actor, changed_at):
         node_id = str(node_id or "")
@@ -3628,6 +3861,7 @@ class PanelApplication:
         node_enrollment_service=None,
         node_heartbeat_service=None,
         node_control_service=None,
+        data_plane_bootstrap_service=None,
     ):
         self.database = database
         self.public_host = public_host
@@ -3654,6 +3888,7 @@ class PanelApplication:
         self.node_enrollment_service = node_enrollment_service
         self.node_heartbeat_service = node_heartbeat_service
         self.node_control_service = node_control_service
+        self.data_plane_bootstrap_service = data_plane_bootstrap_service
         self.update_result = None
         self.update_lock = threading.Lock()
         self.node_name = node_name
@@ -4526,6 +4761,54 @@ class PanelHandler(JsonHandler):
             return
         self.send_json(200, result)
 
+    def _handle_data_plane_node_request(self, method_name):
+        service = self.app.data_plane_bootstrap_service
+        if not self.app.secure_cookies or service is None:
+            self._send_api_error(404, "NOT_FOUND", "not found")
+            return
+        try:
+            payload = self._read_json(maximum=16 * 1024)
+        except OverflowError:
+            self._send_api_error(413, "REQUEST_TOO_LARGE", "request body is too large")
+            return
+        except TypeError:
+            self._send_api_error(
+                415, "UNSUPPORTED_MEDIA_TYPE", "application/json is required"
+            )
+            return
+        except ValueError:
+            self._send_api_error(400, "INVALID_REQUEST", "request body is invalid")
+            return
+        try:
+            result = getattr(service, method_name)(
+                payload, remote_ip=self.client_address[0]
+            )
+        except DataPlaneBootstrapRejected:
+            self._send_api_error(
+                403,
+                "DATA_PLANE_BOOTSTRAP_REJECTED",
+                "data-plane bootstrap was rejected",
+            )
+            return
+        self.send_json(200, result)
+
+    def _handle_issue_data_plane_bootstrap(self, session, node_id):
+        service = self.app.data_plane_bootstrap_service
+        if not self.app.secure_cookies or service is None:
+            self.send_json(409, {"error": "请先为面板启用 HTTPS"})
+            return
+        try:
+            result = service.issue(node_id, actor=session["username"])
+        except (TypeError, ValueError) as exc:
+            self.send_json(409, {"error": str(exc)})
+            return
+        self._audit_safely(
+            session["username"],
+            "node_data_plane_bootstrap_issued",
+            node_id,
+        )
+        self.send_json(201, result)
+
     def _handle_create_node_enrollment(self, session, form):
         service = self.app.node_enrollment_service
         if not self.app.secure_cookies or service is None:
@@ -4680,6 +4963,14 @@ class PanelHandler(JsonHandler):
         if path == "/api/v1/node-heartbeats":
             self._handle_node_heartbeat()
             return
+        data_plane_routes = {
+            "/api/v1/node-data-plane/bootstrap": "fetch",
+            "/api/v1/node-data-plane/ack": "ack",
+        }
+        data_plane_route = data_plane_routes.get(path)
+        if data_plane_route:
+            self._handle_data_plane_node_request(data_plane_route)
+            return
         distributed_routes = {
             "/api/v1/node-auth-decisions": ("authorize", 16 * 1024),
             "/api/v1/node-online-snapshots": ("accept_online_snapshot", 128 * 1024),
@@ -4743,6 +5034,14 @@ class PanelHandler(JsonHandler):
         if protocol_match:
             self._handle_node_protocol(
                 session, protocol_match.group(1), protocol_match.group(2)
+            )
+            return
+        data_plane_match = re.fullmatch(
+            r"/nodes/([0-9a-f]{32})/data-plane/bootstrap", path
+        )
+        if data_plane_match:
+            self._handle_issue_data_plane_bootstrap(
+                session, data_plane_match.group(1)
             )
             return
         if path == "/users/reset-traffic":
@@ -6168,6 +6467,8 @@ def run_service(settings):
     node_enrollment_service = None
     node_heartbeat_service = None
     node_control_service = None
+    data_plane_bootstrap_service = None
+    egress_policy_controller = EgressPolicyController()
     if settings.panel_scheme == "https":
         node_enrollment_service = NodeEnrollmentService(
             database,
@@ -6181,6 +6482,20 @@ def run_service(settings):
             database,
             local_state_provider=usage_manager.distributed_local_state,
         )
+        data_plane_bootstrap_service = DataPlaneBootstrapService(
+            database,
+            panel_url="https://{}:{}".format(
+                settings.panel_public_host, settings.panel_port
+            ),
+            panel_version=PANEL_VERSION,
+            identity_provider=HysteriaIdentityProvider(
+                settings.tls_cert,
+                settings.tls_key,
+                egress_policy_provider=lambda: egress_policy_controller.inspect()[
+                    "state"
+                ],
+            ),
+        )
     application = PanelApplication(
         database=database,
         public_host=settings.public_host,
@@ -6192,9 +6507,11 @@ def run_service(settings):
         usage_manager=usage_manager,
         backup_manager=backup_manager,
         health_monitor=health_monitor,
+        egress_policy_controller=egress_policy_controller,
         node_enrollment_service=node_enrollment_service,
         node_heartbeat_service=node_heartbeat_service,
         node_control_service=node_control_service,
+        data_plane_bootstrap_service=data_plane_bootstrap_service,
     )
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
     if settings.panel_scheme == "https":

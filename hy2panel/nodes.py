@@ -7,6 +7,8 @@ import json
 import os
 import re
 import secrets
+import ssl
+import stat
 import subprocess  # nosec B404 -- fixed executable and argv, never a shell.
 import tempfile
 import threading
@@ -35,6 +37,28 @@ HEARTBEAT_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 HEARTBEAT_PREFIX = b"hy2panel-node-heartbeat-v1\n"
 HEARTBEAT_CLOCK_SKEW_SECONDS = 120
 HEARTBEAT_INTERVAL_SECONDS = 60
+DATA_PLANE_PURPOSES = {"bootstrap", "ack"}
+DATA_PLANE_COMMON_FIELDS = {"nodeId", "sentAt", "nonce", "signature"}
+DATA_PLANE_BOOTSTRAP_FIELDS = DATA_PLANE_COMMON_FIELDS | {
+    "bootstrapToken",
+    "requestId",
+}
+DATA_PLANE_ACK_FIELDS = DATA_PLANE_BOOTSTRAP_FIELDS | {
+    "certificateFileSha256",
+    "certificateDerSha256",
+    "privateKeyPublicSha256",
+    "hysteriaVersion",
+    "configProtocolVersion",
+    "servicesHealthy",
+    "statsHealthy",
+    "udp19999Listening",
+    "udp443Listening",
+    "tcp19999Listening",
+    "tcp443Listening",
+}
+OBJECT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+DATA_PLANE_RESPONSE_LIMIT = 32 * 1024
 
 
 class EnrollmentRejected(ValueError):
@@ -43,6 +67,113 @@ class EnrollmentRejected(ValueError):
 
 class HeartbeatRejected(ValueError):
     """A public heartbeat failed without disclosing node state."""
+
+
+class DataPlaneBootstrapRejected(ValueError):
+    """A data-plane bootstrap request failed without exposing grant state."""
+
+
+class HysteriaIdentityProvider:
+    """Read and attest the existing Hysteria identity without rewriting it."""
+
+    MAX_IDENTITY_FILE_BYTES = 16 * 1024
+
+    def __init__(
+        self,
+        certificate_path,
+        private_key_path,
+        egress_policy_provider,
+        openssl_executable="/usr/bin/openssl",
+        timeout_seconds=5,
+    ):
+        self.certificate_path = Path(certificate_path)
+        self.private_key_path = Path(private_key_path)
+        self.egress_policy_provider = egress_policy_provider
+        self.openssl_executable = openssl_executable
+        self.timeout_seconds = timeout_seconds
+
+    def _read_regular_file(self, path):
+        descriptor = None
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(str(path), flags)
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size < 1
+                or metadata.st_size > self.MAX_IDENTITY_FILE_BYTES
+            ):
+                raise ValueError("Hysteria identity file is unsafe")
+            chunks = []
+            remaining = metadata.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 4096))
+                if not chunk:
+                    raise ValueError("Hysteria identity changed while reading")
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            value = b"".join(chunks)
+        except OSError as exc:
+            raise ValueError("Hysteria identity is unavailable") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        return value
+
+    def _openssl(self, arguments, input_bytes=None):
+        try:
+            completed = subprocess.run(  # nosec B603 -- fixed executable and argv.
+                [self.openssl_executable] + list(arguments),
+                input=input_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=self.timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError("Hysteria identity validation failed") from exc
+        if completed.returncode != 0 or not completed.stdout:
+            raise ValueError("Hysteria identity validation failed")
+        return completed.stdout
+
+    def __call__(self):
+        certificate = self._read_regular_file(self.certificate_path)
+        private_key = self._read_regular_file(self.private_key_path)
+        try:
+            certificate_text = certificate.decode("ascii")
+            private_key_text = private_key.decode("ascii")
+            certificate_der = ssl.PEM_cert_to_DER_cert(certificate_text)
+        except (UnicodeError, ValueError) as exc:
+            raise ValueError("Hysteria identity validation failed") from exc
+        certificate_public_pem = self._openssl(
+            ["x509", "-pubkey", "-noout"], certificate
+        )
+        certificate_public_der = self._openssl(
+            ["pkey", "-pubin", "-outform", "DER"], certificate_public_pem
+        )
+        private_key_public_der = self._openssl(
+            ["pkey", "-pubout", "-outform", "DER"], private_key
+        )
+        if not secrets.compare_digest(certificate_public_der, private_key_public_der):
+            raise ValueError("Hysteria certificate and private key do not match")
+        try:
+            egress_policy = self.egress_policy_provider()
+        except Exception as exc:
+            raise ValueError("Hysteria egress policy is unavailable") from exc
+        if egress_policy not in {"web", "full"}:
+            raise ValueError("Hysteria egress policy is invalid")
+        return {
+            "certificatePem": certificate_text,
+            "privateKeyPem": private_key_text,
+            "certificateFileSha256": hashlib.sha256(certificate).hexdigest(),
+            "certificateDerSha256": hashlib.sha256(certificate_der).hexdigest(),
+            "privateKeyPublicSha256": hashlib.sha256(
+                private_key_public_der
+            ).hexdigest(),
+            "egressPolicy": egress_policy,
+        }
 
 
 def _single_quote(value):
@@ -104,6 +235,20 @@ def canonical_heartbeat(payload):
     }
     return HEARTBEAT_PREFIX + json.dumps(
         signed_fields,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def canonical_data_plane_request(purpose, payload):
+    if purpose not in DATA_PLANE_PURPOSES or not isinstance(payload, dict):
+        raise ValueError("data-plane request purpose is invalid")
+    signed = {key: value for key, value in payload.items() if key != "signature"}
+    return "hy2panel-data-plane-{}-v1\n".format(purpose).encode(
+        "ascii"
+    ) + json.dumps(
+        signed,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -449,3 +594,310 @@ unset HY2PANEL_ENROLLMENT_TOKEN
         if record is None:
             raise EnrollmentRejected("node enrollment was rejected")
         return {"nodeId": record["node_id"], "status": "PENDING_VERIFICATION"}
+
+
+class DataPlaneBootstrapService:
+    """Issue short-lived, node-bound grants for the phase-four installer."""
+
+    COSIGN_VERSION = NodeEnrollmentService.COSIGN_VERSION
+    COSIGN_SHA_AMD64 = NodeEnrollmentService.COSIGN_SHA_AMD64
+    COSIGN_SHA_ARM64 = NodeEnrollmentService.COSIGN_SHA_ARM64
+    HYSTERIA_VERSION = "2.12.1"
+    HYSTERIA_SHA256 = {
+        "amd64": "ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7",
+        "arm64": "c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792",
+    }
+
+    def __init__(
+        self,
+        database,
+        panel_url,
+        panel_version,
+        clock=time.time,
+        token_factory=None,
+        signature_verifier=None,
+        identity_provider=None,
+        verification_slots=8,
+    ):
+        self.database = database
+        self.panel_url = _validate_panel_url(panel_url)
+        if not VERSION_PATTERN.fullmatch(str(panel_version or "")):
+            raise ValueError("panel version is invalid")
+        self.panel_version = str(panel_version)
+        self.clock = clock
+        self.token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+        self.signature_verifier = signature_verifier or OpenSSLSignatureVerifier()
+        self.identity_provider = identity_provider
+        self._verification_gate = threading.BoundedSemaphore(verification_slots)
+
+    @staticmethod
+    def _reject():
+        raise DataPlaneBootstrapRejected("data-plane bootstrap was rejected")
+
+    def _verify(self, purpose, payload, expected_fields, remote_ip):
+        if not isinstance(payload, dict) or set(payload) != expected_fields:
+            self._reject()
+        node_id = payload.get("nodeId")
+        sent_at = payload.get("sentAt")
+        nonce = payload.get("nonce")
+        signature_text = payload.get("signature")
+        if not isinstance(node_id, str) or not OBJECT_ID_PATTERN.fullmatch(node_id):
+            self._reject()
+        if isinstance(sent_at, bool) or not isinstance(sent_at, int):
+            self._reject()
+        now = int(self.clock())
+        if abs(now - sent_at) > HEARTBEAT_CLOCK_SKEW_SECONDS:
+            self._reject()
+        if not isinstance(nonce, str) or not HEARTBEAT_NONCE_PATTERN.fullmatch(nonce):
+            self._reject()
+        try:
+            nonce_bytes = base64.urlsafe_b64decode(nonce + "=")
+            signature = base64.b64decode(signature_text, validate=True)
+            remote_ip = _normalize_ip(remote_ip)
+        except (TypeError, ValueError):
+            self._reject()
+        if len(nonce_bytes) != 32 or len(signature) != 64:
+            self._reject()
+        node = self.database.get_node_for_heartbeat(node_id)
+        if (
+            node is None
+            or node["status"] != "pending_verification"
+            or node.get("verified_at") is None
+            or node.get("policy_state") != "protocol_ready"
+            or node.get("data_plane_state") != "bootstrap_issued"
+        ):
+            self._reject()
+        bound_ip = node.get("expected_ip") or node.get("observed_ip")
+        if not bound_ip or not secrets.compare_digest(bound_ip, remote_ip):
+            self._reject()
+        message = canonical_data_plane_request(purpose, payload)
+        if not self._verification_gate.acquire(blocking=False):
+            self._reject()
+        try:
+            try:
+                verified = self.signature_verifier(
+                    node.get("public_key"), message, signature
+                )
+            except Exception:
+                verified = False
+        finally:
+            self._verification_gate.release()
+        if not verified:
+            self._reject()
+        return node, hashlib.sha256(nonce_bytes).hexdigest(), now, remote_ip
+
+    def _identity(self):
+        if self.identity_provider is None:
+            self._reject()
+        try:
+            identity = self.identity_provider()
+        except Exception:
+            self._reject()
+        expected = {
+            "certificatePem",
+            "privateKeyPem",
+            "certificateFileSha256",
+            "certificateDerSha256",
+            "privateKeyPublicSha256",
+            "egressPolicy",
+        }
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != expected
+            or not isinstance(identity.get("certificatePem"), str)
+            or not identity["certificatePem"].startswith("-----BEGIN CERTIFICATE-----\n")
+            or not isinstance(identity.get("privateKeyPem"), str)
+            or re.match(
+                r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----\n",
+                identity["privateKeyPem"],
+            )
+            is None
+            or identity.get("egressPolicy") not in {"web", "full"}
+            or any(
+                not isinstance(identity.get(field), str)
+                or not SHA256_PATTERN.fullmatch(identity[field])
+                for field in (
+                    "certificateFileSha256",
+                    "certificateDerSha256",
+                    "privateKeyPublicSha256",
+                )
+            )
+        ):
+            self._reject()
+        return identity
+
+    def _deployment_command(self, token):
+        tag = "v{}".format(self.panel_version)
+        repository = "https://github.com/Elegying/Hysteria2-panel"
+        installer = (
+            "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/"
+            "{}/install.sh".format(tag)
+        )
+        bundle = "{}/releases/download/{}/install.sh.sigstore.json".format(
+            repository, tag
+        )
+        identity = (
+            "{}/.github/workflows/release-signature.yml@refs/tags/{}".format(
+                repository, tag
+            )
+        )
+        return """set -euo pipefail
+if [ "$(id -u)" -ne 0 ]; then echo '请切换到 root 后重新粘贴此代码' >&2; exit 1; fi
+bootstrap_tmp="$(mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
+trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
+case "$(uname -m)" in
+  x86_64|amd64) cosign_asset=cosign-linux-amd64; cosign_sha={cosign_sha_amd64} ;;
+  aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
+  *) echo '仅支持 Linux amd64 和 arm64' >&2; exit 1 ;;
+esac
+curl -q -fL --connect-timeout 10 --max-time 300 \
+  "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
+  -o "$bootstrap_tmp/cosign"
+printf '%s  %s\\n' "$cosign_sha" "$bootstrap_tmp/cosign" | sha256sum --check --status
+chmod 0700 "$bootstrap_tmp/cosign"
+curl -q -fL --connect-timeout 10 --max-time 300 {installer} -o "$bootstrap_tmp/install.sh"
+curl -q -fL --connect-timeout 10 --max-time 300 {bundle} -o "$bootstrap_tmp/install.sh.sigstore.json"
+"$bootstrap_tmp/cosign" verify-blob "$bootstrap_tmp/install.sh" \
+  --bundle "$bootstrap_tmp/install.sh.sigstore.json" \
+  --certificate-identity {identity} \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+bash -n "$bootstrap_tmp/install.sh"
+export HY2PANEL_PANEL_URL={panel_url}
+export HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN={token}
+export PANEL_REF={tag}
+/bin/bash "$bootstrap_tmp/install.sh" --activate-data-plane
+unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
+""".format(
+            cosign_sha_amd64=self.COSIGN_SHA_AMD64,
+            cosign_sha_arm64=self.COSIGN_SHA_ARM64,
+            cosign_version=self.COSIGN_VERSION,
+            installer=_single_quote(installer),
+            bundle=_single_quote(bundle),
+            identity=_single_quote(identity),
+            panel_url=_single_quote(self.panel_url),
+            token=_single_quote(token),
+            tag=_single_quote(tag),
+        )
+
+    def issue(self, node_id, actor):
+        node_id = str(node_id or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id):
+            raise ValueError("node is not eligible for data-plane bootstrap")
+        actor = _normalize_name(actor)
+        token = str(self.token_factory())
+        if not TOKEN_PATTERN.fullmatch(token):
+            raise RuntimeError("secure bootstrap token generation failed")
+        node = self.database.get_node_for_heartbeat(node_id)
+        bound_ip = None if node is None else node.get("expected_ip") or node.get("observed_ip")
+        now = int(self.clock())
+        record = self.database.create_data_plane_bootstrap_grant(
+            node_id=node_id,
+            token_digest=hashlib.sha256(token.encode("ascii")).hexdigest(),
+            bound_ip=bound_ip,
+            actor=actor,
+            created_at=now,
+            expires_at=now + 600,
+        )
+        if record is None:
+            raise ValueError("node is not eligible for data-plane bootstrap")
+        return {
+            "nodeId": record["node_id"],
+            "grantId": record["grant_id"],
+            "expiresAt": record["expires_at"],
+            "maxFetchAttempts": 3,
+            "status": "BOOTSTRAP_ISSUED",
+            "deploymentCommand": self._deployment_command(token),
+        }
+
+    def fetch(self, payload, remote_ip):
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != DATA_PLANE_BOOTSTRAP_FIELDS
+            or not isinstance(payload.get("bootstrapToken"), str)
+            or not TOKEN_PATTERN.fullmatch(payload["bootstrapToken"])
+            or not isinstance(payload.get("requestId"), str)
+            or not OBJECT_ID_PATTERN.fullmatch(payload["requestId"])
+        ):
+            self._reject()
+        node, nonce_digest, now, remote_ip = self._verify(
+            "bootstrap", payload, DATA_PLANE_BOOTSTRAP_FIELDS, remote_ip
+        )
+        grant = self.database.fetch_data_plane_bootstrap(
+            node["node_id"],
+            hashlib.sha256(payload["bootstrapToken"].encode("ascii")).hexdigest(),
+            remote_ip,
+            nonce_digest,
+            now,
+        )
+        if grant is None:
+            self._reject()
+        identity = self._identity()
+        result = {
+            "grantId": grant["grant_id"],
+            "expiresAt": grant["expires_at"],
+            "fetchAttempt": grant["fetch_attempts"],
+            "maxFetchAttempts": 3,
+            "configProtocolVersion": 1,
+            "hysteriaVersion": self.HYSTERIA_VERSION,
+            "hysteriaSha256": dict(self.HYSTERIA_SHA256),
+            "ports": {"main": 19999, "udp443": 443},
+        }
+        result.update(identity)
+        if len(
+            json.dumps(result, ensure_ascii=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ) > DATA_PLANE_RESPONSE_LIMIT:
+            self._reject()
+        return result
+
+    def ack(self, payload, remote_ip):
+        boolean_fields = (
+            "servicesHealthy",
+            "statsHealthy",
+            "udp19999Listening",
+            "udp443Listening",
+            "tcp19999Listening",
+            "tcp443Listening",
+        )
+        digest_fields = (
+            "certificateFileSha256",
+            "certificateDerSha256",
+            "privateKeyPublicSha256",
+        )
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != DATA_PLANE_ACK_FIELDS
+            or not isinstance(payload.get("bootstrapToken"), str)
+            or not TOKEN_PATTERN.fullmatch(payload["bootstrapToken"])
+            or not isinstance(payload.get("requestId"), str)
+            or not OBJECT_ID_PATTERN.fullmatch(payload["requestId"])
+            or any(payload.get(field) is not True for field in boolean_fields)
+            or any(
+                not isinstance(payload.get(field), str)
+                or not SHA256_PATTERN.fullmatch(payload[field])
+                for field in digest_fields
+            )
+            or payload.get("hysteriaVersion") != self.HYSTERIA_VERSION
+            or payload.get("configProtocolVersion") != 1
+        ):
+            self._reject()
+        node, nonce_digest, now, remote_ip = self._verify(
+            "ack", payload, DATA_PLANE_ACK_FIELDS, remote_ip
+        )
+        identity = self._identity()
+        if any(
+            not secrets.compare_digest(payload[field], identity[field])
+            for field in digest_fields
+        ):
+            self._reject()
+        acknowledged = self.database.acknowledge_data_plane_bootstrap(
+            node["node_id"],
+            hashlib.sha256(payload["bootstrapToken"].encode("ascii")).hexdigest(),
+            remote_ip,
+            nonce_digest,
+            now,
+        )
+        if not acknowledged:
+            self._reject()
+        return {"nodeId": node["node_id"], "status": "DATA_PLANE_INSTALLED"}
