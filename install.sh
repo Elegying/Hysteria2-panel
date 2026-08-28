@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.27.4"
+PANEL_VERSION="0.27.5"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -20,20 +20,20 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="46cd8130d875117602fcacbc47e101cf26c64789004db660c10eb8c3d754ee47"
+PANEL_SHA256="b031fcfd722d841c8646499beac15b4193bb46bac84a6ee608bddb88a9f2fece"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="08dfca2000d581abe203909f41b0a93fa4212eb3ac09d935da4ff7879de9d801"
+HY2PANEL_VERSION_SHA256="b5712ee9fb93562d99bebbf7b5000dd5e4063c10ff2ec34908a6693f18b9ea8d"
 HY2PANEL_WEB_ASSETS_SHA256="333e186315f8b0f81e755ca8e71c60f4ea753ba6255eab9282fff8feb83f6110"
 HY2PANEL_OPERATIONS_SHA256="3b8974f3a90af2e06d24e895e521723d819411b2673011db87e70a15699e442e"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="71724c20a8b792fb78156901e08b501f82435666aa2ef7ea141c6dd3d86bfafc"
+HY2PANEL_NODES_SHA256="cab6aa91cd5785f7b4d00f46b1644e4d23d0028923f518a0a07fcf7a45c02847"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="6a2c9c853877b75cab506ff63863c3a9756cded34e09695c1ce82e2c407cbf81"
+NODE_AGENT_SHA256="12c79d7358ce8bfb0925ae97e7e6bb39ff4742c2b26cc8c750f8c7b0e09d7c06"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -130,6 +130,7 @@ ACTIVATE_NODE_AGENT_MUTATED=0
 NODE_AGENT_BACKUP_FILE=""
 ACTIVATE_DATA_PLANE=0
 DATA_PLANE_MUTATED=0
+DATA_PLANE_EXISTING=0
 DATA_PLANE_BACKUP_DIR=""
 DATA_PLANE_NODE_AGENT_BACKUP_FILE=""
 DATA_PLANE_OWNED_FILES=()
@@ -1223,6 +1224,74 @@ assert_data_plane_paths_unclaimed() {
   done
 }
 
+assert_existing_data_plane_healthy() {
+  local mode path unit
+  initialize_data_plane_owned_paths
+  for path in "${DATA_PLANE_OWNED_FILES[@]}"; do
+    [[ "${path}" == "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" ]] \
+      && [[ ! -e "${path}" && ! -L "${path}" ]] && continue
+    [[ -f "${path}" && ! -L "${path}" ]] \
+      || fail "已安装数据面缺少受管文件：${path}"
+    mode=600
+    [[ "${path}" == "${NODE_AGENT_OPT_DIR}/bin/hysteria" \
+      || "${path}" == "${NODE_AGENT_OPT_DIR}/tcp_probe.py" ]] && mode=755
+    [[ "$(stat -c '%u:%g:%a' "${path}")" == "0:0:${mode}" ]] \
+      || fail "已安装数据面文件权限异常：${path}"
+  done
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    [[ -f "${path}" && ! -L "${path}" \
+      && "$(stat -c '%u:%g:%a' "${path}")" == "0:0:644" ]] \
+      || fail "已安装数据面 systemd 单元不安全：${path}"
+    unit="${path##*/}"
+    systemctl is-enabled --quiet "${unit}" \
+      || fail "已安装数据面单元未启用：${unit}"
+    systemctl is-active --quiet "${unit}" \
+      || fail "已安装数据面单元未运行：${unit}"
+  done
+  [[ -d "${NODE_AGENT_OPT_DIR}/bin" \
+    && ! -L "${NODE_AGENT_OPT_DIR}/bin" \
+    && "$(stat -c '%u:%g:%a' "${NODE_AGENT_OPT_DIR}/bin")" == "0:0:755" ]] \
+    || fail "已安装数据面二进制目录不安全"
+  [[ -d /var/lib/hysteria2-panel-node \
+    && ! -L /var/lib/hysteria2-panel-node \
+    && "$(stat -c '%u:%g:%a' /var/lib/hysteria2-panel-node)" == "0:0:700" ]] \
+    || fail "已安装数据面状态目录不安全"
+  [[ -z "$(find /var/lib/hysteria2-panel-node -xdev -type l -print -quit)" ]] \
+    || fail "已安装数据面状态目录包含符号链接"
+  [[ -z "$(find /var/lib/hysteria2-panel-node -xdev ! -type d ! -type f -print -quit)" ]] \
+    || fail "已安装数据面状态目录包含特殊文件"
+  while IFS= read -r -d '' path; do
+    [[ "$(stat -c '%u:%g' "${path}")" == "0:0" ]] \
+      || fail "已安装数据面状态项 owner 异常：${path}"
+    if [[ -d "${path}" ]]; then
+      [[ "$(stat -c '%a' "${path}")" == "700" ]] \
+        || fail "已安装数据面状态目录权限异常：${path}"
+    else
+      [[ "$(stat -c '%a' "${path}")" == "600" ]] \
+        || fail "已安装数据面状态文件权限异常：${path}"
+    fi
+  done < <(find /var/lib/hysteria2-panel-node -xdev \( -type d -o -type f \) -print0)
+  ss -H -lun "sport = :19999" | grep -q . || fail "既有数据面 UDP 19999 未监听"
+  ss -H -lun "sport = :443" | grep -q . || fail "既有数据面 UDP 443 未监听"
+  ss -H -ltn "sport = :19999" | grep -q . || fail "既有数据面 TCP 19999 未监听"
+  ss -H -ltn "sport = :443" | grep -q . || fail "既有数据面 TCP 443 未监听"
+}
+
+inspect_existing_data_plane() {
+  local path present=0
+  initialize_data_plane_owned_paths
+  for path in "${DATA_PLANE_OWNED_FILES[@]}" "${DATA_PLANE_OWNED_UNITS[@]}" \
+    "${NODE_AGENT_OPT_DIR}/bin" /var/lib/hysteria2-panel-node; do
+    [[ -e "${path}" || -L "${path}" ]] && present=1
+  done
+  if (( present == 0 )); then
+    DATA_PLANE_EXISTING=0
+    return 0
+  fi
+  DATA_PLANE_EXISTING=1
+  assert_existing_data_plane_healthy
+}
+
 assert_data_plane_ports_available() {
   local kind port
   for kind in -lun -ltn; do
@@ -1235,7 +1304,7 @@ assert_data_plane_ports_available() {
 }
 
 write_data_plane_backup_manifest() {
-  local timestamp manifest
+  local path timestamp manifest
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   DATA_PLANE_BACKUP_DIR="${NODE_DATA_PLANE_BACKUP_ROOT}/${timestamp}-phase4"
   [[ ! -e "${DATA_PLANE_BACKUP_DIR}" && ! -L "${DATA_PLANE_BACKUP_DIR}" ]] \
@@ -1245,10 +1314,42 @@ write_data_plane_backup_manifest() {
   DATA_PLANE_NODE_AGENT_BACKUP_FILE="${DATA_PLANE_BACKUP_DIR}/node_agent.py"
   install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
     "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}"
+  if (( DATA_PLANE_EXISTING == 1 )); then
+    install -d -o root -g root -m 0700 \
+      "${DATA_PLANE_BACKUP_DIR}/opt" \
+      "${DATA_PLANE_BACKUP_DIR}/config" \
+      "${DATA_PLANE_BACKUP_DIR}/units"
+    install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
+      "${DATA_PLANE_BACKUP_DIR}/opt/node_agent.py"
+    install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/tcp_probe.py" \
+      "${DATA_PLANE_BACKUP_DIR}/opt/tcp_probe.py"
+    install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/bin/hysteria" \
+      "${DATA_PLANE_BACKUP_DIR}/opt/hysteria"
+    for path in "${DATA_PLANE_OWNED_FILES[@]}"; do
+      [[ "${path}" == "${NODE_AGENT_OPT_DIR}/bin/hysteria" \
+        || "${path}" == "${NODE_AGENT_OPT_DIR}/tcp_probe.py" ]] && continue
+      [[ -e "${path}" || -L "${path}" ]] || continue
+      install -o root -g root -m 0600 "${path}" \
+        "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}"
+    done
+    for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+      install -o root -g root -m 0644 "${path}" \
+        "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}"
+    done
+    cp -a -- /var/lib/hysteria2-panel-node \
+      "${DATA_PLANE_BACKUP_DIR}/state"
+    printf '%s\n' existing > "${DATA_PLANE_BACKUP_DIR}/deployment-kind"
+  else
+    printf '%s\n' fresh > "${DATA_PLANE_BACKUP_DIR}/deployment-kind"
+  fi
+  chmod 0600 "${DATA_PLANE_BACKUP_DIR}/deployment-kind"
   manifest="${DATA_PLANE_BACKUP_DIR}/manifest.sha256"
   (
     cd "${DATA_PLANE_BACKUP_DIR}"
-    sha256sum node_agent.py > manifest.sha256
+    : > manifest.sha256
+    while IFS= read -r -d '' path; do
+      sha256sum "${path#./}" >> manifest.sha256
+    done < <(find . -type f ! -name manifest.sha256 -print0 | sort -z)
   )
   chmod 0600 "${manifest}"
   sync -f "${DATA_PLANE_BACKUP_DIR}" "${NODE_DATA_PLANE_BACKUP_ROOT}"
@@ -1295,6 +1396,12 @@ recover_interrupted_data_plane() {
   ) || fail "数据面回滚快照摘要不匹配"
   DATA_PLANE_BACKUP_DIR="${marker_backup}"
   DATA_PLANE_NODE_AGENT_BACKUP_FILE="${marker_backup}/node_agent.py"
+  if [[ -f "${marker_backup}/deployment-kind" \
+    && "$(cat "${marker_backup}/deployment-kind")" == "existing" ]]; then
+    DATA_PLANE_EXISTING=1
+  else
+    DATA_PLANE_EXISTING=0
+  fi
   DATA_PLANE_MUTATED=1
   rollback_data_plane_activation \
     || fail "中断的数据面部署无法自动恢复；事务标记已保留"
@@ -1479,9 +1586,74 @@ rollback_data_plane_firewall() {
   rm -f -- "${state}"
 }
 
+stop_existing_data_plane() {
+  systemctl stop \
+    hysteria2-panel-node-tcp-probe-udp443.service \
+    hysteria2-panel-node-tcp-probe-main.service \
+    hysteria2-panel-node-hysteria-udp443.service \
+    hysteria2-panel-node-hysteria-main.service \
+    hysteria2-panel-node-control.service \
+    hysteria2-panel-node-auth.service
+}
+
+restore_existing_data_plane() {
+  local path unit
+  initialize_data_plane_owned_paths
+  (
+    cd "${DATA_PLANE_BACKUP_DIR}"
+    sha256sum --check --status manifest.sha256
+  ) || return 1
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    unit="${path##*/}"
+    systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+  done
+  install -o root -g root -m 0755 \
+    "${DATA_PLANE_BACKUP_DIR}/opt/node_agent.py" \
+    "${NODE_AGENT_OPT_DIR}/node_agent.py" || return 1
+  install -o root -g root -m 0755 \
+    "${DATA_PLANE_BACKUP_DIR}/opt/tcp_probe.py" \
+    "${NODE_AGENT_OPT_DIR}/tcp_probe.py" || return 1
+  durable_replace_file "${DATA_PLANE_BACKUP_DIR}/opt/hysteria" \
+    "${NODE_AGENT_OPT_DIR}/bin/hysteria" 0755 || return 1
+  for path in "${DATA_PLANE_OWNED_FILES[@]}"; do
+    [[ "${path}" == "${NODE_AGENT_OPT_DIR}/bin/hysteria" \
+      || "${path}" == "${NODE_AGENT_OPT_DIR}/tcp_probe.py" ]] && continue
+    rm -f -- "${path}" || return 1
+    if [[ -f "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}" ]]; then
+      install -o root -g root -m 0600 \
+        "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}" "${path}" || return 1
+    fi
+  done
+  rm -r -- /var/lib/hysteria2-panel-node || return 1
+  cp -a -- "${DATA_PLANE_BACKUP_DIR}/state" \
+    /var/lib/hysteria2-panel-node || return 1
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    install -o root -g root -m 0644 \
+      "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}" "${path}" || return 1
+  done
+  systemctl daemon-reload || return 1
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    unit="${path##*/}"
+    systemctl enable --now "${unit}" || return 1
+    systemctl is-active --quiet "${unit}" || return 1
+  done
+  ss -H -lun "sport = :19999" | grep -q . || return 1
+  ss -H -lun "sport = :443" | grep -q . || return 1
+  ss -H -ltn "sport = :19999" | grep -q . || return 1
+  ss -H -ltn "sport = :443" | grep -q . || return 1
+  rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
+  sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
+    /var/lib/hysteria2-panel-node /etc/systemd/system || return 1
+  DATA_PLANE_MUTATED=0
+}
+
 rollback_data_plane_activation() {
   local path unit
   initialize_data_plane_owned_paths
+  if (( DATA_PLANE_EXISTING == 1 )); then
+    restore_existing_data_plane
+    return $?
+  fi
   rollback_data_plane_firewall || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
@@ -1515,7 +1687,7 @@ rollback_data_plane_activation() {
 
 activate_data_plane() {
   local bootstrap_token command_name hysteria_arch hysteria_sha hysteria_url path unit
-  local -a data_plane_commands=(awk cat chmod cp curl date df grep install mkdir mktemp openssl rm rmdir sha256sum ss stat sync systemctl)
+  local -a data_plane_commands=(awk cat chmod cp curl date df find grep install mkdir mktemp openssl rm rmdir sha256sum sort ss stat sync systemctl)
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "数据面只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1536,7 +1708,13 @@ activate_data_plane() {
   systemctl start hysteria2-panel-node-heartbeat.service \
     || fail "节点签名心跳未被中央面板接受；未修改系统"
   recover_interrupted_data_plane
-  assert_data_plane_paths_unclaimed
+  inspect_existing_data_plane
+  if (( DATA_PLANE_EXISTING == 1 )); then
+    assert_existing_data_plane_healthy
+  else
+    assert_data_plane_paths_unclaimed
+    assert_data_plane_ports_available
+  fi
   for command_name in "${data_plane_commands[@]}"; do
     command -v "${command_name}" >/dev/null 2>&1 \
       || fail "数据面部署缺少命令 ${command_name}；未修改系统"
@@ -1544,7 +1722,6 @@ activate_data_plane() {
   select_python || fail "数据面部署需要 Python 3.8 或更高版本；未修改系统"
   (( $(df -Pk "${NODE_AGENT_OPT_DIR}" | awk 'NR == 2 {print $4}') >= 131072 )) \
     || fail "数据面部署至少需要 128 MiB 可用磁盘；未修改系统"
-  assert_data_plane_ports_available
   bootstrap_token="${HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN:-}"
   unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
   [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
@@ -1587,6 +1764,10 @@ activate_data_plane() {
   arm_data_plane_transaction \
     || fail "无法持久化数据面回滚事务；未修改系统"
   DATA_PLANE_MUTATED=1
+  if (( DATA_PLANE_EXISTING == 1 )); then
+    stop_existing_data_plane \
+      || fail "无法停止既有数据面服务；已安排恢复旧数据面"
+  fi
   install -d -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/bin"
   install -d -o root -g root -m 0700 \
     /var/lib/hysteria2-panel-node \
@@ -1873,7 +2054,11 @@ EOF
   sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
     /var/lib/hysteria2-panel-node /etc/systemd/system
   DATA_PLANE_MUTATED=0
-  echo "数据面部署完成；未安装管理面板、未修改 DNS，Hysteria 身份来自中央生产身份的逐字节副本。"
+  if (( DATA_PLANE_EXISTING == 1 )); then
+    echo "数据面升级完成；节点身份、统计队列和 DNS 准入状态保持不变。"
+  else
+    echo "数据面部署完成；未安装管理面板、未修改 DNS，Hysteria 身份来自中央生产身份的逐字节副本。"
+  fi
 }
 
 install_system_dependencies() {

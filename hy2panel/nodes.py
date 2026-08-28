@@ -665,7 +665,13 @@ class DataPlaneBootstrapService:
             or node["status"] != "pending_verification"
             or node.get("verified_at") is None
             or node.get("policy_state") != "protocol_ready"
-            or node.get("data_plane_state") != "bootstrap_issued"
+            or node.get("data_plane_state")
+            not in {
+                "bootstrap_issued",
+                "data_plane_installed",
+                "direct_canary_passed",
+                "dns_admitted",
+            }
         ):
             self._reject()
         bound_ip = node.get("expected_ip") or node.get("observed_ip")

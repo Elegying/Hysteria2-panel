@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.27.4"', source)
+        self.assertIn('PANEL_VERSION="0.27.5"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -3937,6 +3937,45 @@ class DataPlaneInstallerContractTests(unittest.TestCase):
         self.assertIn("recover_interrupted_data_plane()", self.source)
         self.assertIn('sha256sum --check --status manifest.sha256', self.source)
         self.assertIn("recover_interrupted_data_plane", self.activation)
+
+    def test_existing_managed_data_plane_uses_full_transactional_upgrade(self):
+        self.assertIn("inspect_existing_data_plane", self.source)
+        self.assertIn("DATA_PLANE_EXISTING=1", self.source)
+        self.assertIn("stop_existing_data_plane", self.source)
+        self.assertIn("restore_existing_data_plane", self.source)
+        self.assertIn('if (( DATA_PLANE_EXISTING == 1 )); then', self.activation)
+        self.assertIn('assert_existing_data_plane_healthy', self.activation)
+        self.assertIn('assert_data_plane_paths_unclaimed', self.activation)
+        self.assertIn('assert_data_plane_ports_available', self.activation)
+
+        snapshot_start = self.source.index("write_data_plane_backup_manifest()")
+        snapshot = self.source[
+            snapshot_start:self.source.index("\n}\n", snapshot_start) + 2
+        ]
+        for preserved in (
+            '"${DATA_PLANE_OWNED_FILES[@]}"',
+            '"${DATA_PLANE_OWNED_UNITS[@]}"',
+            '"${NODE_AGENT_OPT_DIR}/node_agent.py"',
+            "/var/lib/hysteria2-panel-node",
+        ):
+            self.assertIn(preserved, snapshot)
+        self.assertIn("manifest.sha256", snapshot)
+
+        restore_start = self.source.index("restore_existing_data_plane()")
+        restore = self.source[
+            restore_start:self.source.index("\n}\n", restore_start) + 2
+        ]
+        self.assertIn("sha256sum --check --status manifest.sha256", restore)
+        self.assertIn("systemctl enable --now", restore)
+        self.assertNotIn("node.key", restore)
+        self.assertNotIn("registration.json", restore)
+
+        rollback_start = self.source.index("rollback_data_plane_activation()")
+        rollback = self.source[
+            rollback_start:self.source.index("\n}\n", rollback_start) + 2
+        ]
+        self.assertIn("DATA_PLANE_EXISTING", rollback)
+        self.assertIn("restore_existing_data_plane", rollback)
 
     def test_six_services_are_sandboxed_and_stats_secret_is_not_persisted_in_yaml(self):
         units = (

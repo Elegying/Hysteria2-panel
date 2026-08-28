@@ -214,6 +214,54 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         self.assertEqual(self.now[0], grants[first["grantId"]])
         self.assertIsNone(grants[second["grantId"]])
 
+    def test_installed_node_can_reissue_without_losing_canary_or_dns_state(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    data_plane_installed_at = ?, direct_canary_passed_at = ?,
+                    dns_admitted_at = ? WHERE node_id = ?""",
+                (
+                    self.now[0] - 300,
+                    self.now[0] - 200,
+                    self.now[0] - 100,
+                    self.node_id,
+                ),
+            )
+
+        issued = self.service.issue(self.node_id, actor="admin")
+        digest = self._digest(self.token)
+        fetched = self.db.fetch_data_plane_bootstrap(
+            self.node_id, digest, self.remote_ip, "6" * 64, self.now[0]
+        )
+        self.assertIsNotNone(fetched)
+        self.assertTrue(
+            self.db.acknowledge_data_plane_bootstrap(
+                self.node_id,
+                digest,
+                self.remote_ip,
+                "7" * 64,
+                self.now[0],
+            )
+        )
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            node = connection.execute(
+                """SELECT data_plane_state, data_plane_installed_at,
+                    direct_canary_passed_at, dns_admitted_at
+                FROM nodes WHERE node_id = ?""",
+                (self.node_id,),
+            ).fetchone()
+        self.assertEqual(
+            (
+                "direct_canary_passed",
+                self.now[0],
+                self.now[0] - 200,
+                self.now[0] - 100,
+            ),
+            node,
+        )
+        self.assertEqual("BOOTSTRAP_ISSUED", issued["status"])
+
     def test_fetch_is_bound_replay_safe_and_limited_to_three_attempts(self):
         self.service.issue(self.node_id, actor="admin")
         digest = self._digest(self.token)
@@ -799,9 +847,10 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             '/nodes/{}/data-plane/canary/pass'.format(self.node_id), body
         )
         self.assertIn("data-data-plane-canary-form", body)
-        self.assertNotIn(
+        self.assertIn(
             '/nodes/{}/data-plane/bootstrap'.format(self.node_id), body
         )
+        self.assertIn("生成数据面升级码", body)
 
         canary_request = urllib.request.Request(
             self.base_url
