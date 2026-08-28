@@ -1004,9 +1004,10 @@ class DataPlaneBootstrapClient:
             method="POST",
         )
         try:
-            with self.opener(
-                request, timeout=CONTROL_REQUEST_TIMEOUT_SECONDS
-            ) as response:
+            request_timeout = (
+                75 if purpose == "ack" else CONTROL_REQUEST_TIMEOUT_SECONDS
+            )
+            with self.opener(request, timeout=request_timeout) as response:
                 status = getattr(
                     response,
                     "status",
@@ -1061,10 +1062,13 @@ class DataPlaneBootstrapClient:
             raise ProtocolError("data-plane attestation is invalid")
         result = self._post("ack", token, attestation)
         state = _registration_state(self.state_path)
-        if result != {
-            "nodeId": state["nodeId"],
-            "status": "DATA_PLANE_INSTALLED",
-        }:
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"nodeId", "status"}
+            or result.get("nodeId") != state["nodeId"]
+            or result.get("status")
+            not in {"DATA_PLANE_INSTALLED", "DIRECT_CANARY_PASSED"}
+        ):
             raise ProtocolError("the panel returned an invalid data-plane ACK")
         return result
 

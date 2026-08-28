@@ -29,9 +29,87 @@ from node_agent import (
 from hy2panel.nodes import (
     DataPlaneBootstrapRejected,
     DataPlaneBootstrapService,
+    HysteriaCanaryRunner,
     HysteriaIdentityProvider,
     canonical_data_plane_request,
 )
+
+
+class HysteriaCanaryRunnerTests(unittest.TestCase):
+    def test_tests_both_entrypoints_through_real_hysteria_and_matches_egress_ip(self):
+        configs = []
+        processes = []
+
+        class Process:
+            def __init__(self):
+                self.returncode = None
+                processes.append(self)
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        def popen(argv, **kwargs):
+            self.assertEqual(
+                ["/opt/hysteria2-panel/bin/hysteria", "client", "--config"],
+                argv[:3],
+            )
+            config_path = Path(argv[3])
+            self.assertEqual(0o600, stat.S_IMODE(config_path.stat().st_mode))
+            configs.append(json.loads(config_path.read_text()))
+            self.assertNotIn("shell", kwargs)
+            return Process()
+
+        curl_calls = []
+
+        def run(argv, **kwargs):
+            curl_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "ip=8.8.8.8\nwarp=off\n", "")
+
+        with mock.patch("hy2panel.nodes.subprocess.Popen", side_effect=popen), mock.patch(
+            "hy2panel.nodes.subprocess.run", side_effect=run
+        ), mock.patch("hy2panel.nodes.socket.create_connection"):
+            HysteriaCanaryRunner(
+                server_name="vpn.example.test",
+                port_factory=iter((39001, 39002)).__next__,
+                sleep=lambda _seconds: None,
+            )(
+                node_ip="8.8.8.8",
+                token="canary_" + "T" * 40,
+                pin_sha256="ab" * 32,
+            )
+
+        self.assertEqual([19999, 443], [int(c["server"].rsplit(":", 1)[1]) for c in configs])
+        self.assertTrue(all(c["auth"].startswith("canary_") for c in configs))
+        self.assertTrue(all(c["tls"]["insecure"] is True for c in configs))
+        self.assertTrue(
+            all(c["tls"]["pinSHA256"] == ":".join(["AB"] * 32) for c in configs)
+        )
+        self.assertEqual(2, len(curl_calls))
+        self.assertTrue(all("socks5h://127.0.0.1:" in " ".join(c) for c in curl_calls))
+        self.assertTrue(all(process.returncode == 0 for process in processes))
+
+    def test_rejects_non_public_target_and_wrong_egress(self):
+        runner = HysteriaCanaryRunner(server_name="vpn.example.test")
+        with self.assertRaises(ValueError):
+            runner(
+                node_ip="127.0.0.1",
+                token="canary_" + "T" * 40,
+                pin_sha256="ab" * 32,
+            )
+
+        with mock.patch("hy2panel.nodes.subprocess.Popen") as popen:
+            with self.assertRaises(RuntimeError):
+                runner._verify_trace("ip=1.1.1.1\n", "8.8.8.8")
+        popen.assert_not_called()
 
 
 class DataPlaneBootstrapStateTests(unittest.TestCase):
@@ -141,6 +219,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
                 "last_fetched_at",
                 "acknowledged_at",
                 "revoked_at",
+                "automatic_canary",
             },
             grant_columns,
         )
@@ -597,6 +676,62 @@ class AutoBootstrapClaimTests(unittest.TestCase):
                 with self.assertRaises(DataPlaneBootstrapRejected):
                     self.service.claim(payload, remote_ip=remote_ip)
 
+    def test_claim_token_is_a_reserved_node_bound_canary_not_a_user(self):
+        result = self.service.claim(self._payload(), remote_ip=self.remote_ip)
+        digest = hashlib.sha256(
+            result["bootstrapToken"].encode("ascii")
+        ).hexdigest()
+        self.assertIsNotNone(
+            self.db.fetch_data_plane_bootstrap(
+                self.node_id, digest, self.remote_ip, "a" * 64, self.now[0]
+            )
+        )
+
+        decision = self.db.authorize_distributed_node(
+            self.node_id,
+            "b" * 32,
+            result["bootstrapToken"],
+            True,
+            {},
+            "c" * 64,
+            self.now[0],
+            5,
+        )
+        self.assertTrue(decision["ok"])
+        self.assertEqual("__hy2panel_bootstrap_canary__", decision["id"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            self.assertEqual(
+                0, connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
+            )
+
+        self.assertTrue(
+            self.db.acknowledge_data_plane_bootstrap(
+                self.node_id,
+                digest,
+                self.remote_ip,
+                "d" * 64,
+                self.now[0],
+                automatic_canary_passed=True,
+            )
+        )
+        self.assertIsNone(
+            self.db.authorize_distributed_node(
+                self.node_id,
+                "e" * 32,
+                result["bootstrapToken"],
+                False,
+                {},
+                "f" * 64,
+                self.now[0],
+                5,
+            )
+        )
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+        self.assertEqual(self.now[0], node["direct_canary_passed_at"])
+
 
 class AutoBootstrapClaimClientTests(unittest.TestCase):
     def setUp(self):
@@ -824,6 +959,45 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
             self.service.ack(
                 self._ack_payload(value=21), remote_ip=self.remote_ip
             )
+
+    def test_automatic_ack_requires_real_canary_before_consuming_the_grant(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE node_data_plane_bootstrap_grants SET automatic_canary = 1 "
+                "WHERE node_id = ?",
+                (self.node_id,),
+            )
+        self.service.fetch(self._bootstrap_payload(), remote_ip=self.remote_ip)
+        calls = []
+
+        def failed_canary(**kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("external egress failed")
+
+        self.service.canary_runner = failed_canary
+        with self.assertRaises(DataPlaneBootstrapRejected):
+            self.service.ack(
+                self._ack_payload(value=30), remote_ip=self.remote_ip
+            )
+        with sqlite3.connect(str(self.db_path)) as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT acknowledged_at FROM node_data_plane_bootstrap_grants "
+                    "WHERE node_id = ?",
+                    (self.node_id,),
+                ).fetchone()[0]
+            )
+        self.assertEqual(self.remote_ip, calls[0]["node_ip"])
+        self.assertEqual(self.token, calls[0]["token"])
+        self.assertEqual(self.identity["certificateDerSha256"], calls[0]["pin_sha256"])
+
+        self.service.canary_runner = lambda **kwargs: calls.append(kwargs)
+        result = self.service.ack(
+            self._ack_payload(value=31), remote_ip=self.remote_ip
+        )
+        self.assertEqual(
+            {"nodeId": self.node_id, "status": "DIRECT_CANARY_PASSED"}, result
+        )
 
 
 class HysteriaIdentityProviderTests(unittest.TestCase):
@@ -1399,6 +1573,13 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         Response.response = expected_ack
         self.assertEqual(expected_ack, client.ack("bootstrap_" + "T" * 40, {}))
         self.assertEqual(8 * 1024 + 1, captured["maximum"])
+        self.assertEqual(75, captured["timeout"])
+        automatic_ack = {
+            "nodeId": "8" * 32,
+            "status": "DIRECT_CANARY_PASSED",
+        }
+        Response.response = automatic_ack
+        self.assertEqual(automatic_ack, client.ack("bootstrap_" + "T" * 40, {}))
 
         for invalid_ack in (
             {"status": "DATA_PLANE_INSTALLED"},

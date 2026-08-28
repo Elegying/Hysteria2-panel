@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import ssl
 import stat
 import subprocess  # nosec B404 -- fixed executable and argv, never a shell.
@@ -73,6 +74,161 @@ class HeartbeatRejected(ValueError):
 
 class DataPlaneBootstrapRejected(ValueError):
     """A data-plane bootstrap request failed without exposing grant state."""
+
+
+class HysteriaCanaryRunner:
+    """Prove both node entrypoints and their external egress with no user account."""
+
+    TRACE_URL = "https://cloudflare.com/cdn-cgi/trace"
+
+    def __init__(
+        self,
+        server_name,
+        hysteria_path="/opt/hysteria2-panel/bin/hysteria",
+        curl_path="/usr/bin/curl",
+        port_factory=None,
+        sleep=time.sleep,
+    ):
+        server_name = str(server_name or "").strip().rstrip(".").lower()
+        if not HOSTNAME_PATTERN.fullmatch(server_name):
+            raise ValueError("canary server name is invalid")
+        self.server_name = server_name
+        self.hysteria_path = str(hysteria_path)
+        self.curl_path = str(curl_path)
+        self.port_factory = port_factory or self._allocate_port
+        self.sleep = sleep
+
+    @staticmethod
+    def _allocate_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            return int(listener.getsockname()[1])
+
+    @staticmethod
+    def _verify_trace(payload, expected_ip):
+        if not isinstance(payload, str) or len(payload.encode("utf-8")) > 8192:
+            raise RuntimeError("canary trace response is invalid")
+        addresses = [
+            line[3:].strip()
+            for line in payload.splitlines()
+            if line.startswith("ip=")
+        ]
+        if len(addresses) != 1:
+            raise RuntimeError("canary trace response has no unique egress address")
+        try:
+            observed = str(ipaddress.ip_address(addresses[0]))
+        except ValueError as exc:
+            raise RuntimeError("canary trace response address is invalid") from exc
+        if not secrets.compare_digest(observed, expected_ip):
+            raise RuntimeError("canary egress address does not match the node")
+
+    def _check_entrypoint(self, node_ip, port, token, pin_sha256):
+        local_port = int(self.port_factory())
+        if not 1024 <= local_port <= 65535:
+            raise RuntimeError("canary local port is invalid")
+        server = "[{}]:{}".format(node_ip, port) if ":" in node_ip else "{}:{}".format(node_ip, port)
+        pin = ":".join(
+            pin_sha256[index : index + 2].upper()
+            for index in range(0, len(pin_sha256), 2)
+        )
+        config = {
+            "server": server,
+            "auth": token,
+            "tls": {
+                "sni": self.server_name,
+                "insecure": True,
+                "pinSHA256": pin,
+            },
+            "socks5": {"listen": "127.0.0.1:{}".format(local_port)},
+        }
+        process = None
+        with tempfile.TemporaryDirectory(prefix="hy2panel-canary-") as directory:
+            config_path = Path(directory) / "client.json"
+            descriptor = os.open(
+                str(config_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            try:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    descriptor = -1
+                    json.dump(config, handle, ensure_ascii=True, separators=(",", ":"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                process = subprocess.Popen(  # nosec B603 -- fixed binary and argv.
+                    [self.hysteria_path, "client", "--config", str(config_path)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                    start_new_session=True,
+                    env={
+                        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+                        "HYSTERIA_DISABLE_UPDATE_CHECK": "1",
+                    },
+                )
+                ready = False
+                for _attempt in range(50):
+                    if process.poll() is not None:
+                        break
+                    try:
+                        with socket.create_connection(
+                            ("127.0.0.1", local_port), timeout=0.2
+                        ):
+                            ready = True
+                            break
+                    except OSError:
+                        self.sleep(0.1)
+                if not ready:
+                    raise RuntimeError("Hysteria canary proxy did not become ready")
+                result = subprocess.run(  # nosec B603 -- fixed binary and argv.
+                    [
+                        self.curl_path,
+                        "-q",
+                        "-fLsS",
+                        "--connect-timeout",
+                        "5",
+                        "--max-time",
+                        "15",
+                        "--proxy",
+                        "socks5h://127.0.0.1:{}".format(local_port),
+                        self.TRACE_URL,
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=20,
+                    env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
+                )
+                if result.returncode != 0:
+                    raise RuntimeError("Hysteria canary external request failed")
+                self._verify_trace(result.stdout, node_ip)
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=3)
+
+    def __call__(self, *, node_ip, token, pin_sha256):
+        try:
+            address = ipaddress.ip_address(node_ip)
+        except ValueError as exc:
+            raise ValueError("canary node address is invalid") from exc
+        if not address.is_global:
+            raise ValueError("canary node address must be public")
+        node_ip = str(address)
+        if not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token):
+            raise ValueError("canary token is invalid")
+        if not isinstance(pin_sha256, str) or not SHA256_PATTERN.fullmatch(pin_sha256):
+            raise ValueError("canary certificate pin is invalid")
+        for port in (19999, 443):
+            self._check_entrypoint(node_ip, port, token, pin_sha256)
 
 
 class HysteriaIdentityProvider:
@@ -632,6 +788,7 @@ class DataPlaneBootstrapService:
         token_factory=None,
         signature_verifier=None,
         identity_provider=None,
+        canary_runner=None,
         verification_slots=8,
     ):
         self.database = database
@@ -643,6 +800,7 @@ class DataPlaneBootstrapService:
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
         self.signature_verifier = signature_verifier or OpenSSLSignatureVerifier()
         self.identity_provider = identity_provider
+        self.canary_runner = canary_runner
         self._verification_gate = threading.BoundedSemaphore(verification_slots)
 
     @staticmethod
@@ -1007,13 +1165,39 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             payload["egressPolicy"], identity["egressPolicy"]
         ):
             self._reject()
+        token_digest = hashlib.sha256(
+            payload["bootstrapToken"].encode("ascii")
+        ).hexdigest()
+        automatic_canary = self.database.data_plane_bootstrap_requires_canary(
+            node["node_id"], token_digest, remote_ip, now
+        )
+        if automatic_canary:
+            if self.canary_runner is None:
+                self._reject()
+            try:
+                self.canary_runner(
+                    node_ip=remote_ip,
+                    token=payload["bootstrapToken"],
+                    pin_sha256=identity["certificateDerSha256"],
+                )
+            except Exception:
+                self._reject()
+        acknowledged_at = int(self.clock())
         acknowledged = self.database.acknowledge_data_plane_bootstrap(
             node["node_id"],
-            hashlib.sha256(payload["bootstrapToken"].encode("ascii")).hexdigest(),
+            token_digest,
             remote_ip,
             nonce_digest,
-            now,
+            acknowledged_at,
+            automatic_canary_passed=automatic_canary,
         )
         if not acknowledged:
             self._reject()
-        return {"nodeId": node["node_id"], "status": "DATA_PLANE_INSTALLED"}
+        return {
+            "nodeId": node["node_id"],
+            "status": (
+                "DIRECT_CANARY_PASSED"
+                if automatic_canary
+                else "DATA_PLANE_INSTALLED"
+            ),
+        }

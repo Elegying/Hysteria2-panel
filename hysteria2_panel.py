@@ -58,6 +58,7 @@ from hy2panel.nodes import (
     DataPlaneBootstrapService,
     EnrollmentRejected,
     HeartbeatRejected,
+    HysteriaCanaryRunner,
     HysteriaIdentityProvider,
     NodeEnrollmentService,
     NodeHeartbeatService,
@@ -1889,7 +1890,9 @@ class Database:
                         CHECK (fetch_attempts BETWEEN 0 AND 3),
                     last_fetched_at INTEGER,
                     acknowledged_at INTEGER,
-                    revoked_at INTEGER
+                    revoked_at INTEGER,
+                    automatic_canary INTEGER NOT NULL DEFAULT 0
+                        CHECK (automatic_canary IN (0, 1))
                 );
                 CREATE INDEX IF NOT EXISTS node_data_plane_bootstrap_node_idx
                     ON node_data_plane_bootstrap_grants(node_id, created_at);
@@ -1957,6 +1960,17 @@ class Database:
             for column, statement in command_migrations.items():
                 if column not in command_columns:
                     connection.execute(statement)
+            grant_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(node_data_plane_bootstrap_grants)"
+                )
+            }
+            if "automatic_canary" not in grant_columns:
+                connection.execute(
+                    "ALTER TABLE node_data_plane_bootstrap_grants ADD COLUMN "
+                    "automatic_canary INTEGER NOT NULL DEFAULT 0"
+                )
 
     def begin_runtime_epoch(self):
         """Invalidate short-lived distributed state before serving new auth."""
@@ -2711,8 +2725,8 @@ class Database:
                 connection.execute(
                     """INSERT INTO node_data_plane_bootstrap_grants(
                         grant_id, node_id, token_digest, bound_ip, created_by,
-                        created_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        created_at, expires_at, automatic_canary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         grant_id,
                         node_id,
@@ -2721,6 +2735,7 @@ class Database:
                         actor,
                         created_at,
                         expires_at,
+                        int(auto_enable),
                     ),
                 )
                 updated = connection.execute(
@@ -2809,8 +2824,39 @@ class Database:
         except (sqlite3.IntegrityError, ValueError):
             return None
 
+    def data_plane_bootstrap_requires_canary(
+        self, node_id, token_digest, remote_ip, checked_at
+    ):
+        node_id = str(node_id or "")
+        token_digest = str(token_digest or "")
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", token_digest)
+        ):
+            return False
+        try:
+            remote_ip = str(ipaddress.ip_address(remote_ip))
+            with self._connect() as connection:
+                row = connection.execute(
+                    """SELECT 1 FROM node_data_plane_bootstrap_grants
+                    WHERE node_id = ? AND token_digest = ? AND bound_ip = ?
+                        AND automatic_canary = 1
+                        AND acknowledged_at IS NULL AND revoked_at IS NULL
+                        AND expires_at > ? AND fetch_attempts BETWEEN 1 AND 3""",
+                    (node_id, token_digest, remote_ip, int(checked_at)),
+                ).fetchone()
+                return row is not None
+        except (ValueError, OverflowError):
+            return False
+
     def acknowledge_data_plane_bootstrap(
-        self, node_id, token_digest, remote_ip, nonce_digest, acknowledged_at
+        self,
+        node_id,
+        token_digest,
+        remote_ip,
+        nonce_digest,
+        acknowledged_at,
+        automatic_canary_passed=False,
     ):
         node_id = str(node_id or "")
         token_digest = str(token_digest or "")
@@ -2820,6 +2866,7 @@ class Database:
             not re.fullmatch(r"[0-9a-f]{32}", node_id)
             or not re.fullmatch(r"[0-9a-f]{64}", token_digest)
             or not re.fullmatch(r"[0-9a-f]{64}", nonce_digest)
+            or not isinstance(automatic_canary_passed, bool)
         ):
             return False
         try:
@@ -2827,7 +2874,7 @@ class Database:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 grant = connection.execute(
-                    """SELECT g.grant_id, g.bound_ip
+                    """SELECT g.grant_id, g.bound_ip, g.automatic_canary
                     FROM node_data_plane_bootstrap_grants AS g
                     JOIN nodes AS n ON n.node_id = g.node_id
                     WHERE g.node_id = ? AND g.token_digest = ?
@@ -2843,6 +2890,8 @@ class Database:
                     (node_id, token_digest, acknowledged_at),
                 ).fetchone()
                 if grant is None or grant["bound_ip"] != remote_ip:
+                    return False
+                if bool(grant["automatic_canary"]) != automatic_canary_passed:
                     return False
                 self._consume_node_request_nonce(
                     connection,
@@ -2862,9 +2911,14 @@ class Database:
                     """UPDATE nodes SET
                         data_plane_state = CASE
                             WHEN data_plane_state = 'bootstrap_issued'
-                                THEN 'data_plane_installed'
+                                THEN CASE WHEN ? = 1
+                                    THEN 'direct_canary_passed'
+                                    ELSE 'data_plane_installed' END
                             ELSE data_plane_state END,
-                        data_plane_installed_at = ?
+                        data_plane_installed_at = ?,
+                        direct_canary_passed_at = CASE
+                            WHEN ? = 1 AND direct_canary_passed_at IS NULL
+                                THEN ? ELSE direct_canary_passed_at END
                     WHERE node_id = ? AND data_plane_state IN (
                             'bootstrap_issued', 'data_plane_installed',
                             'direct_canary_passed', 'dns_admitted'
@@ -2872,8 +2926,21 @@ class Database:
                         AND status = 'pending_verification'
                         AND verified_at IS NOT NULL
                         AND policy_state = 'protocol_ready'""",
-                    (acknowledged_at, node_id),
+                    (
+                        int(automatic_canary_passed),
+                        acknowledged_at,
+                        int(automatic_canary_passed),
+                        acknowledged_at,
+                        node_id,
+                    ),
                 )
+                if automatic_canary_passed:
+                    connection.execute(
+                        """DELETE FROM node_auth_decisions
+                        WHERE node_id = ?
+                            AND user_name = '__hy2panel_bootstrap_canary__'""",
+                        (node_id,),
+                    )
                 if grant_updated.rowcount != 1 or node_updated.rowcount != 1:
                     raise sqlite3.IntegrityError("data-plane ack state conflict")
                 return True
@@ -3215,65 +3282,88 @@ class Database:
                         "decisionId": existing["decision_id"],
                         "expiresAt": existing["expires_at"],
                     }
-                ready_count = connection.execute(
-                    """SELECT COUNT(*) FROM nodes
-                    WHERE policy_state = 'protocol_ready'
-                        AND status = 'pending_verification' AND verified_at IS NOT NULL"""
-                ).fetchone()[0]
-                fresh_count = connection.execute(
-                    """SELECT COUNT(*) FROM nodes AS n
-                    JOIN node_online_snapshots AS s ON s.node_id = n.node_id
-                    WHERE n.policy_state = 'protocol_ready'
-                        AND n.status = 'pending_verification' AND n.verified_at IS NOT NULL
-                        AND s.accepted_at >= ? AND s.observed_at >= ?
-                        AND s.traffic_acked_at >= ?""",
+                canary_grant = connection.execute(
+                    """SELECT expires_at FROM node_data_plane_bootstrap_grants
+                    WHERE node_id = ? AND token_digest = ?
+                        AND automatic_canary = 1
+                        AND acknowledged_at IS NULL AND revoked_at IS NULL
+                        AND expires_at > ? AND fetch_attempts BETWEEN 1 AND 3""",
                     (
-                        int(now) - int(freshness_seconds),
-                        int(now) - int(freshness_seconds),
-                        int(now) - int(freshness_seconds),
+                        node_id,
+                        hashlib.sha256(str(token).encode("ascii")).hexdigest(),
+                        int(now),
                     ),
-                ).fetchone()[0]
-                if ready_count == 0 or fresh_count != ready_count:
-                    raise sqlite3.IntegrityError("node state is stale")
-                query = """SELECT name, enabled, device_limit, traffic_limit_bytes,
-                    tx_bytes, rx_bytes FROM proxy_users
-                    WHERE token_fingerprint = ? AND enabled = 1"""
-                if require_udp_443:
-                    query += " AND allow_udp_443 = 1"
-                user = connection.execute(query, (self._fingerprint(token),)).fetchone()
-                allowed = False
-                user_name = None
-                if user is not None:
-                    user_name = user["name"]
-                    remote_online = connection.execute(
-                        """SELECT COALESCE(SUM(c.count), 0)
-                        FROM node_online_counts AS c
-                        JOIN nodes AS n ON n.node_id = c.node_id
-                        WHERE c.user_name = ? COLLATE NOCASE
-                            AND n.policy_state = 'protocol_ready'
-                            AND n.status = 'pending_verification'""",
-                        (user_name,),
+                ).fetchone()
+                allowed = canary_grant is not None
+                user_name = (
+                    "__hy2panel_bootstrap_canary__" if allowed else None
+                )
+                if canary_grant is None:
+                    ready_count = connection.execute(
+                        """SELECT COUNT(*) FROM nodes
+                        WHERE policy_state = 'protocol_ready'
+                            AND status = 'pending_verification'
+                            AND verified_at IS NOT NULL"""
                     ).fetchone()[0]
-                    pending = connection.execute(
-                        """SELECT COUNT(*) FROM node_auth_decisions
-                        WHERE user_name = ? COLLATE NOCASE AND allowed = 1
-                            AND absorbed_at IS NULL AND expires_at >= ?""",
-                        (user_name, int(now)),
+                    fresh_count = connection.execute(
+                        """SELECT COUNT(*) FROM nodes AS n
+                        JOIN node_online_snapshots AS s ON s.node_id = n.node_id
+                        WHERE n.policy_state = 'protocol_ready'
+                            AND n.status = 'pending_verification'
+                            AND n.verified_at IS NOT NULL
+                            AND s.accepted_at >= ? AND s.observed_at >= ?
+                            AND s.traffic_acked_at >= ?""",
+                        (
+                            int(now) - int(freshness_seconds),
+                            int(now) - int(freshness_seconds),
+                            int(now) - int(freshness_seconds),
+                        ),
                     ).fetchone()[0]
-                    local_pending = connection.execute(
-                        """SELECT COUNT(*) FROM local_auth_leases
-                        WHERE user_name = ? COLLATE NOCASE AND expires_at >= ?""",
-                        (user_name, int(now)),
-                    ).fetchone()[0]
-                    online_count = int(local_online.get(user_name, 0)) + int(remote_online)
-                    allowed = bool(
-                        user["tx_bytes"] + user["rx_bytes"]
-                        < user["traffic_limit_bytes"]
-                        and online_count + pending + local_pending
-                        < user["device_limit"]
-                    )
+                    if ready_count == 0 or fresh_count != ready_count:
+                        raise sqlite3.IntegrityError("node state is stale")
+                    query = """SELECT name, enabled, device_limit,
+                        traffic_limit_bytes, tx_bytes, rx_bytes FROM proxy_users
+                        WHERE token_fingerprint = ? AND enabled = 1"""
+                    if require_udp_443:
+                        query += " AND allow_udp_443 = 1"
+                    user = connection.execute(
+                        query, (self._fingerprint(token),)
+                    ).fetchone()
+                    if user is not None:
+                        user_name = user["name"]
+                        remote_online = connection.execute(
+                            """SELECT COALESCE(SUM(c.count), 0)
+                            FROM node_online_counts AS c
+                            JOIN nodes AS n ON n.node_id = c.node_id
+                            WHERE c.user_name = ? COLLATE NOCASE
+                                AND n.policy_state = 'protocol_ready'
+                                AND n.status = 'pending_verification'""",
+                            (user_name,),
+                        ).fetchone()[0]
+                        pending = connection.execute(
+                            """SELECT COUNT(*) FROM node_auth_decisions
+                            WHERE user_name = ? COLLATE NOCASE AND allowed = 1
+                                AND absorbed_at IS NULL AND expires_at >= ?""",
+                            (user_name, int(now)),
+                        ).fetchone()[0]
+                        local_pending = connection.execute(
+                            """SELECT COUNT(*) FROM local_auth_leases
+                            WHERE user_name = ? COLLATE NOCASE AND expires_at >= ?""",
+                            (user_name, int(now)),
+                        ).fetchone()[0]
+                        online_count = int(local_online.get(user_name, 0)) + int(
+                            remote_online
+                        )
+                        allowed = bool(
+                            user["tx_bytes"] + user["rx_bytes"]
+                            < user["traffic_limit_bytes"]
+                            and online_count + pending + local_pending
+                            < user["device_limit"]
+                        )
                 decision_id = uuid.uuid4().hex
                 expires_at = int(now) + MAX_STATE_AGE_SECONDS
+                if canary_grant is not None:
+                    expires_at = min(expires_at, int(canary_grant["expires_at"]))
                 connection.execute(
                     """INSERT INTO node_auth_decisions(
                         node_id, request_id, decision_id, allowed, user_name,
@@ -3308,7 +3398,7 @@ class Database:
                     "decisionId": decision_id,
                     "expiresAt": expires_at,
                 }
-        except (sqlite3.IntegrityError, ValueError, OverflowError):
+        except (sqlite3.IntegrityError, UnicodeError, ValueError, OverflowError):
             return None
 
     def authorize_local_participant(
@@ -7052,6 +7142,7 @@ def run_service(settings):
                     "state"
                 ],
             ),
+            canary_runner=HysteriaCanaryRunner(settings.public_host),
         )
     application = PanelApplication(
         database=database,
