@@ -4062,6 +4062,41 @@ class StreamlinedOnboardingInstallerTests(unittest.TestCase):
             self.assertIn(artifact, rollback)
         self.assertIn("daemon-reload", rollback)
 
+    def test_panel_installs_a_read_only_dns_admission_timer(self):
+        service = self.source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.service <<EOF",
+            1,
+        )[1].split("EOF", 1)[0]
+        timer = self.source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.timer <<'EOF'",
+            1,
+        )[1].split("EOF", 1)[0]
+        self.assertIn("User=hy2panel", service)
+        self.assertIn("reconcile-node-dns", service)
+        self.assertIn("ProtectSystem=strict", service)
+        self.assertIn("ReadWritePaths=/var/lib/hysteria2-panel", service)
+        self.assertIn("OnUnitActiveSec=30s", timer)
+        self.assertIn(
+            "systemctl start hysteria2-panel-node-dns-admission.timer",
+            self.source,
+        )
+        self.assertNotIn("CLOUDFLARE_API", service)
+        self.assertNotIn("dns_records", service)
+
+    def test_dns_timer_is_covered_by_fresh_and_upgrade_rollback(self):
+        self.assertGreaterEqual(
+            self.source.count("hysteria2-panel-node-dns-admission.service"),
+            12,
+        )
+        self.assertGreaterEqual(
+            self.source.count("hysteria2-panel-node-dns-admission.timer"),
+            20,
+        )
+        self.assertIn(
+            '"${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants"',
+            self.source,
+        )
+
 
 class DataPlaneInstallerContractTests(unittest.TestCase):
     def setUp(self):

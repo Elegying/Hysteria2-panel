@@ -231,6 +231,64 @@ class HysteriaCanaryRunner:
             self._check_entrypoint(node_ip, port, token, pin_sha256)
 
 
+class NodeDnsAdmissionReconciler:
+    """Observe manually managed DNS and admit only fresh, canary-passed nodes."""
+
+    def __init__(self, database, hostname, resolver=socket.getaddrinfo, clock=time.time):
+        hostname = str(hostname or "").strip().rstrip(".").lower()
+        if not HOSTNAME_PATTERN.fullmatch(hostname):
+            raise ValueError("DNS admission hostname is invalid")
+        self.database = database
+        self.hostname = hostname
+        self.resolver = resolver
+        self.clock = clock
+
+    def _resolved_public_addresses(self):
+        try:
+            answers = self.resolver(
+                self.hostname, 443, type=socket.SOCK_STREAM
+            )
+        except (OSError, socket.gaierror):
+            return set()
+        addresses = set()
+        for family, _kind, _protocol, _canonical, socket_address in list(answers)[:64]:
+            if family not in {socket.AF_INET, socket.AF_INET6} or not socket_address:
+                continue
+            try:
+                address = ipaddress.ip_address(socket_address[0])
+            except (TypeError, ValueError):
+                continue
+            if address.is_global:
+                addresses.add(str(address))
+        return addresses
+
+    def reconcile(self):
+        candidates = [
+            node
+            for node in self.database.list_nodes()
+            if node.get("data_plane_state") == "direct_canary_passed"
+        ]
+        addresses = self._resolved_public_addresses()
+        now = int(self.clock())
+        admitted = 0
+        for node in candidates:
+            expected = node.get("expected_ip") or node.get("observed_ip")
+            try:
+                expected = str(ipaddress.ip_address(expected))
+            except (TypeError, ValueError):
+                continue
+            if expected not in addresses:
+                continue
+            try:
+                changed = self.database.mark_node_dns_admitted(
+                    node["node_id"], "system:dns-monitor", now
+                )
+            except ValueError:
+                continue
+            admitted += int(bool(changed))
+        return {"checked": len(candidates), "admitted": admitted}
+
+
 class HysteriaIdentityProvider:
     """Read and attest the existing Hysteria identity without rewriting it."""
 

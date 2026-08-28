@@ -20,7 +20,7 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="1d0d5ffab21a373e4d4ff8036c3e4cd7d950f719eb1b3cf5a150a65c5dd0b0b2"
+PANEL_SHA256="6d0df2d6176dec18a841fc475ecc8c0b0015f7cdd513f8c0cc231aa096ac2305"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
@@ -31,7 +31,7 @@ HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="4bde7c663b09e591ce0c3a93db008c740009e95ec1615cda88773bcafc8e09b6"
+HY2PANEL_NODES_SHA256="c764ce66f0178c7e991adf4574d2b1b156ffeb55446553c8e457c60062a91149"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
 NODE_AGENT_SHA256="a0bf48a9e273a181ab71c6e9491df9bc3c690659caa1467571c57a227d201d7a"
 HYSTERIA_VERSION="2.12.1"
@@ -271,6 +271,10 @@ stop_loaded_units() {
 stop_panel_preserving_hysteria() {
   local active_state panel_state server_unit
   local active_servers=()
+  if [[ -f /etc/systemd/system/hysteria2-panel-node-dns-admission.timer ]]; then
+    systemctl stop hysteria2-panel-node-dns-admission.timer \
+      hysteria2-panel-node-dns-admission.service || return 1
+  fi
   for server_unit in hysteria2-panel-server.service hysteria2-panel-server-443.service; do
     active_state="$(systemctl show --no-pager --property=ActiveState --value "${server_unit}" 2>/dev/null)" \
       || return 1
@@ -795,6 +799,8 @@ rollback_existing_install() {
     }
   fi
   if ! stop_loaded_units \
+    hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-node-dns-admission.service \
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-tcp-probe-443.service \
@@ -828,7 +834,7 @@ rollback_existing_install() {
       || { echo "警告：无法恢复 ACME 运行目录权限" >&2; return 1; }
   fi
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -848,6 +854,13 @@ rollback_existing_install() {
   else
     systemctl disable hysteria2-panel-cert-renew.timer >/dev/null 2>&1 || true
     rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants" ]]; then
+    systemctl enable hysteria2-panel-node-dns-admission.timer >/dev/null 2>&1 \
+      || echo "警告：无法恢复节点 DNS 监测 timer 的启用状态" >&2
+  else
+    systemctl disable hysteria2-panel-node-dns-admission.timer >/dev/null 2>&1 || true
+    rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer
   fi
   if [[ -f "${BACKUP_DIR}/99-hysteria2-panel.conf" ]]; then
     cp -a "${BACKUP_DIR}/99-hysteria2-panel.conf" "${SYSCTL_FILE}"
@@ -893,6 +906,10 @@ rollback_existing_install() {
   if [[ -L "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants" ]]; then
     systemctl start hysteria2-panel-cert-renew.timer \
       || echo "警告：旧面板已恢复，但证书续期 timer 未能立即启动" >&2
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants" ]]; then
+    systemctl start hysteria2-panel-node-dns-admission.timer \
+      || echo "警告：旧面板已恢复，但节点 DNS 监测 timer 未能立即启动" >&2
   fi
   rollback_firewall_after_service_recovery || true
   if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
@@ -2745,6 +2762,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/hysteria2-panel-update.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.service \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.timer \
     "${FRESH_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_DROPIN_DIR}" \
@@ -2754,7 +2773,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
-    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer; do
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer; do
     [[ ! -e "${path}" && ! -L "${path}" ]] \
       || fail "发现非本安装器管理的同名路径或服务：${path}；为避免覆盖，安装已停止"
   done
@@ -3117,6 +3137,8 @@ verify_fresh_install_commit_payload() {
     '/var/lib/hysteria2-panel/panel.db|hy2panel:hy2panel:600:1|1'
     '/etc/systemd/system/hysteria2-panel.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-server.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-node-dns-admission.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-node-dns-admission.timer|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-upgrade-recover.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel.service.d/10-hysteria2-panel-upgrade-recovery.conf|root:root:644:1|1'
     '/etc/sudoers.d/hysteria2-panel|root:root:440:1|1'
@@ -3152,6 +3174,8 @@ verify_fresh_install_commit_payload() {
   elif [[ "${panel_scheme_value}" != "http" ]]; then
     return 1
   fi
+  [[ -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
+    || return 1
 }
 
 flush_fresh_cleanup_before_disarm() {
@@ -3171,6 +3195,8 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/hysteria2-panel-update.service
     /etc/systemd/system/hysteria2-panel-cert-renew.service
     /etc/systemd/system/hysteria2-panel-cert-renew.timer
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.service
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.timer
     /etc/systemd/system/hysteria2-panel-egress-full.service
     /etc/systemd/system/hysteria2-panel-egress-web.service
     /etc/systemd/system/hysteria2-panel-egress-recover.service
@@ -3182,6 +3208,7 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer
     /etc/sudoers.d/hysteria2-panel
     "${SYSCTL_FILE}"
     "${TMPFILES_FILE}"
@@ -3374,6 +3401,8 @@ recover_interrupted_fresh_install() {
   echo "检测到上次未完成的首次部署，正在安全清理后重试…"
   stop_loaded_units \
     hysteria2-panel-upgrade-recover.service \
+    hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-node-dns-admission.service \
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-restore.service \
@@ -3391,6 +3420,7 @@ recover_interrupted_fresh_install() {
     || fail "上次部署遗留进程无法全部停止；请人工检查后重试"
   systemctl disable hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-server.service hysteria2-panel.service \
     >/dev/null 2>&1 || true
   if declare -F rollback_persisted_firewall_transaction >/dev/null 2>&1; then
@@ -3409,6 +3439,8 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-update.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.service \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.timer \
     /etc/systemd/system/hysteria2-panel-egress-full.service \
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
@@ -3419,6 +3451,7 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
     /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
   rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
   rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
@@ -3523,6 +3556,8 @@ assert_units_unclaimed() {
     hysteria2-panel-egress-recover.service \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-node-dns-admission.service \
+    hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-update.service; do
     output="$(systemctl show --no-pager \
       --property=LoadState --property=ActiveState \
@@ -3567,6 +3602,8 @@ assert_units_claimed_by_installer() {
     hysteria2-panel-egress-recover.service \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-node-dns-admission.service \
+    hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-update.service; do
     expected_path="/etc/systemd/system/${unit_file}"
     output="$(systemctl show --no-pager \
@@ -5734,7 +5771,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] \
@@ -5743,6 +5780,9 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   [[ ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer ]] \
     || cp -a /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
       "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants"
+  [[ ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
+    || cp -a /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
+      "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants"
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
   [[ ! -f /etc/sudoers.d/hysteria2-panel ]] || cp -a /etc/sudoers.d/hysteria2-panel "${BACKUP_DIR}/hysteria2-panel.sudoers"
   [[ ! -f "${TMPFILES_FILE}" ]] || cp -a "${TMPFILES_FILE}" "${BACKUP_DIR}/hysteria2-panel.tmpfiles"
@@ -6535,6 +6575,57 @@ else
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
 fi
 
+cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.service <<EOF
+[Unit]
+Description=Observe manual DNS and admit fresh Hysteria2 data nodes
+After=network-online.target hysteria2-panel.service
+Requires=hysteria2-panel.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hy2panel
+Group=hy2panel
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py reconcile-node-dns
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/opt/hysteria2-panel /etc/hysteria2-panel
+ReadWritePaths=/var/lib/hysteria2-panel
+TasksMax=32
+MemoryMax=128M
+TimeoutStartSec=20s
+EOF
+cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.timer <<'EOF'
+[Unit]
+Description=Check manually managed data-node DNS every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Persistent=true
+AccuracySec=1s
+Unit=hysteria2-panel-node-dns-admission.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat > /etc/systemd/system/hysteria2-panel-update.service <<EOF
 [Unit]
 Description=Install the latest formal Hysteria 2 panel release
@@ -6584,6 +6675,7 @@ assert_units_claimed_by_installer
 systemctl enable hysteria2-panel-restore-resume.service
 systemctl enable hysteria2-panel.service
 systemctl enable hysteria2-panel-server.service
+systemctl enable hysteria2-panel-node-dns-admission.timer
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
   systemctl enable hysteria2-panel-cert-renew.timer
   systemctl start hysteria2-panel-cert-renew.timer
@@ -6633,6 +6725,8 @@ wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz" "${PANEL_HEAL
   || fail "面板就绪检查失败"
 wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
+systemctl start hysteria2-panel-node-dns-admission.timer \
+  || fail "节点 DNS 只读监测 timer 启动失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
 if (( UDP_443_ENABLED == 1 )); then
   ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 端口未监听"

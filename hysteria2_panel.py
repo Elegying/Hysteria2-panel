@@ -61,6 +61,7 @@ from hy2panel.nodes import (
     HysteriaCanaryRunner,
     HysteriaIdentityProvider,
     NodeEnrollmentService,
+    NodeDnsAdmissionReconciler,
     NodeHeartbeatService,
 )
 from hy2panel.operations import (
@@ -7191,6 +7192,13 @@ def run_service(settings):
     )
 
 
+def reconcile_node_dns(settings):
+    database = Database(settings.database_path, settings.hmac_key)
+    return NodeDnsAdmissionReconciler(
+        database, settings.public_host
+    ).reconcile()
+
+
 def _systemctl_result(runner, arguments, timeout=60):
     return runner(
         ["/bin/systemctl"] + list(arguments),
@@ -7988,6 +7996,10 @@ def main(argv=None):
     init_parser.add_argument("--username", required=True)
     init_parser.add_argument("--if-missing", action="store_true")
     subcommands.add_parser("serve", help="run the authentication service and panel")
+    subcommands.add_parser(
+        "reconcile-node-dns",
+        help="observe manually managed DNS and admit fresh canary-passed nodes",
+    )
     sync_parser = subcommands.add_parser(
         "sync-traffic", help="flush Hysteria traffic before maintenance"
     )
@@ -8073,6 +8085,10 @@ def main(argv=None):
             with exclusive_maintenance_lock(blocking=False), defer_termination_signals():
                 EgressPolicyManager().apply(args.policy, settings.panel_port)
             print(json.dumps({"status": "ok", "policy": args.policy}, separators=(",", ":")))
+            return 0
+        if args.command == "reconcile-node-dns":
+            result = reconcile_node_dns(settings)
+            print(json.dumps(result, separators=(",", ":")))
             return 0
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         run_service(settings)

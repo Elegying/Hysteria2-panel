@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import socket
 import stat
 import subprocess
 import tempfile
@@ -31,6 +32,7 @@ from hy2panel.nodes import (
     DataPlaneBootstrapService,
     HysteriaCanaryRunner,
     HysteriaIdentityProvider,
+    NodeDnsAdmissionReconciler,
     canonical_data_plane_request,
 )
 
@@ -110,6 +112,155 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 runner._verify_trace("ip=1.1.1.1\n", "8.8.8.8")
         popen.assert_not_called()
+
+
+class NodeDnsAdmissionReconcilerTests(unittest.TestCase):
+    def _insert_node(self, node_id, *, policy_state):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """INSERT INTO nodes(
+                    node_id, name, expected_ip, observed_ip, status, public_key,
+                    hostname, platform, architecture, agent_version, created_at,
+                    registered_at, last_seen_at, verified_at, verified_by,
+                    last_heartbeat_at, last_heartbeat_ip, policy_state,
+                    policy_enabled_at, policy_enabled_by
+                ) VALUES (?, 'dns-node', ?, ?, 'pending_verification', ?,
+                    'node.example.test', 'linux', 'amd64', '0.30.0', ?, ?, ?,
+                    ?, 'admin', ?, ?, ?, ?, 'admin')""",
+                (
+                    node_id,
+                    self.remote_ip,
+                    self.remote_ip,
+                    base64.b64encode(
+                        bytes.fromhex("302a300506032b6570032100") + b"a" * 32
+                    ).decode("ascii"),
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.remote_ip,
+                    policy_state,
+                    self.now[0],
+                ),
+            )
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "panel.db"
+        self.db = Database(self.db_path, b"d" * 32)
+        self.db.initialize()
+        self.now = [2_000_000_000]
+        self.node_id = "a" * 32
+        self.remote_ip = "8.8.8.8"
+        self._insert_node(self.node_id, policy_state="protocol_ready")
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    data_plane_installed_at = ?, direct_canary_passed_at = ?,
+                    last_heartbeat_at = ?, last_snapshot_at = ?,
+                    last_traffic_ack_at = ? WHERE node_id = ?""",
+                (
+                    self.now[0] - 10,
+                    self.now[0] - 5,
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.node_id,
+                ),
+            )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _resolver(addresses):
+        def resolve(_host, _port, *, type):
+            if type != socket.SOCK_STREAM:
+                raise AssertionError("resolver type was not bounded")
+            return [
+                (
+                    socket.AF_INET6 if ":" in address else socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    (address, 443, 0, 0)
+                    if ":" in address
+                    else (address, 443),
+                )
+                for address in addresses
+            ]
+
+        return resolve
+
+    def test_exact_manual_dns_and_fresh_state_are_admitted_read_only(self):
+        reconciler = NodeDnsAdmissionReconciler(
+            self.db,
+            "vpn.example.test",
+            resolver=self._resolver(["1.1.1.1", self.remote_ip]),
+            clock=lambda: self.now[0],
+        )
+
+        result = reconciler.reconcile()
+
+        self.assertEqual({"checked": 1, "admitted": 1}, result)
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("dns_admitted", node["data_plane_state"])
+        self.assertEqual("system:dns-monitor", node["dns_admitted_by"])
+
+    def test_wrong_missing_private_or_stale_dns_never_changes_state(self):
+        cases = (
+            self._resolver([]),
+            self._resolver(["1.1.1.1"]),
+            self._resolver(["127.0.0.1", "10.0.0.1"]),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("dns failed")),
+        )
+        for resolver in cases:
+            with self.subTest(resolver=resolver):
+                result = NodeDnsAdmissionReconciler(
+                    self.db,
+                    "vpn.example.test",
+                    resolver=resolver,
+                    clock=lambda: self.now[0],
+                ).reconcile()
+                self.assertEqual(0, result["admitted"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET last_snapshot_at = ? WHERE node_id = ?",
+                (self.now[0] - 46, self.node_id),
+            )
+        result = NodeDnsAdmissionReconciler(
+            self.db,
+            "vpn.example.test",
+            resolver=self._resolver([self.remote_ip]),
+            clock=lambda: self.now[0],
+        ).reconcile()
+        self.assertEqual(0, result["admitted"])
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+
+    def test_reconciliation_never_removes_an_existing_admission(self):
+        self.assertTrue(
+            self.db.mark_node_dns_admitted(
+                self.node_id, "admin", self.now[0]
+            )
+        )
+        result = NodeDnsAdmissionReconciler(
+            self.db,
+            "vpn.example.test",
+            resolver=self._resolver([]),
+            clock=lambda: self.now[0] + 60,
+        ).reconcile()
+        self.assertEqual({"checked": 0, "admitted": 0}, result)
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("dns_admitted", node["data_plane_state"])
+        self.assertIsNone(node["dns_removed_at"])
 
 
 class DataPlaneBootstrapStateTests(unittest.TestCase):
