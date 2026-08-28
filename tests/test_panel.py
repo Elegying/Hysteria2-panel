@@ -359,6 +359,48 @@ class DatabaseTests(unittest.TestCase):
         bob_record = self.db.get_proxy_user(bob["id"])
         self.assertEqual((0, 0), (bob_record["tx_bytes"], bob_record["rx_bytes"]))
 
+    def test_local_traffic_is_attributed_idempotently_and_resets_with_users(self):
+        alice = self.db.create_proxy_user("alice")
+        bob = self.db.create_proxy_user("bob")
+        origin_id = "local:" + "1" * 32
+        traffic = {"alice": {"tx": 100, "rx": 200}, "bob": {"tx": 9, "rx": 8}}
+
+        self.assertTrue(
+            self.db.apply_traffic_batch(
+                "1" * 32,
+                traffic,
+                origin_id=origin_id,
+                origin_kind="local",
+                origin_name="面板本机",
+            )
+        )
+        self.assertFalse(
+            self.db.apply_traffic_batch(
+                "1" * 32,
+                traffic,
+                origin_id=origin_id,
+                origin_kind="local",
+                origin_name="面板本机",
+            )
+        )
+        origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
+        self.assertEqual((109, 208), (origins[origin_id]["tx_bytes"], origins[origin_id]["rx_bytes"]))
+
+        self.db.reset_proxy_user_traffic(alice["id"], expected_generation=0)
+        origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
+        self.assertEqual((9, 8), (origins[origin_id]["tx_bytes"], origins[origin_id]["rx_bytes"]))
+
+        self.db.reset_all_traffic()
+        origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
+        self.assertEqual((0, 0), (origins[origin_id]["tx_bytes"], origins[origin_id]["rx_bytes"]))
+
+        self.db.delete_proxy_user(bob["id"])
+        recreated = self.db.create_proxy_user("bob")
+        self.assertEqual((0, 0), tuple(
+            self.db.get_proxy_user(recreated["id"])[key]
+            for key in ("tx_bytes", "rx_bytes")
+        ))
+
     def test_initialize_migrates_legacy_users_without_changing_their_token(self):
         legacy_path = Path(self.temp_dir.name) / "legacy.db"
         token = "legacy-token"
@@ -388,6 +430,27 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual("legacy", legacy_db.authenticate_token(token))
         self.assertIsNone(legacy_db.authenticate_token(token, require_udp_443=True))
         self.assertIsNone(legacy_db.recover_proxy_token(1))
+
+    def test_initialize_backfills_existing_traffic_once_as_unattributed_history(self):
+        created = self.db.create_proxy_user("historical")
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "UPDATE proxy_users SET tx_bytes = 123, rx_bytes = 456 WHERE id = ?",
+                (created["id"],),
+            )
+            connection.execute("DROP TABLE usage_origin_users")
+            connection.execute("DROP TABLE usage_origins")
+
+        self.db.initialize()
+        self.db.initialize()
+
+        user = self.db.get_proxy_user(created["id"])
+        origins = self.db.list_usage_origins()
+        self.assertEqual((123, 456), (user["tx_bytes"], user["rx_bytes"]))
+        self.assertEqual(1, len(origins))
+        self.assertEqual("legacy-unattributed", origins[0]["origin_id"])
+        self.assertEqual("legacy", origins[0]["kind"])
+        self.assertEqual((123, 456), (origins[0]["tx_bytes"], origins[0]["rx_bytes"]))
 
     def test_disable_rotate_and_delete_user(self):
         created = self.db.create_proxy_user("alice", token="first-token")

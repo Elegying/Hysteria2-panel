@@ -115,6 +115,8 @@ AUDIT_RETENTION_SECONDS = 90 * 86400
 AUDIT_MAX_ROWS = 10000
 TRAFFIC_BATCH_RETENTION_SECONDS = 30 * 86400
 TRAFFIC_BATCH_MAX_ROWS = 100000
+LEGACY_USAGE_ORIGIN_ID = "legacy-unattributed"
+LEGACY_USAGE_ORIGIN_NAME = "升级前历史（未归属）"
 MAINTENANCE_LOCK_PATH = Path("/run/hysteria2-panel-maintenance/lock")
 RESTORE_ACTIVE_MARKER = Path("/etc/hysteria2-panel/.restore-active")
 RESTORE_TRANSACTION_VERSION = 1
@@ -1771,6 +1773,25 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS applied_traffic_batches_applied_at_idx
                     ON applied_traffic_batches(applied_at);
+                CREATE TABLE IF NOT EXISTS usage_origins (
+                    origin_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL CHECK (kind IN ('local', 'remote', 'legacy')),
+                    node_id TEXT,
+                    display_name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    last_traffic_at INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS usage_origin_users (
+                    origin_id TEXT NOT NULL REFERENCES usage_origins(origin_id)
+                        ON DELETE CASCADE,
+                    user_name TEXT NOT NULL COLLATE NOCASE,
+                    tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (tx_bytes >= 0),
+                    rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (rx_bytes >= 0),
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (origin_id, user_name)
+                );
+                CREATE INDEX IF NOT EXISTS usage_origin_users_name_idx
+                    ON usage_origin_users(user_name COLLATE NOCASE);
                 CREATE TABLE IF NOT EXISTS nodes (
                     node_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -1972,6 +1993,41 @@ class Database:
                     "ALTER TABLE node_data_plane_bootstrap_grants ADD COLUMN "
                     "automatic_canary INTEGER NOT NULL DEFAULT 0"
                 )
+            if not connection.execute("SELECT 1 FROM usage_origins LIMIT 1").fetchone():
+                historical_users = connection.execute(
+                    """SELECT name, tx_bytes, rx_bytes, updated_at FROM proxy_users
+                    WHERE tx_bytes > 0 OR rx_bytes > 0"""
+                ).fetchall()
+                if historical_users:
+                    created_at = min(int(row["updated_at"]) for row in historical_users)
+                    last_traffic_at = max(int(row["updated_at"]) for row in historical_users)
+                    connection.execute(
+                        """INSERT INTO usage_origins(
+                            origin_id, kind, node_id, display_name, created_at,
+                            last_traffic_at
+                        ) VALUES (?, 'legacy', NULL, ?, ?, ?)""",
+                        (
+                            LEGACY_USAGE_ORIGIN_ID,
+                            LEGACY_USAGE_ORIGIN_NAME,
+                            created_at,
+                            last_traffic_at,
+                        ),
+                    )
+                    connection.executemany(
+                        """INSERT INTO usage_origin_users(
+                            origin_id, user_name, tx_bytes, rx_bytes, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)""",
+                        (
+                            (
+                                LEGACY_USAGE_ORIGIN_ID,
+                                row["name"],
+                                int(row["tx_bytes"]),
+                                int(row["rx_bytes"]),
+                                int(row["updated_at"]),
+                            )
+                            for row in historical_users
+                        ),
+                    )
 
     def begin_runtime_epoch(self):
         """Invalidate short-lived distributed state before serving new auth."""
@@ -2246,6 +2302,10 @@ class Database:
             generation = row["generation"] if expected_generation is None else int(expected_generation)
             if generation != row["generation"]:
                 raise ConflictError("proxy user changed; refresh and try again")
+            connection.execute(
+                "DELETE FROM usage_origin_users WHERE user_name = ? COLLATE NOCASE",
+                (row["name"],),
+            )
             cursor = connection.execute(
                 "DELETE FROM proxy_users WHERE id = ? AND generation = ?",
                 (row["id"], generation),
@@ -2290,11 +2350,78 @@ class Database:
     def add_traffic(self, traffic_by_user):
         self.apply_traffic_batch(uuid.uuid4().hex, traffic_by_user)
 
-    def apply_traffic_batch(self, batch_id, traffic_by_user):
+    @staticmethod
+    def _record_usage_origin_traffic(
+        connection,
+        origin_id,
+        origin_kind,
+        origin_name,
+        node_id,
+        user_name,
+        tx,
+        rx,
+        now,
+    ):
+        connection.execute(
+            """INSERT INTO usage_origins(
+                origin_id, kind, node_id, display_name, created_at, last_traffic_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(origin_id) DO UPDATE SET
+                display_name = excluded.display_name,
+                node_id = COALESCE(excluded.node_id, usage_origins.node_id),
+                last_traffic_at = MAX(
+                    COALESCE(usage_origins.last_traffic_at, 0),
+                    excluded.last_traffic_at
+                )""",
+            (origin_id, origin_kind, node_id, origin_name, now, now),
+        )
+        connection.execute(
+            """INSERT INTO usage_origin_users(
+                origin_id, user_name, tx_bytes, rx_bytes, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(origin_id, user_name) DO UPDATE SET
+                tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
+                rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
+                updated_at = excluded.updated_at""",
+            (origin_id, user_name, tx, rx, now),
+        )
+
+    def list_usage_origins(self):
+        with self._connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT o.origin_id, o.kind, o.node_id, o.display_name,
+                        o.created_at, o.last_traffic_at,
+                        COALESCE(SUM(u.tx_bytes), 0) AS tx_bytes,
+                        COALESCE(SUM(u.rx_bytes), 0) AS rx_bytes
+                    FROM usage_origins AS o
+                    LEFT JOIN usage_origin_users AS u ON u.origin_id = o.origin_id
+                    GROUP BY o.origin_id
+                    ORDER BY o.created_at, o.origin_id"""
+                )
+            ]
+
+    def apply_traffic_batch(
+        self,
+        batch_id,
+        traffic_by_user,
+        origin_id=LEGACY_USAGE_ORIGIN_ID,
+        origin_kind="legacy",
+        origin_name=LEGACY_USAGE_ORIGIN_NAME,
+    ):
         if not isinstance(batch_id, str) or not re.fullmatch(r"[0-9a-f]{32}", batch_id):
             raise ValueError("traffic batch id is invalid")
         if not isinstance(traffic_by_user, dict):
             raise ValueError("traffic must be a mapping")
+        if (
+            not isinstance(origin_id, str)
+            or not re.fullmatch(r"(?:local:|node:)?[0-9a-f]{32}|legacy-unattributed", origin_id)
+            or origin_kind not in {"local", "remote", "legacy"}
+            or not isinstance(origin_name, str)
+            or not NAME_PATTERN.fullmatch(origin_name)
+        ):
+            raise ValueError("traffic origin is invalid")
         now = int(time.time())
         with self._connect() as connection:
             if connection.execute(
@@ -2325,6 +2452,18 @@ class Database:
                     updated_at = ? WHERE name = ? COLLATE NOCASE""",
                     (tx, rx, now, name),
                 )
+                if user is not None:
+                    self._record_usage_origin_traffic(
+                        connection,
+                        origin_id,
+                        origin_kind,
+                        origin_name,
+                        None,
+                        user["name"],
+                        tx,
+                        rx,
+                        now,
+                    )
             self._queue_kick_users_on_ready_nodes(
                 connection, exhausted_users, now
             )
@@ -2359,13 +2498,23 @@ class Database:
             )
             if cursor.rowcount != 1:
                 raise ConflictError("proxy user changed; refresh and try again")
+            connection.execute(
+                """UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0,
+                    updated_at = ? WHERE user_name = ? COLLATE NOCASE""",
+                (now, row["name"]),
+            )
 
     def reset_all_traffic(self):
         with self._connect() as connection:
+            now = int(time.time())
             connection.execute(
                 """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
                 generation = generation + 1, updated_at = ?""",
-                (int(time.time()),),
+                (now,),
+            )
+            connection.execute(
+                "UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0, updated_at = ?",
+                (now,),
             )
 
     def create_node_enrollment(
@@ -3158,7 +3307,7 @@ class Database:
                     connection, node_id, "online", nonce_digest, accepted_at
                 )
                 node = connection.execute(
-                    """SELECT policy_state FROM nodes
+                    """SELECT name, policy_state FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -3263,7 +3412,7 @@ class Database:
                     connection, node_id, "auth", nonce_digest, now
                 )
                 node = connection.execute(
-                    """SELECT policy_state FROM nodes
+                    """SELECT name, policy_state FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -3510,7 +3659,7 @@ class Database:
                     connection, node_id, "traffic", nonce_digest, accepted_at
                 )
                 node = connection.execute(
-                    """SELECT policy_state FROM nodes
+                    """SELECT name, policy_state FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -3591,6 +3740,17 @@ class Database:
                             rx_bytes = rx_bytes + ?, updated_at = ?
                         WHERE name = ? COLLATE NOCASE""",
                         (tx, rx, int(accepted_at), name),
+                    )
+                    self._record_usage_origin_traffic(
+                        connection,
+                        "node:" + node_id,
+                        "remote",
+                        node["name"],
+                        node_id,
+                        user["name"],
+                        tx,
+                        rx,
+                        int(accepted_at),
                     )
                 self._queue_kick_users_on_ready_nodes(
                     connection, exhausted_users, int(accepted_at)

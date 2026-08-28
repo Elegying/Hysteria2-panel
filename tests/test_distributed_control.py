@@ -503,6 +503,17 @@ class DistributedTrafficTests(DistributedControlCase):
         self.assertTrue(first["committed"])
         self.assertTrue(duplicate["duplicate"])
         self.assertEqual((20, 40), (user["tx_bytes"], user["rx_bytes"]))
+        origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
+        self.assertEqual(
+            (10, 20),
+            (origins["node:" + self.nodes[0]]["tx_bytes"], origins["node:" + self.nodes[0]]["rx_bytes"]),
+        )
+        self.assertEqual(
+            (10, 20),
+            (origins["node:" + self.nodes[1]]["tx_bytes"], origins["node:" + self.nodes[1]]["rx_bytes"]),
+        )
+        self.assertEqual("node-1", origins["node:" + self.nodes[0]]["display_name"])
+        self.assertEqual("node-2", origins["node:" + self.nodes[1]]["display_name"])
 
     def test_unknown_user_is_counted_without_blocking_known_traffic(self):
         result = self.service.apply_traffic_batch(
@@ -669,6 +680,7 @@ class DistributedTrafficTests(DistributedControlCase):
         for name in names:
             user = self.db.get_proxy_user_by_name(name)
             self.assertEqual((0, 0), (user["tx_bytes"], user["rx_bytes"]))
+        self.assertEqual([], self.db.list_usage_origins())
 
     def test_one_nodes_full_ledger_does_not_block_another_node(self):
         with sqlite3.connect(str(self.db_path)) as connection:
