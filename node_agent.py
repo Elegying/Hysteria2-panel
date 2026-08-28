@@ -506,10 +506,37 @@ def _canonical_heartbeat(payload):
     ).encode("utf-8")
 
 
+def _openssl_message_input(message):
+    creator = getattr(os, "memfd_create", None)
+    if creator is None or not os.path.isdir("/proc/self/fd"):
+        return "/dev/stdin", {"input": message}, None
+    descriptor = creator("hy2panel-openssl-message", getattr(os, "MFD_CLOEXEC", 0))
+    try:
+        remaining = memoryview(message)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("cannot stage the OpenSSL message")
+            remaining = remaining[written:]
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return (
+            "/proc/self/fd/{}".format(descriptor),
+            {"pass_fds": (descriptor,)},
+            descriptor,
+        )
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 def _openssl_sign(private_key_path, message, executable="/usr/bin/openssl"):
     private_key_path = pathlib.Path(private_key_path)
     _read_root_only_file(private_key_path, "private key")
+    message_descriptor = None
     try:
+        message_path, message_options, message_descriptor = _openssl_message_input(
+            message
+        )
         completed = subprocess.run(  # nosec B603 -- fixed argv, no shell.
             [
                 executable,
@@ -519,16 +546,19 @@ def _openssl_sign(private_key_path, message, executable="/usr/bin/openssl"):
                 "-inkey",
                 str(private_key_path),
                 "-in",
-                "/dev/stdin",
+                message_path,
             ],
-            input=message,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=5,
             check=False,
+            **message_options,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise HeartbeatError("cannot sign the node heartbeat") from exc
+    finally:
+        if message_descriptor is not None:
+            os.close(message_descriptor)
     if completed.returncode != 0 or len(completed.stdout) != 64:
         raise HeartbeatError("cannot sign the node heartbeat")
     return completed.stdout

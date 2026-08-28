@@ -579,7 +579,11 @@ class NodeAgentProtocolTests(unittest.TestCase):
         private_key.write_bytes(b"private")
         private_key.chmod(0o600)
         completed = mock.Mock(returncode=0, stdout=b"s" * 64)
-        with mock.patch.object(node_agent.subprocess, "run", return_value=completed) as run:
+        with mock.patch.object(
+            node_agent.os, "memfd_create", None, create=True
+        ), mock.patch.object(
+            node_agent.subprocess, "run", return_value=completed
+        ) as run:
             self.assertEqual(
                 b"s" * 64,
                 node_agent._openssl_sign(private_key, message, executable="/usr/bin/openssl"),
@@ -589,11 +593,45 @@ class NodeAgentProtocolTests(unittest.TestCase):
         self.assertEqual(message, run.call_args.kwargs["input"])
         self.assertNotIn("stdin", run.call_args.kwargs)
 
+    def test_signer_uses_anonymous_memory_on_openssl_3_linux(self):
+        message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
+        private_key = Path(self.temp_dir.name) / "node.key"
+        private_key.write_bytes(b"private")
+        private_key.chmod(0o600)
+        completed = mock.Mock(returncode=0, stdout=b"s" * 64)
+        with mock.patch.object(
+            node_agent.os, "memfd_create", return_value=41, create=True
+        ) as create, mock.patch.object(
+            node_agent.os.path, "isdir", return_value=True
+        ), mock.patch.object(
+            node_agent.os, "write", return_value=len(message)
+        ) as write, mock.patch.object(
+            node_agent.os, "lseek"
+        ) as seek, mock.patch.object(
+            node_agent.os, "close"
+        ) as close, mock.patch.object(
+            node_agent.subprocess, "run", return_value=completed
+        ) as run:
+            self.assertEqual(
+                b"s" * 64,
+                node_agent._openssl_sign(private_key, message, executable="/usr/bin/openssl"),
+            )
+        create.assert_called_once()
+        write.assert_called_once_with(41, mock.ANY)
+        seek.assert_called_once_with(41, 0, node_agent.os.SEEK_SET)
+        close.assert_called_once_with(41)
+        arguments = run.call_args.args[0]
+        self.assertEqual("/proc/self/fd/41", arguments[arguments.index("-in") + 1])
+        self.assertEqual((41,), run.call_args.kwargs["pass_fds"])
+        self.assertNotIn("input", run.call_args.kwargs)
+
     def test_verifier_streams_secret_bearing_requests_without_a_message_file(self):
         public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
         message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
         completed = mock.Mock(returncode=0)
-        with mock.patch("hy2panel.nodes.subprocess.run", return_value=completed) as run:
+        with mock.patch(
+            "hy2panel.nodes.os.memfd_create", None, create=True
+        ), mock.patch("hy2panel.nodes.subprocess.run", return_value=completed) as run:
             self.assertTrue(
                 OpenSSLSignatureVerifier()(
                     base64.b64encode(public_der).decode("ascii"),
@@ -604,6 +642,36 @@ class NodeAgentProtocolTests(unittest.TestCase):
         arguments = run.call_args.args[0]
         self.assertEqual("/dev/stdin", arguments[arguments.index("-in") + 1])
         self.assertEqual(message, run.call_args.kwargs["input"])
+
+    def test_verifier_uses_anonymous_memory_on_openssl_3_linux(self):
+        public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
+        message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
+        completed = mock.Mock(returncode=0)
+        with mock.patch(
+            "hy2panel.nodes.os.memfd_create", return_value=42, create=True
+        ), mock.patch(
+            "hy2panel.nodes.os.path.isdir", return_value=True
+        ), mock.patch(
+            "hy2panel.nodes.os.write", return_value=len(message)
+        ), mock.patch(
+            "hy2panel.nodes.os.lseek"
+        ), mock.patch(
+            "hy2panel.nodes.os.close"
+        ) as close, mock.patch(
+            "hy2panel.nodes.subprocess.run", return_value=completed
+        ) as run:
+            self.assertTrue(
+                OpenSSLSignatureVerifier()(
+                    base64.b64encode(public_der).decode("ascii"),
+                    message,
+                    b"s" * 64,
+                )
+            )
+        close.assert_any_call(42)
+        arguments = run.call_args.args[0]
+        self.assertEqual("/proc/self/fd/42", arguments[arguments.index("-in") + 1])
+        self.assertEqual((42,), run.call_args.kwargs["pass_fds"])
+        self.assertNotIn("input", run.call_args.kwargs)
 
     def test_streaming_signer_and_verifier_interoperate_with_real_ed25519(self):
         homebrew_openssl = Path("/opt/homebrew/opt/openssl@3/bin/openssl")

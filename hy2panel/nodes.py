@@ -4,6 +4,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import secrets
 import subprocess  # nosec B404 -- fixed executable and argv, never a shell.
@@ -109,6 +110,29 @@ def canonical_heartbeat(payload):
     ).encode("utf-8")
 
 
+def _openssl_message_input(message):
+    creator = getattr(os, "memfd_create", None)
+    if creator is None or not os.path.isdir("/proc/self/fd"):
+        return "/dev/stdin", {"input": message}, None
+    descriptor = creator("hy2panel-openssl-message", getattr(os, "MFD_CLOEXEC", 0))
+    try:
+        remaining = memoryview(message)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("cannot stage the OpenSSL message")
+            remaining = remaining[written:]
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return (
+            "/proc/self/fd/{}".format(descriptor),
+            {"pass_fds": (descriptor,)},
+            descriptor,
+        )
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
 class OpenSSLSignatureVerifier:
     """Verify Ed25519 signatures using the platform OpenSSL binary."""
 
@@ -129,6 +153,7 @@ class OpenSSLSignatureVerifier:
             or len(signature) != 64
         ):
             return False
+        message_descriptor = None
         try:
             with tempfile.TemporaryDirectory(prefix="hy2panel-heartbeat-") as directory:
                 directory = Path(directory)
@@ -138,6 +163,9 @@ class OpenSSLSignatureVerifier:
                 signature_path.write_bytes(signature)
                 for path in (public_path, signature_path):
                     path.chmod(0o600)
+                message_path, message_options, message_descriptor = (
+                    _openssl_message_input(message)
+                )
                 completed = subprocess.run(  # nosec B603 -- fixed argv, no shell.
                     [
                         self.executable,
@@ -152,17 +180,20 @@ class OpenSSLSignatureVerifier:
                         str(signature_path),
                         "-rawin",
                         "-in",
-                        "/dev/stdin",
+                        message_path,
                     ],
-                    input=message,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=self.timeout_seconds,
                     check=False,
+                    **message_options,
                 )
                 return completed.returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
+        finally:
+            if message_descriptor is not None:
+                os.close(message_descriptor)
 
 
 class NodeHeartbeatService:
