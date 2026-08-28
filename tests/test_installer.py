@@ -684,13 +684,14 @@ esac
         self.assertIn("required_identity_variables=(", source)
         self.assertIn("为避免轮换节点身份", source)
 
-    def test_installer_defaults_panel_to_http(self):
+    def test_installer_defaults_new_panels_to_https_without_migrating_existing_http(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('EXISTING_PANEL_SCHEME="http"', source)
+        self.assertIn('EXISTING_PANEL_SCHEME="https"', source)
         self.assertIn('PANEL_SCHEME="${PANEL_SCHEME:-${EXISTING_PANEL_SCHEME}}"', source)
-        self.assertIn('管理面板:   HTTP TCP 19998（可选 HTTPS）', source)
-        self.assertIn('域名的明文 HTTP 被网络重置', source)
+        self.assertIn('管理面板:   HTTPS TCP 19998（可显式选择 HTTP）', source)
+        self.assertIn('EXISTING_PANEL_SCHEME="${HY2PANEL_PANEL_SCHEME}"', source)
+        self.assertIn('PANEL_SCHEME="${EXISTING_PANEL_SCHEME}"', source)
         self.assertIn('${PANEL_SCHEME}://${detected_host}:${PANEL_PORT}/', source)
 
     def test_https_uses_a_validated_panel_domain_and_never_the_node_certificate(self):

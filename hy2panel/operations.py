@@ -885,22 +885,75 @@ class UpdateController:
                     pass
 
     def _read_status(self):
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
         try:
-            with self.status_path.open("rb") as source:
-                raw = source.read(16385)
+            descriptor = os.open(self.status_path, flags)
         except FileNotFoundError:
             return None
-        if not raw or len(raw) > 16384:
+        except OSError as exc:
+            raise ValueError("update status file is invalid") from exc
+        try:
+            file_status = os.fstat(descriptor)
+            parent_status = os.lstat(self.status_path.parent)
+            if (
+                not stat.S_ISREG(file_status.st_mode)
+                or file_status.st_nlink != 1
+                or stat.S_IMODE(file_status.st_mode) != 0o600
+                or not stat.S_ISDIR(parent_status.st_mode)
+                or stat.S_IMODE(parent_status.st_mode) & 0o022
+                or file_status.st_uid != parent_status.st_uid
+                or not 0 < file_status.st_size <= 16384
+            ):
+                raise ValueError("update status file is invalid")
+            raw = os.read(descriptor, 16385)
+        finally:
+            os.close(descriptor)
+        if len(raw) != file_status.st_size:
             raise ValueError("update status file is invalid")
         payload = json.loads(raw.decode("utf-8"))
         if not isinstance(payload, dict):
             raise ValueError("update status file is invalid")
         return payload
 
+    def _update_unit_allows_queue(self):
+        result = self.runner(
+            [
+                "/bin/systemctl",
+                "show",
+                self.SERVICE,
+                "--all",
+                "--property=ActiveState",
+                "--property=Job",
+                "--no-pager",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env=_systemctl_environment(),
+        )
+        if result.returncode != 0:
+            raise RuntimeError("update service state could not be verified")
+        states = {
+            key: value
+            for line in result.stdout.splitlines()
+            for key, separator, value in (line.partition("="),)
+            if separator
+        }
+        active_state = states.get("ActiveState")
+        if not active_state or "Job" not in states:
+            raise RuntimeError("update service state could not be verified")
+        return active_state in {"inactive", "failed"} and states["Job"] in {"", "0"}
+
     def queue(self, target_version):
         target = self._version_label(target_version)
         if self._version_tuple(target) <= self._version_tuple(self.current_version):
             raise ValueError("update target must be newer than the current version")
+        existing = self._read_status()
+        if existing is not None and not self._update_unit_allows_queue():
+            raise RuntimeError("an update target is already active")
         record = {
             "state": "queued",
             "target": target,
@@ -930,6 +983,15 @@ class UpdateController:
             )
             self._write_status(record)
             raise RuntimeError("update service could not be started")
+
+    def pending_target(self):
+        record = self._read_status()
+        if not record or record.get("state") != "queued":
+            raise RuntimeError("no queued update target is available")
+        target = self._version_label(record.get("target"))
+        if self._version_tuple(target) <= self._version_tuple(self.current_version):
+            raise RuntimeError("queued update target is not newer than the current version")
+        return target
 
     def status(self):
         current = self._version_label(self.current_version)

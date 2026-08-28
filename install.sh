@@ -20,14 +20,14 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="73af2fc9d027f4a545ce60337fde597f1f4233074ec8c4f88420a5a0d40279d5"
+PANEL_SHA256="0d7eab204ff305cfe11fc6f968f15ef7dc6aa9f4297cd756cd1bde69bd9cdeb5"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
 HY2PANEL_VERSION_SHA256="905d3d330c1e991c27b90fd7cd1acb4233f0a492ce699f1d8cce2dea98858da1"
 HY2PANEL_WEB_ASSETS_SHA256="711ce11d7747135634af4929d1398f4ec9bf60f36cbbc6301fbf05236f766def"
-HY2PANEL_OPERATIONS_SHA256="3b8974f3a90af2e06d24e895e521723d819411b2673011db87e70a15699e442e"
-HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
+HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
+HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
@@ -155,7 +155,7 @@ Hysteria2-panel 一键部署
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
   账号专属入口: UDP 443（同时提供 TCP 连通性探测）
-  管理面板:   HTTP TCP 19998（可选 HTTPS）
+  管理面板:   HTTPS TCP 19998（可显式选择 HTTP）
 
 支持系统：
   Debian/Ubuntu（apt）
@@ -5012,7 +5012,7 @@ else
   EXISTING_PUBLIC_HOST="${detected_host}"
   EXISTING_HYSTERIA_PORT="${DEFAULT_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${DEFAULT_PANEL_PORT}"
-  EXISTING_PANEL_SCHEME="http"
+  EXISTING_PANEL_SCHEME="https"
   EXISTING_PANEL_PUBLIC_HOST=""
   EXISTING_EGRESS_POLICY="full"
   EXISTING_AUTH_PORT="${DEFAULT_AUTH_PORT}"
@@ -6059,7 +6059,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/hysteria2-panel/panel.env
-ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-update
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-update --queued-target
 TimeoutStartSec=25min
 TimeoutStopSec=15min
 KillSignal=SIGTERM

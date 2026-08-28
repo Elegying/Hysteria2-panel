@@ -12,6 +12,7 @@ from .version import PANEL_VERSION
 
 class UpdateChecker:
     URL = "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest"
+    TIMEOUT_SECONDS = 10
 
     def __init__(self, current_version=PANEL_VERSION, opener=urllib.request.urlopen):
         self.current_version = current_version
@@ -29,7 +30,7 @@ class UpdateChecker:
             self.URL,
             headers={"Accept": "application/vnd.github+json", "User-Agent": "Hysteria2-panel"},
         )
-        with self.opener(request, timeout=3) as response:
+        with self.opener(request, timeout=self.TIMEOUT_SECONDS) as response:
             raw_body = response.read(16385)
         if len(raw_body) > 16384:
             raise ValueError("release response is too large")
@@ -141,8 +142,18 @@ class UpdateInstaller:
         if result.returncode != 0:
             raise ValueError("release installer signature is invalid")
 
-    def apply(self):
-        release = UpdateChecker(self.current_version, opener=self.opener).check()
+    def apply(self, target_version=None):
+        checker = UpdateChecker(self.current_version, opener=self.opener)
+        if target_version is None:
+            release = checker.check()
+        else:
+            target_tuple = checker._version_tuple(target_version)
+            current_tuple = checker._version_tuple(self.current_version)
+            release = {
+                "current": "v{}".format(self.current_version.lstrip("v")),
+                "latest": "v{}.{}.{}".format(*target_tuple),
+                "update_available": target_tuple > current_tuple,
+            }
         if not release["update_available"]:
             return {
                 "current": release["current"],

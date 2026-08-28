@@ -4047,6 +4047,110 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual("failed", status["state"])
             self.assertIn("版本未改变", status["message"])
 
+    def test_update_controller_reads_only_a_secure_regular_queued_target(self):
+        def runner(_command, **_kwargs):
+            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "update-status.json"
+            controller = UpdateController(
+                runner=runner,
+                status_path=status_path,
+                current_version="0.13.0",
+                clock=lambda: 1000,
+            )
+            controller.queue("v0.14.0")
+            self.assertEqual("v0.14.0", controller.pending_target())
+
+            status_path.chmod(0o644)
+            with self.assertRaises(ValueError):
+                controller.pending_target()
+
+            status_path.chmod(0o600)
+            Path(directory).chmod(0o777)
+            with self.assertRaises(ValueError):
+                controller.pending_target()
+            Path(directory).chmod(0o700)
+
+            status_path.unlink()
+            target = Path(directory) / "attacker-status.json"
+            target.write_text(
+                '{"state":"queued","target":"v9.9.9"}', encoding="utf-8"
+            )
+            target.chmod(0o600)
+            status_path.symlink_to(target)
+            with self.assertRaises(ValueError):
+                controller.pending_target()
+
+    def test_update_controller_preserves_an_active_target_but_allows_failed_retry(self):
+        starts = []
+        unit_state = ["activating"]
+        unit_job = [""]
+
+        def runner(command, **_kwargs):
+            if command[1] == "show":
+                if unit_state[0] is None:
+                    return type(
+                        "Result",
+                        (),
+                        {"returncode": 1, "stdout": "", "stderr": "unavailable"},
+                    )()
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "returncode": 0,
+                        "stdout": "ActiveState={}\nJob={}\n".format(
+                            unit_state[0], unit_job[0]
+                        ),
+                        "stderr": "",
+                    },
+                )()
+            starts.append(command)
+            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        with tempfile.TemporaryDirectory() as directory:
+            status_path = Path(directory) / "update-status.json"
+            controller = UpdateController(
+                runner=runner,
+                status_path=status_path,
+                current_version="0.13.0",
+                clock=lambda: 1000,
+            )
+            status_path.write_text("{}", encoding="utf-8")
+            status_path.chmod(0o600)
+            with self.assertRaises(RuntimeError):
+                controller.queue("v0.14.0")
+            status_path.unlink()
+            controller.queue("v0.14.0")
+
+            with self.assertRaises(RuntimeError):
+                controller.queue("v0.15.0")
+            self.assertEqual("v0.14.0", controller.pending_target())
+
+            for blocked_state in ("deactivating", "maintenance", "unknown"):
+                unit_state[0] = blocked_state
+                with self.subTest(state=blocked_state), self.assertRaises(RuntimeError):
+                    controller.queue("v0.15.0")
+                self.assertEqual("v0.14.0", controller.pending_target())
+
+            unit_state[0] = None
+            with self.assertRaises(RuntimeError):
+                controller.queue("v0.15.0")
+            self.assertEqual("v0.14.0", controller.pending_target())
+
+            unit_state[0] = "inactive"
+            unit_job[0] = "1234"
+            with self.assertRaises(RuntimeError):
+                controller.queue("v0.15.0")
+            self.assertEqual("v0.14.0", controller.pending_target())
+
+            unit_state[0] = "failed"
+            unit_job[0] = ""
+            controller.queue("v0.15.0")
+            self.assertEqual("v0.15.0", controller.pending_target())
+            self.assertEqual(2, len(starts))
+
     def test_reboot_controller_uses_only_the_fixed_nonblocking_command(self):
         calls = []
 
@@ -4085,7 +4189,73 @@ class OperationsTests(unittest.TestCase):
             "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest",
             requests[0][0],
         )
-        self.assertEqual(3, requests[0][1])
+        self.assertEqual(10, requests[0][1])
+
+    def test_update_installer_uses_the_queued_target_without_rechecking_latest(self):
+        requests = []
+        calls = []
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        def opener(request, timeout):
+            requests.append((request.full_url, timeout))
+            self.assertNotIn("/releases/latest", request.full_url)
+            if request.full_url.endswith("/install.sh.sigstore.json"):
+                return Response(
+                    b'{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}'
+                )
+            return Response(b'#!/usr/bin/env bash\nPANEL_VERSION="0.12.0"\n')
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return type("Result", (), {"returncode": 0})()
+
+        result = UpdateInstaller(
+            current_version="0.11.2", opener=opener, runner=runner
+        ).apply("v0.12.0")
+
+        self.assertEqual(
+            [
+                "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.12.0/install.sh",
+                "https://github.com/Elegying/Hysteria2-panel/releases/download/v0.12.0/install.sh.sigstore.json",
+            ],
+            [url for url, _ in requests],
+        )
+        self.assertEqual("v0.12.0", calls[2][1]["env"]["PANEL_REF"])
+        self.assertEqual(
+            {"current": "v0.11.2", "latest": "v0.12.0", "updated": True},
+            result,
+        )
+
+    def test_apply_update_cli_installs_the_queued_target(self):
+        settings = mock.Mock()
+        controller = mock.Mock()
+        controller.pending_target.return_value = "v0.12.0"
+        installer = mock.Mock()
+        installer.apply.return_value = {
+            "current": "v0.11.2",
+            "latest": "v0.12.0",
+            "updated": True,
+        }
+        with mock.patch.object(
+            hysteria2_panel.Settings, "from_mapping", return_value=settings
+        ), mock.patch.object(
+            hysteria2_panel, "UpdateController", return_value=controller
+        ), mock.patch.object(
+            hysteria2_panel, "UpdateInstaller", return_value=installer
+        ), mock.patch.object(
+            hysteria2_panel.os, "geteuid", return_value=0, create=True
+        ), mock.patch("builtins.print"):
+            result = hysteria2_panel.main(["apply-update", "--queued-target"])
+
+        self.assertEqual(0, result)
+        controller.pending_target.assert_called_once_with()
+        installer.apply.assert_called_once_with("v0.12.0")
 
     def test_update_installer_downloads_only_the_fixed_release_and_runs_noninteractively(self):
         requests = []
@@ -4228,7 +4398,7 @@ class OperationsTests(unittest.TestCase):
                 self.close()
 
         def opener(request, timeout):
-            self.assertEqual(3, timeout)
+            self.assertEqual(10, timeout)
             requests.append(request.full_url)
             return Response(
                 json.dumps(
@@ -6230,6 +6400,124 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(1, self.restore_controller.queued)
         self.assertTrue(self.backup_manager.pending_archive.is_file())
         self.assertLess(events.index("queue_restore"), events.index("restore_queued"))
+
+    def test_restore_streaming_does_not_hold_the_user_action_lock(self):
+        headers, csrf_token = self.authenticated_headers()
+        lock_available = []
+
+        def stage_archive(_stream, _content_length):
+            acquired = self.application.user_action_lock.acquire(blocking=False)
+            lock_available.append(acquired)
+            if acquired:
+                self.application.user_action_lock.release()
+            return {"createdAt": "2026-08-28T00:00:00Z"}
+
+        self.backup_manager.stage_archive = stage_archive
+        restore_headers = {
+            **headers,
+            "Content-Type": "application/zip",
+            "X-HY2Panel-CSRF": csrf_token,
+        }
+
+        with self.request(
+            "/restore",
+            headers=restore_headers,
+            raw_data=b"placeholder",
+            follow_redirects=False,
+        ) as response:
+            self.assertEqual(202, response.status)
+
+        self.assertEqual([True], lock_available)
+
+    def test_restore_streaming_rejects_concurrent_mutations_without_waiting(self):
+        headers, csrf_token = self.authenticated_headers()
+        stage_started = threading.Event()
+        release_stage = threading.Event()
+        mutation_finished = threading.Event()
+        restore_failures = []
+        mutation_status = []
+
+        def stage_archive(_stream, _content_length):
+            stage_started.set()
+            if not release_stage.wait(2):
+                raise RuntimeError("test did not release restore staging")
+            return {"createdAt": "2026-08-28T00:00:00Z"}
+
+        self.backup_manager.stage_archive = stage_archive
+        restore_headers = {
+            **headers,
+            "Content-Type": "application/zip",
+            "X-HY2Panel-CSRF": csrf_token,
+        }
+
+        def restore_request():
+            try:
+                with self.request(
+                    "/restore",
+                    headers=restore_headers,
+                    raw_data=b"placeholder",
+                    follow_redirects=False,
+                ) as response:
+                    response.read()
+            except Exception as exc:
+                restore_failures.append(exc)
+
+        def mutate_request():
+            try:
+                with self.request(
+                    "/users",
+                    {"csrf": csrf_token, "name": "during-restore"},
+                    headers=headers,
+                    follow_redirects=False,
+                ) as response:
+                    mutation_status.append(response.status)
+            except urllib.error.HTTPError as exc:
+                mutation_status.append(exc.code)
+            finally:
+                mutation_finished.set()
+
+        restore_thread = threading.Thread(target=restore_request)
+        mutation_thread = threading.Thread(target=mutate_request)
+        restore_thread.start()
+        self.assertTrue(stage_started.wait(1))
+        mutation_thread.start()
+        finished_without_waiting = mutation_finished.wait(0.5)
+        release_stage.set()
+        restore_thread.join(2)
+        mutation_thread.join(2)
+
+        self.assertTrue(finished_without_waiting)
+        self.assertEqual([503], mutation_status)
+        self.assertEqual([], restore_failures)
+        self.assertIsNone(self.db.get_proxy_user_by_name("during-restore"))
+
+    def test_restore_validation_failure_releases_the_mutation_gate(self):
+        headers, csrf_token = self.authenticated_headers()
+        self.backup_manager.stage_archive = mock.Mock(
+            side_effect=BackupValidationError("invalid archive")
+        )
+        restore_headers = {
+            **headers,
+            "Content-Type": "application/zip",
+            "X-HY2Panel-CSRF": csrf_token,
+        }
+
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.request(
+                "/restore",
+                headers=restore_headers,
+                raw_data=b"placeholder",
+                follow_redirects=False,
+            )
+        self.assertEqual(400, rejected.exception.code)
+
+        with self.request(
+            "/users",
+            {"csrf": csrf_token, "name": "after-failed-restore"},
+            headers=headers,
+            follow_redirects=False,
+        ) as response:
+            self.assertEqual(201, response.status)
 
     def test_backup_is_audited_only_after_the_archive_send_completes(self):
         events = []
