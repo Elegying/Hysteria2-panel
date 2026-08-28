@@ -37,8 +37,9 @@ HEARTBEAT_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 HEARTBEAT_PREFIX = b"hy2panel-node-heartbeat-v1\n"
 HEARTBEAT_CLOCK_SKEW_SECONDS = 120
 HEARTBEAT_INTERVAL_SECONDS = 60
-DATA_PLANE_PURPOSES = {"bootstrap", "ack"}
+DATA_PLANE_PURPOSES = {"claim", "bootstrap", "ack"}
 DATA_PLANE_COMMON_FIELDS = {"nodeId", "sentAt", "nonce", "signature"}
+DATA_PLANE_CLAIM_FIELDS = DATA_PLANE_COMMON_FIELDS | {"requestId"}
 DATA_PLANE_BOOTSTRAP_FIELDS = DATA_PLANE_COMMON_FIELDS | {
     "bootstrapToken",
     "requestId",
@@ -706,6 +707,72 @@ class DataPlaneBootstrapService:
             self._reject()
         return node, hashlib.sha256(nonce_bytes).hexdigest(), now, remote_ip
 
+    def _verify_claim(self, payload, remote_ip):
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != DATA_PLANE_CLAIM_FIELDS
+            or not isinstance(payload.get("requestId"), str)
+            or not OBJECT_ID_PATTERN.fullmatch(payload["requestId"])
+        ):
+            self._reject()
+        node_id = payload.get("nodeId")
+        sent_at = payload.get("sentAt")
+        nonce = payload.get("nonce")
+        signature_text = payload.get("signature")
+        if not isinstance(node_id, str) or not OBJECT_ID_PATTERN.fullmatch(node_id):
+            self._reject()
+        if isinstance(sent_at, bool) or not isinstance(sent_at, int):
+            self._reject()
+        now = int(self.clock())
+        if abs(now - sent_at) > HEARTBEAT_CLOCK_SKEW_SECONDS:
+            self._reject()
+        if not isinstance(nonce, str) or not HEARTBEAT_NONCE_PATTERN.fullmatch(nonce):
+            self._reject()
+        try:
+            nonce_bytes = base64.urlsafe_b64decode(nonce + "=")
+            signature = base64.b64decode(signature_text, validate=True)
+            remote_ip = _normalize_ip(remote_ip)
+        except (TypeError, ValueError):
+            self._reject()
+        if len(nonce_bytes) != 32 or len(signature) != 64:
+            self._reject()
+        node = self.database.get_node_for_heartbeat(node_id)
+        if (
+            node is None
+            or node["status"] != "pending_verification"
+            or node.get("verified_at") is None
+            or node.get("policy_state") not in {"standby", "protocol_ready"}
+            or node.get("last_heartbeat_at") is None
+            or int(node["last_heartbeat_at"]) < now - HEARTBEAT_CLOCK_SKEW_SECONDS
+            or node.get("data_plane_state")
+            not in {
+                "not_issued",
+                "bootstrap_issued",
+                "data_plane_installed",
+                "direct_canary_passed",
+                "dns_admitted",
+            }
+        ):
+            self._reject()
+        bound_ip = node.get("expected_ip") or node.get("observed_ip")
+        if not bound_ip or not secrets.compare_digest(bound_ip, remote_ip):
+            self._reject()
+        message = canonical_data_plane_request("claim", payload)
+        if not self._verification_gate.acquire(blocking=False):
+            self._reject()
+        try:
+            try:
+                verified = self.signature_verifier(
+                    node.get("public_key"), message, signature
+                )
+            except Exception:
+                verified = False
+        finally:
+            self._verification_gate.release()
+        if not verified:
+            self._reject()
+        return node, hashlib.sha256(nonce_bytes).hexdigest(), now, remote_ip
+
     def _identity(self):
         if self.identity_provider is None:
             self._reject()
@@ -827,6 +894,32 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             "maxFetchAttempts": 3,
             "status": "BOOTSTRAP_ISSUED",
             "deploymentCommand": self._deployment_command(token),
+        }
+
+    def claim(self, payload, remote_ip):
+        node, nonce_digest, now, remote_ip = self._verify_claim(payload, remote_ip)
+        token = str(self.token_factory())
+        if not TOKEN_PATTERN.fullmatch(token):
+            raise RuntimeError("secure bootstrap token generation failed")
+        record = self.database.create_data_plane_bootstrap_grant(
+            node_id=node["node_id"],
+            token_digest=hashlib.sha256(token.encode("ascii")).hexdigest(),
+            bound_ip=remote_ip,
+            actor="system:auto-onboarding",
+            created_at=now,
+            expires_at=now + 600,
+            auto_enable=True,
+            nonce_digest=nonce_digest,
+        )
+        if record is None:
+            self._reject()
+        return {
+            "nodeId": record["node_id"],
+            "grantId": record["grant_id"],
+            "expiresAt": record["expires_at"],
+            "maxFetchAttempts": 3,
+            "status": "AUTO_BOOTSTRAP_ISSUED",
+            "bootstrapToken": token,
         }
 
     def fetch(self, payload, remote_ip):

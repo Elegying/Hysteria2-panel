@@ -2621,6 +2621,8 @@ class Database:
         actor,
         created_at,
         expires_at,
+        auto_enable=False,
+        nonce_digest=None,
     ):
         node_id = str(node_id or "")
         token_digest = str(token_digest or "")
@@ -2633,6 +2635,11 @@ class Database:
             or not actor
             or len(actor) > 64
             or expires_at != created_at + 600
+            or not isinstance(auto_enable, bool)
+            or (
+                auto_enable
+                and not re.fullmatch(r"[0-9a-f]{64}", str(nonce_digest or ""))
+            )
         ):
             return None
         try:
@@ -2641,7 +2648,7 @@ class Database:
                 connection.execute("BEGIN IMMEDIATE")
                 node = connection.execute(
                     """SELECT status, verified_at, policy_state, data_plane_state,
-                        expected_ip, observed_ip
+                        expected_ip, observed_ip, last_heartbeat_at
                     FROM nodes WHERE node_id = ?""",
                     (node_id,),
                 ).fetchone()
@@ -2649,7 +2656,18 @@ class Database:
                     node is None
                     or node["status"] != "pending_verification"
                     or node["verified_at"] is None
-                    or node["policy_state"] != "protocol_ready"
+                    or (
+                        not auto_enable
+                        and node["policy_state"] != "protocol_ready"
+                    )
+                    or (
+                        auto_enable
+                        and (
+                            node["policy_state"] not in {"standby", "protocol_ready"}
+                            or node["last_heartbeat_at"] is None
+                            or int(node["last_heartbeat_at"]) < created_at - 120
+                        )
+                    )
                     or node["data_plane_state"]
                     not in {
                         "not_issued",
@@ -2661,6 +2679,27 @@ class Database:
                     or (node["expected_ip"] or node["observed_ip"]) != bound_ip
                 ):
                     return None
+                if auto_enable:
+                    self._consume_node_request_nonce(
+                        connection,
+                        node_id,
+                        "bootstrap-claim",
+                        str(nonce_digest),
+                        created_at,
+                    )
+                    enabled = connection.execute(
+                        """UPDATE nodes SET policy_state = 'protocol_ready',
+                            policy_enabled_at = ?, policy_enabled_by = ?
+                        WHERE node_id = ? AND status = 'pending_verification'
+                            AND verified_at IS NOT NULL
+                            AND policy_state IN ('standby', 'protocol_ready')
+                            AND last_heartbeat_at >= ?""",
+                        (created_at, actor, node_id, created_at - 120),
+                    )
+                    if enabled.rowcount != 1:
+                        raise sqlite3.IntegrityError(
+                            "automatic node protocol state conflict"
+                        )
                 connection.execute(
                     """UPDATE node_data_plane_bootstrap_grants
                     SET revoked_at = ?
@@ -5436,6 +5475,7 @@ class PanelHandler(JsonHandler):
             self._handle_node_heartbeat()
             return
         data_plane_routes = {
+            "/api/v1/node-data-plane/claim": "claim",
             "/api/v1/node-data-plane/bootstrap": "fetch",
             "/api/v1/node-data-plane/ack": "ack",
         }

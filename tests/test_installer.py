@@ -4003,6 +4003,66 @@ exit "$status"
         )
 
 
+class StreamlinedOnboardingInstallerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = INSTALLER.read_text()
+
+    def test_join_installs_a_persistent_fixed_onboarding_timer(self):
+        start = self.source.index("install_join_node()")
+        end = self.source.index("\n}\n", start) + 2
+        join = self.source[start:end]
+
+        self.assertIn("NODE_ONBOARDING_INSTALLER", join)
+        self.assertIn("NODE_ONBOARDING_SERVICE", join)
+        self.assertIn("NODE_ONBOARDING_TIMER", join)
+        self.assertIn("NODE_ONBOARDING_MARKER", join)
+        self.assertIn("ConditionPathExists=", join)
+        self.assertIn("--complete-node-onboarding", join)
+        self.assertIn("OnUnitActiveSec=30s", join)
+        self.assertIn('sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der"', join)
+        self.assertNotIn("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", join)
+        self.assertNotIn("server.key", join)
+
+    def test_completion_claims_then_reuses_the_existing_transactional_deployers(self):
+        start = self.source.index("complete_node_onboarding()")
+        end = self.source.index("\n}\n", start) + 2
+        completion = self.source[start:end]
+
+        claim = completion.index("claim-data-plane")
+        activate_agent = completion.index("activate_node_agent")
+        activate_data_plane = completion.index("activate_data_plane")
+        self.assertLess(claim, activate_agent)
+        self.assertLess(activate_agent, activate_data_plane)
+        self.assertIn("NODE_ONBOARDING_TOKEN_FILE", completion)
+        self.assertIn('rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"', completion)
+        self.assertIn("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", completion)
+        self.assertIn("disable --now --no-block", completion)
+        self.assertNotIn("eval ", completion)
+        self.assertNotIn("bash -c", completion)
+
+        dispatch = self.source.split(
+            "if (( COMPLETE_NODE_ONBOARDING == 1 )); then", 1
+        )[1].split("fi", 1)[0]
+        self.assertLess(
+            dispatch.index("INSTALL_COMMITTED=1"),
+            dispatch.index("complete_node_onboarding"),
+        )
+
+    def test_join_rollback_removes_every_owned_onboarding_artifact(self):
+        start = self.source.index("rollback_join_node_install()")
+        end = self.source.index("\n}\n", start) + 2
+        rollback = self.source[start:end]
+
+        for artifact in (
+            "NODE_ONBOARDING_SERVICE",
+            "NODE_ONBOARDING_TIMER",
+            "NODE_ONBOARDING_MARKER",
+        ):
+            self.assertIn(artifact, rollback)
+        self.assertIn("daemon-reload", rollback)
+
+
 class DataPlaneInstallerContractTests(unittest.TestCase):
     def setUp(self):
         self.source = INSTALLER.read_text()

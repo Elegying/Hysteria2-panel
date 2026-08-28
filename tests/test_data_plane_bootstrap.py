@@ -13,7 +13,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
+import node_agent
 from hysteria2_panel import Database, PanelApplication, make_panel_server
 from node_agent import (
     collect_data_plane_attestation,
@@ -476,6 +478,189 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         self.assertIsNone(node["dns_admitted_at"])
 
 
+class AutoBootstrapClaimTests(unittest.TestCase):
+    _insert_node = DataPlaneBootstrapStateTests._insert_node
+    _digest = DataPlaneBootstrapStateTests._digest
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "panel.db"
+        self.db = Database(self.db_path, b"c" * 32)
+        self.db.initialize()
+        self.now = [2_000_000_000]
+        self.node_id = "5" * 32
+        self.remote_ip = "203.0.113.50"
+        self.tokens = iter(("claim_" + "A" * 40, "claim_" + "B" * 40))
+        self._insert_node(self.node_id, policy_state="standby")
+        self.signed_messages = []
+        self.service = DataPlaneBootstrapService(
+            self.db,
+            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_version="0.30.0",
+            clock=lambda: self.now[0],
+            token_factory=lambda: next(self.tokens),
+            signature_verifier=self._verify_signature,
+        )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _verify_signature(self, _public_key, message, _signature):
+        self.signed_messages.append(message)
+        return True
+
+    def _payload(self, value=1, **changes):
+        payload = {
+            "nodeId": self.node_id,
+            "sentAt": self.now[0],
+            "nonce": base64.urlsafe_b64encode(bytes([value]) * 32)
+            .decode("ascii")
+            .rstrip("="),
+            "requestId": "{:032x}".format(value),
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        payload.update(changes)
+        return payload
+
+    def test_verified_online_node_claim_enables_protocol_and_returns_only_token(self):
+        result = self.service.claim(self._payload(), remote_ip=self.remote_ip)
+
+        self.assertEqual("AUTO_BOOTSTRAP_ISSUED", result["status"])
+        self.assertEqual(self.node_id, result["nodeId"])
+        self.assertEqual("claim_" + "A" * 40, result["bootstrapToken"])
+        self.assertNotIn("deploymentCommand", result)
+        self.assertTrue(
+            self.signed_messages[-1].startswith(
+                b"hy2panel-data-plane-claim-v1\n"
+            )
+        )
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            node = connection.execute(
+                "SELECT policy_state, policy_enabled_by, data_plane_state "
+                "FROM nodes WHERE node_id = ?",
+                (self.node_id,),
+            ).fetchone()
+            grant = connection.execute(
+                "SELECT token_digest, created_by, revoked_at "
+                "FROM node_data_plane_bootstrap_grants WHERE grant_id = ?",
+                (result["grantId"],),
+            ).fetchone()
+        self.assertEqual(
+            ("protocol_ready", "system:auto-onboarding", "bootstrap_issued"),
+            tuple(node),
+        )
+        self.assertEqual(
+            hashlib.sha256(result["bootstrapToken"].encode("ascii")).hexdigest(),
+            grant["token_digest"],
+        )
+        self.assertEqual("system:auto-onboarding", grant["created_by"])
+        self.assertIsNone(grant["revoked_at"])
+        self.assertNotIn(result["bootstrapToken"].encode("ascii"), self.db_path.read_bytes())
+
+    def test_claim_reissues_atomically_after_a_lost_response(self):
+        first = self.service.claim(self._payload(1), remote_ip=self.remote_ip)
+        second = self.service.claim(self._payload(2), remote_ip=self.remote_ip)
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            grants = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    "SELECT grant_id, revoked_at FROM node_data_plane_bootstrap_grants "
+                    "WHERE node_id = ?",
+                    (self.node_id,),
+                )
+            }
+        self.assertEqual(self.now[0], grants[first["grantId"]])
+        self.assertIsNone(grants[second["grantId"]])
+
+    def test_claim_fails_closed_before_verification_or_without_fresh_heartbeat(self):
+        cases = (
+            ("6" * 32, False, self.now[0], self.remote_ip),
+            ("7" * 32, True, self.now[0] - 121, self.remote_ip),
+            ("8" * 32, True, self.now[0], "203.0.113.81"),
+        )
+        for node_id, verified, heartbeat_at, remote_ip in cases:
+            with self.subTest(node_id=node_id):
+                self._insert_node(
+                    node_id,
+                    verified=verified,
+                    policy_state="standby",
+                    address="203.0.113.80",
+                )
+                with sqlite3.connect(str(self.db_path)) as connection:
+                    connection.execute(
+                        "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
+                        (heartbeat_at, node_id),
+                    )
+                payload = self._payload(nodeId=node_id)
+                with self.assertRaises(DataPlaneBootstrapRejected):
+                    self.service.claim(payload, remote_ip=remote_ip)
+
+
+class AutoBootstrapClaimClientTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.output = Path(self.temp_dir.name) / "bootstrap.token"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_claim_token_is_written_atomically_without_printing_the_secret(self):
+        client = mock.Mock()
+        client.claim.return_value = {
+            "nodeId": "5" * 32,
+            "grantId": "6" * 32,
+            "expiresAt": 2_000_000_600,
+            "maxFetchAttempts": 3,
+            "status": "AUTO_BOOTSTRAP_ISSUED",
+            "bootstrapToken": "claim_" + "C" * 40,
+        }
+
+        node_agent.write_bootstrap_claim(client, self.output)
+
+        self.assertEqual("claim_" + "C" * 40, self.output.read_text("ascii"))
+        self.assertEqual(0o600, stat.S_IMODE(self.output.stat().st_mode))
+        with self.assertRaises(ProtocolError):
+            node_agent.write_bootstrap_claim(client, self.output)
+
+    def test_claim_cli_heartbeats_before_requesting_the_secret(self):
+        state = Path(self.temp_dir.name) / "registration.json"
+        private_key = Path(self.temp_dir.name) / "node.key"
+        arguments = [
+            "claim-data-plane",
+            "--private-key",
+            str(private_key),
+            "--state-file",
+            str(state),
+            "--output-token",
+            str(self.output),
+        ]
+        order = []
+
+        class Client:
+            def __init__(self, state_path, private_key_path):
+                self.state_path = state_path
+                self.private_key_path = private_key_path
+
+        def fake_heartbeat(**_kwargs):
+            order.append("heartbeat")
+            return {"nodeId": "5" * 32, "status": "ONLINE"}
+
+        def fake_write(client, output):
+            self.assertIsInstance(client, Client)
+            self.assertEqual(self.output, output)
+            order.append("claim")
+
+        with mock.patch.object(node_agent, "heartbeat", side_effect=fake_heartbeat), mock.patch.object(
+            node_agent, "DataPlaneBootstrapClient", Client
+        ), mock.patch.object(
+            node_agent, "write_bootstrap_claim", side_effect=fake_write
+        ):
+            self.assertEqual(0, node_agent.main(arguments))
+        self.assertEqual(["heartbeat", "claim"], order)
+
+
 class DataPlaneBootstrapContractTests(unittest.TestCase):
     _insert_node = DataPlaneBootstrapStateTests._insert_node
     _digest = DataPlaneBootstrapStateTests._digest
@@ -905,6 +1090,26 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         )
         self.assertEqual("DATA_PLANE_INSTALLED", result["status"])
 
+    def test_public_auto_claim_uses_the_same_https_and_signature_boundary(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET policy_state = 'standby' WHERE node_id = ?",
+                (self.node_id,),
+            )
+        payload = self._common(30)
+        payload["requestId"] = "3" * 32
+
+        result = json.loads(
+            self._post_json("/api/v1/node-data-plane/claim", payload)
+            .read()
+            .decode("utf-8")
+        )
+
+        self.assertEqual("AUTO_BOOTSTRAP_ISSUED", result["status"])
+        self.assertEqual(self.node_id, result["nodeId"])
+        self.assertEqual(self.token, result["bootstrapToken"])
+        self.assertNotIn("deploymentCommand", result)
+
     def test_dashboard_exposes_only_eligible_deploy_and_separate_canary_controls(self):
         raw_session, csrf = self.db.create_session(self.admin_id)
         headers = {"Cookie": "hy2panel_session={}".format(raw_session)}
@@ -1153,6 +1358,27 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             nonce_factory=lambda _size: "N" * 43,
         )
 
+        claim_response = {
+            "nodeId": "8" * 32,
+            "grantId": "7" * 32,
+            "expiresAt": 2_000_000_600,
+            "maxFetchAttempts": 3,
+            "status": "AUTO_BOOTSTRAP_ISSUED",
+            "bootstrapToken": "bootstrap_" + "C" * 40,
+        }
+        Response.response = claim_response
+
+        self.assertEqual(claim_response, client.claim())
+        self.assertTrue(
+            captured["message"].startswith(b"hy2panel-data-plane-claim-v1\n")
+        )
+        self.assertEqual(
+            "https://panel.example.test:19998/api/v1/node-data-plane/claim",
+            captured["request"].full_url,
+        )
+        self.assertEqual(8 * 1024 + 1, captured["maximum"])
+
+        Response.response = self.response
         result = client.fetch("bootstrap_" + "T" * 40)
 
         self.assertEqual(self.response, result)

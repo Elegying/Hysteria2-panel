@@ -20,7 +20,7 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="a186e66c1a067c2ff3b6e6efea5f4ea49ae6b5891e332890d978344c2f22d8f8"
+PANEL_SHA256="454911d69d9e989959db00c1f212c8b7083790864b2cd8e11b54b3153a320471"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
@@ -31,9 +31,9 @@ HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="e121467f90058d08bba44e03717e7084c18a9005261e406d3b1e5583a37598f3"
+HY2PANEL_NODES_SHA256="608fbd4c0a9c2b9edb79ef7f043490bc32a944a03c47b86102efd8b008e2f621"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="f19b131dfbe15d761ea4e81255bc07f10b16ec9de2f9af733a4696a04506bdc2"
+NODE_AGENT_SHA256="ad261c29b574e55d956b6c3baa95e228501374f8fdbbd489b904d3520dd17514"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -64,6 +64,12 @@ NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
 NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node
 NODE_AGENT_HEARTBEAT_SERVICE=/etc/systemd/system/hysteria2-panel-node-heartbeat.service
 NODE_AGENT_HEARTBEAT_TIMER=/etc/systemd/system/hysteria2-panel-node-heartbeat.timer
+NODE_ONBOARDING_INSTALLER=${NODE_AGENT_OPT_DIR}/onboarding-install.sh
+NODE_ONBOARDING_SERVICE=/etc/systemd/system/hysteria2-panel-node-onboarding.service
+NODE_ONBOARDING_TIMER=/etc/systemd/system/hysteria2-panel-node-onboarding.timer
+NODE_ONBOARDING_MARKER=${NODE_AGENT_CONFIG_DIR}/.onboarding-pending
+NODE_ONBOARDING_RUNTIME_DIR=/run/hysteria2-panel-node-onboarding
+NODE_ONBOARDING_TOKEN_FILE=${NODE_ONBOARDING_RUNTIME_DIR}/bootstrap.token
 NODE_DATA_PLANE_BACKUP_ROOT=/var/backups/hysteria2-panel-node
 NODE_DATA_PLANE_TRANSACTION=/etc/hysteria2-panel-node/.data-plane-transaction
 DATA_PLANE_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_DATA_PLANE_V1
@@ -136,6 +142,7 @@ ACTIVATE_NODE_AGENT=0
 ACTIVATE_NODE_AGENT_MUTATED=0
 NODE_AGENT_BACKUP_FILE=""
 ACTIVATE_DATA_PLANE=0
+COMPLETE_NODE_ONBOARDING=0
 DATA_PLANE_MUTATED=0
 DATA_PLANE_EXISTING=0
 DATA_PLANE_BACKUP_DIR=""
@@ -161,6 +168,9 @@ Hysteria2-panel 一键部署
 
 部署数据面（复制既有 Hysteria 身份，不安装面板、不修改 DNS）：
   sudo -E bash install.sh --activate-data-plane
+
+自动对接收尾（仅供安装器创建的 systemd timer 调用）：
+  sudo bash /opt/hysteria2-panel-node/onboarding-install.sh --complete-node-onboarding
 
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
@@ -988,12 +998,17 @@ select_python() {
 
 rollback_join_node_install() {
   local path
+  systemctl disable --now hysteria2-panel-node-onboarding.timer >/dev/null 2>&1 || true
+  systemctl stop hysteria2-panel-node-onboarding.service >/dev/null 2>&1 || true
+  rm -f -- "${NODE_ONBOARDING_SERVICE}" "${NODE_ONBOARDING_TIMER}" \
+    "${NODE_ONBOARDING_MARKER}" || return 1
   for path in "${NODE_AGENT_CONFIG_DIR}" "${NODE_AGENT_OPT_DIR}"; do
     if [[ -e "${path}" || -L "${path}" ]]; then
       [[ ! -L "${path}" && -d "${path}" ]] || return 1
       rm -r -- "${path}" || return 1
     fi
   done
+  systemctl daemon-reload || return 1
   sync -f /etc || return 1
   sync -f /opt || return 1
   JOIN_NODE_MUTATED=0
@@ -1172,8 +1187,8 @@ rebind_node() {
 }
 
 install_join_node() {
-  local command_name enrollment_token panel_url path
-  local -a join_commands=(curl install mkdir mktemp openssl rm sha256sum sync uname)
+  local command_name enrollment_token fingerprint panel_url path
+  local -a join_commands=(awk cat curl install mkdir mktemp openssl rm sha256sum stat sync systemctl uname)
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "节点对接只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1216,15 +1231,66 @@ install_join_node() {
     -out "${TMP_DIR}/node-public.der" \
     || fail "无法生成节点 Agent 公钥"
 
+  cat > "${TMP_DIR}/hysteria2-panel-node-onboarding.service" <<EOF
+[Unit]
+Description=Complete Hysteria2-panel node onboarding after operator verification
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=${NODE_ONBOARDING_MARKER}
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=${NODE_ONBOARDING_INSTALLER} --complete-node-onboarding
+UMask=0077
+TimeoutStartSec=25min
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+TasksMax=512
+MemoryMax=2G
+EOF
+  cat > "${TMP_DIR}/hysteria2-panel-node-onboarding.timer" <<'EOF'
+[Unit]
+Description=Retry Hysteria2-panel node onboarding until operator verification
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=30s
+Persistent=true
+AccuracySec=1s
+Unit=hysteria2-panel-node-onboarding.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  printf '%s\n' 'HYSTERIA2_PANEL_NODE_ONBOARDING_V1' \
+    > "${TMP_DIR}/onboarding-pending"
+
   JOIN_NODE_MUTATED=1
   install -d -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}"
   install -d -o root -g root -m 0700 "${NODE_AGENT_CONFIG_DIR}"
   install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
     "${NODE_AGENT_OPT_DIR}/node_agent.py"
+  install -o root -g root -m 0700 "$0" "${NODE_ONBOARDING_INSTALLER}"
   install -o root -g root -m 0600 "${TMP_DIR}/node.key" \
     "${NODE_AGENT_CONFIG_DIR}/node.key"
   install -o root -g root -m 0644 "${TMP_DIR}/node-public.der" \
     "${NODE_AGENT_CONFIG_DIR}/node-public.der"
+  install -o root -g root -m 0600 "${TMP_DIR}/onboarding-pending" \
+    "${NODE_ONBOARDING_MARKER}"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-onboarding.service" \
+    "${NODE_ONBOARDING_SERVICE}"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-onboarding.timer" \
+    "${NODE_ONBOARDING_TIMER}"
   if ! HY2PANEL_ENROLLMENT_TOKEN="${enrollment_token}" \
     "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" register \
       --panel-url "${panel_url}" \
@@ -1234,9 +1300,84 @@ install_join_node() {
     fail "节点注册失败；已安排清理本次新增文件"
   fi
   enrollment_token=""
+  systemctl daemon-reload
+  systemctl enable --now hysteria2-panel-node-onboarding.timer \
+    || fail "无法启用节点自动收尾 timer；已安排清理本次新增文件"
   sync -f "${NODE_AGENT_OPT_DIR}"
   sync -f "${NODE_AGENT_CONFIG_DIR}"
-  echo "节点 Agent 已安装；面板状态为待验证。第一阶段未安装 Hysteria，也未修改网络或 DNS。"
+  sync -f /etc/systemd/system
+  fingerprint="$(sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der" | awk '{print $1}')"
+  echo "节点 Agent 已安装；请在面板核对并确认此公钥指纹："
+  echo "  短码：${fingerprint:0:16}"
+  echo "  完整：${fingerprint}"
+  echo "确认后本机将自动完成签名心跳、FULL/UDP 443、fq/BBR、16 MiB UDP 缓冲和数据面部署。安装器不会修改 DNS。"
+}
+
+complete_node_onboarding() {
+  local bootstrap_token marker_value
+
+  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
+    || fail "节点自动收尾只允许使用最初核验过的正式版本 v${PANEL_VERSION}"
+  [[ -d /run/systemd/system ]] \
+    || fail "节点自动收尾需要使用 systemd 的 Linux 服务器"
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "完整面板服务器不能执行分流节点自动收尾"
+  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
+  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node-public.der" 644
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
+  require_node_agent_file "${NODE_ONBOARDING_INSTALLER}" 700
+  require_node_agent_file "${NODE_ONBOARDING_SERVICE}" 644
+  require_node_agent_file "${NODE_ONBOARDING_TIMER}" 644
+  require_node_agent_file "${NODE_ONBOARDING_MARKER}" 600
+  marker_value="$(cat "${NODE_ONBOARDING_MARKER}")"
+  [[ "${marker_value}" == "HYSTERIA2_PANEL_NODE_ONBOARDING_V1" ]] \
+    || fail "节点自动收尾标记无效；拒绝继续"
+  select_python || fail "节点自动收尾需要 Python 3.8 或更高版本"
+
+  install -d -o root -g root -m 0700 "${NODE_ONBOARDING_RUNTIME_DIR}"
+  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+  if ! "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" claim-data-plane \
+    --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
+    --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+    --output-token "${NODE_ONBOARDING_TOKEN_FILE}"; then
+    rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+    echo "节点尚未通过面板指纹确认，自动收尾将在 30 秒后安全重试。"
+    return 0
+  fi
+  require_node_agent_file "${NODE_ONBOARDING_TOKEN_FILE}" 600
+  IFS= read -r bootstrap_token < "${NODE_ONBOARDING_TOKEN_FILE}"
+  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+  [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
+    || fail "面板返回的一次性数据面凭据无效"
+
+  if [[ ! -e "${NODE_AGENT_HEARTBEAT_SERVICE}" && \
+    ! -L "${NODE_AGENT_HEARTBEAT_SERVICE}" && \
+    ! -e "${NODE_AGENT_HEARTBEAT_TIMER}" && \
+    ! -L "${NODE_AGENT_HEARTBEAT_TIMER}" ]]; then
+    ACTIVATE_NODE_AGENT=1
+    activate_node_agent
+    ACTIVATE_NODE_AGENT_MUTATED=0
+    ACTIVATE_NODE_AGENT=0
+  else
+    require_node_agent_file "${NODE_AGENT_HEARTBEAT_SERVICE}" 644
+    require_node_agent_file "${NODE_AGENT_HEARTBEAT_TIMER}" 644
+    systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
+      || fail "既有节点签名心跳 timer 未运行；自动收尾已停止"
+  fi
+
+  ACTIVATE_DATA_PLANE=1
+  HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN="${bootstrap_token}" activate_data_plane
+  bootstrap_token=""
+  ACTIVATE_DATA_PLANE=0
+  DATA_PLANE_MUTATED=0
+  rm -f -- "${NODE_ONBOARDING_MARKER}"
+  systemctl disable --now --no-block hysteria2-panel-node-onboarding.timer \
+    >/dev/null 2>&1 || true
+  sync -f "${NODE_AGENT_CONFIG_DIR}" /etc/systemd/system
+  echo "节点自动对接已完成；可继续为该节点配置 DNS。"
 }
 
 rollback_node_agent_activation() {
@@ -5109,6 +5250,9 @@ elif [[ "${1:-}" == "--activate-node-agent" ]]; then
 elif [[ "${1:-}" == "--activate-data-plane" ]]; then
   ACTIVATE_DATA_PLANE=1
   shift
+elif [[ "${1:-}" == "--complete-node-onboarding" ]]; then
+  COMPLETE_NODE_ONBOARDING=1
+  shift
 fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
@@ -5123,6 +5267,13 @@ if (( REBIND_NODE == 1 )); then
   rebind_node
   INSTALL_COMMITTED=1
   REBIND_NODE_MUTATED=0
+  exit 0
+fi
+if (( COMPLETE_NODE_ONBOARDING == 1 )); then
+  # This mode owns no full-panel transaction. Its two reused activation
+  # functions set their own rollback flags before making any changes.
+  INSTALL_COMMITTED=1
+  complete_node_onboarding
   exit 0
 fi
 if (( ACTIVATE_NODE_AGENT == 1 )); then

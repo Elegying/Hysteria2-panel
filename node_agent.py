@@ -713,7 +713,7 @@ def _canonical_node_request(purpose, payload):
 
 
 def _canonical_data_plane_request(purpose, payload):
-    if purpose not in {"bootstrap", "ack"}:
+    if purpose not in {"claim", "bootstrap", "ack"}:
         raise ProtocolError("data-plane request purpose is invalid")
     return "hy2panel-data-plane-{}-v1\n".format(purpose).encode(
         "ascii"
@@ -949,6 +949,7 @@ class DataPlaneBootstrapClient:
     """Fetch and acknowledge a bounded identity response over signed HTTPS."""
 
     PATHS = {
+        "claim": ("/api/v1/node-data-plane/claim", 8 * 1024),
         "bootstrap": ("/api/v1/node-data-plane/bootstrap", 32 * 1024),
         "ack": ("/api/v1/node-data-plane/ack", 8 * 1024),
     }
@@ -970,7 +971,9 @@ class DataPlaneBootstrapClient:
         self.nonce_factory = nonce_factory or secrets.token_urlsafe
 
     def _post(self, purpose, token, fields):
-        if not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token):
+        if purpose != "claim" and (
+            not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token)
+        ):
             raise ProtocolError("the data-plane bootstrap credential is invalid")
         state = _registration_state(self.state_path)
         nonce = str(self.nonce_factory(32))
@@ -980,9 +983,10 @@ class DataPlaneBootstrapClient:
             "nodeId": state["nodeId"],
             "sentAt": int(self.clock()),
             "nonce": nonce,
-            "bootstrapToken": token,
             "requestId": uuid.uuid4().hex,
         }
+        if purpose != "claim":
+            payload["bootstrapToken"] = token
         payload.update(fields)
         signature = self.signer(
             self.private_key_path, _canonical_data_plane_request(purpose, payload)
@@ -1023,6 +1027,32 @@ class DataPlaneBootstrapClient:
             raise ProtocolError("the panel returned an invalid data-plane response")
         return result
 
+    def claim(self):
+        result = self._post("claim", None, {})
+        state = _registration_state(self.state_path)
+        if (
+            set(result)
+            != {
+                "nodeId",
+                "grantId",
+                "expiresAt",
+                "maxFetchAttempts",
+                "status",
+                "bootstrapToken",
+            }
+            or result.get("nodeId") != state["nodeId"]
+            or not NODE_ID_PATTERN.fullmatch(str(result.get("grantId", "")))
+            or isinstance(result.get("expiresAt"), bool)
+            or not isinstance(result.get("expiresAt"), int)
+            or result["expiresAt"] <= int(self.clock())
+            or result.get("maxFetchAttempts") != 3
+            or result.get("status") != "AUTO_BOOTSTRAP_ISSUED"
+            or not isinstance(result.get("bootstrapToken"), str)
+            or not TOKEN_PATTERN.fullmatch(result["bootstrapToken"])
+        ):
+            raise ProtocolError("the panel returned an invalid bootstrap claim")
+        return result
+
     def fetch(self, token):
         return self._post("bootstrap", token, {})
 
@@ -1037,6 +1067,50 @@ class DataPlaneBootstrapClient:
         }:
             raise ProtocolError("the panel returned an invalid data-plane ACK")
         return result
+
+
+def write_bootstrap_claim(client, output_path):
+    """Persist one claimed credential without exposing it on stdout or argv."""
+    output_path = pathlib.Path(output_path)
+    parent = output_path.parent
+    try:
+        parent_metadata = parent.stat()
+    except OSError as exc:
+        raise ProtocolError("the bootstrap claim directory is unavailable") from exc
+    if (
+        parent.is_symlink()
+        or not stat.S_ISDIR(parent_metadata.st_mode)
+        or parent_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_metadata.st_mode) & 0o077
+        or output_path.exists()
+        or output_path.is_symlink()
+    ):
+        raise ProtocolError("the bootstrap claim path is unsafe")
+    result = client.claim()
+    token = result["bootstrapToken"]
+    descriptor = None
+    staged_name = None
+    try:
+        descriptor, staged_name = tempfile.mkstemp(prefix=".bootstrap-", dir=str(parent))
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(token.encode("ascii"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged_name, str(output_path))
+        staged_name = None
+        _fsync_directory(parent)
+    except OSError as exc:
+        raise ProtocolError("cannot persist the bootstrap claim") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if staged_name is not None:
+            try:
+                os.unlink(staged_name)
+            except FileNotFoundError:
+                pass
 
 
 def _write_private_bundle_file(directory, name, value):
@@ -1962,6 +2036,10 @@ def _parser():
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
     command.add_argument("--output-dir", required=True)
+    command = subcommands.add_parser("claim-data-plane")
+    command.add_argument("--private-key", required=True)
+    command.add_argument("--state-file", required=True)
+    command.add_argument("--output-token", required=True)
     command = subcommands.add_parser("run-hysteria")
     command.add_argument("--template", required=True)
     command.add_argument("--runtime-config", required=True)
@@ -2040,6 +2118,21 @@ def main(arguments=None):
         finally:
             del token
         print("数据面身份与配置已验证并准备完成")
+        return 0
+    if options.command == "claim-data-plane":
+        try:
+            heartbeat(
+                state_path=options.state_file,
+                private_key_path=options.private_key,
+            )
+            client = DataPlaneBootstrapClient(
+                pathlib.Path(options.state_file), pathlib.Path(options.private_key)
+            )
+            write_bootstrap_claim(client, pathlib.Path(options.output_token))
+        except (HeartbeatError, OSError, ProtocolError, ValueError) as exc:
+            print("节点尚未获准自动部署：{}".format(exc), file=sys.stderr)
+            return 1
+        print("节点已领取短时数据面部署凭据")
         return 0
     if options.command == "run-hysteria":
         try:
