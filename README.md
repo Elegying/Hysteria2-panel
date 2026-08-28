@@ -1,22 +1,82 @@
 # Hysteria2-panel
 
-一个轻量、无第三方 Python 依赖的 Hysteria 2 多用户管理面板。部署脚本下载并校验官方 Hysteria 二进制，通过官方 HTTP 认证回调动态管理用户，并通过官方流量统计 API 显示在线设备和流量。
+[![CI](https://github.com/Elegying/Hysteria2-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/Elegying/Hysteria2-panel/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Elegying/Hysteria2-panel)](https://github.com/Elegying/Hysteria2-panel/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+轻量、无第三方 Python 运行时依赖的 Hysteria 2 多用户与多节点管理面板。它把面板本机节点和后续数据节点统一纳管：用户、设备数、流量额度和端口权限都由中央面板判定，用户数据流量则直接连接目标节点，不经过面板中转。
 
 - 上游：[apernet/hysteria](https://github.com/apernet/hysteria)
 - Hysteria 服务端配置：[官方文档](https://v2.hysteria.network/docs/advanced/Full-Server-Config/)
 - 流量统计 API：[官方文档](https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/)
 - 连接 URI：[官方文档](https://v2.hysteria.network/docs/developers/URI-Scheme/)
 
-## 一键部署
+## 一分钟开始
+
+新服务器先把面板域名的 DNS A/AAAA 记录指向服务器，并在云安全组放行 TCP `80`、面板端口以及 Hysteria 所需的 TCP/UDP 端口，然后用 `root` 执行这一行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)
+```
+
+这条命令会部署管理面板和本机 Hysteria 节点，自动配置 systemd 保活、证书、主端口与账号专属 UDP `443`、`FULL` 出站策略、`fq`/内核 BBR，以及至少 16 MiB UDP 缓冲。安装完成后即可登录网页；恢复旧服务器时先上传备份，再从“对接节点”生成命令，把后续服务器接入即可。
+
+> 这条短命令把 GitHub HTTPS 与受保护的 `main/install.sh` 作为首次信任入口，适合追踪项目最新稳定主线。要求更严格的生产环境，可以改用下方的固定 Release + Sigstore 验签流程，在授予 root 权限前先验证发布身份和文件完整性。
+
+推荐顺序：
+
+1. 配好面板 DNS 和云安全组；默认 HTTPS 首次签发要求公网 TCP `80` 可达；
+2. 在面板服务器运行上面的一行命令，完成面板和本机节点部署；
+3. 如果是迁移服务器，先在网页上传备份，恢复用户、流量、节点身份和 Hysteria 证书；
+4. 在网页选择“全新节点对接”或“安全重绑定”，把生成的命令复制到数据节点执行；
+5. 核对双方显示的 16 位指纹短码，按页面提示添加节点 DNS，等待自动验收完成。
+
+DNS 未提前配置好时，默认 HTTPS 安装会在申请证书前安全停止，不会自动退回明文 HTTP。主机防火墙可由安装器处理，但云厂商安全组不受服务器脚本控制，必须手工放行。
+
+## 工作原理
+
+```mermaid
+flowchart LR
+    U[用户客户端] -->|Hysteria / QUIC 数据流| L[面板本机节点]
+    U -->|Hysteria / QUIC 数据流| N[对接数据节点]
+    L -. 本机认证与统计 .-> P[中央面板]
+    N -. 签名认证、在线快照、流量 ACK .-> P
+```
+
+- 用户直接连接所选的面板本机节点或对接节点，不需要先连接面板再跳转；
+- 节点在认证时向中央面板确认账号状态、流量额度、设备数和 UDP `443` 权限；
+- 各节点持续上报在线快照和流量，面板按用户统一汇总，避免跨节点重复放行；
+- 中央状态过期或无法确认时，新认证会安全拒绝；数据节点上的已有连接不会因为面板短暂重启被主动切断。
+
+## 核心功能
+
+| 能力 | 说明 |
+|---|---|
+| 一行部署 | 自动部署面板、本机 Hysteria、systemd 服务、证书、防火墙检查和网络优化 |
+| 多用户管理 | 创建、禁用、轮换凭据、分享 URI/二维码，并设置流量和设备限制 |
+| 多节点对接 | 网页生成短时签名命令，支持全新接入和保留私钥、证书、流量 spool 的安全重绑定 |
+| 统一鉴权与统计 | 面板本机节点和数据节点共用用户、设备数、流量额度及 UDP `443` 权限 |
+| 双入口与 FULL | 主 UDP 端口和账号专属 UDP `443`，节点默认自动部署 `FULL` 公网出站策略 |
+| 网络优化 | Hysteria `standard` + `bbr`，以及事务化的内核 `bbr/fq` 和至少 16 MiB UDP 缓冲 |
+| 备份迁移 | 一键导出/恢复用户、流量、签名身份和 Hysteria TLS 身份，保持旧客户端配置可用 |
+| 健康与恢复 | systemd 保活、面板 watchdog、健康/就绪探针，以及安装、恢复和升级事务回滚 |
+| 可信发布 | 固定 Release、SHA-256 与 GitHub Actions OIDC/Sigstore 签名验证 |
+
+## 安装要求与严格验签
 
 部署目标需要 systemd、root 权限、Python 3.8 或更高版本，以及 `apt`、`dnf` 或 `yum` 中至少一个受支持的软件包管理器。当前兼容性按自动化证据分层：
 
 - **定期完整 E2E**：Ubuntu 24.04 LTS、Debian stable 与 Rocky Linux 9 的 amd64/arm64；nightly 会在干净的 systemd 容器中执行完整安装、升级和异常中断恢复；
 - **尽力支持**：其他 Debian/Ubuntu 版本，以及 AlmaLinux、CentOS Stream、Fedora 等兼容 `apt`/`dnf`/`yum` 的 systemd 发行版。它们共享安装器路径但没有逐版本、逐架构的完整 E2E 证明，生产部署前必须先在同版本 canary 验证；SELinux enforcing 主机还需单独验证策略和日志。
 
+<details>
+<summary>展开：固定正式版本并使用 Sigstore 验签安装</summary>
+
+以下流程会在执行 root 安装器前，验证固定 Release 的发布身份、文件完整性和 shell 语法：
+
 ```bash
 set -euo pipefail
-version=0.30.0
+version=0.30.1
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -49,7 +109,9 @@ sudo bash "${workdir}/install.sh"
 
 这段引导只执行固定正式版本的 Release 资产：先用固定 SHA-256 校验 Cosign，再验证安装器的 GitHub Actions OIDC/Sigstore 身份和 shell 语法，任一校验失败都不会以 root 执行。升级到新版本时请先把 `version` 改成对应的正式标签。
 
-安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `https`，并要求填写独立的面板公网域名，例如 `panel.ssrvpn.vip`；只有显式选择 `http` 时才启用明文管理面。出站策略默认是 `full`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`PANEL_PUBLIC_HOST`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
+</details>
+
+安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `https`，并要求填写独立的面板公网域名，例如 `panel.example.com`；只有显式选择 `http` 时才启用明文管理面。出站策略默认是 `full`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`PANEL_PUBLIC_HOST`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
 重复运行安装器会先检查备份分区余量，再暂停面板写入而保持旧 Hysteria 统计端点运行，结算流量并截断 SQLite WAL 后建立带 SHA-256 清单的一致性备份；备份与开机恢复事务持久化后才允许覆盖程序。升级进程被强制终止或主机中途重启时，systemd 会在面板启动前核验清单并恢复旧版本，校验不通过则保持事务标记并拒绝覆盖。最终切换前会在认证入口已停止时，于有界窗口内持续为在线身份设置 Hysteria 断开标记，再执行最后一次流量结算并停止旧 Hysteria。`/kick` 只在客户端下一次产生流量时生效，因此完全空闲的会话可能仍显示在 `/online`，并由服务停止统一关闭；统计查询或踢线失败仍会安全回滚。恢复、手工安装、在线更新和 ACME 续期共用维护锁，不允许两项维护交叉写入。随后自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 Hysteria TLS 身份。Hysteria 的 `server.crt`、`server.key`、用户 URI 和固定指纹不会被 ACME 读取或替换；面板 HTTPS 使用另一套 Let’s Encrypt 证书。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、systemd 单元、sudoers 和网络参数；数据库优先保留升级窗口内通过完整性校验的最新状态，仅在损坏时清除 WAL/SHM 后恢复升级前快照。只有全部服务和端口通过检查后才解除回滚保护。自动备份仅清理符合安装器时间戳命名的目录，最多保留 10 份且最长 90 天，手工或恢复备份不会被匹配。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
 
@@ -79,6 +141,18 @@ sudo bash "${workdir}/install.sh"
 > 安装器会先识别防火墙所有权：UFW 或 firewalld 中恰好一个启用时，以该管理器的查询结果为准并自动放行用户输入的 Hysteria 端口（TCP/UDP）、面板端口（TCP）、账号专属入口 `443`（TCP/UDP），以及 HTTPS 模式所需的 ACME TCP `80`。UFW 对冲突或无法证明无关的入站 deny/reject/limit 会停止；firewalld 目标 zone 存在 rich rule 时也会安全停止。写入后会再次复查全部目标规则与 zone，任何漂移或缺失都会撤销本次已添加规则。两者都未启用时才只读检查 nftables、IPv4 iptables 与 IPv6 ip6tables；无规则则保持不变，自定义入站策略或检查失败则停止。安装器不会主动启用防火墙；云平台安全组不在主机控制范围内，仍需人工放行。自动开放的面板端口对所有来源生效；生产环境应再在安全组中把该端口限制为固定管理 IP，但 TCP `80` 必须允许 Let’s Encrypt 公网校验。设计依据见 [ADR-012](docs/decisions/ADR-012-managed-firewall-port-opening.md)。
 
 TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后立即关闭，不读取或返回应用数据。它们用于兼容只会对节点地址执行 TCP 连通性测试的客户端，不代表 Hysteria UDP/QUIC 数据通道的真实健康状态；两个探测服务分别随对应的 Hysteria 服务启停。TCP `443` 探测成功也不代表账号已获准使用 UDP `443`。
+
+## 保活、健康与重启
+
+| 组件 | 自动恢复与健康判断 | 需要知道的边界 |
+|---|---|---|
+| 中央面板 | systemd 在异常退出后自动重启；`WatchdogSec=30s` 持续检查面板 `/healthz`、本机认证入口、流量采集进度和后台工作线程 | 重启期间新的中央鉴权会短暂不可用，恢复后需等待各协议就绪节点重新提交新鲜状态 |
+| 面板本机 Hysteria | 主端口、UDP `443` 和 TCP 探测都是独立 systemd 服务，异常退出自动重启 | 服务状态和 TCP 探测不能代替真实 Hysteria/QUIC 握手验收 |
+| 对接数据节点 | 节点 Agent、控制通道、Hysteria 双入口和 TCP 探测都由 systemd 保活；面板监测签名心跳、在线快照、流量 ACK 和 DNS/灰度状态 | 数据节点当前没有独立的 systemd watchdog 来强制终止“进程仍在但内部完全卡死”的极端情况；其状态过期后，面板会停止放行新的认证并显示异常 |
+
+旧版曾有一个重启相关问题：5 秒设备预留使用了不能跨进程重启比较的时钟值，导致重启后可能把旧预留错误地当成仍然有效。现在每次面板进程启动都会建立新的运行纪元并清除旧的认证决定、短期设备预留和节点快照；协议时间戳也改用可跨重启比较的墙上时钟，并有专门回归测试。因此，旧的“服务器重启后长期卡在 5 秒认证、用户一直连不上”问题不应再次出现。
+
+重启后仍可能有一个短暂且刻意的安全关闭窗口：面板要等所有已注册且协议就绪的节点重新提交在线快照和流量 ACK，才会放行新连接。如果某个仍被标记为协议就绪的数据节点实际离线或持续不上报，新认证会继续拒绝，直到该节点恢复或管理员撤销它；这是为了防止设备数或流量超额，不是旧的 5 秒计时错误。数据节点已有的 Hysteria 会话不经过面板转发，面板短暂重启不会主动切断这些会话。
 
 ## 多用户管理
 

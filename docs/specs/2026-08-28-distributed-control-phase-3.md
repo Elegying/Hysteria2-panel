@@ -1,5 +1,7 @@
 # 规格：分布式中央认证与计量第三阶段
 
+> 公开版本中的域名和 IP 是示例值，不代表实际生产拓扑。
+
 ## 目标
 
 在第二阶段已验证 Ed25519 节点身份和签名心跳之上，建立可在两个合成节点间
@@ -16,7 +18,7 @@ DNS。只有本阶段通过双节点合成验收并由管理员另行批准后�
 1. “设备数”表示 Hysteria `/online` 返回的客户端实例数，不表示物理设备。
 2. 中央控制不可用、任一参与节点快照过期或计量状态不可确认时，新认证失败关闭；
    已建立的 Hysteria 会话不因控制面短暂故障被主动中断。
-3. 永远不改变 Hysteria `server.crt`、`server.key`、`vpn.ssrvpn.vip`、现有用户 URI、
+3. 永远不改变 Hysteria `server.crt`、`server.key`、`vpn.example.com`、现有用户 URI、
    HMAC 或证书指纹。本阶段也不复制这些材料。
 
 ## 依据与架构选择
@@ -211,7 +213,7 @@ Hysteria 的清零响应和本地 spool 落盘之间仍存在掉电少计的极�
 ## 永不触碰
 
 - 不生成、续签、替换、转换或重新编码 Hysteria 节点证书与私钥。
-- 不改变 `vpn.ssrvpn.vip`、用户 URI、认证 token、HMAC 或证书指纹。
+- 不改变 `vpn.example.com`、用户 URI、认证 token、HMAC 或证书指纹。
 - 不把 Hysteria TLS 私钥、HMAC、用户数据库或长期秘密放进部署代码、HTTP 日志、
   审计、GitHub Actions 或 Git。
 - 不因节点心跳或协议就绪自动修改 Cloudflare DNS 或宣布节点已入池。

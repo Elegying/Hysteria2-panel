@@ -628,7 +628,7 @@ class RateLimiterTests(unittest.TestCase):
 
     def test_authentication_lock_slot_is_bounded_for_every_address_hash(self):
         limiter = LoginRateLimiter(max_attempts=1, window_seconds=60)
-        address = "155.103.116.201"
+        address = "1.1.1.1"
         self.assertGreaterEqual(
             hashlib.sha256(address.encode("utf-8")).digest()[0],
             len(limiter._authentication_locks),
@@ -5432,7 +5432,7 @@ class PanelHttpTests(unittest.TestCase):
             hmac_key=b"c" * 32,
             tls_cert=certificate,
             tls_key=private_key,
-            public_host="154.9.234.210",
+            public_host="8.8.8.8",
             hysteria_port=19999,
             node_name="私家车-2026",
             work_dir=Path(self.temp_dir.name) / "backup-restore",
@@ -5443,7 +5443,7 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.application = PanelApplication(
             database=self.db,
-            public_host="154.9.234.210",
+            public_host="8.8.8.8",
             hysteria_port=19999,
             pin_sha256="AA:BB:CC",
             stats_client=self.stats,
@@ -5458,7 +5458,7 @@ class PanelHttpTests(unittest.TestCase):
             reboot_controller=self.reboot_controller,
             node_enrollment_service=NodeEnrollmentService(
                 self.db,
-                panel_url="https://panel.ssrvpn.vip:19998",
+                panel_url="https://panel.example.com:19998",
                 panel_version="0.25.0",
             ),
             node_heartbeat_service=NodeHeartbeatService(
@@ -6099,7 +6099,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
         self.assertEqual(201, response.status)
         self.assertIn("hysteria2://", body)
-        self.assertIn("154.9.234.210:19999", body)
+        self.assertIn("8.8.8.8:19999", body)
         self.assertIn("%E7%A7%81%E5%AE%B6%E8%BD%A6-2026", body)
         user = self.db.list_proxy_users()["users"][0]
         self.assertEqual("alice", user["name"])
@@ -6214,6 +6214,11 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('.node-row small{margin-top:2px;overflow-wrap:anywhere}', body)
         self.assertIn('.node-actions{grid-column:1/-1;display:grid}', body)
         self.assertIn('@media(prefers-reduced-motion:reduce)', body)
+        self.assertIn(
+            "const forbidden = ['server.crt', 'server.key', "
+            "'HY2PANEL_HMAC_KEY', 'HY2PANEL_PUBLIC_HOST'];",
+            body,
+        )
         self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
         self.assertNotIn('td::before{content:attr(data-label)', body)
         self.assertNotIn('限 3 个并发连接', body)
@@ -6901,7 +6906,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.30.0", body)
+        self.assertIn("v0.30.1", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
@@ -7524,7 +7529,7 @@ class SettingsTests(unittest.TestCase):
             {
                 "HY2PANEL_DB": "/tmp/panel.db",
                 "HY2PANEL_HMAC_KEY": "ab" * 32,
-                "HY2PANEL_PUBLIC_HOST": "154.9.234.210",
+                "HY2PANEL_PUBLIC_HOST": "8.8.8.8",
                 "HY2PANEL_HYSTERIA_PORT": "19999",
                 "HY2PANEL_PANEL_PORT": "19998",
                 "HY2PANEL_AUTH_PORT": "19996",
@@ -7551,7 +7556,7 @@ class SettingsTests(unittest.TestCase):
     def test_custom_node_name_and_http_panel_scheme(self):
         values = {
             "HY2PANEL_HMAC_KEY": "ab" * 32,
-            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
             "HY2PANEL_STATS_SECRET": "stats-secret",
             "HY2PANEL_CERT_PIN": "AA:BB:CC",
             "HY2PANEL_NODE_NAME": "私家车-2026",
@@ -7567,23 +7572,23 @@ class SettingsTests(unittest.TestCase):
         settings = Settings.from_mapping(
             {
                 "HY2PANEL_HMAC_KEY": "ab" * 32,
-                "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+                "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
                 "HY2PANEL_STATS_SECRET": "stats-secret",
                 "HY2PANEL_CERT_PIN": "NODE:CERT:PIN",
                 "HY2PANEL_TLS_CERT": "/etc/hysteria2-panel/server.crt",
                 "HY2PANEL_TLS_KEY": "/etc/hysteria2-panel/server.key",
                 "HY2PANEL_PANEL_SCHEME": "https",
-                "HY2PANEL_PANEL_PUBLIC_HOST": "panel.ssrvpn.vip",
+                "HY2PANEL_PANEL_PUBLIC_HOST": "panel.example.com",
                 "HY2PANEL_PANEL_TLS_CERT": "/etc/hysteria2-panel/panel.crt",
                 "HY2PANEL_PANEL_TLS_KEY": "/etc/hysteria2-panel/panel.key",
             }
         )
 
-        self.assertEqual("vpn.ssrvpn.vip", settings.public_host)
+        self.assertEqual("vpn.example.com", settings.public_host)
         self.assertEqual(Path("/etc/hysteria2-panel/server.crt"), settings.tls_cert)
         self.assertEqual(Path("/etc/hysteria2-panel/server.key"), settings.tls_key)
         self.assertEqual("NODE:CERT:PIN", settings.cert_pin)
-        self.assertEqual("panel.ssrvpn.vip", settings.panel_public_host)
+        self.assertEqual("panel.example.com", settings.panel_public_host)
         self.assertEqual(
             Path("/etc/hysteria2-panel/panel.crt"), settings.panel_tls_cert
         )
@@ -7594,11 +7599,11 @@ class SettingsTests(unittest.TestCase):
     def test_https_rejects_missing_or_invalid_independent_panel_identity(self):
         base = {
             "HY2PANEL_HMAC_KEY": "ab" * 32,
-            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
             "HY2PANEL_STATS_SECRET": "stats-secret",
             "HY2PANEL_CERT_PIN": "NODE:CERT:PIN",
             "HY2PANEL_PANEL_SCHEME": "https",
-            "HY2PANEL_PANEL_PUBLIC_HOST": "panel.ssrvpn.vip",
+            "HY2PANEL_PANEL_PUBLIC_HOST": "panel.example.com",
             "HY2PANEL_PANEL_TLS_CERT": "/etc/hysteria2-panel/panel.crt",
             "HY2PANEL_PANEL_TLS_KEY": "/etc/hysteria2-panel/panel.key",
         }
@@ -7614,9 +7619,9 @@ class SettingsTests(unittest.TestCase):
                     Settings.from_mapping(values)
 
         for hostname in (
-            "https://panel.ssrvpn.vip",
-            "*.ssrvpn.vip",
-            "panel/ssrvpn.vip",
+            "https://panel.example.com",
+            "*.example.com",
+            "panel/example.com",
             "localhost",
         ):
             with self.subTest(hostname=hostname):
@@ -7628,7 +7633,7 @@ class SettingsTests(unittest.TestCase):
     def test_invalid_node_name_or_panel_scheme_is_rejected(self):
         base = {
             "HY2PANEL_HMAC_KEY": "ab" * 32,
-            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
             "HY2PANEL_STATS_SECRET": "stats-secret",
             "HY2PANEL_CERT_PIN": "AA:BB:CC",
         }
@@ -7640,7 +7645,7 @@ class SettingsTests(unittest.TestCase):
     def test_internal_auth_listener_must_remain_on_ipv4_loopback(self):
         base = {
             "HY2PANEL_HMAC_KEY": "ab" * 32,
-            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
             "HY2PANEL_STATS_SECRET": "stats-secret",
             "HY2PANEL_CERT_PIN": "AA:BB:CC",
         }
@@ -7659,7 +7664,7 @@ class SettingsTests(unittest.TestCase):
     def test_configured_ports_preserve_privileged_endpoints_but_reserve_secondary_443(self):
         base = {
             "HY2PANEL_HMAC_KEY": "ab" * 32,
-            "HY2PANEL_PUBLIC_HOST": "vpn.ssrvpn.vip",
+            "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
             "HY2PANEL_STATS_SECRET": "stats-secret",
             "HY2PANEL_CERT_PIN": "AA:BB:CC",
         }
@@ -7702,7 +7707,7 @@ class ConnectionUriTests(unittest.TestCase):
 
     def test_connection_uri_encodes_auth_label_and_certificate_pin(self):
         uri = build_connection_uri(
-            host="154.9.234.210",
+            host="8.8.8.8",
             port=19999,
             auth="a token/with:specials",
             pin_sha256="AA:BB:CC",
@@ -7711,7 +7716,7 @@ class ConnectionUriTests(unittest.TestCase):
         parsed = urllib.parse.urlsplit(uri)
 
         self.assertEqual("hysteria2", parsed.scheme)
-        self.assertEqual("154.9.234.210:19999", parsed.netloc.split("@", 1)[1])
+        self.assertEqual("8.8.8.8:19999", parsed.netloc.split("@", 1)[1])
         self.assertEqual("a token/with:specials", urllib.parse.unquote(parsed.netloc.split("@", 1)[0]))
         self.assertEqual("1", urllib.parse.parse_qs(parsed.query)["insecure"][0])
         self.assertEqual("AA:BB:CC", urllib.parse.parse_qs(parsed.query)["pinSHA256"][0])

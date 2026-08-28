@@ -50,7 +50,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.now = [2_000_000_000]
         self.service = NodeEnrollmentService(
             self.db,
-            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_url="https://panel.example.com:19998",
             panel_version="0.25.0",
             clock=lambda: self.now[0],
         )
@@ -94,7 +94,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertIn("verify-blob", command)
         self.assertIn("release-signature.yml@refs/tags/v0.25.0", command)
         self.assertIn("--join-node", command)
-        self.assertNotIn("vpn.ssrvpn.vip", command)
+        self.assertNotIn("vpn.example.com", command)
         self.assertNotIn("server.crt", command)
         self.assertNotIn("HY2PANEL_HMAC_KEY", command)
         syntax = subprocess.run(
@@ -248,7 +248,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             NodeEnrollmentService(
                 self.db,
-                panel_url="http://panel.ssrvpn.vip:19998",
+                panel_url="http://panel.example.com:19998",
                 panel_version="0.25.0",
             )
 
@@ -296,7 +296,7 @@ class NodeAgentTests(unittest.TestCase):
             )
 
         result = node_agent.register(
-            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_url="https://panel.example.com:19998",
             token="T" * 43,
             public_key_path=self.public_key,
             state_path=self.state_file,
@@ -308,7 +308,7 @@ class NodeAgentTests(unittest.TestCase):
 
         self.assertEqual("PENDING_VERIFICATION", result["status"])
         self.assertEqual(
-            "https://panel.ssrvpn.vip:19998/api/v1/node-registrations",
+            "https://panel.example.com:19998/api/v1/node-registrations",
             captured["url"],
         )
         self.assertEqual(10, captured["timeout"])
@@ -329,13 +329,13 @@ class NodeAgentTests(unittest.TestCase):
         state = json.loads(self.state_file.read_text())
         self.assertEqual("a" * 32, state["nodeId"])
         self.assertEqual("PENDING_VERIFICATION", state["status"])
-        self.assertEqual("https://panel.ssrvpn.vip:19998", state["panelUrl"])
+        self.assertEqual("https://panel.example.com:19998", state["panelUrl"])
         self.assertNotIn("T" * 43, self.state_file.read_text())
 
     def test_registration_rejects_http_bad_public_keys_and_oversized_responses(self):
         with self.assertRaises(ValueError):
             node_agent.register(
-                "http://panel.ssrvpn.vip:19998",
+                "http://panel.example.com:19998",
                 "T" * 43,
                 self.public_key,
                 self.state_file,
@@ -344,7 +344,7 @@ class NodeAgentTests(unittest.TestCase):
         self.public_key.write_bytes(b"not-ed25519")
         with self.assertRaises(ValueError):
             node_agent.register(
-                "https://panel.ssrvpn.vip:19998",
+                "https://panel.example.com:19998",
                 "T" * 43,
                 self.public_key,
                 self.state_file,
@@ -353,7 +353,7 @@ class NodeAgentTests(unittest.TestCase):
         self.public_key.write_bytes(bytes.fromhex("302a300506032b6570032100") + b"k" * 32)
         with self.assertRaises(node_agent.RegistrationError):
             node_agent.register(
-                "https://panel.ssrvpn.vip:19998",
+                "https://panel.example.com:19998",
                 "T" * 43,
                 self.public_key,
                 self.state_file,
@@ -365,7 +365,7 @@ class NodeAgentTests(unittest.TestCase):
         arguments = [
             "register",
             "--panel-url",
-            "https://panel.ssrvpn.vip:19998",
+            "https://panel.example.com:19998",
             "--public-key",
             str(self.public_key),
             "--state-file",
@@ -396,7 +396,7 @@ class NodeAgentTests(unittest.TestCase):
             json.dumps(
                 {
                     "nodeId": "c" * 32,
-                    "panelUrl": "https://panel.ssrvpn.vip:19998",
+                    "panelUrl": "https://panel.example.com:19998",
                     "registeredAt": 1_999_999_000,
                     "status": "PENDING_VERIFICATION",
                 }
@@ -441,7 +441,7 @@ class NodeAgentTests(unittest.TestCase):
 
         self.assertEqual("ONLINE", result["status"])
         self.assertEqual(
-            "https://panel.ssrvpn.vip:19998/api/v1/node-heartbeats",
+            "https://panel.example.com:19998/api/v1/node-heartbeats",
             captured["url"],
         )
         self.assertEqual(10, captured["timeout"])

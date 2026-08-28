@@ -371,7 +371,7 @@ document.addEventListener('submit', async function(event) {
   try {
     const payload = await submitInlineForm(form);
     const command = payload && payload.deploymentCommand;
-    const forbidden = ['server.crt', 'server.key', 'HY2PANEL_HMAC_KEY', 'vpn.ssrvpn.vip'];
+    const forbidden = ['server.crt', 'server.key', 'HY2PANEL_HMAC_KEY', 'HY2PANEL_PUBLIC_HOST'];
     if (typeof command !== 'string' || !command.startsWith('set -euo pipefail') || !command.includes('--activate-data-plane') || forbidden.some(function(value) { return command.includes(value); })) {
       throw new Error('数据面部署代码响应无效');
     }

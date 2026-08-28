@@ -384,20 +384,29 @@ esac
         self.assertEqual(0, help_result.returncode, help_result.stderr)
         self.assertIn("19999", help_result.stdout)
 
-    def test_readme_bootstrap_verifies_the_signed_release_before_root_bash(self):
+    def test_readme_offers_one_line_bootstrap_and_strict_signed_install(self):
         source = README.read_text()
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
-        self.assertNotIn(
-            "bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)",
-            source,
+        quick_command = (
+            "bash <(curl -fsSL "
+            "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)"
         )
+        self.assertIn(quick_command, source)
+        self.assertIn("首次信任入口", source)
+        self.assertIn("GitHub HTTPS", source)
         self.assertIn("releases/download/v", source)
         self.assertIn("install.sh.sigstore.json", source)
         self.assertIn("verify-blob", source)
         self.assertIn("--certificate-identity", source)
         self.assertIn("--certificate-oidc-issuer", source)
         self.assertIn("bash -n", source)
+        self.assertLess(source.index(quick_command), source.index("verify-blob"))
         self.assertLess(source.index("verify-blob"), source.index("sudo bash"))
+        self.assertIn("if quick_command not in readme:", workflow)
+        self.assertNotIn(
+            "README must not execute an unsigned main-branch installer", workflow
+        )
 
     def test_upgrade_is_armed_for_boot_recovery_before_payload_overwrite(self):
         source = INSTALLER.read_text()
@@ -480,7 +489,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.30.0"', source)
+        self.assertIn('PANEL_VERSION="0.30.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -576,7 +585,7 @@ esac
         self.assertNotIn('configure_firewall', join_function)
         self.assertNotIn('server.crt', join_function)
         self.assertNotIn('HY2PANEL_HMAC_KEY', join_function)
-        self.assertNotIn('vpn.ssrvpn.vip', join_function)
+        self.assertNotIn('vpn.example.com', join_function)
 
         dispatch = source.index('if (( JOIN_NODE == 1 )); then')
         full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
@@ -701,7 +710,7 @@ printf '%s:%s:%s:%s\n' \
         self.assertNotIn("configure_firewall", activation)
         self.assertNotIn("server.crt", activation)
         self.assertNotIn("HY2PANEL_HMAC_KEY", activation)
-        self.assertNotIn("vpn.ssrvpn.vip", activation)
+        self.assertNotIn("vpn.example.com", activation)
 
         dispatch = source.index('if (( ACTIVATE_NODE_AGENT == 1 )); then')
         full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
@@ -4401,7 +4410,7 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
             self.assertIn(check, self.activation)
             self.assertLess(self.activation.index(check), ack)
         self.assertIn('source "${NODE_AGENT_CONFIG_DIR}/stats.env"', self.activation)
-        self.assertNotIn("vpn.ssrvpn.vip", self.activation)
+        self.assertNotIn("vpn.example.com", self.activation)
         self.assertNotIn("cloudflare", self.activation.lower())
         self.assertNotIn("HY2PANEL_HMAC_KEY", self.activation)
 

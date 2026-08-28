@@ -1,5 +1,7 @@
 # 规格：节点控制第二阶段
 
+> 公开版本中的域名和 IP 是示例值，不代表实际生产拓扑。
+
 ## 目标
 
 在第一阶段“待验证 Agent”之上增加最小可信控制通道：管理员核对节点本机
@@ -15,7 +17,7 @@ Hysteria 数据面，不复制 Hysteria 证书、HMAC 或用户数据，不参�
 1. 设备数仍表示在线 Hysteria 客户端实例数；节点心跳不计入设备数。
 2. 中央控制不可用时，后续新认证失败关闭，已建立连接继续；本阶段尚不接线认证。
 3. 节点服务器使用稳定公网 IP；登记了预期 IP 时，心跳来源必须完全匹配。
-4. Hysteria 身份链、`vpn.ssrvpn.vip`、用户链接和证书指纹是永久不变量。
+4. Hysteria 身份链、`vpn.example.com`、用户链接和证书指纹是永久不变量。
 
 ## 技术栈与命令
 
@@ -94,7 +96,7 @@ Hysteria 数据面，不复制 Hysteria 证书、HMAC 或用户数据，不参�
 ## 永不触碰
 
 - Hysteria `server.crt`、`server.key`、`HY2PANEL_HMAC_KEY`。
-- `vpn.ssrvpn.vip`、现有用户 URI、证书指纹和 Cloudflare DNS。
+- `vpn.example.com`、现有用户 URI、证书指纹和 Cloudflare DNS。
 - 用户认证、设备数、流量结算与数据面服务（留给后续独立阶段）。
 
 ## 验收标准
