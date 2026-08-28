@@ -401,6 +401,18 @@ class DatabaseTests(unittest.TestCase):
             for key in ("tx_bytes", "rx_bytes")
         ))
 
+    def test_traffic_origin_kind_must_match_its_identity_namespace(self):
+        self.db.create_proxy_user("alice")
+
+        with self.assertRaisesRegex(ValueError, "origin"):
+            self.db.apply_traffic_batch(
+                "2" * 32,
+                {"alice": {"tx": 1, "rx": 1}},
+                origin_id="node:" + "2" * 32,
+                origin_kind="local",
+                origin_name="错误来源",
+            )
+
     def test_initialize_migrates_legacy_users_without_changing_their_token(self):
         legacy_path = Path(self.temp_dir.name) / "legacy.db"
         token = "legacy-token"
@@ -832,6 +844,32 @@ class UsageManagerTests(unittest.TestCase):
         origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
         self.assertEqual((7, 11), (origins["local:" + "a" * 32]["tx_bytes"], origins["local:" + "a" * 32]["rx_bytes"]))
         self.assertEqual("主面板", origins["local:" + "a" * 32]["display_name"])
+
+    def test_dashboard_keeps_fresh_local_online_counts_when_only_traffic_sync_fails(self):
+        self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(online={"alice": 2})
+        stats.collect_and_clear = lambda: (_ for _ in ()).throw(
+            OSError("traffic unavailable")
+        )
+        manager = UsageManager(
+            self.db,
+            stats,
+            local_origin_id="local:" + "b" * 32,
+            local_origin_name="主面板",
+        )
+
+        snapshot = manager.snapshot()
+        local = next(
+            row
+            for row in snapshot["machine_stats"]["origins"]
+            if row["origin_id"] == "local:" + "b" * 32
+        )
+
+        self.assertFalse(snapshot["available"])
+        self.assertTrue(snapshot["online_complete"])
+        self.assertEqual({"alice": 2}, snapshot["online"])
+        self.assertEqual(2, local["online_devices"])
+        self.assertEqual("fresh", local["online_state"])
 
     def test_failed_online_snapshot_marks_runtime_not_ready(self):
         class FakeHealth:

@@ -2406,10 +2406,15 @@ class Database:
         self, origin_id, origin_kind, origin_name, node_id=None, created_at=None
     ):
         created_at = int(time.time()) if created_at is None else int(created_at)
+        identity_matches_kind = bool(
+            isinstance(origin_id, str)
+            and (
+                (origin_kind == "local" and re.fullmatch(r"local:[0-9a-f]{32}", origin_id))
+                or (origin_kind == "remote" and re.fullmatch(r"node:[0-9a-f]{32}", origin_id))
+            )
+        )
         if (
-            not isinstance(origin_id, str)
-            or not re.fullmatch(r"(?:local:|node:)[0-9a-f]{32}", origin_id)
-            or origin_kind not in {"local", "remote"}
+            not identity_matches_kind
             or not isinstance(origin_name, str)
             or not NAME_PATTERN.fullmatch(origin_name)
         ):
@@ -2493,10 +2498,25 @@ class Database:
             raise ValueError("traffic batch id is invalid")
         if not isinstance(traffic_by_user, dict):
             raise ValueError("traffic must be a mapping")
+        identity_matches_kind = bool(
+            isinstance(origin_id, str)
+            and (
+                (
+                    origin_kind == "local"
+                    and re.fullmatch(r"local:[0-9a-f]{32}", origin_id)
+                )
+                or (
+                    origin_kind == "remote"
+                    and re.fullmatch(r"node:[0-9a-f]{32}", origin_id)
+                )
+                or (
+                    origin_kind == "legacy"
+                    and origin_id == LEGACY_USAGE_ORIGIN_ID
+                )
+            )
+        )
         if (
-            not isinstance(origin_id, str)
-            or not re.fullmatch(r"(?:local:|node:)?[0-9a-f]{32}|legacy-unattributed", origin_id)
-            or origin_kind not in {"local", "remote", "legacy"}
+            not identity_matches_kind
             or not isinstance(origin_name, str)
             or not NAME_PATTERN.fullmatch(origin_name)
         ):
@@ -3386,7 +3406,7 @@ class Database:
                     connection, node_id, "online", nonce_digest, accepted_at
                 )
                 node = connection.execute(
-                    """SELECT name, policy_state FROM nodes
+                    """SELECT policy_state FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -3491,7 +3511,7 @@ class Database:
                     connection, node_id, "auth", nonce_digest, now
                 )
                 node = connection.execute(
-                    """SELECT name, policy_state FROM nodes
+                    """SELECT policy_state FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -6906,6 +6926,7 @@ class UsageManager:
     def snapshot(self):
         with self.lock:
             available = True
+            online_available = True
             try:
                 self._collect_locked()
             except Exception:
@@ -6917,6 +6938,7 @@ class UsageManager:
                 LOGGER.exception("online snapshot failed during dashboard snapshot")
                 online = {}
                 available = False
+                online_available = False
             users = self.database.list_proxy_users_for_usage()
             now = int(self.wall_clock())
             node_states = self.database.list_node_online_states(
@@ -6946,10 +6968,14 @@ class UsageManager:
         current_local.update(
             {
                 "display_name": self.local_origin_name,
-                "online_devices": sum(online.values()) if available else None,
+                "online_devices": (
+                    sum(online.values()) if online_available else None
+                ),
                 "last_known_online_devices": sum(online.values()),
-                "online_state": "fresh" if available else "unavailable",
-                "observed_at": now if available else None,
+                "online_state": (
+                    "fresh" if online_available else "unavailable"
+                ),
+                "observed_at": now if online_available else None,
             }
         )
         current_node_ids = set()
@@ -7011,7 +7037,7 @@ class UsageManager:
                 row["origin_id"],
             ),
         )
-        has_stale_online = (not available) or any(
+        has_stale_online = (not online_available) or any(
             node["online_state"] in {"stale", "unavailable"}
             for node in node_states
             if node["policy_state"] == "protocol_ready"
