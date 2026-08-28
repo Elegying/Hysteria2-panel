@@ -1930,6 +1930,9 @@ class Database:
                     "ALTER TABLE nodes ADD COLUMN direct_canary_passed_at INTEGER"
                 ),
                 "dns_admitted_at": "ALTER TABLE nodes ADD COLUMN dns_admitted_at INTEGER",
+                "dns_admitted_by": "ALTER TABLE nodes ADD COLUMN dns_admitted_by TEXT",
+                "dns_removed_at": "ALTER TABLE nodes ADD COLUMN dns_removed_at INTEGER",
+                "dns_removed_by": "ALTER TABLE nodes ADD COLUMN dns_removed_by TEXT",
             }
             for column, statement in node_migrations.items():
                 if column not in node_columns:
@@ -2506,6 +2509,12 @@ class Database:
         if not re.fullmatch(r"[0-9a-f]{32}", node_id):
             return False
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                "SELECT data_plane_state FROM nodes WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            if node is not None and node["data_plane_state"] == "dns_admitted":
+                raise ValueError("请先从外部 DNS 撤出并记录撤出后再撤销节点")
             updated = connection.execute(
                 "UPDATE nodes SET status = 'revoked' WHERE node_id = ?",
                 (node_id,),
@@ -2864,6 +2873,113 @@ class Database:
                 raise sqlite3.IntegrityError("direct canary state conflict")
             return True
 
+    def mark_node_dns_admitted(self, node_id, actor, admitted_at):
+        node_id = str(node_id or "")
+        actor = str(actor or "").strip()
+        admitted_at = int(admitted_at)
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not actor
+            or len(actor) > 64
+            or admitted_at <= 0
+        ):
+            raise ValueError("DNS 准入确认参数无效")
+        fresh_after = admitted_at - MAX_STATE_AGE_SECONDS
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT status, verified_at, policy_state, data_plane_state,
+                    data_plane_installed_at, direct_canary_passed_at,
+                    last_heartbeat_at, last_snapshot_at, last_traffic_ack_at
+                FROM nodes WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if node is None:
+                raise ValueError("节点不存在")
+            if node["data_plane_state"] == "dns_admitted":
+                return False
+            if (
+                node["status"] != "pending_verification"
+                or node["verified_at"] is None
+                or node["policy_state"] != "protocol_ready"
+                or node["data_plane_state"] != "direct_canary_passed"
+                or node["data_plane_installed_at"] is None
+                or node["direct_canary_passed_at"] is None
+                or node["last_heartbeat_at"] is None
+                or node["last_snapshot_at"] is None
+                or node["last_traffic_ack_at"] is None
+                or min(
+                    int(node["last_heartbeat_at"]),
+                    int(node["last_snapshot_at"]),
+                    int(node["last_traffic_ack_at"]),
+                )
+                < fresh_after
+            ):
+                raise ValueError("节点未满足 DNS 准入的新鲜度与灰度条件")
+            updated = connection.execute(
+                """UPDATE nodes SET data_plane_state = 'dns_admitted',
+                    dns_admitted_at = ?, dns_admitted_by = ?,
+                    dns_removed_at = NULL, dns_removed_by = NULL
+                WHERE node_id = ? AND status = 'pending_verification'
+                    AND verified_at IS NOT NULL
+                    AND policy_state = 'protocol_ready'
+                    AND data_plane_state = 'direct_canary_passed'
+                    AND data_plane_installed_at IS NOT NULL
+                    AND direct_canary_passed_at IS NOT NULL
+                    AND last_heartbeat_at >= ?
+                    AND last_snapshot_at >= ?
+                    AND last_traffic_ack_at >= ?""",
+                (
+                    admitted_at,
+                    actor,
+                    node_id,
+                    fresh_after,
+                    fresh_after,
+                    fresh_after,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise sqlite3.IntegrityError("DNS admission state conflict")
+            return True
+
+    def remove_node_dns_admission(self, node_id, actor, removed_at):
+        node_id = str(node_id or "")
+        actor = str(actor or "").strip()
+        removed_at = int(removed_at)
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not actor
+            or len(actor) > 64
+            or removed_at <= 0
+        ):
+            raise ValueError("DNS 撤出确认参数无效")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT data_plane_state, dns_admitted_at, dns_removed_at
+                FROM nodes WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if node is None:
+                raise ValueError("节点不存在")
+            if (
+                node["data_plane_state"] == "direct_canary_passed"
+                and node["dns_admitted_at"] is not None
+                and node["dns_removed_at"] is not None
+            ):
+                return False
+            if node["data_plane_state"] != "dns_admitted":
+                raise ValueError("节点当前未处于 DNS 准入状态")
+            updated = connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    dns_removed_at = ?, dns_removed_by = ?
+                WHERE node_id = ? AND data_plane_state = 'dns_admitted'""",
+                (removed_at, actor, node_id),
+            )
+            if updated.rowcount != 1:
+                raise sqlite3.IntegrityError("DNS removal state conflict")
+            return True
+
     def set_node_policy_state(self, node_id, state, actor, changed_at):
         node_id = str(node_id or "")
         actor = str(actor or "").strip()
@@ -2875,6 +2991,16 @@ class Database:
         ):
             return False
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                "SELECT data_plane_state FROM nodes WHERE node_id = ?", (node_id,)
+            ).fetchone()
+            if (
+                state == "standby"
+                and node is not None
+                and node["data_plane_state"] == "dns_admitted"
+            ):
+                raise ValueError("请先从外部 DNS 撤出并记录撤出后再停用控制协议")
             if state == "protocol_ready":
                 updated = connection.execute(
                     """UPDATE nodes SET policy_state = ?, policy_enabled_at = ?,
@@ -4712,6 +4838,14 @@ class PanelHandler(JsonHandler):
                 node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/canary/pass" data-data-plane-canary-form data-confirm="只记录该节点直连灰度通过，不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认直连灰度通过</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
+            if data_plane_eligible and data_plane_state == "direct_canary_passed":
+                node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/dns/admit" data-node-dns-action-form data-confirm="请仅在外部 DNS 已加入该节点且真实 Hysteria 验收通过后记录准入；此操作本身不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认 DNS 准入完成</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
+            if data_plane_eligible and data_plane_state == "dns_admitted":
+                node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/dns/remove" data-node-dns-action-form data-confirm="请先从外部 DNS 移除该节点；此操作只记录撤出并保留直连灰度状态。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">确认已撤出 DNS</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
             node_rows.append(
                 """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                     name=html.escape(node["name"]),
@@ -5043,6 +5177,27 @@ class PanelHandler(JsonHandler):
             )
         self.send_json(200, {"directCanaryPassed": changed})
 
+    def _handle_node_dns_admission(self, session, node_id, action):
+        try:
+            if action == "admit":
+                changed = self.app.database.mark_node_dns_admitted(
+                    node_id, session["username"], int(time.time())
+                )
+                audit_action = "node_data_plane_dns_admitted"
+                payload = {"dnsAdmitted": changed}
+            else:
+                changed = self.app.database.remove_node_dns_admission(
+                    node_id, session["username"], int(time.time())
+                )
+                audit_action = "node_data_plane_dns_removed"
+                payload = {"dnsRemoved": changed}
+        except (sqlite3.IntegrityError, TypeError, ValueError) as exc:
+            self.send_json(409, {"error": str(exc)})
+            return
+        if changed:
+            self._audit_safely(session["username"], audit_action, node_id)
+        self.send_json(200, payload)
+
     def _handle_create_node_enrollment(self, session, form):
         service = self.app.node_enrollment_service
         if not self.app.secure_cookies or service is None:
@@ -5105,7 +5260,13 @@ class PanelHandler(JsonHandler):
             self._redirect("/")
 
     def _handle_revoke_node(self, session, node_id):
-        revoked = self.app.database.revoke_node(node_id, revoked_at=int(time.time()))
+        try:
+            revoked = self.app.database.revoke_node(
+                node_id, revoked_at=int(time.time())
+            )
+        except ValueError as exc:
+            self.send_json(409, {"error": str(exc)})
+            return
         if not revoked:
             self.send_json(404, {"error": "节点不存在"})
             return
@@ -5117,12 +5278,16 @@ class PanelHandler(JsonHandler):
 
     def _handle_node_protocol(self, session, node_id, action):
         state = "protocol_ready" if action == "enable" else "standby"
-        changed = self.app.database.set_node_policy_state(
-            node_id,
-            state,
-            actor=session["username"],
-            changed_at=int(time.time()),
-        )
+        try:
+            changed = self.app.database.set_node_policy_state(
+                node_id,
+                state,
+                actor=session["username"],
+                changed_at=int(time.time()),
+            )
+        except ValueError as exc:
+            self.send_json(409, {"error": str(exc)})
+            return
         if not changed:
             self.send_json(409, {"error": "节点必须已验证且心跳在线"})
             return
@@ -5284,6 +5449,14 @@ class PanelHandler(JsonHandler):
         if data_plane_canary_match:
             self._handle_mark_data_plane_canary_passed(
                 session, data_plane_canary_match.group(1)
+            )
+            return
+        data_plane_dns_match = re.fullmatch(
+            r"/nodes/([0-9a-f]{32})/data-plane/dns/(admit|remove)", path
+        )
+        if data_plane_dns_match:
+            self._handle_node_dns_admission(
+                session, data_plane_dns_match.group(1), data_plane_dns_match.group(2)
             )
             return
         if path == "/users/reset-traffic":

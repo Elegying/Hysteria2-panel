@@ -121,6 +121,9 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
                 "data_plane_installed_at",
                 "direct_canary_passed_at",
                 "dns_admitted_at",
+                "dns_admitted_by",
+                "dns_removed_at",
+                "dns_removed_by",
             }.issubset(node_columns)
         )
         self.assertEqual(
@@ -388,6 +391,89 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
                 self.node_id, "admin", self.now[0] + 1
             )
         )
+
+    def test_dns_admission_requires_fresh_control_state_and_is_reversible(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'data_plane_installed',
+                    data_plane_installed_at = ? WHERE node_id = ?""",
+                (self.now[0] - 10, self.node_id),
+            )
+        self.assertTrue(
+            self.db.mark_node_direct_canary_passed(
+                self.node_id, "admin", self.now[0] - 5
+            )
+        )
+
+        with self.assertRaises(ValueError):
+            self.db.mark_node_dns_admitted(self.node_id, "admin", self.now[0])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET last_heartbeat_at = ?, last_snapshot_at = ?,
+                    last_traffic_ack_at = ? WHERE node_id = ?""",
+                (self.now[0], self.now[0], self.now[0], self.node_id),
+            )
+
+        self.assertTrue(
+            self.db.mark_node_dns_admitted(self.node_id, "admin", self.now[0])
+        )
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("dns_admitted", node["data_plane_state"])
+        self.assertEqual(self.now[0], node["dns_admitted_at"])
+        self.assertEqual("admin", node["dns_admitted_by"])
+        self.assertIsNone(node["dns_removed_at"])
+        self.assertFalse(
+            self.db.mark_node_dns_admitted(self.node_id, "admin", self.now[0] + 1)
+        )
+        with self.assertRaises(ValueError):
+            self.db.set_node_policy_state(
+                self.node_id, "standby", "admin", self.now[0] + 1
+            )
+        with self.assertRaises(ValueError):
+            self.db.revoke_node(self.node_id, self.now[0] + 1)
+
+        self.assertTrue(
+            self.db.remove_node_dns_admission(
+                self.node_id, "rollback-admin", self.now[0] + 2
+            )
+        )
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+        self.assertEqual(self.now[0] + 2, node["dns_removed_at"])
+        self.assertEqual("rollback-admin", node["dns_removed_by"])
+        self.assertFalse(
+            self.db.remove_node_dns_admission(
+                self.node_id, "rollback-admin", self.now[0] + 3
+            )
+        )
+
+    def test_dns_admission_rejects_stale_state_without_partial_writes(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    data_plane_installed_at = ?, direct_canary_passed_at = ?,
+                    last_heartbeat_at = ?, last_snapshot_at = ?,
+                    last_traffic_ack_at = ? WHERE node_id = ?""",
+                (
+                    self.now[0] - 100,
+                    self.now[0] - 90,
+                    self.now[0],
+                    self.now[0] - 46,
+                    self.now[0],
+                    self.node_id,
+                ),
+            )
+        with self.assertRaises(ValueError):
+            self.db.mark_node_dns_admitted(self.node_id, "admin", self.now[0])
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+        self.assertIsNone(node["dns_admitted_at"])
 
 
 class DataPlaneBootstrapContractTests(unittest.TestCase):
@@ -868,6 +954,45 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         )
         self.assertIsNotNone(node["direct_canary_passed_at"])
         self.assertIsNone(node["dns_admitted_at"])
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET last_heartbeat_at = ?, last_snapshot_at = ?,
+                    last_traffic_ack_at = ? WHERE node_id = ?""",
+                (self.now[0], self.now[0], self.now[0], self.node_id),
+            )
+        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
+        self.assertIn(
+            '/nodes/{}/data-plane/dns/admit'.format(self.node_id), body
+        )
+        self.assertIn("确认 DNS 准入完成", body)
+
+        admit_request = urllib.request.Request(
+            self.base_url + "/nodes/{}/data-plane/dns/admit".format(self.node_id),
+            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
+            headers={**headers, "Accept": "application/json"},
+            method="POST",
+        )
+        result = json.loads(
+            urllib.request.urlopen(admit_request, timeout=2).read().decode("utf-8")
+        )
+        self.assertEqual({"dnsAdmitted": True}, result)
+        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
+        self.assertIn("DNS 已准入", body)
+        self.assertIn(
+            '/nodes/{}/data-plane/dns/remove'.format(self.node_id), body
+        )
+
+        remove_request = urllib.request.Request(
+            self.base_url + "/nodes/{}/data-plane/dns/remove".format(self.node_id),
+            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
+            headers={**headers, "Accept": "application/json"},
+            method="POST",
+        )
+        result = json.loads(
+            urllib.request.urlopen(remove_request, timeout=2).read().decode("utf-8")
+        )
+        self.assertEqual({"dnsRemoved": True}, result)
 
 
 class NodeDataPlaneConfigTests(unittest.TestCase):
