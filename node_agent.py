@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.27.0"
+AGENT_VERSION = "0.27.1"
 MAX_RESPONSE_BYTES = 8192
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
@@ -1124,15 +1124,44 @@ def _linux_memfd():
 def run_hysteria_from_template(
     binary,
     template_path,
+    runtime_config_path,
     *,
     environment=None,
     execve=os.execve,
     memfd_factory=_linux_memfd,
+    lstat=os.lstat,
+    symlink=os.symlink,
+    unlink=os.unlink,
 ):
     """Exec Hysteria with the stats secret substituted only in anonymous memory."""
 
     if str(binary) != "/opt/hysteria2-panel-node/bin/hysteria":
         raise ProtocolError("data-plane Hysteria binary path is invalid")
+    runtime_config_path = pathlib.Path(runtime_config_path)
+    allowed_runtime_paths = {
+        pathlib.Path("/run/hysteria2-panel-node-main/config.yaml"),
+        pathlib.Path("/run/hysteria2-panel-node-udp443/config.yaml"),
+    }
+    if runtime_config_path not in allowed_runtime_paths:
+        raise ProtocolError("runtime Hysteria configuration path is invalid")
+    try:
+        runtime_directory = lstat(runtime_config_path.parent)
+    except OSError as exc:
+        raise ProtocolError("runtime Hysteria configuration directory is unavailable") from exc
+    if (
+        not stat.S_ISDIR(runtime_directory.st_mode)
+        or runtime_directory.st_uid != 0
+        or stat.S_IMODE(runtime_directory.st_mode) != 0o700
+    ):
+        raise ProtocolError("runtime Hysteria configuration directory is unsafe")
+    try:
+        lstat(runtime_config_path)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ProtocolError("runtime Hysteria configuration path is unavailable") from exc
+    else:
+        raise ProtocolError("runtime Hysteria configuration path is already occupied")
     environment = dict(os.environ if environment is None else environment)
     secret = environment.pop("HY2PANEL_STATS_SECRET", "")
     if not isinstance(secret, str) or TOKEN_PATTERN.fullmatch(secret) is None:
@@ -1157,6 +1186,7 @@ def run_hysteria_from_template(
     except UnicodeError as exc:
         raise ProtocolError("local traffic stats secret is invalid") from exc
     anonymous = memfd_factory()
+    runtime_link_created = False
     try:
         if not isinstance(anonymous, int) or anonymous < 0:
             raise ProtocolError("anonymous Hysteria configuration is unavailable")
@@ -1168,12 +1198,23 @@ def run_hysteria_from_template(
                 raise OSError("short anonymous configuration write")
             offset += written
         os.lseek(anonymous, 0, os.SEEK_SET)
-        arguments = [str(binary), "server", "-c", "/proc/self/fd/{}".format(anonymous)]
+        anonymous_path = "/proc/self/fd/{}".format(anonymous)
+        symlink(anonymous_path, runtime_config_path)
+        runtime_link_created = True
+        runtime_link = lstat(runtime_config_path)
+        if not stat.S_ISLNK(runtime_link.st_mode) or runtime_link.st_uid != 0:
+            raise ProtocolError("runtime Hysteria configuration link is unsafe")
+        arguments = [str(binary), "server", "-c", str(runtime_config_path)]
         execve(str(binary), arguments, environment)
         raise ProtocolError("Hysteria execution returned unexpectedly")
     except OSError as exc:
         raise ProtocolError("cannot execute the data-plane Hysteria service") from exc
     finally:
+        if runtime_link_created:
+            try:
+                unlink(runtime_config_path)
+            except OSError:
+                pass
         if isinstance(anonymous, int) and anonymous >= 0:
             try:
                 os.close(anonymous)
@@ -1903,6 +1944,7 @@ def _parser():
     command.add_argument("--output-dir", required=True)
     command = subcommands.add_parser("run-hysteria")
     command.add_argument("--template", required=True)
+    command.add_argument("--runtime-config", required=True)
     command = subcommands.add_parser("ack-data-plane")
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
@@ -1984,6 +2026,7 @@ def main(arguments=None):
             run_hysteria_from_template(
                 "/opt/hysteria2-panel-node/bin/hysteria",
                 pathlib.Path(options.template),
+                pathlib.Path(options.runtime_config),
             )
         except (OSError, ProtocolError, ValueError) as exc:
             print("错误：{}".format(exc), file=sys.stderr)
