@@ -5496,6 +5496,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-dialog-open="node-onboarding-dialog"', body)
         self.assertIn('id="node-onboarding-dialog"', body)
         self.assertIn('data-node-enrollment-form', body)
+        self.assertIn('name="mode"', body)
+        self.assertIn('value="rebind"', body)
         self.assertIn("待验证", body)
         self.assertIn("待注册 &lt;节点&gt;", body)
         self.assertNotIn("待注册 <节点>", body)
@@ -5536,6 +5538,23 @@ class PanelHttpTests(unittest.TestCase):
             self.enrollment_token(issued["deploymentCommand"]),
             json.dumps(self.db.list_nodes()),
         )
+
+        rebind_response = self.request(
+            "/node-enrollments",
+            data={
+                "csrf": csrf,
+                "name": "existing-edge-02",
+                "expected_ip": "203.0.113.11",
+                "ttl_minutes": "10",
+                "mode": "rebind",
+            },
+            headers={**headers, "Accept": "application/json"},
+        )
+        rebind = json.loads(rebind_response.read())
+        self.assertEqual("REBIND_PENDING_REGISTRATION", rebind["status"])
+        self.assertEqual("rebind", rebind["mode"])
+        self.assertIn("--rebind-node", rebind["deploymentCommand"])
+        self.assertNotIn("--join-node", rebind["deploymentCommand"])
 
         revoke = self.request(
             "/node-enrollments/{}/revoke".format(issued["enrollmentId"]),
@@ -6833,7 +6852,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.28.4", body)
+        self.assertIn("v0.29.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

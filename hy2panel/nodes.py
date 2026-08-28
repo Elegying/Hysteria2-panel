@@ -461,7 +461,10 @@ class NodeEnrollmentService:
         self.clock = clock
         self.token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
 
-    def _deployment_command(self, token):
+    def _deployment_command(self, token, mode="join"):
+        if mode not in {"join", "rebind"}:
+            raise ValueError("enrollment mode must be join or rebind")
+        installer_mode = "--join-node" if mode == "join" else "--rebind-node"
         tag = "v{}".format(self.panel_version)
         repository = "https://github.com/Elegying/Hysteria2-panel"
         raw_installer = (
@@ -500,7 +503,7 @@ bash -n "$join_tmp/install.sh"
 export HY2PANEL_PANEL_URL={panel_url}
 export HY2PANEL_ENROLLMENT_TOKEN={token}
 export PANEL_REF={tag}
-/bin/bash "$join_tmp/install.sh" --join-node
+/bin/bash "$join_tmp/install.sh" {installer_mode}
 unset HY2PANEL_ENROLLMENT_TOKEN
 """.format(
             cosign_sha_amd64=self.COSIGN_SHA_AMD64,
@@ -512,11 +515,15 @@ unset HY2PANEL_ENROLLMENT_TOKEN
             panel_url=_single_quote(self.panel_url),
             token=_single_quote(token),
             tag=_single_quote(tag),
+            installer_mode=installer_mode,
         )
 
-    def create(self, name, expected_ip, ttl_minutes, actor):
+    def create(self, name, expected_ip, ttl_minutes, actor, mode="join"):
         name = _normalize_name(name)
         expected_ip = _normalize_ip(expected_ip, allow_empty=True)
+        mode = str(mode or "join")
+        if mode not in {"join", "rebind"}:
+            raise ValueError("enrollment mode must be join or rebind")
         try:
             ttl_minutes = int(ttl_minutes)
         except (TypeError, ValueError) as exc:
@@ -540,8 +547,13 @@ unset HY2PANEL_ENROLLMENT_TOKEN
             "nodeId": record["node_id"],
             "enrollmentId": record["enrollment_id"],
             "expiresAt": record["expires_at"],
-            "status": "PENDING_REGISTRATION",
-            "deploymentCommand": self._deployment_command(token),
+            "status": (
+                "PENDING_REGISTRATION"
+                if mode == "join"
+                else "REBIND_PENDING_REGISTRATION"
+            ),
+            "mode": mode,
+            "deploymentCommand": self._deployment_command(token, mode=mode),
         }
 
     def revoke(self, enrollment_id):

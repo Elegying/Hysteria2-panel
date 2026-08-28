@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.28.4"
+PANEL_VERSION="0.29.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -20,20 +20,20 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="0d7eab204ff305cfe11fc6f968f15ef7dc6aa9f4297cd756cd1bde69bd9cdeb5"
+PANEL_SHA256="a186e66c1a067c2ff3b6e6efea5f4ea49ae6b5891e332890d978344c2f22d8f8"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="a42cb7aa8eda9f0eb9c8580907838eaed1f0cdebda1bef68ab2042b265045bd0"
+HY2PANEL_VERSION_SHA256="5bf144156e8f9463ae941a251835ba21d9f84bd730bfd49bddad11e6121c3d63"
 HY2PANEL_WEB_ASSETS_SHA256="711ce11d7747135634af4929d1398f4ec9bf60f36cbbc6301fbf05236f766def"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="4034f6471824e1d8e8bdb0728f668d09251b7738258edac973e010c790748449"
+HY2PANEL_NODES_SHA256="e121467f90058d08bba44e03717e7084c18a9005261e406d3b1e5583a37598f3"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="2168ffb3dfc2186f65f4302599a0a36bc8ec7b9be512b58c5964ea9634507101"
+NODE_AGENT_SHA256="f19b131dfbe15d761ea4e81255bc07f10b16ec9de2f9af733a4696a04506bdc2"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -54,6 +54,7 @@ ACME_WORK_DIR=/var/lib/hysteria2-panel/acme-work
 ACME_LOGS_DIR=/var/lib/hysteria2-panel/acme-logs
 MIN_QUIC_UDP_BUFFER=16777216
 SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel.conf
+NODE_SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel-node.conf
 TMPFILES_FILE=/etc/tmpfiles.d/hysteria2-panel.conf
 MAINTENANCE_RUNTIME_DIR=/run/hysteria2-panel-maintenance
 MAINTENANCE_LOCK_FILE=${MAINTENANCE_RUNTIME_DIR}/lock
@@ -66,6 +67,9 @@ NODE_AGENT_HEARTBEAT_TIMER=/etc/systemd/system/hysteria2-panel-node-heartbeat.ti
 NODE_DATA_PLANE_BACKUP_ROOT=/var/backups/hysteria2-panel-node
 NODE_DATA_PLANE_TRANSACTION=/etc/hysteria2-panel-node/.data-plane-transaction
 DATA_PLANE_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_DATA_PLANE_V1
+NODE_REBIND_BACKUP_ROOT=/var/backups/hysteria2-panel-node/rebind
+NODE_REBIND_TRANSACTION=/etc/hysteria2-panel-node/.rebind-transaction
+NODE_REBIND_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_REBIND_V1
 FRESH_IN_PROGRESS_MARKER=/etc/.hysteria2-panel-installing-by-installer
 LEGACY_FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer
 FRESH_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FRESH_TRANSACTION_V1
@@ -125,6 +129,9 @@ MAINTENANCE_LOCK_HELD=0
 ORIGINAL_ARGS=()
 JOIN_NODE=0
 JOIN_NODE_MUTATED=0
+REBIND_NODE=0
+REBIND_NODE_MUTATED=0
+REBIND_NODE_BACKUP_DIR=""
 ACTIVATE_NODE_AGENT=0
 ACTIVATE_NODE_AGENT_MUTATED=0
 NODE_AGENT_BACKUP_FILE=""
@@ -145,6 +152,9 @@ Hysteria2-panel 一键部署
 
 对接节点（只安装节点 Agent，不安装或修改 Hysteria）：
   sudo -E bash install.sh --join-node
+
+已有数据节点安全重新绑定（保留节点私钥、Hysteria 身份和流量 spool）：
+  sudo -E bash install.sh --rebind-node
 
 验证后启用签名心跳（不安装或修改 Hysteria）：
   sudo bash install.sh --activate-node-agent
@@ -923,6 +933,8 @@ finalize_install() {
   local cleanup_status=0
   local join_node_state="${JOIN_NODE:-0}"
   local join_node_mutated="${JOIN_NODE_MUTATED:-0}"
+  local rebind_node_state="${REBIND_NODE:-0}"
+  local rebind_node_mutated="${REBIND_NODE_MUTATED:-0}"
   local activate_node_state="${ACTIVATE_NODE_AGENT:-0}"
   local activate_node_mutated="${ACTIVATE_NODE_AGENT_MUTATED:-0}"
   local data_plane_state="${ACTIVATE_DATA_PLANE:-0}"
@@ -935,6 +947,10 @@ finalize_install() {
   if (( status != 0 && data_plane_state == 1 )); then
     if (( data_plane_mutated == 1 )); then
       rollback_data_plane_activation || status=1
+    fi
+  elif (( status != 0 && rebind_node_state == 1 )); then
+    if (( rebind_node_mutated == 1 )); then
+      rollback_node_rebind || status=1
     fi
   elif (( status != 0 && activate_node_state == 1 )); then
     if (( activate_node_mutated == 1 )); then
@@ -981,6 +997,178 @@ rollback_join_node_install() {
   sync -f /etc || return 1
   sync -f /opt || return 1
   JOIN_NODE_MUTATED=0
+}
+
+write_node_rebind_backup() {
+  local timestamp manifest
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  REBIND_NODE_BACKUP_DIR="${NODE_REBIND_BACKUP_ROOT}/${timestamp}-$$"
+  [[ ! -e "${REBIND_NODE_BACKUP_DIR}" && ! -L "${REBIND_NODE_BACKUP_DIR}" ]] \
+    || return 1
+  install -d -o root -g root -m 0700 "${NODE_DATA_PLANE_BACKUP_ROOT}"
+  install -d -o root -g root -m 0700 "${NODE_REBIND_BACKUP_ROOT}"
+  install -d -o root -g root -m 0700 "${REBIND_NODE_BACKUP_DIR}"
+  install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
+    "${REBIND_NODE_BACKUP_DIR}/node_agent.py"
+  install -o root -g root -m 0600 \
+    "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+    "${REBIND_NODE_BACKUP_DIR}/registration.json"
+  manifest="${REBIND_NODE_BACKUP_DIR}/manifest.sha256"
+  (
+    cd "${REBIND_NODE_BACKUP_DIR}"
+    sha256sum node_agent.py registration.json > manifest.sha256
+  )
+  chmod 0600 "${manifest}"
+  sync -f "${REBIND_NODE_BACKUP_DIR}" "${NODE_REBIND_BACKUP_ROOT}"
+}
+
+arm_node_rebind_transaction() {
+  local stage="${TMP_DIR}/node-rebind-transaction"
+  {
+    echo "${NODE_REBIND_TRANSACTION_MAGIC}"
+    echo "${REBIND_NODE_BACKUP_DIR}"
+  } > "${stage}"
+  durable_replace_file "${stage}" "${NODE_REBIND_TRANSACTION}" 0600
+}
+
+rollback_node_rebind() {
+  [[ -d "${REBIND_NODE_BACKUP_DIR}" && ! -L "${REBIND_NODE_BACKUP_DIR}" ]] \
+    || return 1
+  [[ -f "${REBIND_NODE_BACKUP_DIR}/manifest.sha256" \
+    && ! -L "${REBIND_NODE_BACKUP_DIR}/manifest.sha256" \
+    && -f "${REBIND_NODE_BACKUP_DIR}/node_agent.py" \
+    && ! -L "${REBIND_NODE_BACKUP_DIR}/node_agent.py" \
+    && -f "${REBIND_NODE_BACKUP_DIR}/registration.json" \
+    && ! -L "${REBIND_NODE_BACKUP_DIR}/registration.json" ]] || return 1
+  (
+    cd "${REBIND_NODE_BACKUP_DIR}"
+    sha256sum --check --status manifest.sha256
+  ) || return 1
+  systemctl stop hysteria2-panel-node-heartbeat.timer \
+    hysteria2-panel-node-heartbeat.service >/dev/null 2>&1 || true
+  durable_replace_file "${REBIND_NODE_BACKUP_DIR}/node_agent.py" \
+    "${NODE_AGENT_OPT_DIR}/node_agent.py" 0755 || return 1
+  durable_replace_file "${REBIND_NODE_BACKUP_DIR}/registration.json" \
+    "${NODE_AGENT_CONFIG_DIR}/registration.json" 0600 || return 1
+  systemctl enable --now hysteria2-panel-node-heartbeat.timer || return 1
+  rm -f -- "${NODE_REBIND_TRANSACTION}" || return 1
+  sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
+    /etc/systemd/system || return 1
+  REBIND_NODE_MUTATED=0
+}
+
+recover_interrupted_node_rebind() {
+  local marker_magic marker_backup
+  local -a marker_lines=()
+  [[ -e "${NODE_REBIND_TRANSACTION}" || -L "${NODE_REBIND_TRANSACTION}" ]] \
+    || return 0
+  [[ -f "${NODE_REBIND_TRANSACTION}" && ! -L "${NODE_REBIND_TRANSACTION}" ]] \
+    || fail "节点重绑定事务标记不安全，拒绝自动恢复"
+  [[ "$(stat -c '%u:%g:%a' "${NODE_REBIND_TRANSACTION}")" == "0:0:600" ]] \
+    || fail "节点重绑定事务标记权限异常，拒绝自动恢复"
+  mapfile -t marker_lines < "${NODE_REBIND_TRANSACTION}"
+  [[ ${#marker_lines[@]} -eq 2 ]] \
+    || fail "节点重绑定事务标记格式异常，拒绝自动恢复"
+  marker_magic="${marker_lines[0]}"
+  marker_backup="${marker_lines[1]}"
+  [[ "${marker_magic}" == "${NODE_REBIND_TRANSACTION_MAGIC}" ]] \
+    || fail "节点重绑定事务标记版本未知，拒绝自动恢复"
+  [[ "${marker_backup}" =~ ^${NODE_REBIND_BACKUP_ROOT}/[0-9]{8}T[0-9]{6}Z-[0-9]+$ ]] \
+    || fail "节点重绑定回滚快照路径异常，拒绝自动恢复"
+  [[ -d "${marker_backup}" && ! -L "${marker_backup}" ]] \
+    || fail "节点重绑定回滚快照缺失或不安全"
+  [[ "$(stat -c '%u:%g:%a' "${marker_backup}")" == "0:0:700" ]] \
+    || fail "节点重绑定回滚快照权限异常"
+  REBIND_NODE_BACKUP_DIR="${marker_backup}"
+  REBIND_NODE_MUTATED=1
+  rollback_node_rebind \
+    || fail "中断的节点重绑定无法自动恢复；事务标记已保留"
+  echo "已恢复重绑定前的节点注册状态；私钥、Hysteria 服务和流量 spool 未改动。"
+}
+
+rebind_node() {
+  local command_name enrollment_token generated_public panel_url
+  local -a rebind_commands=(cat chmod cmp curl date install mkdir mktemp mv openssl rm sha256sum stat sync systemctl uname)
+
+  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
+    || fail "节点重绑定只允许使用当前受签名正式版本 v${PANEL_VERSION}"
+  [[ -d /run/systemd/system ]] \
+    || fail "节点重绑定需要使用 systemd 的 Linux 服务器"
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "完整面板服务器不能执行数据节点重绑定"
+  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
+  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node-public.der" 644
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
+  require_node_agent_file "${NODE_AGENT_HEARTBEAT_SERVICE}" 644
+  require_node_agent_file "${NODE_AGENT_HEARTBEAT_TIMER}" 644
+  for command_name in "${rebind_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "节点重绑定缺少命令 ${command_name}；未修改系统"
+  done
+  select_python || fail "节点重绑定需要 Python 3.8 或更高版本；未修改系统"
+  case "$(uname -m)" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *) fail "节点重绑定仅支持 Linux amd64 和 arm64" ;;
+  esac
+  recover_interrupted_node_rebind
+  systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
+    || fail "节点签名心跳 timer 未运行；未修改系统"
+  panel_url="${HY2PANEL_PANEL_URL:-}"
+  enrollment_token="${HY2PANEL_ENROLLMENT_TOKEN:-}"
+  unset HY2PANEL_ENROLLMENT_TOKEN
+  [[ "${panel_url}" =~ ^https://[^/?#[:space:]]+/?$ ]] \
+    || fail "节点重绑定要求有效的 HTTPS 面板地址"
+  [[ "${enrollment_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
+    || fail "缺少或无效的一次性节点重绑定凭据"
+
+  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
+  printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
+    | sha256sum --check --status \
+    || fail "节点 Agent SHA-256 校验失败"
+  "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" \
+    || fail "节点 Agent 语法检查失败"
+  generated_public="${TMP_DIR}/node-public.der"
+  openssl pkey -in "${NODE_AGENT_CONFIG_DIR}/node.key" -pubout -outform DER \
+    -out "${generated_public}" \
+    || fail "无法验证既有节点私钥"
+  cmp -s "${generated_public}" "${NODE_AGENT_CONFIG_DIR}/node-public.der" \
+    || fail "节点公钥与私钥不匹配；未修改系统"
+
+  write_node_rebind_backup \
+    || fail "无法创建节点重绑定 root-only 回滚快照；未修改系统"
+  arm_node_rebind_transaction \
+    || fail "无法持久化节点重绑定事务；未修改系统"
+  REBIND_NODE_MUTATED=1
+  systemctl stop hysteria2-panel-node-heartbeat.timer \
+    hysteria2-panel-node-heartbeat.service \
+    || fail "无法暂停节点签名心跳；已安排恢复"
+  durable_replace_file "${TMP_DIR}/node_agent.py" \
+    "${NODE_AGENT_OPT_DIR}/node_agent.py" 0755 \
+    || fail "无法更新节点 Agent；已安排恢复"
+  if ! HY2PANEL_ENROLLMENT_TOKEN="${enrollment_token}" \
+    "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" register \
+      --panel-url "${panel_url}" \
+      --public-key "${NODE_AGENT_CONFIG_DIR}/node-public.der" \
+      --state-file "${TMP_DIR}/registration.json"; then
+    enrollment_token=""
+    fail "节点重新注册失败；已安排恢复原注册状态"
+  fi
+  enrollment_token=""
+  require_node_agent_file "${TMP_DIR}/registration.json" 600
+  durable_replace_file "${TMP_DIR}/registration.json" \
+    "${NODE_AGENT_CONFIG_DIR}/registration.json" 0600 \
+    || fail "无法提交新的节点注册状态；已安排恢复"
+  systemctl enable --now hysteria2-panel-node-heartbeat.timer \
+    || fail "无法恢复节点签名心跳 timer；已安排恢复"
+  rm -f -- "${NODE_REBIND_TRANSACTION}"
+  sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
+    /etc/systemd/system
+  REBIND_NODE_MUTATED=0
+  echo "节点重绑定已进入待验证状态；私钥、Hysteria 身份、运行中的数据面和流量 spool 均保持不变。请在面板核对原公钥指纹；验证后 heartbeat timer 会自动上线节点，再启用控制协议。"
 }
 
 install_join_node() {
@@ -1213,6 +1401,118 @@ initialize_data_plane_owned_paths() {
   )
 }
 
+assert_data_plane_network_stack_claimable() {
+  if [[ -e "${NODE_SYSCTL_FILE}" || -L "${NODE_SYSCTL_FILE}" ]]; then
+    [[ -f "${NODE_SYSCTL_FILE}" && ! -L "${NODE_SYSCTL_FILE}" ]] \
+      || fail "数据节点内核配置路径不安全，拒绝修改：${NODE_SYSCTL_FILE}"
+    [[ "$(stat -c '%u:%g:%a' "${NODE_SYSCTL_FILE}")" == "0:0:644" ]] \
+      || fail "数据节点内核配置权限异常，拒绝修改：${NODE_SYSCTL_FILE}"
+    grep -q '^# Managed by Hysteria2-panel data node$' "${NODE_SYSCTL_FILE}" \
+      || fail "${NODE_SYSCTL_FILE} 已存在且不属于本安装器，拒绝覆盖"
+  fi
+}
+
+write_data_plane_network_snapshot() {
+  local cc qdisc rmem state_file sysctl_presence wmem
+  state_file="${DATA_PLANE_BACKUP_DIR}/network-state"
+  rmem="$(sysctl -n net.core.rmem_max 2>/dev/null)" || return 1
+  wmem="$(sysctl -n net.core.wmem_max 2>/dev/null)" || return 1
+  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null)" || return 1
+  cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" || return 1
+  [[ "${rmem}" =~ ^[0-9]+$ && "${wmem}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${qdisc}" =~ ^[A-Za-z0-9_-]+$ && "${cc}" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || return 1
+  sysctl_presence=absent
+  if [[ -f "${NODE_SYSCTL_FILE}" && ! -L "${NODE_SYSCTL_FILE}" ]]; then
+    sysctl_presence=present
+    install -o root -g root -m 0644 "${NODE_SYSCTL_FILE}" \
+      "${DATA_PLANE_BACKUP_DIR}/node-sysctl.conf"
+  fi
+  {
+    echo "HYSTERIA2_PANEL_NODE_NETWORK_V1"
+    echo "${rmem}"
+    echo "${wmem}"
+    echo "${qdisc}"
+    echo "${cc}"
+    echo "${sysctl_presence}"
+  } > "${state_file}"
+  chmod 0600 "${state_file}"
+}
+
+restore_data_plane_network_snapshot() {
+  local cc qdisc rmem sysctl_presence wmem
+  local -a state_lines=()
+  [[ -f "${DATA_PLANE_BACKUP_DIR}/network-state" \
+    && ! -L "${DATA_PLANE_BACKUP_DIR}/network-state" ]] || return 1
+  mapfile -t state_lines < "${DATA_PLANE_BACKUP_DIR}/network-state"
+  [[ ${#state_lines[@]} -eq 6 \
+    && "${state_lines[0]}" == "HYSTERIA2_PANEL_NODE_NETWORK_V1" ]] || return 1
+  rmem="${state_lines[1]}"
+  wmem="${state_lines[2]}"
+  qdisc="${state_lines[3]}"
+  cc="${state_lines[4]}"
+  sysctl_presence="${state_lines[5]}"
+  [[ "${rmem}" =~ ^[0-9]+$ && "${wmem}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${qdisc}" =~ ^[A-Za-z0-9_-]+$ && "${cc}" =~ ^[A-Za-z0-9_-]+$ ]] \
+    || return 1
+  [[ "${sysctl_presence}" == "present" || "${sysctl_presence}" == "absent" ]] \
+    || return 1
+  sysctl -w "net.core.rmem_max=${rmem}" >/dev/null || return 1
+  sysctl -w "net.core.wmem_max=${wmem}" >/dev/null || return 1
+  sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null || return 1
+  sysctl -w "net.ipv4.tcp_congestion_control=${cc}" >/dev/null || return 1
+  if [[ "${sysctl_presence}" == "present" ]]; then
+    [[ -f "${DATA_PLANE_BACKUP_DIR}/node-sysctl.conf" \
+      && ! -L "${DATA_PLANE_BACKUP_DIR}/node-sysctl.conf" ]] || return 1
+    install -o root -g root -m 0644 \
+      "${DATA_PLANE_BACKUP_DIR}/node-sysctl.conf" "${NODE_SYSCTL_FILE}" \
+      || return 1
+  else
+    rm -f -- "${NODE_SYSCTL_FILE}" || return 1
+  fi
+  sync -f /etc/sysctl.d || return 1
+}
+
+optimize_data_plane_network_stack() {
+  local available_cc current_rmem current_wmem sysctl_stage target_rmem target_wmem
+  current_rmem="$(sysctl -n net.core.rmem_max 2>/dev/null)" || return 1
+  current_wmem="$(sysctl -n net.core.wmem_max 2>/dev/null)" || return 1
+  [[ "${current_rmem}" =~ ^[0-9]+$ && "${current_wmem}" =~ ^[0-9]+$ ]] \
+    || return 1
+  target_rmem="${MIN_QUIC_UDP_BUFFER}"
+  target_wmem="${MIN_QUIC_UDP_BUFFER}"
+  (( current_rmem <= target_rmem )) || target_rmem="${current_rmem}"
+  (( current_wmem <= target_wmem )) || target_wmem="${current_wmem}"
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe tcp_bbr >/dev/null 2>&1 || true
+  fi
+  available_cc="$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)" \
+    || return 1
+  [[ " ${available_cc} " == *" bbr "* ]] || return 1
+  sysctl -w "net.core.rmem_max=${target_rmem}" >/dev/null || return 1
+  sysctl -w "net.core.wmem_max=${target_wmem}" >/dev/null || return 1
+  sysctl -w net.core.default_qdisc=fq >/dev/null || return 1
+  sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null || return 1
+  [[ "$(sysctl -n net.core.rmem_max)" -ge "${MIN_QUIC_UDP_BUFFER}" ]] || return 1
+  [[ "$(sysctl -n net.core.wmem_max)" -ge "${MIN_QUIC_UDP_BUFFER}" ]] || return 1
+  [[ "$(sysctl -n net.core.default_qdisc)" == "fq" ]] || return 1
+  [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] || return 1
+  sysctl_stage="${TMP_DIR}/99-hysteria2-panel-node.conf"
+  cat > "${sysctl_stage}" <<EOF
+# Managed by Hysteria2-panel data node
+# Hysteria recommends 16 MiB UDP buffers for high-bandwidth QUIC transfers.
+net.core.rmem_max=${target_rmem}
+net.core.wmem_max=${target_wmem}
+# TCP BBR benefits the data node's TCP egress to web and video origins.
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+  install -o root -g root -m 0644 "${sysctl_stage}" "${NODE_SYSCTL_FILE}" \
+    || return 1
+  sync -f "${NODE_SYSCTL_FILE}" /etc/sysctl.d || return 1
+  echo "数据节点网络优化：Hysteria BBR standard + 内核 fq/BBR + 16 MiB UDP 缓冲"
+}
+
 assert_data_plane_paths_unclaimed() {
   local path
   initialize_data_plane_owned_paths
@@ -1314,6 +1614,7 @@ write_data_plane_backup_manifest() {
   DATA_PLANE_NODE_AGENT_BACKUP_FILE="${DATA_PLANE_BACKUP_DIR}/node_agent.py"
   install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
     "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}"
+  write_data_plane_network_snapshot || return 1
   if (( DATA_PLANE_EXISTING == 1 )); then
     install -d -o root -g root -m 0700 \
       "${DATA_PLANE_BACKUP_DIR}/opt" \
@@ -1631,6 +1932,7 @@ restore_existing_data_plane() {
     install -o root -g root -m 0644 \
       "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}" "${path}" || return 1
   done
+  restore_data_plane_network_snapshot || return 1
   systemctl daemon-reload || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
@@ -1655,6 +1957,7 @@ rollback_data_plane_activation() {
     return $?
   fi
   rollback_data_plane_firewall || return 1
+  restore_data_plane_network_snapshot || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
     systemctl disable --now "${unit}" >/dev/null 2>&1 || true
@@ -1687,7 +1990,7 @@ rollback_data_plane_activation() {
 
 activate_data_plane() {
   local bootstrap_token command_name hysteria_arch hysteria_sha hysteria_url path unit
-  local -a data_plane_commands=(awk cat chmod cp curl date df find grep install mkdir mktemp openssl rm rmdir sha256sum sort ss stat sync systemctl)
+  local -a data_plane_commands=(awk cat chmod cp curl date df find grep install mkdir mktemp mv openssl rm rmdir sha256sum sort ss stat sync sysctl systemctl)
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "数据面只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1708,6 +2011,7 @@ activate_data_plane() {
   systemctl start hysteria2-panel-node-heartbeat.service \
     || fail "节点签名心跳未被中央面板接受；未修改系统"
   recover_interrupted_data_plane
+  assert_data_plane_network_stack_claimable
   inspect_existing_data_plane
   if (( DATA_PLANE_EXISTING == 1 )); then
     assert_existing_data_plane_healthy
@@ -1764,6 +2068,8 @@ activate_data_plane() {
   arm_data_plane_transaction \
     || fail "无法持久化数据面回滚事务；未修改系统"
   DATA_PLANE_MUTATED=1
+  optimize_data_plane_network_stack \
+    || fail "数据节点无法完成 fq/BBR 和 16 MiB UDP 缓冲优化；已安排恢复"
   if (( DATA_PLANE_EXISTING == 1 )); then
     stop_existing_data_plane \
       || fail "无法停止既有数据面服务；已安排恢复旧数据面"
@@ -2138,7 +2444,26 @@ validate_panel_public_host() {
   done
 }
 
+preflight_panel_acme_dns() {
+  "${PYTHON_BIN}" - "${PANEL_PUBLIC_HOST}" <<'PY' \
+    || fail "面板域名 DNS 尚未解析到公网地址；未调用 Certbot，也不会自动降级为 HTTP"
+import ipaddress
+import socket
+import sys
+
+hostname = sys.argv[1]
+try:
+    records = socket.getaddrinfo(hostname, 80, type=socket.SOCK_STREAM)
+except OSError:
+    raise SystemExit(1)
+addresses = {record[4][0].split("%", 1)[0] for record in records}
+if not any(ipaddress.ip_address(address).is_global for address in addresses):
+    raise SystemExit(1)
+PY
+}
+
 issue_panel_acme_certificate() {
+  preflight_panel_acme_dns
   install -d -o root -g root -m 0700 \
     "${ACME_CONFIG_DIR}" "${ACME_WORK_DIR}" "${ACME_LOGS_DIR}"
   /usr/bin/certbot certonly \
@@ -4775,6 +5100,9 @@ elif [[ "${1:-}" == "--recover-fresh" ]]; then
 elif [[ "${1:-}" == "--join-node" ]]; then
   JOIN_NODE=1
   shift
+elif [[ "${1:-}" == "--rebind-node" ]]; then
+  REBIND_NODE=1
+  shift
 elif [[ "${1:-}" == "--activate-node-agent" ]]; then
   ACTIVATE_NODE_AGENT=1
   shift
@@ -4789,6 +5117,12 @@ if (( JOIN_NODE == 1 )); then
   install_join_node
   INSTALL_COMMITTED=1
   JOIN_NODE_MUTATED=0
+  exit 0
+fi
+if (( REBIND_NODE == 1 )); then
+  rebind_node
+  INSTALL_COMMITTED=1
+  REBIND_NODE_MUTATED=0
   exit 0
 fi
 if (( ACTIVATE_NODE_AGENT == 1 )); then

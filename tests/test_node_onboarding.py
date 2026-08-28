@@ -106,6 +106,31 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         )
         self.assertEqual(0, syntax.returncode, syntax.stderr)
 
+    def test_existing_node_rebind_is_explicit_and_uses_the_same_signed_release(self):
+        issued = self.create(mode="rebind")
+        command = issued["deploymentCommand"]
+
+        self.assertEqual("REBIND_PENDING_REGISTRATION", issued["status"])
+        self.assertEqual("rebind", issued["mode"])
+        self.assertIn("--rebind-node", command)
+        self.assertNotIn("--join-node", command)
+        self.assertIn("install.sh.sigstore.json", command)
+        self.assertIn("verify-blob", command)
+        self.assertNotIn("server.crt", command)
+        self.assertNotIn("server.key", command)
+        self.assertNotIn("/var/lib/hysteria2-panel-node/spool", command)
+        syntax = subprocess.run(
+            ["bash", "-n"],
+            input=command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, syntax.returncode, syntax.stderr)
+
+        with self.assertRaisesRegex(ValueError, "enrollment mode"):
+            self.create(mode="automatic")
+
     def test_registration_consumes_the_token_once_and_moves_the_node_to_pending_verification(self):
         issued = self.create()
         token = token_from_command(issued["deploymentCommand"])
