@@ -3593,6 +3593,45 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual([True], extension_granted)
         self.assertFalse(serving.is_alive())
 
+    def test_handler_can_extend_only_the_current_request_for_node_canaries(self):
+        extension_granted = []
+
+        class CanaryHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                extension_granted.append(
+                    self.server.begin_node_canary_request(self.connection)
+                )
+                time.sleep(1.2)
+                self.send_response(204)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = BoundedThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            CanaryHandler,
+            max_workers=1,
+            request_deadline=1,
+            node_canary_request_deadline=3,
+        )
+        serving = threading.Thread(target=server.serve_forever)
+        serving.start()
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:{}/canary".format(server.server_address[1]),
+                timeout=2,
+            ) as response:
+                self.assertEqual(204, response.status)
+        finally:
+            server.shutdown()
+            server.shutdown_active_requests()
+            server.server_close()
+            serving.join(2)
+
+        self.assertEqual([True], extension_granted)
+        self.assertFalse(serving.is_alive())
+
     def test_shutdown_interrupts_a_slow_request_before_waiting_for_threads(self):
         request_started = threading.Event()
 
@@ -5501,7 +5540,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("待验证", body)
         self.assertIn("待注册 &lt;节点&gt;", body)
         self.assertNotIn("待注册 <节点>", body)
-        self.assertIn("不会复制 Hysteria 证书", body)
+        self.assertIn("Hysteria 长期身份只会原样复制", body)
 
     def test_node_enrollment_creation_and_revocation_require_session_and_csrf(self):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
@@ -5580,6 +5619,16 @@ class PanelHttpTests(unittest.TestCase):
             remote_ip="127.0.0.1",
         )
         path = "/nodes/{}/verify".format(issued["nodeId"])
+        headers, csrf = self.authenticated_headers()
+        fingerprint = hashlib.sha256(public_der).hexdigest()
+        dashboard = self.request("/", headers=headers).read().decode("utf-8")
+        self.assertIn(fingerprint[:16], dashboard)
+        self.assertIn(
+            'type="hidden" name="fingerprint" value="{}"'.format(fingerprint),
+            dashboard,
+        )
+        self.assertIn("短码一致，开始自动部署", dashboard)
+        self.assertNotIn("输入核对后的完整指纹", dashboard)
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
             self.request(
                 path,
@@ -5588,7 +5637,6 @@ class PanelHttpTests(unittest.TestCase):
             )
         self.assertEqual(303, unauthenticated.exception.code)
 
-        headers, csrf = self.authenticated_headers()
         with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
             self.request(
                 path,
@@ -5717,7 +5765,8 @@ class PanelHttpTests(unittest.TestCase):
         self.application.node_heartbeat_service.accept(heartbeat, "127.0.0.1")
         headers, csrf = self.authenticated_headers()
         dashboard = self.request("/", headers=headers).read().decode()
-        self.assertIn("协议待命", dashboard)
+        self.assertIn("自动部署等待中", dashboard)
+        self.assertIn("旧节点手动启用", dashboard)
         self.assertIn(
             "/nodes/{}/protocol/enable".format(issued["nodeId"]), dashboard
         )
@@ -6852,7 +6901,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.29.0", body)
+        self.assertIn("v0.30.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

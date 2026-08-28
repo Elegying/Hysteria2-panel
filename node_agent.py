@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.29.0"
+AGENT_VERSION = "0.30.0"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 CONTROL_LOOP_INTERVAL_SECONDS = 2
@@ -713,7 +713,7 @@ def _canonical_node_request(purpose, payload):
 
 
 def _canonical_data_plane_request(purpose, payload):
-    if purpose not in {"bootstrap", "ack"}:
+    if purpose not in {"claim", "bootstrap", "ack"}:
         raise ProtocolError("data-plane request purpose is invalid")
     return "hy2panel-data-plane-{}-v1\n".format(purpose).encode(
         "ascii"
@@ -776,7 +776,13 @@ def validate_data_plane_identity(response, architecture):
         or response.get("maxFetchAttempts") != 3
         or response.get("configProtocolVersion") != 1
         or response.get("hysteriaVersion") != "2.12.1"
-        or response.get("ports") != {"main": 19999, "udp443": 443}
+        or not isinstance(response.get("ports"), dict)
+        or set(response["ports"]) != {"main", "udp443"}
+        or isinstance(response["ports"].get("main"), bool)
+        or not isinstance(response["ports"].get("main"), int)
+        or not 1 <= response["ports"]["main"] <= 65535
+        or response["ports"]["main"] in {443, 19995, 19996, 19997}
+        or response["ports"].get("udp443") != 443
         or response.get("egressPolicy") not in {"web", "full"}
         or any(
             not isinstance(response.get(field), str)
@@ -850,6 +856,7 @@ def validate_data_plane_identity(response, architecture):
         "hysteria_version": response["hysteriaVersion"],
         "hysteria_sha256": hysteria_hashes[architecture],
         "egress_policy": response["egressPolicy"],
+        "main_port": response["ports"]["main"],
     }
 
 
@@ -863,6 +870,7 @@ def render_data_plane_configs(identity, stats_secret):
         "hysteria_version",
         "hysteria_sha256",
         "egress_policy",
+        "main_port",
     }
     if (
         not isinstance(identity, dict)
@@ -940,7 +948,7 @@ masquerade:
         )
 
     return {
-        "main": render(19999, "auth/main", 19997),
+        "main": render(identity["main_port"], "auth/main", 19997),
         "udp443": render(443, "auth/udp443", 19995),
     }
 
@@ -949,6 +957,7 @@ class DataPlaneBootstrapClient:
     """Fetch and acknowledge a bounded identity response over signed HTTPS."""
 
     PATHS = {
+        "claim": ("/api/v1/node-data-plane/claim", 8 * 1024),
         "bootstrap": ("/api/v1/node-data-plane/bootstrap", 32 * 1024),
         "ack": ("/api/v1/node-data-plane/ack", 8 * 1024),
     }
@@ -970,7 +979,9 @@ class DataPlaneBootstrapClient:
         self.nonce_factory = nonce_factory or secrets.token_urlsafe
 
     def _post(self, purpose, token, fields):
-        if not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token):
+        if purpose != "claim" and (
+            not isinstance(token, str) or not TOKEN_PATTERN.fullmatch(token)
+        ):
             raise ProtocolError("the data-plane bootstrap credential is invalid")
         state = _registration_state(self.state_path)
         nonce = str(self.nonce_factory(32))
@@ -980,9 +991,10 @@ class DataPlaneBootstrapClient:
             "nodeId": state["nodeId"],
             "sentAt": int(self.clock()),
             "nonce": nonce,
-            "bootstrapToken": token,
             "requestId": uuid.uuid4().hex,
         }
+        if purpose != "claim":
+            payload["bootstrapToken"] = token
         payload.update(fields)
         signature = self.signer(
             self.private_key_path, _canonical_data_plane_request(purpose, payload)
@@ -1000,9 +1012,10 @@ class DataPlaneBootstrapClient:
             method="POST",
         )
         try:
-            with self.opener(
-                request, timeout=CONTROL_REQUEST_TIMEOUT_SECONDS
-            ) as response:
+            request_timeout = (
+                75 if purpose == "ack" else CONTROL_REQUEST_TIMEOUT_SECONDS
+            )
+            with self.opener(request, timeout=request_timeout) as response:
                 status = getattr(
                     response,
                     "status",
@@ -1023,6 +1036,32 @@ class DataPlaneBootstrapClient:
             raise ProtocolError("the panel returned an invalid data-plane response")
         return result
 
+    def claim(self):
+        result = self._post("claim", None, {})
+        state = _registration_state(self.state_path)
+        if (
+            set(result)
+            != {
+                "nodeId",
+                "grantId",
+                "expiresAt",
+                "maxFetchAttempts",
+                "status",
+                "bootstrapToken",
+            }
+            or result.get("nodeId") != state["nodeId"]
+            or not NODE_ID_PATTERN.fullmatch(str(result.get("grantId", "")))
+            or isinstance(result.get("expiresAt"), bool)
+            or not isinstance(result.get("expiresAt"), int)
+            or result["expiresAt"] <= int(self.clock())
+            or result.get("maxFetchAttempts") != 3
+            or result.get("status") != "AUTO_BOOTSTRAP_ISSUED"
+            or not isinstance(result.get("bootstrapToken"), str)
+            or not TOKEN_PATTERN.fullmatch(result["bootstrapToken"])
+        ):
+            raise ProtocolError("the panel returned an invalid bootstrap claim")
+        return result
+
     def fetch(self, token):
         return self._post("bootstrap", token, {})
 
@@ -1031,12 +1070,59 @@ class DataPlaneBootstrapClient:
             raise ProtocolError("data-plane attestation is invalid")
         result = self._post("ack", token, attestation)
         state = _registration_state(self.state_path)
-        if result != {
-            "nodeId": state["nodeId"],
-            "status": "DATA_PLANE_INSTALLED",
-        }:
+        if (
+            not isinstance(result, dict)
+            or set(result) != {"nodeId", "status"}
+            or result.get("nodeId") != state["nodeId"]
+            or result.get("status")
+            not in {"DATA_PLANE_INSTALLED", "DIRECT_CANARY_PASSED"}
+        ):
             raise ProtocolError("the panel returned an invalid data-plane ACK")
         return result
+
+
+def write_bootstrap_claim(client, output_path):
+    """Persist one claimed credential without exposing it on stdout or argv."""
+    output_path = pathlib.Path(output_path)
+    parent = output_path.parent
+    try:
+        parent_metadata = parent.stat()
+    except OSError as exc:
+        raise ProtocolError("the bootstrap claim directory is unavailable") from exc
+    if (
+        parent.is_symlink()
+        or not stat.S_ISDIR(parent_metadata.st_mode)
+        or parent_metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_metadata.st_mode) & 0o077
+        or output_path.exists()
+        or output_path.is_symlink()
+    ):
+        raise ProtocolError("the bootstrap claim path is unsafe")
+    result = client.claim()
+    token = result["bootstrapToken"]
+    descriptor = None
+    staged_name = None
+    try:
+        descriptor, staged_name = tempfile.mkstemp(prefix=".bootstrap-", dir=str(parent))
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = None
+            handle.write(token.encode("ascii"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged_name, str(output_path))
+        staged_name = None
+        _fsync_directory(parent)
+    except OSError as exc:
+        raise ProtocolError("cannot persist the bootstrap claim") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if staged_name is not None:
+            try:
+                os.unlink(staged_name)
+            except FileNotFoundError:
+                pass
 
 
 def _write_private_bundle_file(directory, name, value):
@@ -1102,6 +1188,7 @@ def prepare_data_plane_bundle(
             "hysteriaVersion": identity["hysteria_version"],
             "hysteriaSha256": identity["hysteria_sha256"],
             "egressPolicy": identity["egress_policy"],
+            "mainPort": identity["main_port"],
             "configProtocolVersion": 1,
         }
         files = {
@@ -1338,6 +1425,7 @@ def collect_data_plane_attestation(
         "hysteriaVersion",
         "hysteriaSha256",
         "egressPolicy",
+        "mainPort",
         "configProtocolVersion",
     }
     if (
@@ -1346,6 +1434,10 @@ def collect_data_plane_attestation(
         or metadata.get("hysteriaVersion") != "2.12.1"
         or metadata.get("configProtocolVersion") != 1
         or metadata.get("egressPolicy") not in {"web", "full"}
+        or isinstance(metadata.get("mainPort"), bool)
+        or not isinstance(metadata.get("mainPort"), int)
+        or not 1 <= metadata["mainPort"] <= 65535
+        or metadata["mainPort"] in {443, 19995, 19996, 19997}
         or any(
             not isinstance(metadata.get(field), str)
             or re.fullmatch(r"[0-9a-f]{64}", metadata[field]) is None
@@ -1371,7 +1463,7 @@ def collect_data_plane_attestation(
             "amd64": metadata["hysteriaSha256"],
             "arm64": metadata["hysteriaSha256"],
         },
-        "ports": {"main": 19999, "udp443": 443},
+        "ports": {"main": metadata["mainPort"], "udp443": 443},
         "certificatePem": certificate.decode("ascii"),
         "privateKeyPem": private_key.decode("ascii"),
         "certificateFileSha256": metadata["certificateFileSha256"],
@@ -1394,9 +1486,9 @@ def collect_data_plane_attestation(
         for url in ("http://127.0.0.1:19997", "http://127.0.0.1:19995")
     )
     listener_results = {
-        "udp19999Listening": listener_checker("udp", 19999) is True,
+        "udp19999Listening": listener_checker("udp", metadata["mainPort"]) is True,
         "udp443Listening": listener_checker("udp", 443) is True,
-        "tcp19999Listening": listener_checker("tcp", 19999) is True,
+        "tcp19999Listening": listener_checker("tcp", metadata["mainPort"]) is True,
         "tcp443Listening": listener_checker("tcp", 443) is True,
     }
     if not services_healthy or not stats_healthy or not all(listener_results.values()):
@@ -1962,6 +2054,10 @@ def _parser():
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
     command.add_argument("--output-dir", required=True)
+    command = subcommands.add_parser("claim-data-plane")
+    command.add_argument("--private-key", required=True)
+    command.add_argument("--state-file", required=True)
+    command.add_argument("--output-token", required=True)
     command = subcommands.add_parser("run-hysteria")
     command.add_argument("--template", required=True)
     command.add_argument("--runtime-config", required=True)
@@ -2040,6 +2136,21 @@ def main(arguments=None):
         finally:
             del token
         print("数据面身份与配置已验证并准备完成")
+        return 0
+    if options.command == "claim-data-plane":
+        try:
+            heartbeat(
+                state_path=options.state_file,
+                private_key_path=options.private_key,
+            )
+            client = DataPlaneBootstrapClient(
+                pathlib.Path(options.state_file), pathlib.Path(options.private_key)
+            )
+            write_bootstrap_claim(client, pathlib.Path(options.output_token))
+        except (HeartbeatError, OSError, ProtocolError, ValueError) as exc:
+            print("节点尚未获准自动部署：{}".format(exc), file=sys.stderr)
+            return 1
+        print("节点已领取短时数据面部署凭据")
         return 0
     if options.command == "run-hysteria":
         try:

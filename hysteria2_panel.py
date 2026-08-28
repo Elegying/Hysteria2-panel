@@ -58,8 +58,10 @@ from hy2panel.nodes import (
     DataPlaneBootstrapService,
     EnrollmentRejected,
     HeartbeatRejected,
+    HysteriaCanaryRunner,
     HysteriaIdentityProvider,
     NodeEnrollmentService,
+    NodeDnsAdmissionReconciler,
     NodeHeartbeatService,
 )
 from hy2panel.operations import (
@@ -1889,7 +1891,9 @@ class Database:
                         CHECK (fetch_attempts BETWEEN 0 AND 3),
                     last_fetched_at INTEGER,
                     acknowledged_at INTEGER,
-                    revoked_at INTEGER
+                    revoked_at INTEGER,
+                    automatic_canary INTEGER NOT NULL DEFAULT 0
+                        CHECK (automatic_canary IN (0, 1))
                 );
                 CREATE INDEX IF NOT EXISTS node_data_plane_bootstrap_node_idx
                     ON node_data_plane_bootstrap_grants(node_id, created_at);
@@ -1957,6 +1961,17 @@ class Database:
             for column, statement in command_migrations.items():
                 if column not in command_columns:
                     connection.execute(statement)
+            grant_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(node_data_plane_bootstrap_grants)"
+                )
+            }
+            if "automatic_canary" not in grant_columns:
+                connection.execute(
+                    "ALTER TABLE node_data_plane_bootstrap_grants ADD COLUMN "
+                    "automatic_canary INTEGER NOT NULL DEFAULT 0"
+                )
 
     def begin_runtime_epoch(self):
         """Invalidate short-lived distributed state before serving new auth."""
@@ -2621,6 +2636,8 @@ class Database:
         actor,
         created_at,
         expires_at,
+        auto_enable=False,
+        nonce_digest=None,
     ):
         node_id = str(node_id or "")
         token_digest = str(token_digest or "")
@@ -2633,6 +2650,11 @@ class Database:
             or not actor
             or len(actor) > 64
             or expires_at != created_at + 600
+            or not isinstance(auto_enable, bool)
+            or (
+                auto_enable
+                and not re.fullmatch(r"[0-9a-f]{64}", str(nonce_digest or ""))
+            )
         ):
             return None
         try:
@@ -2641,7 +2663,7 @@ class Database:
                 connection.execute("BEGIN IMMEDIATE")
                 node = connection.execute(
                     """SELECT status, verified_at, policy_state, data_plane_state,
-                        expected_ip, observed_ip
+                        expected_ip, observed_ip, last_heartbeat_at
                     FROM nodes WHERE node_id = ?""",
                     (node_id,),
                 ).fetchone()
@@ -2649,7 +2671,18 @@ class Database:
                     node is None
                     or node["status"] != "pending_verification"
                     or node["verified_at"] is None
-                    or node["policy_state"] != "protocol_ready"
+                    or (
+                        not auto_enable
+                        and node["policy_state"] != "protocol_ready"
+                    )
+                    or (
+                        auto_enable
+                        and (
+                            node["policy_state"] not in {"standby", "protocol_ready"}
+                            or node["last_heartbeat_at"] is None
+                            or int(node["last_heartbeat_at"]) < created_at - 120
+                        )
+                    )
                     or node["data_plane_state"]
                     not in {
                         "not_issued",
@@ -2661,6 +2694,27 @@ class Database:
                     or (node["expected_ip"] or node["observed_ip"]) != bound_ip
                 ):
                     return None
+                if auto_enable:
+                    self._consume_node_request_nonce(
+                        connection,
+                        node_id,
+                        "bootstrap-claim",
+                        str(nonce_digest),
+                        created_at,
+                    )
+                    enabled = connection.execute(
+                        """UPDATE nodes SET policy_state = 'protocol_ready',
+                            policy_enabled_at = ?, policy_enabled_by = ?
+                        WHERE node_id = ? AND status = 'pending_verification'
+                            AND verified_at IS NOT NULL
+                            AND policy_state IN ('standby', 'protocol_ready')
+                            AND last_heartbeat_at >= ?""",
+                        (created_at, actor, node_id, created_at - 120),
+                    )
+                    if enabled.rowcount != 1:
+                        raise sqlite3.IntegrityError(
+                            "automatic node protocol state conflict"
+                        )
                 connection.execute(
                     """UPDATE node_data_plane_bootstrap_grants
                     SET revoked_at = ?
@@ -2672,8 +2726,8 @@ class Database:
                 connection.execute(
                     """INSERT INTO node_data_plane_bootstrap_grants(
                         grant_id, node_id, token_digest, bound_ip, created_by,
-                        created_at, expires_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        created_at, expires_at, automatic_canary
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         grant_id,
                         node_id,
@@ -2682,6 +2736,7 @@ class Database:
                         actor,
                         created_at,
                         expires_at,
+                        int(auto_enable),
                     ),
                 )
                 updated = connection.execute(
@@ -2770,8 +2825,39 @@ class Database:
         except (sqlite3.IntegrityError, ValueError):
             return None
 
+    def data_plane_bootstrap_requires_canary(
+        self, node_id, token_digest, remote_ip, checked_at
+    ):
+        node_id = str(node_id or "")
+        token_digest = str(token_digest or "")
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not re.fullmatch(r"[0-9a-f]{64}", token_digest)
+        ):
+            return False
+        try:
+            remote_ip = str(ipaddress.ip_address(remote_ip))
+            with self._connect() as connection:
+                row = connection.execute(
+                    """SELECT 1 FROM node_data_plane_bootstrap_grants
+                    WHERE node_id = ? AND token_digest = ? AND bound_ip = ?
+                        AND automatic_canary = 1
+                        AND acknowledged_at IS NULL AND revoked_at IS NULL
+                        AND expires_at > ? AND fetch_attempts BETWEEN 1 AND 3""",
+                    (node_id, token_digest, remote_ip, int(checked_at)),
+                ).fetchone()
+                return row is not None
+        except (ValueError, OverflowError):
+            return False
+
     def acknowledge_data_plane_bootstrap(
-        self, node_id, token_digest, remote_ip, nonce_digest, acknowledged_at
+        self,
+        node_id,
+        token_digest,
+        remote_ip,
+        nonce_digest,
+        acknowledged_at,
+        automatic_canary_passed=False,
     ):
         node_id = str(node_id or "")
         token_digest = str(token_digest or "")
@@ -2781,6 +2867,7 @@ class Database:
             not re.fullmatch(r"[0-9a-f]{32}", node_id)
             or not re.fullmatch(r"[0-9a-f]{64}", token_digest)
             or not re.fullmatch(r"[0-9a-f]{64}", nonce_digest)
+            or not isinstance(automatic_canary_passed, bool)
         ):
             return False
         try:
@@ -2788,7 +2875,7 @@ class Database:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 grant = connection.execute(
-                    """SELECT g.grant_id, g.bound_ip
+                    """SELECT g.grant_id, g.bound_ip, g.automatic_canary
                     FROM node_data_plane_bootstrap_grants AS g
                     JOIN nodes AS n ON n.node_id = g.node_id
                     WHERE g.node_id = ? AND g.token_digest = ?
@@ -2804,6 +2891,8 @@ class Database:
                     (node_id, token_digest, acknowledged_at),
                 ).fetchone()
                 if grant is None or grant["bound_ip"] != remote_ip:
+                    return False
+                if bool(grant["automatic_canary"]) != automatic_canary_passed:
                     return False
                 self._consume_node_request_nonce(
                     connection,
@@ -2823,9 +2912,14 @@ class Database:
                     """UPDATE nodes SET
                         data_plane_state = CASE
                             WHEN data_plane_state = 'bootstrap_issued'
-                                THEN 'data_plane_installed'
+                                THEN CASE WHEN ? = 1
+                                    THEN 'direct_canary_passed'
+                                    ELSE 'data_plane_installed' END
                             ELSE data_plane_state END,
-                        data_plane_installed_at = ?
+                        data_plane_installed_at = ?,
+                        direct_canary_passed_at = CASE
+                            WHEN ? = 1 AND direct_canary_passed_at IS NULL
+                                THEN ? ELSE direct_canary_passed_at END
                     WHERE node_id = ? AND data_plane_state IN (
                             'bootstrap_issued', 'data_plane_installed',
                             'direct_canary_passed', 'dns_admitted'
@@ -2833,8 +2927,21 @@ class Database:
                         AND status = 'pending_verification'
                         AND verified_at IS NOT NULL
                         AND policy_state = 'protocol_ready'""",
-                    (acknowledged_at, node_id),
+                    (
+                        int(automatic_canary_passed),
+                        acknowledged_at,
+                        int(automatic_canary_passed),
+                        acknowledged_at,
+                        node_id,
+                    ),
                 )
+                if automatic_canary_passed:
+                    connection.execute(
+                        """DELETE FROM node_auth_decisions
+                        WHERE node_id = ?
+                            AND user_name = '__hy2panel_bootstrap_canary__'""",
+                        (node_id,),
+                    )
                 if grant_updated.rowcount != 1 or node_updated.rowcount != 1:
                     raise sqlite3.IntegrityError("data-plane ack state conflict")
                 return True
@@ -3176,65 +3283,88 @@ class Database:
                         "decisionId": existing["decision_id"],
                         "expiresAt": existing["expires_at"],
                     }
-                ready_count = connection.execute(
-                    """SELECT COUNT(*) FROM nodes
-                    WHERE policy_state = 'protocol_ready'
-                        AND status = 'pending_verification' AND verified_at IS NOT NULL"""
-                ).fetchone()[0]
-                fresh_count = connection.execute(
-                    """SELECT COUNT(*) FROM nodes AS n
-                    JOIN node_online_snapshots AS s ON s.node_id = n.node_id
-                    WHERE n.policy_state = 'protocol_ready'
-                        AND n.status = 'pending_verification' AND n.verified_at IS NOT NULL
-                        AND s.accepted_at >= ? AND s.observed_at >= ?
-                        AND s.traffic_acked_at >= ?""",
+                canary_grant = connection.execute(
+                    """SELECT expires_at FROM node_data_plane_bootstrap_grants
+                    WHERE node_id = ? AND token_digest = ?
+                        AND automatic_canary = 1
+                        AND acknowledged_at IS NULL AND revoked_at IS NULL
+                        AND expires_at > ? AND fetch_attempts BETWEEN 1 AND 3""",
                     (
-                        int(now) - int(freshness_seconds),
-                        int(now) - int(freshness_seconds),
-                        int(now) - int(freshness_seconds),
+                        node_id,
+                        hashlib.sha256(str(token).encode("ascii")).hexdigest(),
+                        int(now),
                     ),
-                ).fetchone()[0]
-                if ready_count == 0 or fresh_count != ready_count:
-                    raise sqlite3.IntegrityError("node state is stale")
-                query = """SELECT name, enabled, device_limit, traffic_limit_bytes,
-                    tx_bytes, rx_bytes FROM proxy_users
-                    WHERE token_fingerprint = ? AND enabled = 1"""
-                if require_udp_443:
-                    query += " AND allow_udp_443 = 1"
-                user = connection.execute(query, (self._fingerprint(token),)).fetchone()
-                allowed = False
-                user_name = None
-                if user is not None:
-                    user_name = user["name"]
-                    remote_online = connection.execute(
-                        """SELECT COALESCE(SUM(c.count), 0)
-                        FROM node_online_counts AS c
-                        JOIN nodes AS n ON n.node_id = c.node_id
-                        WHERE c.user_name = ? COLLATE NOCASE
-                            AND n.policy_state = 'protocol_ready'
-                            AND n.status = 'pending_verification'""",
-                        (user_name,),
+                ).fetchone()
+                allowed = canary_grant is not None
+                user_name = (
+                    "__hy2panel_bootstrap_canary__" if allowed else None
+                )
+                if canary_grant is None:
+                    ready_count = connection.execute(
+                        """SELECT COUNT(*) FROM nodes
+                        WHERE policy_state = 'protocol_ready'
+                            AND status = 'pending_verification'
+                            AND verified_at IS NOT NULL"""
                     ).fetchone()[0]
-                    pending = connection.execute(
-                        """SELECT COUNT(*) FROM node_auth_decisions
-                        WHERE user_name = ? COLLATE NOCASE AND allowed = 1
-                            AND absorbed_at IS NULL AND expires_at >= ?""",
-                        (user_name, int(now)),
+                    fresh_count = connection.execute(
+                        """SELECT COUNT(*) FROM nodes AS n
+                        JOIN node_online_snapshots AS s ON s.node_id = n.node_id
+                        WHERE n.policy_state = 'protocol_ready'
+                            AND n.status = 'pending_verification'
+                            AND n.verified_at IS NOT NULL
+                            AND s.accepted_at >= ? AND s.observed_at >= ?
+                            AND s.traffic_acked_at >= ?""",
+                        (
+                            int(now) - int(freshness_seconds),
+                            int(now) - int(freshness_seconds),
+                            int(now) - int(freshness_seconds),
+                        ),
                     ).fetchone()[0]
-                    local_pending = connection.execute(
-                        """SELECT COUNT(*) FROM local_auth_leases
-                        WHERE user_name = ? COLLATE NOCASE AND expires_at >= ?""",
-                        (user_name, int(now)),
-                    ).fetchone()[0]
-                    online_count = int(local_online.get(user_name, 0)) + int(remote_online)
-                    allowed = bool(
-                        user["tx_bytes"] + user["rx_bytes"]
-                        < user["traffic_limit_bytes"]
-                        and online_count + pending + local_pending
-                        < user["device_limit"]
-                    )
+                    if ready_count == 0 or fresh_count != ready_count:
+                        raise sqlite3.IntegrityError("node state is stale")
+                    query = """SELECT name, enabled, device_limit,
+                        traffic_limit_bytes, tx_bytes, rx_bytes FROM proxy_users
+                        WHERE token_fingerprint = ? AND enabled = 1"""
+                    if require_udp_443:
+                        query += " AND allow_udp_443 = 1"
+                    user = connection.execute(
+                        query, (self._fingerprint(token),)
+                    ).fetchone()
+                    if user is not None:
+                        user_name = user["name"]
+                        remote_online = connection.execute(
+                            """SELECT COALESCE(SUM(c.count), 0)
+                            FROM node_online_counts AS c
+                            JOIN nodes AS n ON n.node_id = c.node_id
+                            WHERE c.user_name = ? COLLATE NOCASE
+                                AND n.policy_state = 'protocol_ready'
+                                AND n.status = 'pending_verification'""",
+                            (user_name,),
+                        ).fetchone()[0]
+                        pending = connection.execute(
+                            """SELECT COUNT(*) FROM node_auth_decisions
+                            WHERE user_name = ? COLLATE NOCASE AND allowed = 1
+                                AND absorbed_at IS NULL AND expires_at >= ?""",
+                            (user_name, int(now)),
+                        ).fetchone()[0]
+                        local_pending = connection.execute(
+                            """SELECT COUNT(*) FROM local_auth_leases
+                            WHERE user_name = ? COLLATE NOCASE AND expires_at >= ?""",
+                            (user_name, int(now)),
+                        ).fetchone()[0]
+                        online_count = int(local_online.get(user_name, 0)) + int(
+                            remote_online
+                        )
+                        allowed = bool(
+                            user["tx_bytes"] + user["rx_bytes"]
+                            < user["traffic_limit_bytes"]
+                            and online_count + pending + local_pending
+                            < user["device_limit"]
+                        )
                 decision_id = uuid.uuid4().hex
                 expires_at = int(now) + MAX_STATE_AGE_SECONDS
+                if canary_grant is not None:
+                    expires_at = min(expires_at, int(canary_grant["expires_at"]))
                 connection.execute(
                     """INSERT INTO node_auth_decisions(
                         node_id, request_id, decision_id, allowed, user_name,
@@ -3269,7 +3399,7 @@ class Database:
                     "decisionId": decision_id,
                     "expiresAt": expires_at,
                 }
-        except (sqlite3.IntegrityError, ValueError, OverflowError):
+        except (sqlite3.IntegrityError, UnicodeError, ValueError, OverflowError):
             return None
 
     def authorize_local_participant(
@@ -3691,7 +3821,15 @@ class Database:
                         (SELECT COUNT(*) FROM node_commands AS c
                             WHERE c.node_id = n.node_id AND c.acked_at IS NULL
                                 AND c.last_error IS NOT NULL
-                        ) AS failed_commands
+                        ) AS failed_commands,
+                        (SELECT g.automatic_canary
+                            FROM node_data_plane_bootstrap_grants AS g
+                            WHERE g.node_id = n.node_id
+                                AND g.acknowledged_at IS NULL
+                                AND g.revoked_at IS NULL
+                                AND g.expires_at > CAST(strftime('%s','now') AS INTEGER)
+                            ORDER BY g.created_at DESC, g.grant_id DESC LIMIT 1
+                        ) AS active_automatic_canary
                     FROM nodes AS n
                     LEFT JOIN node_enrollments AS e ON e.enrollment_id = (
                         SELECT enrollment_id FROM node_enrollments
@@ -3926,6 +4064,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         max_workers=64,
         request_timeout=10,
         request_deadline=30,
+        node_canary_request_deadline=70,
         maintenance_request_deadline=15 * 60,
         worker_queue_timeout=0,
         request_queue_size=64,
@@ -3933,6 +4072,9 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self.max_workers = max(1, int(max_workers))
         self.request_timeout = max(1, int(request_timeout))
         self.request_deadline = max(1, int(request_deadline))
+        self.node_canary_request_deadline = max(
+            self.request_deadline, min(120, int(node_canary_request_deadline))
+        )
         self.maintenance_request_deadline = max(
             self.request_deadline, int(maintenance_request_deadline)
         )
@@ -4091,6 +4233,11 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
     def begin_maintenance_request(self, request):
         return self._arm_request_deadline(request, self.maintenance_request_deadline)
+
+    def begin_node_canary_request(self, request):
+        return self._arm_request_deadline(
+            request, self.node_canary_request_deadline
+        )
 
     @staticmethod
     def _expire_request(request):
@@ -4812,8 +4959,11 @@ class PanelHandler(JsonHandler):
                 except (TypeError, ValueError):
                     fingerprint = ""
             if status == "pending_verification" and not verified and fingerprint:
-                node_actions = """<form method="post" action="/nodes/{node_id}/verify"><input type="hidden" name="csrf" value="{csrf}"><label class="muted" for="fingerprint-{node_id}">输入核对后的完整指纹</label><input id="fingerprint-{node_id}" name="fingerprint" required minlength="64" maxlength="64" pattern="[0-9a-f]{{64}}" autocomplete="off"><button class="compact-button" type="submit">确认节点指纹</button></form>""".format(
-                    node_id=node["node_id"], csrf=csrf
+                node_actions = """<form method="post" action="/nodes/{node_id}/verify" data-confirm="请确认服务器显示的指纹短码也是 {short_fingerprint}；确认后节点将自动完成部署。"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="fingerprint" value="{fingerprint}"><span class="muted">与服务器输出核对短码</span><strong><code>{short_fingerprint}</code></strong><button class="compact-button" type="submit">短码一致，开始自动部署</button></form>""".format(
+                    node_id=node["node_id"],
+                    csrf=csrf,
+                    fingerprint=fingerprint,
+                    short_fingerprint=fingerprint[:16],
                 )
             if status == "pending_verification":
                 node_actions += """<form method="post" action="/nodes/{node_id}/revoke" data-confirm="撤销后该节点的后续心跳会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">撤销节点</button></form>""".format(
@@ -4866,17 +5016,19 @@ class PanelHandler(JsonHandler):
                     node_id=node["node_id"], csrf=csrf
                 )
             elif verified and status == "pending_verification":
-                details.append("协议待命")
-                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这里只启用中央控制协议，不会部署 Hysteria 或修改 DNS，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">启用控制协议</button></form>""".format(
+                details.append("自动部署等待中（通常 30 秒内开始）")
+                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这是旧节点故障恢复入口，只启用中央控制协议，不会部署 Hysteria 或修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">旧节点手动启用</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
             data_plane_state = node.get("data_plane_state") or "not_issued"
             data_plane_labels = {
-                "not_issued": "数据面未部署",
-                "bootstrap_issued": "数据面部署码已签发 · 尚未确认安装",
+                "not_issued": "等待节点自动领取部署凭据",
+                "bootstrap_issued": "自动部署中 · 正在配置 FULL/双入口/网络优化",
                 "data_plane_installed": "数据面已安装 · 待直连灰度",
-                "direct_canary_passed": "直连灰度已通过 · 尚未加入 DNS",
-                "dns_admitted": "DNS 已准入",
+                "direct_canary_passed": "主 UDP {}/443 真实验收通过 · 请手工添加 DNS".format(
+                    self.app.hysteria_port
+                ),
+                "dns_admitted": "DNS 已检测并自动准入 · 节点可用",
             }
             details.append(data_plane_labels.get(data_plane_state, "数据面状态异常"))
             data_plane_eligible = bool(
@@ -4896,9 +5048,13 @@ class PanelHandler(JsonHandler):
                 }
                 and self.app.secure_cookies
                 and self.app.data_plane_bootstrap_service is not None
+                and not (
+                    data_plane_state == "bootstrap_issued"
+                    and node.get("active_automatic_canary")
+                )
             ):
                 if data_plane_state == "not_issued":
-                    data_plane_action = "部署数据面"
+                    data_plane_action = "旧节点手动部署"
                 elif data_plane_state == "bootstrap_issued":
                     data_plane_action = "重新生成部署码"
                 else:
@@ -4908,10 +5064,6 @@ class PanelHandler(JsonHandler):
                 )
             if data_plane_eligible and data_plane_state == "data_plane_installed":
                 node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/canary/pass" data-data-plane-canary-form data-confirm="只记录该节点直连灰度通过，不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认直连灰度通过</button></form>""".format(
-                    node_id=node["node_id"], csrf=csrf
-                )
-            if data_plane_eligible and data_plane_state == "direct_canary_passed":
-                node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/dns/admit" data-node-dns-action-form data-confirm="请仅在外部 DNS 已加入该节点且真实 Hysteria 验收通过后记录准入；此操作本身不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认 DNS 准入完成</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
             if data_plane_eligible and data_plane_state == "dns_admitted":
@@ -4955,8 +5107,8 @@ class PanelHandler(JsonHandler):
 <div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong><small class="muted">180 / 90 / 30 天分级提醒</small></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
-<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">生成短时、单用途的一键部署代码，新服务器先进入待验证状态。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
-<p class="notice"><strong>注册阶段安全边界：</strong>首次对接只安装节点 Agent、核对节点公钥并接收签名心跳；不会复制 Hysteria 证书、HMAC、用户数据，不会启动 VPN 入口或修改 <code>vpn.ssrvpn.vip</code> DNS。数据面部署必须在节点验证和控制协议就绪后另行生成第二段代码。</p>
+<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">一条签名部署代码；随后只需核对短码并手工添加 DNS。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
+<p class="notice"><strong>自动流程：</strong>在新服务器运行下方代码 → 回到节点卡片核对 16 位指纹短码 → 等待自动完成签名心跳、FULL、主 UDP {port}/443、fq/BBR、16 MiB UDP 缓冲和双入口真实出口验收 → 按提示手工添加 <code>{public_host}</code> DNS。面板只读检测 DNS，不会写入或删除 DNS；Hysteria 长期身份只会原样复制，不会自动轮换。</p>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">节点公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-mode">操作类型</label><select id="node-enrollment-mode" name="mode"><option value="join" selected>全新节点对接</option><option value="rebind">已有数据节点安全重绑定</option></select></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <section class="enrollment-result" data-data-plane-bootstrap-result hidden><label for="data-plane-deployment-code">数据面一键部署代码</label><textarea id="data-plane-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="data-plane-deployment-code">复制数据面部署代码</button></div><p class="muted" data-data-plane-bootstrap-expiry role="status"></p><p class="notice"><strong>安全边界：</strong>代码只携带绑定节点与来源 IP 的短时授权；不会携带 Hysteria 证书私钥、HMAC、统计密钥、用户数据，也不会修改 DNS。</p></section>
@@ -5201,6 +5353,8 @@ class PanelHandler(JsonHandler):
         except ValueError:
             self._send_api_error(400, "INVALID_REQUEST", "request body is invalid")
             return
+        if method_name == "ack":
+            self.server.begin_node_canary_request(self.connection)
         try:
             result = getattr(service, method_name)(
                 payload, remote_ip=self.client_address[0]
@@ -5436,6 +5590,7 @@ class PanelHandler(JsonHandler):
             self._handle_node_heartbeat()
             return
         data_plane_routes = {
+            "/api/v1/node-data-plane/claim": "claim",
             "/api/v1/node-data-plane/bootstrap": "fetch",
             "/api/v1/node-data-plane/ack": "ack",
         }
@@ -7012,6 +7167,8 @@ def run_service(settings):
                     "state"
                 ],
             ),
+            canary_runner=HysteriaCanaryRunner(settings.public_host),
+            hysteria_port=settings.hysteria_port,
         )
     application = PanelApplication(
         database=database,
@@ -7058,6 +7215,13 @@ def run_service(settings):
         usage_manager,
         panel_scheme=settings.panel_scheme,
     )
+
+
+def reconcile_node_dns(settings):
+    database = Database(settings.database_path, settings.hmac_key)
+    return NodeDnsAdmissionReconciler(
+        database, settings.public_host
+    ).reconcile()
 
 
 def _systemctl_result(runner, arguments, timeout=60):
@@ -7857,6 +8021,10 @@ def main(argv=None):
     init_parser.add_argument("--username", required=True)
     init_parser.add_argument("--if-missing", action="store_true")
     subcommands.add_parser("serve", help="run the authentication service and panel")
+    subcommands.add_parser(
+        "reconcile-node-dns",
+        help="observe manually managed DNS and admit fresh canary-passed nodes",
+    )
     sync_parser = subcommands.add_parser(
         "sync-traffic", help="flush Hysteria traffic before maintenance"
     )
@@ -7942,6 +8110,10 @@ def main(argv=None):
             with exclusive_maintenance_lock(blocking=False), defer_termination_signals():
                 EgressPolicyManager().apply(args.policy, settings.panel_port)
             print(json.dumps({"status": "ok", "policy": args.policy}, separators=(",", ":")))
+            return 0
+        if args.command == "reconcile-node-dns":
+            result = reconcile_node_dns(settings)
+            print(json.dumps(result, separators=(",", ":")))
             return 0
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         run_service(settings)

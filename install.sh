@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.29.0"
+PANEL_VERSION="0.30.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -20,20 +20,20 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="a186e66c1a067c2ff3b6e6efea5f4ea49ae6b5891e332890d978344c2f22d8f8"
+PANEL_SHA256="d19ff41ceea66f041b01724520f0e0d2b242f46609e5a5d403d55021b772517d"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="5bf144156e8f9463ae941a251835ba21d9f84bd730bfd49bddad11e6121c3d63"
+HY2PANEL_VERSION_SHA256="77718f874f9edd33635a127f34036d0a0899d2299327706795f5bb3f9008d251"
 HY2PANEL_WEB_ASSETS_SHA256="711ce11d7747135634af4929d1398f4ec9bf60f36cbbc6301fbf05236f766def"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="e121467f90058d08bba44e03717e7084c18a9005261e406d3b1e5583a37598f3"
+HY2PANEL_NODES_SHA256="25bb04215e3a78b25061b8a5d5fb5de8a05358d88b87bc38739d9da4e3705346"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="f19b131dfbe15d761ea4e81255bc07f10b16ec9de2f9af733a4696a04506bdc2"
+NODE_AGENT_SHA256="e38f5d3e3a7c93ea5d7b271246568fb8cc32b023f9894d897f59f8de7e256d84"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -64,6 +64,12 @@ NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
 NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node
 NODE_AGENT_HEARTBEAT_SERVICE=/etc/systemd/system/hysteria2-panel-node-heartbeat.service
 NODE_AGENT_HEARTBEAT_TIMER=/etc/systemd/system/hysteria2-panel-node-heartbeat.timer
+NODE_ONBOARDING_INSTALLER=${NODE_AGENT_OPT_DIR}/onboarding-install.sh
+NODE_ONBOARDING_SERVICE=/etc/systemd/system/hysteria2-panel-node-onboarding.service
+NODE_ONBOARDING_TIMER=/etc/systemd/system/hysteria2-panel-node-onboarding.timer
+NODE_ONBOARDING_MARKER=${NODE_AGENT_CONFIG_DIR}/.onboarding-pending
+NODE_ONBOARDING_RUNTIME_DIR=/run/hysteria2-panel-node-onboarding
+NODE_ONBOARDING_TOKEN_FILE=${NODE_ONBOARDING_RUNTIME_DIR}/bootstrap.token
 NODE_DATA_PLANE_BACKUP_ROOT=/var/backups/hysteria2-panel-node
 NODE_DATA_PLANE_TRANSACTION=/etc/hysteria2-panel-node/.data-plane-transaction
 DATA_PLANE_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_DATA_PLANE_V1
@@ -136,10 +142,12 @@ ACTIVATE_NODE_AGENT=0
 ACTIVATE_NODE_AGENT_MUTATED=0
 NODE_AGENT_BACKUP_FILE=""
 ACTIVATE_DATA_PLANE=0
+COMPLETE_NODE_ONBOARDING=0
 DATA_PLANE_MUTATED=0
 DATA_PLANE_EXISTING=0
 DATA_PLANE_BACKUP_DIR=""
 DATA_PLANE_NODE_AGENT_BACKUP_FILE=""
+DATA_PLANE_MAIN_PORT=19999
 DATA_PLANE_OWNED_FILES=()
 DATA_PLANE_OWNED_UNITS=()
 
@@ -161,6 +169,9 @@ Hysteria2-panel 一键部署
 
 部署数据面（复制既有 Hysteria 身份，不安装面板、不修改 DNS）：
   sudo -E bash install.sh --activate-data-plane
+
+自动对接收尾（仅供安装器创建的 systemd timer 调用）：
+  sudo bash /opt/hysteria2-panel-node/onboarding-install.sh --complete-node-onboarding
 
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
@@ -261,6 +272,10 @@ stop_loaded_units() {
 stop_panel_preserving_hysteria() {
   local active_state panel_state server_unit
   local active_servers=()
+  if [[ -f /etc/systemd/system/hysteria2-panel-node-dns-admission.timer ]]; then
+    systemctl stop hysteria2-panel-node-dns-admission.timer \
+      hysteria2-panel-node-dns-admission.service || return 1
+  fi
   for server_unit in hysteria2-panel-server.service hysteria2-panel-server-443.service; do
     active_state="$(systemctl show --no-pager --property=ActiveState --value "${server_unit}" 2>/dev/null)" \
       || return 1
@@ -785,6 +800,8 @@ rollback_existing_install() {
     }
   fi
   if ! stop_loaded_units \
+    hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-node-dns-admission.service \
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-tcp-probe-443.service \
@@ -818,7 +835,7 @@ rollback_existing_install() {
       || { echo "警告：无法恢复 ACME 运行目录权限" >&2; return 1; }
   fi
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -838,6 +855,13 @@ rollback_existing_install() {
   else
     systemctl disable hysteria2-panel-cert-renew.timer >/dev/null 2>&1 || true
     rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants" ]]; then
+    systemctl enable hysteria2-panel-node-dns-admission.timer >/dev/null 2>&1 \
+      || echo "警告：无法恢复节点 DNS 监测 timer 的启用状态" >&2
+  else
+    systemctl disable hysteria2-panel-node-dns-admission.timer >/dev/null 2>&1 || true
+    rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer
   fi
   if [[ -f "${BACKUP_DIR}/99-hysteria2-panel.conf" ]]; then
     cp -a "${BACKUP_DIR}/99-hysteria2-panel.conf" "${SYSCTL_FILE}"
@@ -883,6 +907,10 @@ rollback_existing_install() {
   if [[ -L "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants" ]]; then
     systemctl start hysteria2-panel-cert-renew.timer \
       || echo "警告：旧面板已恢复，但证书续期 timer 未能立即启动" >&2
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants" ]]; then
+    systemctl start hysteria2-panel-node-dns-admission.timer \
+      || echo "警告：旧面板已恢复，但节点 DNS 监测 timer 未能立即启动" >&2
   fi
   rollback_firewall_after_service_recovery || true
   if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
@@ -988,12 +1016,17 @@ select_python() {
 
 rollback_join_node_install() {
   local path
+  systemctl disable --now hysteria2-panel-node-onboarding.timer >/dev/null 2>&1 || true
+  systemctl stop hysteria2-panel-node-onboarding.service >/dev/null 2>&1 || true
+  rm -f -- "${NODE_ONBOARDING_SERVICE}" "${NODE_ONBOARDING_TIMER}" \
+    "${NODE_ONBOARDING_MARKER}" || return 1
   for path in "${NODE_AGENT_CONFIG_DIR}" "${NODE_AGENT_OPT_DIR}"; do
     if [[ -e "${path}" || -L "${path}" ]]; then
       [[ ! -L "${path}" && -d "${path}" ]] || return 1
       rm -r -- "${path}" || return 1
     fi
   done
+  systemctl daemon-reload || return 1
   sync -f /etc || return 1
   sync -f /opt || return 1
   JOIN_NODE_MUTATED=0
@@ -1172,8 +1205,8 @@ rebind_node() {
 }
 
 install_join_node() {
-  local command_name enrollment_token panel_url path
-  local -a join_commands=(curl install mkdir mktemp openssl rm sha256sum sync uname)
+  local command_name enrollment_token fingerprint panel_url path
+  local -a join_commands=(awk cat curl install mkdir mktemp openssl rm sha256sum stat sync systemctl uname)
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "节点对接只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1216,15 +1249,66 @@ install_join_node() {
     -out "${TMP_DIR}/node-public.der" \
     || fail "无法生成节点 Agent 公钥"
 
+  cat > "${TMP_DIR}/hysteria2-panel-node-onboarding.service" <<EOF
+[Unit]
+Description=Complete Hysteria2-panel node onboarding after operator verification
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=${NODE_ONBOARDING_MARKER}
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=${NODE_ONBOARDING_INSTALLER} --complete-node-onboarding
+UMask=0077
+TimeoutStartSec=25min
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+TasksMax=512
+MemoryMax=2G
+EOF
+  cat > "${TMP_DIR}/hysteria2-panel-node-onboarding.timer" <<'EOF'
+[Unit]
+Description=Retry Hysteria2-panel node onboarding until operator verification
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=30s
+Persistent=true
+AccuracySec=1s
+Unit=hysteria2-panel-node-onboarding.service
+
+[Install]
+WantedBy=timers.target
+EOF
+  printf '%s\n' 'HYSTERIA2_PANEL_NODE_ONBOARDING_V1' \
+    > "${TMP_DIR}/onboarding-pending"
+
   JOIN_NODE_MUTATED=1
   install -d -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}"
   install -d -o root -g root -m 0700 "${NODE_AGENT_CONFIG_DIR}"
   install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
     "${NODE_AGENT_OPT_DIR}/node_agent.py"
+  install -o root -g root -m 0700 "$0" "${NODE_ONBOARDING_INSTALLER}"
   install -o root -g root -m 0600 "${TMP_DIR}/node.key" \
     "${NODE_AGENT_CONFIG_DIR}/node.key"
   install -o root -g root -m 0644 "${TMP_DIR}/node-public.der" \
     "${NODE_AGENT_CONFIG_DIR}/node-public.der"
+  install -o root -g root -m 0600 "${TMP_DIR}/onboarding-pending" \
+    "${NODE_ONBOARDING_MARKER}"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-onboarding.service" \
+    "${NODE_ONBOARDING_SERVICE}"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-onboarding.timer" \
+    "${NODE_ONBOARDING_TIMER}"
   if ! HY2PANEL_ENROLLMENT_TOKEN="${enrollment_token}" \
     "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" register \
       --panel-url "${panel_url}" \
@@ -1234,9 +1318,101 @@ install_join_node() {
     fail "节点注册失败；已安排清理本次新增文件"
   fi
   enrollment_token=""
+  systemctl daemon-reload
+  systemctl enable --now hysteria2-panel-node-onboarding.timer \
+    || fail "无法启用节点自动收尾 timer；已安排清理本次新增文件"
   sync -f "${NODE_AGENT_OPT_DIR}"
   sync -f "${NODE_AGENT_CONFIG_DIR}"
-  echo "节点 Agent 已安装；面板状态为待验证。第一阶段未安装 Hysteria，也未修改网络或 DNS。"
+  sync -f /etc/systemd/system
+  fingerprint="$(sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der" | awk '{print $1}')"
+  echo "节点 Agent 已安装；请在面板核对并确认此公钥指纹："
+  echo "  短码：${fingerprint:0:16}"
+  echo "  完整：${fingerprint}"
+  echo "确认后本机将自动完成签名心跳、FULL/UDP 443、fq/BBR、16 MiB UDP 缓冲和数据面部署。安装器不会修改 DNS。"
+}
+
+complete_node_onboarding() {
+  local bootstrap_token marker_value
+
+  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
+    || fail "节点自动收尾只允许使用最初核验过的正式版本 v${PANEL_VERSION}"
+  [[ -d /run/systemd/system ]] \
+    || fail "节点自动收尾需要使用 systemd 的 Linux 服务器"
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "完整面板服务器不能执行分流节点自动收尾"
+  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
+  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node-public.der" 644
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
+  require_node_agent_file "${NODE_ONBOARDING_INSTALLER}" 700
+  require_node_agent_file "${NODE_ONBOARDING_SERVICE}" 644
+  require_node_agent_file "${NODE_ONBOARDING_TIMER}" 644
+  require_node_agent_file "${NODE_ONBOARDING_MARKER}" 600
+  marker_value="$(cat "${NODE_ONBOARDING_MARKER}")"
+  [[ "${marker_value}" == "HYSTERIA2_PANEL_NODE_ONBOARDING_V1" ]] \
+    || fail "节点自动收尾标记无效；拒绝继续"
+  select_python || fail "节点自动收尾需要 Python 3.8 或更高版本"
+
+  # A successful activation removes its durable data-plane transaction only
+  # after the central ACK.  If the process then dies before removing the
+  # onboarding marker, the fully healthy local installation is authoritative
+  # evidence that only the timer cleanup remains.
+  if [[ ! -e "${NODE_DATA_PLANE_TRANSACTION}" \
+    && ! -L "${NODE_DATA_PLANE_TRANSACTION}" ]]; then
+    inspect_existing_data_plane
+    if (( DATA_PLANE_EXISTING == 1 )); then
+      rm -f -- "${NODE_ONBOARDING_MARKER}"
+      systemctl disable --now --no-block \
+        hysteria2-panel-node-onboarding.timer >/dev/null 2>&1 || true
+      sync -f "${NODE_AGENT_CONFIG_DIR}" /etc/systemd/system
+      echo "节点自动对接此前已完成；本次仅清理持久完成器。"
+      return 0
+    fi
+  fi
+
+  install -d -o root -g root -m 0700 "${NODE_ONBOARDING_RUNTIME_DIR}"
+  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+  if ! "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" claim-data-plane \
+    --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
+    --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+    --output-token "${NODE_ONBOARDING_TOKEN_FILE}"; then
+    rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+    echo "节点尚未通过面板指纹确认，自动收尾将在 30 秒后安全重试。"
+    return 0
+  fi
+  require_node_agent_file "${NODE_ONBOARDING_TOKEN_FILE}" 600
+  IFS= read -r bootstrap_token < "${NODE_ONBOARDING_TOKEN_FILE}"
+  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+  [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
+    || fail "面板返回的一次性数据面凭据无效"
+
+  if [[ ! -e "${NODE_AGENT_HEARTBEAT_SERVICE}" && \
+    ! -L "${NODE_AGENT_HEARTBEAT_SERVICE}" && \
+    ! -e "${NODE_AGENT_HEARTBEAT_TIMER}" && \
+    ! -L "${NODE_AGENT_HEARTBEAT_TIMER}" ]]; then
+    ACTIVATE_NODE_AGENT=1
+    activate_node_agent
+    ACTIVATE_NODE_AGENT_MUTATED=0
+    ACTIVATE_NODE_AGENT=0
+  else
+    require_node_agent_file "${NODE_AGENT_HEARTBEAT_SERVICE}" 644
+    require_node_agent_file "${NODE_AGENT_HEARTBEAT_TIMER}" 644
+    systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
+      || fail "既有节点签名心跳 timer 未运行；自动收尾已停止"
+  fi
+
+  ACTIVATE_DATA_PLANE=1
+  HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN="${bootstrap_token}" activate_data_plane
+  bootstrap_token=""
+  ACTIVATE_DATA_PLANE=0
+  DATA_PLANE_MUTATED=0
+  rm -f -- "${NODE_ONBOARDING_MARKER}"
+  systemctl disable --now --no-block hysteria2-panel-node-onboarding.timer \
+    >/dev/null 2>&1 || true
+  sync -f "${NODE_AGENT_CONFIG_DIR}" /etc/systemd/system
+  echo "节点自动对接已完成；可继续为该节点配置 DNS。"
 }
 
 rollback_node_agent_activation() {
@@ -1524,6 +1700,27 @@ assert_data_plane_paths_unclaimed() {
   done
 }
 
+read_data_plane_main_port() {
+  local metadata="$1" compatibility="${2:-strict}"
+  "${PYTHON_BIN}" - "${metadata}" "${compatibility}" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+raw = path.read_bytes()
+if not raw or len(raw) > 8192:
+    raise SystemExit(1)
+record = json.loads(raw.decode("ascii"))
+port = record.get("mainPort") if isinstance(record, dict) else None
+if port is None and sys.argv[2] == "legacy-19999":
+    port = 19999
+if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535 or port in {443, 19995, 19996, 19997}:
+    raise SystemExit(1)
+print(port)
+PY
+}
+
 assert_existing_data_plane_healthy() {
   local mode path unit
   initialize_data_plane_owned_paths
@@ -1560,6 +1757,9 @@ assert_existing_data_plane_healthy() {
     || fail "已安装数据面状态目录包含符号链接"
   [[ -z "$(find /var/lib/hysteria2-panel-node -xdev ! -type d ! -type f -print -quit)" ]] \
     || fail "已安装数据面状态目录包含特殊文件"
+  DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
+    "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" \
+    || fail "已安装数据面主端口元数据异常"
   while IFS= read -r -d '' path; do
     [[ "$(stat -c '%u:%g' "${path}")" == "0:0" ]] \
       || fail "已安装数据面状态项 owner 异常：${path}"
@@ -1571,9 +1771,11 @@ assert_existing_data_plane_healthy() {
         || fail "已安装数据面状态文件权限异常：${path}"
     fi
   done < <(find /var/lib/hysteria2-panel-node -xdev \( -type d -o -type f \) -print0)
-  ss -H -lun "sport = :19999" | grep -q . || fail "既有数据面 UDP 19999 未监听"
+  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "既有数据面 UDP ${DATA_PLANE_MAIN_PORT} 未监听"
   ss -H -lun "sport = :443" | grep -q . || fail "既有数据面 UDP 443 未监听"
-  ss -H -ltn "sport = :19999" | grep -q . || fail "既有数据面 TCP 19999 未监听"
+  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "既有数据面 TCP ${DATA_PLANE_MAIN_PORT} 未监听"
   ss -H -ltn "sport = :443" | grep -q . || fail "既有数据面 TCP 443 未监听"
 }
 
@@ -1595,11 +1797,20 @@ inspect_existing_data_plane() {
 assert_data_plane_ports_available() {
   local kind port
   for kind in -lun -ltn; do
-    for port in 443 19995 19996 19997 19999; do
+    for port in 443 19995 19996 19997 "${DATA_PLANE_MAIN_PORT}"; do
       if ss -H "${kind}" "sport = :${port}" | grep -q .; then
         fail "数据面端口已被占用；未修改系统：${port}"
       fi
     done
+  done
+}
+
+assert_data_plane_main_port_available() {
+  local kind
+  for kind in -lun -ltn; do
+    if ss -H "${kind}" "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q .; then
+      fail "数据面主端口已被占用；未修改系统：${DATA_PLANE_MAIN_PORT}"
+    fi
   done
 }
 
@@ -1711,7 +1922,7 @@ recover_interrupted_data_plane() {
 
 record_data_plane_firewall_change() {
   local line="$1" stage="${TMP_DIR}/data-plane-firewall.state"
-  [[ "${line}" =~ ^(ufw|firewalld-runtime|firewalld-permanent)\|[-A-Za-z0-9_.]+\|(443|19999)\|(tcp|udp)$ ]] \
+  [[ "${line}" =~ ^(ufw|firewalld-runtime|firewalld-permanent)\|[-A-Za-z0-9_.]+\|([0-9]{1,5})\|(tcp|udp)$ ]] \
     || return 1
   if [[ -f "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" ]]; then
     cp -- "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" "${stage}"
@@ -1768,7 +1979,7 @@ configure_data_plane_firewall() {
             || fail "无法读取 firewalld ${zone} rich rules；数据面已安排回滚"
         fi
         for protocol in tcp udp; do
-          for port in 443 19999; do
+          for port in 443 "${DATA_PLANE_MAIN_PORT}"; do
             rule="${port}/${protocol}"
             if [[ "${scope}" == "permanent" ]]; then
               if firewall-cmd --quiet --permanent --zone="${zone}" \
@@ -1825,7 +2036,7 @@ configure_data_plane_firewall() {
     UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" \
       || fail "无法读取 UFW 规则；数据面已安排回滚"
     for protocol in tcp udp; do
-      for port in 443 19999; do
+      for port in 443 "${DATA_PLANE_MAIN_PORT}"; do
         rule="${port}/${protocol}"
         if ufw_rule_is_denied "${rule}"; then
           fail "UFW 已存在拒绝 ${rule} 的规则；数据面已安排回滚"
@@ -1857,34 +2068,116 @@ configure_data_plane_firewall() {
   echo "主机未启用 UFW/firewalld 且无自定义入站限制；数据面未修改防火墙。"
 }
 
-rollback_data_plane_firewall() {
-  local manager zone port protocol
-  local state="${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+validate_data_plane_firewall_state() {
+  local manager zone port protocol extra state="$1"
   [[ -e "${state}" || -L "${state}" ]] || return 0
   [[ -f "${state}" && ! -L "${state}" ]] || return 1
-  while IFS='|' read -r manager zone port protocol; do
-    [[ "${port}" =~ ^(443|19999)$ && "${protocol}" =~ ^(tcp|udp)$ ]] \
+  while IFS='|' read -r manager zone port protocol extra; do
+    [[ -z "${extra}" && "${port}" =~ ^[0-9]{1,5}$ \
+      && "${port}" -ge 1 && "${port}" -le 65535 \
+      && "${protocol}" =~ ^(tcp|udp)$ ]] \
       || return 1
     case "${manager}" in
-      firewalld-runtime)
+      firewalld-runtime|firewalld-permanent)
         [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
-        firewall-cmd --zone="${zone}" --remove-port="${port}/${protocol}" \
-          >/dev/null 2>&1 || true
-        ;;
-      firewalld-permanent)
-        [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
-        firewall-cmd --permanent --zone="${zone}" \
-          --remove-port="${port}/${protocol}" >/dev/null 2>&1 || true
         ;;
       ufw)
         [[ "${zone}" == "-" ]] || return 1
-        ufw --force delete allow proto "${protocol}" from any to any \
-          port "${port}" >/dev/null 2>&1 || true
         ;;
       *) return 1 ;;
     esac
   done < "${state}"
+}
+
+remove_data_plane_firewall_rule() {
+  local manager="$1" zone="$2" port="$3" protocol="$4" rule status
+  rule="${port}/${protocol}"
+  case "${manager}" in
+    firewalld-runtime)
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        firewall-cmd --quiet --zone="${zone}" --remove-port="${rule}" \
+          || return 1
+      else
+        status=$?
+        (( status == 1 )) && return 0
+        return 1
+      fi
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        return 1
+      else
+        status=$?
+        (( status == 1 ))
+      fi
+      ;;
+    firewalld-permanent)
+      if firewall-cmd --quiet --permanent --zone="${zone}" \
+        --query-port="${rule}"; then
+        firewall-cmd --quiet --permanent --zone="${zone}" \
+          --remove-port="${rule}" || return 1
+      else
+        status=$?
+        (( status == 1 )) && return 0
+        return 1
+      fi
+      if firewall-cmd --quiet --permanent --zone="${zone}" \
+        --query-port="${rule}"; then
+        return 1
+      else
+        status=$?
+        (( status == 1 ))
+      fi
+      ;;
+    ufw)
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      if ufw_rule_is_recorded "${rule}"; then
+        ufw --force delete allow proto "${protocol}" from any to any \
+          port "${port}" >/dev/null || return 1
+      else
+        status=$?
+        (( status == 1 )) && return 0
+        return 1
+      fi
+      UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" || return 1
+      if ufw_rule_is_recorded "${rule}"; then
+        return 1
+      else
+        status=$?
+        (( status == 1 ))
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+rollback_data_plane_firewall() {
+  local failed=0 manager zone port protocol
+  local state="${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+  validate_data_plane_firewall_state "${state}" || return 1
+  [[ -e "${state}" ]] || return 0
+  while IFS='|' read -r manager zone port protocol; do
+    remove_data_plane_firewall_rule \
+      "${manager}" "${zone}" "${port}" "${protocol}" || failed=1
+  done < "${state}"
+  (( failed == 0 )) || return 1
   rm -f -- "${state}"
+}
+
+rollback_new_data_plane_firewall_rules() {
+  local backup_state failed=0 manager zone port protocol rule
+  local state="${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+  backup_state="${DATA_PLANE_BACKUP_DIR}/config/data-plane-firewall.state"
+  validate_data_plane_firewall_state "${state}" || return 1
+  validate_data_plane_firewall_state "${backup_state}" || return 1
+  [[ -e "${state}" ]] || return 0
+  while IFS='|' read -r manager zone port protocol; do
+    rule="${manager}|${zone}|${port}|${protocol}"
+    if [[ -f "${backup_state}" ]] && grep -Fqx -- "${rule}" "${backup_state}"; then
+      continue
+    fi
+    remove_data_plane_firewall_rule \
+      "${manager}" "${zone}" "${port}" "${protocol}" || failed=1
+  done < "${state}"
+  (( failed == 0 ))
 }
 
 stop_existing_data_plane() {
@@ -1904,6 +2197,7 @@ restore_existing_data_plane() {
     cd "${DATA_PLANE_BACKUP_DIR}"
     sha256sum --check --status manifest.sha256
   ) || return 1
+  rollback_new_data_plane_firewall_rules || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
     systemctl disable --now "${unit}" >/dev/null 2>&1 || true
@@ -1939,9 +2233,11 @@ restore_existing_data_plane() {
     systemctl enable --now "${unit}" || return 1
     systemctl is-active --quiet "${unit}" || return 1
   done
-  ss -H -lun "sport = :19999" | grep -q . || return 1
+  DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
+    "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" || return 1
+  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
   ss -H -lun "sport = :443" | grep -q . || return 1
-  ss -H -ltn "sport = :19999" | grep -q . || return 1
+  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
   ss -H -ltn "sport = :443" | grep -q . || return 1
   rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
   sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
@@ -1989,7 +2285,7 @@ rollback_data_plane_activation() {
 }
 
 activate_data_plane() {
-  local bootstrap_token command_name hysteria_arch hysteria_sha hysteria_url path unit
+  local bootstrap_token command_name existing_main_port="" hysteria_arch hysteria_sha hysteria_url main_capability="" path unit
   local -a data_plane_commands=(awk cat chmod cp curl date df find grep install mkdir mktemp mv openssl rm rmdir sha256sum sort ss stat sync sysctl systemctl)
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
@@ -2010,20 +2306,20 @@ activate_data_plane() {
     || fail "节点签名心跳 timer 未运行；未修改系统"
   systemctl start hysteria2-panel-node-heartbeat.service \
     || fail "节点签名心跳未被中央面板接受；未修改系统"
-  recover_interrupted_data_plane
-  assert_data_plane_network_stack_claimable
-  inspect_existing_data_plane
-  if (( DATA_PLANE_EXISTING == 1 )); then
-    assert_existing_data_plane_healthy
-  else
-    assert_data_plane_paths_unclaimed
-    assert_data_plane_ports_available
-  fi
   for command_name in "${data_plane_commands[@]}"; do
     command -v "${command_name}" >/dev/null 2>&1 \
       || fail "数据面部署缺少命令 ${command_name}；未修改系统"
   done
   select_python || fail "数据面部署需要 Python 3.8 或更高版本；未修改系统"
+  recover_interrupted_data_plane
+  assert_data_plane_network_stack_claimable
+  inspect_existing_data_plane
+  if (( DATA_PLANE_EXISTING == 1 )); then
+    assert_existing_data_plane_healthy
+    existing_main_port="${DATA_PLANE_MAIN_PORT}"
+  else
+    assert_data_plane_paths_unclaimed
+  fi
   (( $(df -Pk "${NODE_AGENT_OPT_DIR}" | awk 'NR == 2 {print $4}') >= 131072 )) \
     || fail "数据面部署至少需要 128 MiB 可用磁盘；未修改系统"
   bootstrap_token="${HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN:-}"
@@ -2062,6 +2358,17 @@ activate_data_plane() {
       --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
       --output-dir "${TMP_DIR}/data-plane" \
     || fail "数据面身份取件或本地摘要验证失败；未修改系统"
+  DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
+    "${TMP_DIR}/data-plane/bootstrap.json")" \
+    || fail "中央返回的数据面主端口无效；未修改系统"
+  if (( DATA_PLANE_EXISTING == 0 )); then
+    assert_data_plane_ports_available
+  elif [[ "${DATA_PLANE_MAIN_PORT}" != "${existing_main_port}" ]]; then
+    assert_data_plane_main_port_available
+  fi
+  if (( DATA_PLANE_MAIN_PORT < 1024 )); then
+    main_capability=CAP_NET_BIND_SERVICE
+  fi
 
   write_data_plane_backup_manifest \
     || fail "无法创建数据面 root-only 回滚快照；未修改系统"
@@ -2172,7 +2479,7 @@ EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-hysteria-main.service" <<EOF
 [Unit]
-Description=Hysteria2-panel data node main UDP 19999
+Description=Hysteria2-panel data node main UDP ${DATA_PLANE_MAIN_PORT}
 After=network-online.target hysteria2-panel-node-auth.service hysteria2-panel-node-control.service
 Wants=network-online.target
 
@@ -2198,8 +2505,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=${main_capability}
+AmbientCapabilities=${main_capability}
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
 TasksMax=256
@@ -2252,14 +2559,14 @@ EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-tcp-probe-main.service" <<EOF
 [Unit]
-Description=Hysteria2-panel data node TCP 19999 probe
+Description=Hysteria2-panel data node TCP ${DATA_PLANE_MAIN_PORT} probe
 After=hysteria2-panel-node-hysteria-main.service
 Requires=hysteria2-panel-node-hysteria-main.service
 
 [Service]
 Type=simple
 DynamicUser=true
-ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/tcp_probe.py 19999
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/tcp_probe.py ${DATA_PLANE_MAIN_PORT}
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -2273,8 +2580,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=${main_capability}
+AmbientCapabilities=${main_capability}
 RestrictAddressFamilies=AF_INET AF_INET6
 TasksMax=16
 MemoryMax=64M
@@ -2334,9 +2641,11 @@ EOF
   done
   systemctl is-active --quiet hysteria2-panel-node-control.service \
     || fail "数据面控制循环未运行"
-  ss -H -lun "sport = :19999" | grep -q . || fail "Hysteria UDP 19999 未监听"
+  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "Hysteria UDP ${DATA_PLANE_MAIN_PORT} 未监听"
   ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 未监听"
-  ss -H -ltn "sport = :19999" | grep -q . || fail "TCP 19999 probe 未监听"
+  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+    || fail "TCP ${DATA_PLANE_MAIN_PORT} probe 未监听"
   ss -H -ltn "sport = :443" | grep -q . || fail "TCP 443 probe 未监听"
   configure_data_plane_firewall
   (
@@ -2604,6 +2913,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/hysteria2-panel-update.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.service \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.timer \
     "${FRESH_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_DROPIN_DIR}" \
@@ -2613,7 +2924,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
-    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer; do
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer; do
     [[ ! -e "${path}" && ! -L "${path}" ]] \
       || fail "发现非本安装器管理的同名路径或服务：${path}；为避免覆盖，安装已停止"
   done
@@ -2976,6 +3288,8 @@ verify_fresh_install_commit_payload() {
     '/var/lib/hysteria2-panel/panel.db|hy2panel:hy2panel:600:1|1'
     '/etc/systemd/system/hysteria2-panel.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-server.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-node-dns-admission.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-node-dns-admission.timer|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-upgrade-recover.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel.service.d/10-hysteria2-panel-upgrade-recovery.conf|root:root:644:1|1'
     '/etc/sudoers.d/hysteria2-panel|root:root:440:1|1'
@@ -3011,6 +3325,8 @@ verify_fresh_install_commit_payload() {
   elif [[ "${panel_scheme_value}" != "http" ]]; then
     return 1
   fi
+  [[ -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
+    || return 1
 }
 
 flush_fresh_cleanup_before_disarm() {
@@ -3030,6 +3346,8 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/hysteria2-panel-update.service
     /etc/systemd/system/hysteria2-panel-cert-renew.service
     /etc/systemd/system/hysteria2-panel-cert-renew.timer
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.service
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.timer
     /etc/systemd/system/hysteria2-panel-egress-full.service
     /etc/systemd/system/hysteria2-panel-egress-web.service
     /etc/systemd/system/hysteria2-panel-egress-recover.service
@@ -3041,6 +3359,7 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer
     /etc/sudoers.d/hysteria2-panel
     "${SYSCTL_FILE}"
     "${TMPFILES_FILE}"
@@ -3233,6 +3552,8 @@ recover_interrupted_fresh_install() {
   echo "检测到上次未完成的首次部署，正在安全清理后重试…"
   stop_loaded_units \
     hysteria2-panel-upgrade-recover.service \
+    hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-node-dns-admission.service \
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-restore.service \
@@ -3250,6 +3571,7 @@ recover_interrupted_fresh_install() {
     || fail "上次部署遗留进程无法全部停止；请人工检查后重试"
   systemctl disable hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-server.service hysteria2-panel.service \
     >/dev/null 2>&1 || true
   if declare -F rollback_persisted_firewall_transaction >/dev/null 2>&1; then
@@ -3268,6 +3590,8 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-update.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.service \
     /etc/systemd/system/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.service \
+    /etc/systemd/system/hysteria2-panel-node-dns-admission.timer \
     /etc/systemd/system/hysteria2-panel-egress-full.service \
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
@@ -3278,6 +3602,7 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
     /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
   rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
   rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
@@ -3382,6 +3707,8 @@ assert_units_unclaimed() {
     hysteria2-panel-egress-recover.service \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-node-dns-admission.service \
+    hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-update.service; do
     output="$(systemctl show --no-pager \
       --property=LoadState --property=ActiveState \
@@ -3426,6 +3753,8 @@ assert_units_claimed_by_installer() {
     hysteria2-panel-egress-recover.service \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-cert-renew.timer \
+    hysteria2-panel-node-dns-admission.service \
+    hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-update.service; do
     expected_path="/etc/systemd/system/${unit_file}"
     output="$(systemctl show --no-pager \
@@ -5109,6 +5438,9 @@ elif [[ "${1:-}" == "--activate-node-agent" ]]; then
 elif [[ "${1:-}" == "--activate-data-plane" ]]; then
   ACTIVATE_DATA_PLANE=1
   shift
+elif [[ "${1:-}" == "--complete-node-onboarding" ]]; then
+  COMPLETE_NODE_ONBOARDING=1
+  shift
 fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
@@ -5123,6 +5455,13 @@ if (( REBIND_NODE == 1 )); then
   rebind_node
   INSTALL_COMMITTED=1
   REBIND_NODE_MUTATED=0
+  exit 0
+fi
+if (( COMPLETE_NODE_ONBOARDING == 1 )); then
+  # This mode owns no full-panel transaction. Its two reused activation
+  # functions set their own rollback flags before making any changes.
+  INSTALL_COMMITTED=1
+  complete_node_onboarding
   exit 0
 fi
 if (( ACTIVATE_NODE_AGENT == 1 )); then
@@ -5583,7 +5922,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] \
@@ -5592,6 +5931,9 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   [[ ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer ]] \
     || cp -a /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
       "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants"
+  [[ ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
+    || cp -a /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
+      "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants"
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
   [[ ! -f /etc/sudoers.d/hysteria2-panel ]] || cp -a /etc/sudoers.d/hysteria2-panel "${BACKUP_DIR}/hysteria2-panel.sudoers"
   [[ ! -f "${TMPFILES_FILE}" ]] || cp -a "${TMPFILES_FILE}" "${BACKUP_DIR}/hysteria2-panel.tmpfiles"
@@ -6384,6 +6726,57 @@ else
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
 fi
 
+cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.service <<EOF
+[Unit]
+Description=Observe manual DNS and admit fresh Hysteria2 data nodes
+After=network-online.target hysteria2-panel.service
+Requires=hysteria2-panel.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hy2panel
+Group=hy2panel
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py reconcile-node-dns
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/opt/hysteria2-panel /etc/hysteria2-panel
+ReadWritePaths=/var/lib/hysteria2-panel
+TasksMax=32
+MemoryMax=128M
+TimeoutStartSec=20s
+EOF
+cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.timer <<'EOF'
+[Unit]
+Description=Check manually managed data-node DNS every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+Persistent=true
+AccuracySec=1s
+Unit=hysteria2-panel-node-dns-admission.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat > /etc/systemd/system/hysteria2-panel-update.service <<EOF
 [Unit]
 Description=Install the latest formal Hysteria 2 panel release
@@ -6433,6 +6826,7 @@ assert_units_claimed_by_installer
 systemctl enable hysteria2-panel-restore-resume.service
 systemctl enable hysteria2-panel.service
 systemctl enable hysteria2-panel-server.service
+systemctl enable hysteria2-panel-node-dns-admission.timer
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
   systemctl enable hysteria2-panel-cert-renew.timer
   systemctl start hysteria2-panel-cert-renew.timer
@@ -6482,6 +6876,8 @@ wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz" "${PANEL_HEAL
   || fail "面板就绪检查失败"
 wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
+systemctl start hysteria2-panel-node-dns-admission.timer \
+  || fail "节点 DNS 只读监测 timer 启动失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
 if (( UDP_443_ENABLED == 1 )); then
   ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 端口未监听"

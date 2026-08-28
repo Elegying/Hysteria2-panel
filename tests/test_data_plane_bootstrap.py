@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import socket
 import stat
 import subprocess
 import tempfile
@@ -13,7 +14,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
+import node_agent
 from hysteria2_panel import Database, PanelApplication, make_panel_server
 from node_agent import (
     collect_data_plane_attestation,
@@ -27,9 +30,248 @@ from node_agent import (
 from hy2panel.nodes import (
     DataPlaneBootstrapRejected,
     DataPlaneBootstrapService,
+    HysteriaCanaryRunner,
     HysteriaIdentityProvider,
+    NodeDnsAdmissionReconciler,
     canonical_data_plane_request,
 )
+
+
+class HysteriaCanaryRunnerTests(unittest.TestCase):
+    def test_tests_both_entrypoints_through_real_hysteria_and_matches_egress_ip(self):
+        configs = []
+        processes = []
+
+        class Process:
+            def __init__(self):
+                self.returncode = None
+                processes.append(self)
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.returncode = 0
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        def popen(argv, **kwargs):
+            self.assertEqual(
+                ["/opt/hysteria2-panel/bin/hysteria", "client", "--config"],
+                argv[:3],
+            )
+            config_path = Path(argv[3])
+            self.assertEqual(0o600, stat.S_IMODE(config_path.stat().st_mode))
+            configs.append(json.loads(config_path.read_text()))
+            self.assertNotIn("shell", kwargs)
+            return Process()
+
+        curl_calls = []
+
+        def run(argv, **kwargs):
+            curl_calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, "ip=8.8.8.8\nwarp=off\n", "")
+
+        with mock.patch("hy2panel.nodes.subprocess.Popen", side_effect=popen), mock.patch(
+            "hy2panel.nodes.subprocess.run", side_effect=run
+        ), mock.patch("hy2panel.nodes.socket.create_connection"):
+            HysteriaCanaryRunner(
+                server_name="vpn.example.test",
+                port_factory=iter((39001, 39002)).__next__,
+                sleep=lambda _seconds: None,
+            )(
+                node_ip="8.8.8.8",
+                main_port=24443,
+                token="canary_" + "T" * 40,
+                pin_sha256="ab" * 32,
+            )
+
+        self.assertEqual([24443, 443], [int(c["server"].rsplit(":", 1)[1]) for c in configs])
+        self.assertTrue(all("--max-filesize" in command for command in curl_calls))
+        self.assertTrue(all(c["auth"].startswith("canary_") for c in configs))
+        self.assertTrue(all(c["tls"]["insecure"] is True for c in configs))
+        self.assertTrue(
+            all(c["tls"]["pinSHA256"] == ":".join(["AB"] * 32) for c in configs)
+        )
+        self.assertEqual(2, len(curl_calls))
+        self.assertTrue(all("socks5h://127.0.0.1:" in " ".join(c) for c in curl_calls))
+        self.assertTrue(all(process.returncode == 0 for process in processes))
+
+    def test_rejects_non_public_target_and_wrong_egress(self):
+        runner = HysteriaCanaryRunner(server_name="vpn.example.test")
+        with self.assertRaises(ValueError):
+            runner(
+                node_ip="127.0.0.1",
+                main_port=19999,
+                token="canary_" + "T" * 40,
+                pin_sha256="ab" * 32,
+            )
+        for invalid_port in (0, 443, 65536, True, "19999"):
+            with self.subTest(invalid_port=invalid_port), self.assertRaises(ValueError):
+                runner(
+                    node_ip="8.8.8.8",
+                    main_port=invalid_port,
+                    token="canary_" + "T" * 40,
+                    pin_sha256="ab" * 32,
+                )
+
+        with mock.patch("hy2panel.nodes.subprocess.Popen") as popen:
+            with self.assertRaises(RuntimeError):
+                runner._verify_trace("ip=1.1.1.1\n", "8.8.8.8")
+        popen.assert_not_called()
+
+
+class NodeDnsAdmissionReconcilerTests(unittest.TestCase):
+    def _insert_node(self, node_id, *, policy_state):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """INSERT INTO nodes(
+                    node_id, name, expected_ip, observed_ip, status, public_key,
+                    hostname, platform, architecture, agent_version, created_at,
+                    registered_at, last_seen_at, verified_at, verified_by,
+                    last_heartbeat_at, last_heartbeat_ip, policy_state,
+                    policy_enabled_at, policy_enabled_by
+                ) VALUES (?, 'dns-node', ?, ?, 'pending_verification', ?,
+                    'node.example.test', 'linux', 'amd64', '0.30.0', ?, ?, ?,
+                    ?, 'admin', ?, ?, ?, ?, 'admin')""",
+                (
+                    node_id,
+                    self.remote_ip,
+                    self.remote_ip,
+                    base64.b64encode(
+                        bytes.fromhex("302a300506032b6570032100") + b"a" * 32
+                    ).decode("ascii"),
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.remote_ip,
+                    policy_state,
+                    self.now[0],
+                ),
+            )
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "panel.db"
+        self.db = Database(self.db_path, b"d" * 32)
+        self.db.initialize()
+        self.now = [2_000_000_000]
+        self.node_id = "a" * 32
+        self.remote_ip = "8.8.8.8"
+        self._insert_node(self.node_id, policy_state="protocol_ready")
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    data_plane_installed_at = ?, direct_canary_passed_at = ?,
+                    last_heartbeat_at = ?, last_snapshot_at = ?,
+                    last_traffic_ack_at = ? WHERE node_id = ?""",
+                (
+                    self.now[0] - 10,
+                    self.now[0] - 5,
+                    self.now[0],
+                    self.now[0],
+                    self.now[0],
+                    self.node_id,
+                ),
+            )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @staticmethod
+    def _resolver(addresses):
+        def resolve(_host, _port, *, type):
+            if type != socket.SOCK_STREAM:
+                raise AssertionError("resolver type was not bounded")
+            return [
+                (
+                    socket.AF_INET6 if ":" in address else socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    6,
+                    "",
+                    (address, 443, 0, 0)
+                    if ":" in address
+                    else (address, 443),
+                )
+                for address in addresses
+            ]
+
+        return resolve
+
+    def test_exact_manual_dns_and_fresh_state_are_admitted_read_only(self):
+        reconciler = NodeDnsAdmissionReconciler(
+            self.db,
+            "vpn.example.test",
+            resolver=self._resolver(["1.1.1.1", self.remote_ip]),
+            clock=lambda: self.now[0],
+        )
+
+        result = reconciler.reconcile()
+
+        self.assertEqual({"checked": 1, "admitted": 1}, result)
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("dns_admitted", node["data_plane_state"])
+        self.assertEqual("system:dns-monitor", node["dns_admitted_by"])
+
+    def test_wrong_missing_private_or_stale_dns_never_changes_state(self):
+        cases = (
+            self._resolver([]),
+            self._resolver(["1.1.1.1"]),
+            self._resolver(["127.0.0.1", "10.0.0.1"]),
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("dns failed")),
+        )
+        for resolver in cases:
+            with self.subTest(resolver=resolver):
+                result = NodeDnsAdmissionReconciler(
+                    self.db,
+                    "vpn.example.test",
+                    resolver=resolver,
+                    clock=lambda: self.now[0],
+                ).reconcile()
+                self.assertEqual(0, result["admitted"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET last_snapshot_at = ? WHERE node_id = ?",
+                (self.now[0] - 46, self.node_id),
+            )
+        result = NodeDnsAdmissionReconciler(
+            self.db,
+            "vpn.example.test",
+            resolver=self._resolver([self.remote_ip]),
+            clock=lambda: self.now[0],
+        ).reconcile()
+        self.assertEqual(0, result["admitted"])
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+
+    def test_reconciliation_never_removes_an_existing_admission(self):
+        self.assertTrue(
+            self.db.mark_node_dns_admitted(
+                self.node_id, "admin", self.now[0]
+            )
+        )
+        result = NodeDnsAdmissionReconciler(
+            self.db,
+            "vpn.example.test",
+            resolver=self._resolver([]),
+            clock=lambda: self.now[0] + 60,
+        ).reconcile()
+        self.assertEqual({"checked": 0, "admitted": 0}, result)
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("dns_admitted", node["data_plane_state"])
+        self.assertIsNone(node["dns_removed_at"])
 
 
 class DataPlaneBootstrapStateTests(unittest.TestCase):
@@ -139,6 +381,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
                 "last_fetched_at",
                 "acknowledged_at",
                 "revoked_at",
+                "automatic_canary",
             },
             grant_columns,
         )
@@ -476,6 +719,258 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         self.assertIsNone(node["dns_admitted_at"])
 
 
+class AutoBootstrapClaimTests(unittest.TestCase):
+    _insert_node = DataPlaneBootstrapStateTests._insert_node
+    _digest = DataPlaneBootstrapStateTests._digest
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "panel.db"
+        self.db = Database(self.db_path, b"c" * 32)
+        self.db.initialize()
+        self.now = [2_000_000_000]
+        self.node_id = "5" * 32
+        self.remote_ip = "203.0.113.50"
+        self.tokens = iter(("claim_" + "A" * 40, "claim_" + "B" * 40))
+        self._insert_node(self.node_id, policy_state="standby")
+        self.signed_messages = []
+        self.service = DataPlaneBootstrapService(
+            self.db,
+            panel_url="https://panel.ssrvpn.vip:19998",
+            panel_version="0.30.0",
+            clock=lambda: self.now[0],
+            token_factory=lambda: next(self.tokens),
+            signature_verifier=self._verify_signature,
+        )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _verify_signature(self, _public_key, message, _signature):
+        self.signed_messages.append(message)
+        return True
+
+    def _payload(self, value=1, **changes):
+        payload = {
+            "nodeId": self.node_id,
+            "sentAt": self.now[0],
+            "nonce": base64.urlsafe_b64encode(bytes([value]) * 32)
+            .decode("ascii")
+            .rstrip("="),
+            "requestId": "{:032x}".format(value),
+            "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+        }
+        payload.update(changes)
+        return payload
+
+    def test_verified_online_node_claim_enables_protocol_and_returns_only_token(self):
+        result = self.service.claim(self._payload(), remote_ip=self.remote_ip)
+
+        self.assertEqual("AUTO_BOOTSTRAP_ISSUED", result["status"])
+        self.assertEqual(self.node_id, result["nodeId"])
+        self.assertEqual("claim_" + "A" * 40, result["bootstrapToken"])
+        self.assertNotIn("deploymentCommand", result)
+        self.assertTrue(
+            self.signed_messages[-1].startswith(
+                b"hy2panel-data-plane-claim-v1\n"
+            )
+        )
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            node = connection.execute(
+                "SELECT policy_state, policy_enabled_by, data_plane_state "
+                "FROM nodes WHERE node_id = ?",
+                (self.node_id,),
+            ).fetchone()
+            grant = connection.execute(
+                "SELECT token_digest, created_by, revoked_at "
+                "FROM node_data_plane_bootstrap_grants WHERE grant_id = ?",
+                (result["grantId"],),
+            ).fetchone()
+        self.assertEqual(
+            ("protocol_ready", "system:auto-onboarding", "bootstrap_issued"),
+            tuple(node),
+        )
+        self.assertEqual(
+            hashlib.sha256(result["bootstrapToken"].encode("ascii")).hexdigest(),
+            grant["token_digest"],
+        )
+        self.assertEqual("system:auto-onboarding", grant["created_by"])
+        self.assertIsNone(grant["revoked_at"])
+        self.assertNotIn(result["bootstrapToken"].encode("ascii"), self.db_path.read_bytes())
+
+    def test_claim_reissues_atomically_after_a_lost_response(self):
+        first = self.service.claim(self._payload(1), remote_ip=self.remote_ip)
+        second = self.service.claim(self._payload(2), remote_ip=self.remote_ip)
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            grants = {
+                row[0]: row[1]
+                for row in connection.execute(
+                    "SELECT grant_id, revoked_at FROM node_data_plane_bootstrap_grants "
+                    "WHERE node_id = ?",
+                    (self.node_id,),
+                )
+            }
+        self.assertEqual(self.now[0], grants[first["grantId"]])
+        self.assertIsNone(grants[second["grantId"]])
+
+    def test_claim_fails_closed_before_verification_or_without_fresh_heartbeat(self):
+        cases = (
+            ("6" * 32, False, self.now[0], self.remote_ip),
+            ("7" * 32, True, self.now[0] - 121, self.remote_ip),
+            ("8" * 32, True, self.now[0], "203.0.113.81"),
+        )
+        for node_id, verified, heartbeat_at, remote_ip in cases:
+            with self.subTest(node_id=node_id):
+                self._insert_node(
+                    node_id,
+                    verified=verified,
+                    policy_state="standby",
+                    address="203.0.113.80",
+                )
+                with sqlite3.connect(str(self.db_path)) as connection:
+                    connection.execute(
+                        "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
+                        (heartbeat_at, node_id),
+                    )
+                payload = self._payload(nodeId=node_id)
+                with self.assertRaises(DataPlaneBootstrapRejected):
+                    self.service.claim(payload, remote_ip=remote_ip)
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET data_plane_state = 'direct_canary_passed' "
+                "WHERE node_id = ?",
+                (self.node_id,),
+            )
+        recovered = self.service.claim(
+            self._payload(9), remote_ip=self.remote_ip
+        )
+        self.assertEqual("AUTO_BOOTSTRAP_ISSUED", recovered["status"])
+        node = self.db.get_node_for_heartbeat(self.node_id)
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+
+    def test_claim_token_is_a_reserved_node_bound_canary_not_a_user(self):
+        result = self.service.claim(self._payload(), remote_ip=self.remote_ip)
+        digest = hashlib.sha256(
+            result["bootstrapToken"].encode("ascii")
+        ).hexdigest()
+        self.assertIsNotNone(
+            self.db.fetch_data_plane_bootstrap(
+                self.node_id, digest, self.remote_ip, "a" * 64, self.now[0]
+            )
+        )
+
+        decision = self.db.authorize_distributed_node(
+            self.node_id,
+            "b" * 32,
+            result["bootstrapToken"],
+            True,
+            {},
+            "c" * 64,
+            self.now[0],
+            5,
+        )
+        self.assertTrue(decision["ok"])
+        self.assertEqual("__hy2panel_bootstrap_canary__", decision["id"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            self.assertEqual(
+                0, connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
+            )
+
+        self.assertTrue(
+            self.db.acknowledge_data_plane_bootstrap(
+                self.node_id,
+                digest,
+                self.remote_ip,
+                "d" * 64,
+                self.now[0],
+                automatic_canary_passed=True,
+            )
+        )
+        self.assertIsNone(
+            self.db.authorize_distributed_node(
+                self.node_id,
+                "e" * 32,
+                result["bootstrapToken"],
+                False,
+                {},
+                "f" * 64,
+                self.now[0],
+                5,
+            )
+        )
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+        self.assertEqual(self.now[0], node["direct_canary_passed_at"])
+
+
+class AutoBootstrapClaimClientTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.output = Path(self.temp_dir.name) / "bootstrap.token"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_claim_token_is_written_atomically_without_printing_the_secret(self):
+        client = mock.Mock()
+        client.claim.return_value = {
+            "nodeId": "5" * 32,
+            "grantId": "6" * 32,
+            "expiresAt": 2_000_000_600,
+            "maxFetchAttempts": 3,
+            "status": "AUTO_BOOTSTRAP_ISSUED",
+            "bootstrapToken": "claim_" + "C" * 40,
+        }
+
+        node_agent.write_bootstrap_claim(client, self.output)
+
+        self.assertEqual("claim_" + "C" * 40, self.output.read_text("ascii"))
+        self.assertEqual(0o600, stat.S_IMODE(self.output.stat().st_mode))
+        with self.assertRaises(ProtocolError):
+            node_agent.write_bootstrap_claim(client, self.output)
+
+    def test_claim_cli_heartbeats_before_requesting_the_secret(self):
+        state = Path(self.temp_dir.name) / "registration.json"
+        private_key = Path(self.temp_dir.name) / "node.key"
+        arguments = [
+            "claim-data-plane",
+            "--private-key",
+            str(private_key),
+            "--state-file",
+            str(state),
+            "--output-token",
+            str(self.output),
+        ]
+        order = []
+
+        class Client:
+            def __init__(self, state_path, private_key_path):
+                self.state_path = state_path
+                self.private_key_path = private_key_path
+
+        def fake_heartbeat(**_kwargs):
+            order.append("heartbeat")
+            return {"nodeId": "5" * 32, "status": "ONLINE"}
+
+        def fake_write(client, output):
+            self.assertIsInstance(client, Client)
+            self.assertEqual(self.output, output)
+            order.append("claim")
+
+        with mock.patch.object(node_agent, "heartbeat", side_effect=fake_heartbeat), mock.patch.object(
+            node_agent, "DataPlaneBootstrapClient", Client
+        ), mock.patch.object(
+            node_agent, "write_bootstrap_claim", side_effect=fake_write
+        ):
+            self.assertEqual(0, node_agent.main(arguments))
+        self.assertEqual(["heartbeat", "claim"], order)
+
+
 class DataPlaneBootstrapContractTests(unittest.TestCase):
     _insert_node = DataPlaneBootstrapStateTests._insert_node
     _digest = DataPlaneBootstrapStateTests._digest
@@ -498,6 +993,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
             token_factory=lambda: self.token,
             signature_verifier=lambda _key, _message, _signature: True,
             identity_provider=lambda: dict(self.identity),
+            hysteria_port=24443,
         )
         self.service.issue(self.node_id, actor="admin")
 
@@ -580,7 +1076,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
         self.assertEqual(3, result["maxFetchAttempts"])
         self.assertEqual(1, result["configProtocolVersion"])
         self.assertEqual("2.12.1", result["hysteriaVersion"])
-        self.assertEqual({"main": 19999, "udp443": 443}, result["ports"])
+        self.assertEqual({"main": 24443, "udp443": 443}, result["ports"])
         self.assertEqual(self.identity["certificatePem"], result["certificatePem"])
         self.assertEqual(self.identity["privateKeyPem"], result["privateKeyPem"])
         self.assertEqual("web", result["egressPolicy"])
@@ -639,6 +1135,46 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
             self.service.ack(
                 self._ack_payload(value=21), remote_ip=self.remote_ip
             )
+
+    def test_automatic_ack_requires_real_canary_before_consuming_the_grant(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE node_data_plane_bootstrap_grants SET automatic_canary = 1 "
+                "WHERE node_id = ?",
+                (self.node_id,),
+            )
+        self.service.fetch(self._bootstrap_payload(), remote_ip=self.remote_ip)
+        calls = []
+
+        def failed_canary(**kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("external egress failed")
+
+        self.service.canary_runner = failed_canary
+        with self.assertRaises(DataPlaneBootstrapRejected):
+            self.service.ack(
+                self._ack_payload(value=30), remote_ip=self.remote_ip
+            )
+        with sqlite3.connect(str(self.db_path)) as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT acknowledged_at FROM node_data_plane_bootstrap_grants "
+                    "WHERE node_id = ?",
+                    (self.node_id,),
+                ).fetchone()[0]
+            )
+        self.assertEqual(self.remote_ip, calls[0]["node_ip"])
+        self.assertEqual(self.token, calls[0]["token"])
+        self.assertEqual(self.identity["certificateDerSha256"], calls[0]["pin_sha256"])
+        self.assertEqual(24443, calls[0]["main_port"])
+
+        self.service.canary_runner = lambda **kwargs: calls.append(kwargs)
+        result = self.service.ack(
+            self._ack_payload(value=31), remote_ip=self.remote_ip
+        )
+        self.assertEqual(
+            {"nodeId": self.node_id, "status": "DIRECT_CANARY_PASSED"}, result
+        )
 
 
 class HysteriaIdentityProviderTests(unittest.TestCase):
@@ -869,6 +1405,14 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
 
     def test_public_fetch_and_ack_return_the_fixed_contract(self):
         self.service.issue(self.node_id, actor="admin")
+        extended_requests = []
+        original_begin_canary = self.server.begin_node_canary_request
+
+        def begin_canary(request):
+            extended_requests.append(request)
+            return original_begin_canary(request)
+
+        self.server.begin_node_canary_request = begin_canary
 
         fetched = json.loads(
             self._post_json(
@@ -878,6 +1422,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             .decode("utf-8")
         )
         self.assertEqual(self.identity["privateKeyPem"], fetched["privateKeyPem"])
+        self.assertEqual([], extended_requests)
 
         ack = self._common(2)
         ack.update(
@@ -904,6 +1449,39 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             .decode("utf-8")
         )
         self.assertEqual("DATA_PLANE_INSTALLED", result["status"])
+        self.assertEqual(1, len(extended_requests))
+
+    def test_public_auto_claim_uses_the_same_https_and_signature_boundary(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET policy_state = 'standby' WHERE node_id = ?",
+                (self.node_id,),
+            )
+        payload = self._common(30)
+        payload["requestId"] = "3" * 32
+
+        result = json.loads(
+            self._post_json("/api/v1/node-data-plane/claim", payload)
+            .read()
+            .decode("utf-8")
+        )
+
+        self.assertEqual("AUTO_BOOTSTRAP_ISSUED", result["status"])
+        self.assertEqual(self.node_id, result["nodeId"])
+        self.assertEqual(self.token, result["bootstrapToken"])
+        self.assertNotIn("deploymentCommand", result)
+        raw_session, _csrf = self.db.create_session(self.admin_id)
+        dashboard = urllib.request.urlopen(
+            urllib.request.Request(
+                self.base_url + "/",
+                headers={"Cookie": "hy2panel_session={}".format(raw_session)},
+            ),
+            timeout=2,
+        ).read().decode("utf-8")
+        self.assertIn("自动部署中", dashboard)
+        self.assertNotIn(
+            "/nodes/{}/data-plane/bootstrap".format(self.node_id), dashboard
+        )
 
     def test_dashboard_exposes_only_eligible_deploy_and_separate_canary_controls(self):
         raw_session, csrf = self.db.create_session(self.admin_id)
@@ -915,8 +1493,8 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertIn(
             '/nodes/{}/data-plane/bootstrap'.format(self.node_id), body
         )
-        self.assertIn("部署数据面", body)
-        self.assertIn("数据面未部署", body)
+        self.assertIn("旧节点手动部署", body)
+        self.assertIn("等待节点自动领取部署凭据", body)
         self.assertIn("data-data-plane-bootstrap-form", body)
         self.assertNotIn("data-plane/canary/pass", body)
         self.assertNotIn("dns/admit", body)
@@ -962,10 +1540,10 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
                 (self.now[0], self.now[0], self.now[0], self.node_id),
             )
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertIn(
+        self.assertNotIn(
             '/nodes/{}/data-plane/dns/admit'.format(self.node_id), body
         )
-        self.assertIn("确认 DNS 准入完成", body)
+        self.assertIn("请手工添加 DNS", body)
 
         admit_request = urllib.request.Request(
             self.base_url + "/nodes/{}/data-plane/dns/admit".format(self.node_id),
@@ -978,7 +1556,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         )
         self.assertEqual({"dnsAdmitted": True}, result)
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertIn("DNS 已准入", body)
+        self.assertIn("DNS 已检测并自动准入", body)
         self.assertIn(
             '/nodes/{}/data-plane/dns/remove'.format(self.node_id), body
         )
@@ -1014,7 +1592,7 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
                 "amd64": "ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7",
                 "arm64": "c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792",
             },
-            "ports": {"main": 19999, "udp443": 443},
+            "ports": {"main": 24443, "udp443": 443},
         }
         self.response.update(provider())
 
@@ -1039,7 +1617,11 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             {"privateKeyPublicSha256": "0" * 64},
             {"hysteriaVersion": "2.12.0"},
             {"configProtocolVersion": 2},
-            {"ports": {"main": 19998, "udp443": 443}},
+            {"ports": {"main": 0, "udp443": 443}},
+            {"ports": {"main": 443, "udp443": 443}},
+            {"ports": {"main": 19996, "udp443": 443}},
+            {"ports": {"main": 65536, "udp443": 443}},
+            {"ports": {"main": True, "udp443": 443}},
             {"egressPolicy": "unknown"},
             {"unexpected": True},
         )
@@ -1063,7 +1645,7 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         self.assertEqual({"main", "udp443"}, set(configs))
         main = configs["main"]
         udp443 = configs["udp443"]
-        self.assertIn("listen: :19999", main)
+        self.assertIn("listen: :24443", main)
         self.assertIn("url: http://127.0.0.1:19996/auth/main", main)
         self.assertIn("listen: 127.0.0.1:19997", main)
         self.assertIn("listen: :443", udp443)
@@ -1153,6 +1735,27 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             nonce_factory=lambda _size: "N" * 43,
         )
 
+        claim_response = {
+            "nodeId": "8" * 32,
+            "grantId": "7" * 32,
+            "expiresAt": 2_000_000_600,
+            "maxFetchAttempts": 3,
+            "status": "AUTO_BOOTSTRAP_ISSUED",
+            "bootstrapToken": "bootstrap_" + "C" * 40,
+        }
+        Response.response = claim_response
+
+        self.assertEqual(claim_response, client.claim())
+        self.assertTrue(
+            captured["message"].startswith(b"hy2panel-data-plane-claim-v1\n")
+        )
+        self.assertEqual(
+            "https://panel.example.test:19998/api/v1/node-data-plane/claim",
+            captured["request"].full_url,
+        )
+        self.assertEqual(8 * 1024 + 1, captured["maximum"])
+
+        Response.response = self.response
         result = client.fetch("bootstrap_" + "T" * 40)
 
         self.assertEqual(self.response, result)
@@ -1173,6 +1776,13 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         Response.response = expected_ack
         self.assertEqual(expected_ack, client.ack("bootstrap_" + "T" * 40, {}))
         self.assertEqual(8 * 1024 + 1, captured["maximum"])
+        self.assertEqual(75, captured["timeout"])
+        automatic_ack = {
+            "nodeId": "8" * 32,
+            "status": "DIRECT_CANARY_PASSED",
+        }
+        Response.response = automatic_ack
+        self.assertEqual(automatic_ack, client.ack("bootstrap_" + "T" * 40, {}))
 
         for invalid_ack in (
             {"status": "DATA_PLANE_INSTALLED"},
@@ -1235,10 +1845,12 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
                 "egressPolicy",
                 "hysteriaSha256",
                 "hysteriaVersion",
+                "mainPort",
                 "privateKeyPublicSha256",
             },
             set(metadata),
         )
+        self.assertEqual(24443, metadata["mainPort"])
         persisted = b"".join(path.read_bytes() for path in destination.iterdir())
         self.assertNotIn(token.encode("ascii"), persisted)
         self.assertNotIn(b"vpn.ssrvpn.vip", persisted)
@@ -1438,6 +2050,7 @@ class DataPlaneAttestationTests(unittest.TestCase):
                     "hysteriaVersion": "2.12.1",
                     "hysteriaSha256": "f" * 64,
                     "egressPolicy": "web",
+                    "mainPort": 24443,
                     "configProtocolVersion": 1,
                 }
             ),
@@ -1485,7 +2098,7 @@ class DataPlaneAttestationTests(unittest.TestCase):
         self.assertTrue(all(value is True for key, value in result.items() if key.endswith("Healthy") or key.endswith("Listening")))
         self.assertEqual(6, len(services))
         self.assertEqual(
-            [("udp", 19999), ("udp", 443), ("tcp", 19999), ("tcp", 443)],
+            [("udp", 24443), ("udp", 443), ("tcp", 24443), ("tcp", 443)],
             listeners,
         )
         self.assertEqual(

@@ -480,7 +480,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.29.0"', source)
+        self.assertIn('PANEL_VERSION="0.30.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -4003,6 +4003,107 @@ exit "$status"
         )
 
 
+class StreamlinedOnboardingInstallerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = INSTALLER.read_text()
+
+    def test_join_installs_a_persistent_fixed_onboarding_timer(self):
+        start = self.source.index("install_join_node()")
+        end = self.source.index("\n}\n", start) + 2
+        join = self.source[start:end]
+
+        self.assertIn("NODE_ONBOARDING_INSTALLER", join)
+        self.assertIn("NODE_ONBOARDING_SERVICE", join)
+        self.assertIn("NODE_ONBOARDING_TIMER", join)
+        self.assertIn("NODE_ONBOARDING_MARKER", join)
+        self.assertIn("ConditionPathExists=", join)
+        self.assertIn("--complete-node-onboarding", join)
+        self.assertIn("OnUnitActiveSec=30s", join)
+        self.assertIn('sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der"', join)
+        self.assertNotIn("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", join)
+        self.assertNotIn("server.key", join)
+
+    def test_completion_claims_then_reuses_the_existing_transactional_deployers(self):
+        start = self.source.index("complete_node_onboarding()")
+        end = self.source.index("\n}\n", start) + 2
+        completion = self.source[start:end]
+
+        claim = completion.index("claim-data-plane")
+        activate_agent = completion.index("activate_node_agent")
+        activate_data_plane = completion.index("activate_data_plane")
+        self.assertLess(claim, activate_agent)
+        self.assertLess(activate_agent, activate_data_plane)
+        self.assertIn("NODE_ONBOARDING_TOKEN_FILE", completion)
+        self.assertIn('rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"', completion)
+        self.assertIn("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", completion)
+        self.assertIn("disable --now --no-block", completion)
+        self.assertNotIn("eval ", completion)
+        self.assertNotIn("bash -c", completion)
+
+        local_commit = completion.index("inspect_existing_data_plane")
+        transaction_gate = completion.index("NODE_DATA_PLANE_TRANSACTION")
+        self.assertLess(transaction_gate, local_commit)
+        self.assertLess(local_commit, claim)
+        self.assertIn("本次仅清理持久完成器", completion)
+
+        dispatch = self.source.split(
+            "if (( COMPLETE_NODE_ONBOARDING == 1 )); then", 1
+        )[1].split("fi", 1)[0]
+        self.assertLess(
+            dispatch.index("INSTALL_COMMITTED=1"),
+            dispatch.index("complete_node_onboarding"),
+        )
+
+    def test_join_rollback_removes_every_owned_onboarding_artifact(self):
+        start = self.source.index("rollback_join_node_install()")
+        end = self.source.index("\n}\n", start) + 2
+        rollback = self.source[start:end]
+
+        for artifact in (
+            "NODE_ONBOARDING_SERVICE",
+            "NODE_ONBOARDING_TIMER",
+            "NODE_ONBOARDING_MARKER",
+        ):
+            self.assertIn(artifact, rollback)
+        self.assertIn("daemon-reload", rollback)
+
+    def test_panel_installs_a_read_only_dns_admission_timer(self):
+        service = self.source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.service <<EOF",
+            1,
+        )[1].split("EOF", 1)[0]
+        timer = self.source.split(
+            "cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.timer <<'EOF'",
+            1,
+        )[1].split("EOF", 1)[0]
+        self.assertIn("User=hy2panel", service)
+        self.assertIn("reconcile-node-dns", service)
+        self.assertIn("ProtectSystem=strict", service)
+        self.assertIn("ReadWritePaths=/var/lib/hysteria2-panel", service)
+        self.assertIn("OnUnitActiveSec=30s", timer)
+        self.assertIn(
+            "systemctl start hysteria2-panel-node-dns-admission.timer",
+            self.source,
+        )
+        self.assertNotIn("CLOUDFLARE_API", service)
+        self.assertNotIn("dns_records", service)
+
+    def test_dns_timer_is_covered_by_fresh_and_upgrade_rollback(self):
+        self.assertGreaterEqual(
+            self.source.count("hysteria2-panel-node-dns-admission.service"),
+            12,
+        )
+        self.assertGreaterEqual(
+            self.source.count("hysteria2-panel-node-dns-admission.timer"),
+            20,
+        )
+        self.assertIn(
+            '"${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants"',
+            self.source,
+        )
+
+
 class DataPlaneInstallerContractTests(unittest.TestCase):
     def setUp(self):
         self.source = INSTALLER.read_text()
@@ -4280,11 +4381,21 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
 
     def test_ack_occurs_only_after_services_stats_and_all_four_listeners(self):
         ack = self.activation.index('node_agent.py" ack-data-plane')
+        parsed_port = self.activation.index("read_data_plane_main_port")
+        transaction = self.activation.index("write_data_plane_backup_manifest")
+        self.assertLess(parsed_port, transaction)
+        self.assertIn(
+            'tcp_probe.py ${DATA_PLANE_MAIN_PORT}', self.activation
+        )
+        self.assertIn(
+            'for port in 443 19995 19996 19997 "${DATA_PLANE_MAIN_PORT}"',
+            self.source,
+        )
         for check in (
             "systemctl is-active --quiet hysteria2-panel-node-control.service",
-            'ss -H -lun "sport = :19999"',
+            'ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}"',
             'ss -H -lun "sport = :443"',
-            'ss -H -ltn "sport = :19999"',
+            'ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}"',
             'ss -H -ltn "sport = :443"',
         ):
             self.assertIn(check, self.activation)
@@ -4302,7 +4413,7 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
             firewall_start:self.source.index("\n}\n", firewall_start) + 2
         ]
         self.assertIn('for protocol in tcp udp', firewall)
-        self.assertIn('for port in 443 19999', firewall)
+        self.assertIn('for port in 443 "${DATA_PLANE_MAIN_PORT}"', firewall)
         self.assertIn("Hysteria2-panel-node data-plane", firewall)
         for guard in (
             "firewalld_has_global_conflicts",
@@ -4320,11 +4431,39 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
         rollback = self.source[
             rollback_start:self.source.index("\n}\n", rollback_start) + 2
         ]
-        self.assertIn("--remove-port", rollback)
-        self.assertIn("firewalld-runtime", rollback)
-        self.assertIn("firewalld-permanent", rollback)
-        self.assertIn("ufw --force delete allow", rollback)
+        remove_start = self.source.index("remove_data_plane_firewall_rule()")
+        remove = self.source[
+            remove_start:self.source.index("\n}\n", remove_start) + 2
+        ]
+        self.assertIn("--remove-port", remove)
+        self.assertIn("firewalld-runtime", remove)
+        self.assertIn("firewalld-permanent", remove)
+        self.assertIn("ufw --force delete allow", remove)
+        self.assertIn("--query-port", remove)
+        self.assertIn("ufw show added", remove)
+        self.assertIn("remove_data_plane_firewall_rule", rollback)
+        self.assertIn("failed=1", rollback)
         self.assertIn("rollback_data_plane_firewall", self.source.split("rollback_data_plane_activation()", 1)[1])
+
+    def test_existing_data_plane_rollback_removes_only_new_firewall_rules(self):
+        delta_start = self.source.index("rollback_new_data_plane_firewall_rules()")
+        delta = self.source[
+            delta_start:self.source.index("\n}\n", delta_start) + 2
+        ]
+        self.assertIn("validate_data_plane_firewall_state", delta)
+        self.assertIn("config/data-plane-firewall.state", delta)
+        self.assertIn('grep -Fqx -- "${rule}" "${backup_state}"', delta)
+        self.assertIn("remove_data_plane_firewall_rule", delta)
+
+        restore_start = self.source.index("restore_existing_data_plane()")
+        restore = self.source[
+            restore_start:self.source.index("\n}\n", restore_start) + 2
+        ]
+        verify = restore.index("sha256sum --check --status manifest.sha256")
+        remove_delta = restore.index("rollback_new_data_plane_firewall_rules")
+        overwrite = restore.index("durable_replace_file")
+        self.assertLess(verify, remove_delta)
+        self.assertLess(remove_delta, overwrite)
 
 
 class TcpProbeTests(unittest.TestCase):
