@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.28.0"', source)
+        self.assertIn('PANEL_VERSION="0.28.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -4010,6 +4010,27 @@ class DataPlaneInstallerContractTests(unittest.TestCase):
         self.assertIn("--stats-url http://127.0.0.1:19997", self.activation)
         self.assertIn("--stats-url http://127.0.0.1:19995", self.activation)
         self.assertIn("__HY2PANEL_STATS_SECRET__", (ROOT / "node_agent.py").read_text())
+
+    def test_auth_proxy_outage_does_not_stop_established_data_plane_sessions(self):
+        self.assertEqual(
+            0,
+            self.activation.count(
+                "Requires=hysteria2-panel-node-auth.service"
+            ),
+        )
+        self.assertGreaterEqual(
+            self.activation.count(
+                "After=network-online.target hysteria2-panel-node-auth.service"
+            ),
+            1,
+        )
+        self.assertGreaterEqual(
+            self.activation.count(
+                "After=network-online.target hysteria2-panel-node-auth.service "
+                "hysteria2-panel-node-control.service"
+            ),
+            2,
+        )
 
     def test_ack_occurs_only_after_services_stats_and_all_four_listeners(self):
         ack = self.activation.index('node_agent.py" ack-data-plane')

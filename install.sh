@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.28.0"
+PANEL_VERSION="0.28.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -24,7 +24,7 @@ PANEL_SHA256="5140710cb9d34ac6871dc34f61212c2a9ac512068264424a8a2709ec10f751ed"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="672abea1dd7d375cb42864f34f5ae331a3c5b2c7b4f4cbecf8cdd70a0ec7c53f"
+HY2PANEL_VERSION_SHA256="0915f8903bc8485021e711c90e84cbebf437adef8a03697b55d3feda144716c2"
 HY2PANEL_WEB_ASSETS_SHA256="711ce11d7747135634af4929d1398f4ec9bf60f36cbbc6301fbf05236f766def"
 HY2PANEL_OPERATIONS_SHA256="3b8974f3a90af2e06d24e895e521723d819411b2673011db87e70a15699e442e"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
@@ -33,7 +33,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="cab6aa91cd5785f7b4d00f46b1644e4d23d0028923f518a0a07fcf7a45c02847"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="e63b7c78fee2fab340d54ac38fac9ba11751bf32b4c53f7ffb04e666f363386a"
+NODE_AGENT_SHA256="74fc1ee1f3375272d640ad7f15403eb0a1f44360e4f9a27367c1b24da8631661"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1828,7 +1828,6 @@ EOF
 Description=Hysteria2-panel signed data-node control loop
 After=network-online.target hysteria2-panel-node-auth.service
 Wants=network-online.target
-Requires=hysteria2-panel-node-auth.service
 
 [Service]
 Type=simple
@@ -1870,7 +1869,6 @@ EOF
 Description=Hysteria2-panel data node main UDP 19999
 After=network-online.target hysteria2-panel-node-auth.service hysteria2-panel-node-control.service
 Wants=network-online.target
-Requires=hysteria2-panel-node-auth.service
 
 [Service]
 Type=simple
@@ -1911,7 +1909,6 @@ EOF
 Description=Hysteria2-panel data node authorized UDP 443
 After=network-online.target hysteria2-panel-node-auth.service hysteria2-panel-node-control.service
 Wants=network-online.target
-Requires=hysteria2-panel-node-auth.service
 
 [Service]
 Type=simple
