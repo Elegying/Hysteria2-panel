@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.27.0"', source)
+        self.assertIn('PANEL_VERSION="0.27.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -3903,8 +3903,21 @@ class DataPlaneInstallerContractTests(unittest.TestCase):
             self.assertIn(unit, self.activation)
         self.assertGreaterEqual(self.activation.count("NoNewPrivileges=true"), 6)
         self.assertGreaterEqual(self.activation.count("ProtectSystem=strict"), 6)
+        self.assertGreaterEqual(
+            self.activation.count("WantedBy=multi-user.target"), 6
+        )
         self.assertIn("EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env", self.activation)
         self.assertIn('node_agent.py run-hysteria', self.activation)
+        self.assertIn("RuntimeDirectory=hysteria2-panel-node-main", self.activation)
+        self.assertIn("RuntimeDirectory=hysteria2-panel-node-udp443", self.activation)
+        self.assertIn(
+            "--runtime-config /run/hysteria2-panel-node-main/config.yaml",
+            self.activation,
+        )
+        self.assertIn(
+            "--runtime-config /run/hysteria2-panel-node-udp443/config.yaml",
+            self.activation,
+        )
         self.assertIn("CapabilityBoundingSet=CAP_NET_BIND_SERVICE", self.activation)
         self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", self.activation)
         self.assertIn("--stats-url http://127.0.0.1:19997", self.activation)

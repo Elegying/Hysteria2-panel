@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.27.0"
+PANEL_VERSION="0.27.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -24,7 +24,7 @@ PANEL_SHA256="86497777610165cd17d5a3e380d84882e060642d1d69510acc95265475ee5d5e"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="1926881d16a0110e2c2aaad68d94602f7c9b649aac7489176a86d7a79083d0c9"
+HY2PANEL_VERSION_SHA256="3973a941ccf8a71a7be941ca1ea806f45de091eec6d9b533556db51db7d0b841"
 HY2PANEL_WEB_ASSETS_SHA256="333e186315f8b0f81e755ca8e71c60f4ea753ba6255eab9282fff8feb83f6110"
 HY2PANEL_OPERATIONS_SHA256="5f410c32713796e3d3f86370f1a9574f357e0fd43f5c7cbeda5cc3265f3a493b"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
@@ -33,7 +33,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="71724c20a8b792fb78156901e08b501f82435666aa2ef7ea141c6dd3d86bfafc"
 HY2PANEL_DISTRIBUTED_SHA256="59699bef3ddcf260ce47e339d8bf557f08df3b6695bd89615fdcb1c4d9d09f63"
-NODE_AGENT_SHA256="1683b8bbe19375da5a492ccea2288af0dfdf8bc0513c83e2e2e2e48c8983366c"
+NODE_AGENT_SHA256="4682877148c2c510a187bacfd2a38537e8acc8104926afd8443a91f61520f34d"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1636,6 +1636,9 @@ ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
 TasksMax=64
 MemoryMax=192M
 LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-control.service" <<EOF
@@ -1675,6 +1678,9 @@ ReadWritePaths=/var/lib/hysteria2-panel-node
 TasksMax=64
 MemoryMax=256M
 LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-hysteria-main.service" <<EOF
@@ -1690,7 +1696,9 @@ User=root
 Group=root
 EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env
 Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
-ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-main.yaml
+RuntimeDirectory=hysteria2-panel-node-main
+RuntimeDirectoryMode=0700
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-main.yaml --runtime-config /run/hysteria2-panel-node-main/config.yaml
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -1711,6 +1719,9 @@ ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
 TasksMax=256
 MemoryMax=768M
 LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-hysteria-udp443.service" <<EOF
@@ -1726,7 +1737,9 @@ User=root
 Group=root
 EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env
 Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
-ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-udp443.yaml
+RuntimeDirectory=hysteria2-panel-node-udp443
+RuntimeDirectoryMode=0700
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-udp443.yaml --runtime-config /run/hysteria2-panel-node-udp443/config.yaml
 Restart=on-failure
 RestartSec=3s
 UMask=0077
@@ -1747,6 +1760,9 @@ ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
 TasksMax=256
 MemoryMax=768M
 LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-tcp-probe-main.service" <<EOF
@@ -1778,6 +1794,9 @@ RestrictAddressFamilies=AF_INET AF_INET6
 TasksMax=16
 MemoryMax=64M
 LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
   cat > "${TMP_DIR}/hysteria2-panel-node-tcp-probe-udp443.service" <<EOF
@@ -1809,6 +1828,9 @@ RestrictAddressFamilies=AF_INET AF_INET6
 TasksMax=16
 MemoryMax=64M
 LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do

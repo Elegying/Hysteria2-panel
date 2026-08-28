@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import threading
@@ -1069,9 +1070,35 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             captured["path"] = path
             captured["arguments"] = arguments
             captured["environment"] = environment
-            descriptor = int(arguments[-1].rsplit("/", 1)[1])
+            descriptor = int(captured["link_target"].rsplit("/", 1)[1])
             captured["config"] = os.pread(descriptor, 65536, 0).decode("ascii")
             raise Executed
+
+        runtime_config = "/run/hysteria2-panel-node-main/config.yaml"
+        link_exists = [False]
+
+        class Metadata:
+            st_uid = 0
+
+            def __init__(self, mode):
+                self.st_mode = mode
+
+        def lstat(path):
+            if str(path) == "/run/hysteria2-panel-node-main":
+                return Metadata(stat.S_IFDIR | 0o700)
+            if str(path) == runtime_config and link_exists[0]:
+                return Metadata(stat.S_IFLNK | 0o777)
+            raise FileNotFoundError(path)
+
+        def symlink(target, path):
+            self.assertEqual(runtime_config, str(path))
+            captured["link_target"] = target
+            link_exists[0] = True
+
+        def unlink(path):
+            self.assertEqual(runtime_config, str(path))
+            captured["unlinked"] = True
+            link_exists[0] = False
 
         anonymous = Path(self.temp_dir.name) / "anonymous-memory-test"
 
@@ -1083,11 +1110,15 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             run_hysteria_from_template(
                 "/opt/hysteria2-panel-node/bin/hysteria",
                 template,
+                runtime_config,
                 environment=environment,
                 execve=execve,
                 memfd_factory=lambda: os.open(
                     anonymous, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600
                 ),
+                lstat=lstat,
+                symlink=symlink,
+                unlink=unlink,
             )
 
         self.assertEqual(
@@ -1102,7 +1133,9 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             ],
             captured["arguments"],
         )
-        self.assertTrue(captured["arguments"][-1].startswith("/proc/self/fd/"))
+        self.assertEqual(runtime_config, captured["arguments"][-1])
+        self.assertTrue(captured["link_target"].startswith("/proc/self/fd/"))
+        self.assertTrue(captured["unlinked"])
         self.assertIn("secret: {}".format("S" * 48), captured["config"])
         self.assertNotIn("HY2PANEL_STATS_SECRET", captured["environment"])
         self.assertNotIn("S" * 48, template.read_text(encoding="ascii"))
@@ -1118,10 +1151,60 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
                 run_hysteria_from_template(
                     "/opt/hysteria2-panel-node/bin/hysteria",
                     template,
+                    "/run/hysteria2-panel-node-main/config.yaml",
                     environment={"HY2PANEL_STATS_SECRET": "S" * 48},
                     execve=lambda *_args: None,
                     memfd_factory=lambda: -1,
                 )
+
+    def test_hysteria_wrapper_rejects_unsafe_or_occupied_runtime_paths(self):
+        template = Path(self.temp_dir.name) / "hysteria.yaml"
+        template.write_text(
+            "trafficStats:\n  secret: __HY2PANEL_STATS_SECRET__\n",
+            encoding="ascii",
+        )
+
+        class Metadata:
+            st_uid = 0
+
+            def __init__(self, mode):
+                self.st_mode = mode
+
+        common = {
+            "environment": {"HY2PANEL_STATS_SECRET": "S" * 48},
+            "execve": lambda *_args: None,
+            "memfd_factory": lambda: -1,
+        }
+        with self.assertRaises(ProtocolError):
+            run_hysteria_from_template(
+                "/opt/hysteria2-panel-node/bin/hysteria",
+                template,
+                "/tmp/config.yaml",
+                **common,
+            )
+
+        with self.assertRaises(ProtocolError):
+            run_hysteria_from_template(
+                "/opt/hysteria2-panel-node/bin/hysteria",
+                template,
+                "/run/hysteria2-panel-node-main/config.yaml",
+                lstat=lambda _path: Metadata(stat.S_IFDIR | 0o755),
+                **common,
+            )
+
+        def occupied_lstat(path):
+            if str(path) == "/run/hysteria2-panel-node-main":
+                return Metadata(stat.S_IFDIR | 0o700)
+            return Metadata(stat.S_IFREG | 0o600)
+
+        with self.assertRaises(ProtocolError):
+            run_hysteria_from_template(
+                "/opt/hysteria2-panel-node/bin/hysteria",
+                template,
+                "/run/hysteria2-panel-node-main/config.yaml",
+                lstat=occupied_lstat,
+                **common,
+            )
 
 
 class DataPlaneAttestationTests(unittest.TestCase):

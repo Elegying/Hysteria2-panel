@@ -16,7 +16,7 @@
 
 ```bash
 set -euo pipefail
-version=0.27.0
+version=0.27.1
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
