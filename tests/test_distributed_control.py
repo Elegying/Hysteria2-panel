@@ -206,6 +206,50 @@ class OnlineSnapshotTests(DistributedControlCase):
 
         self.assertEqual(1, result["sequence"])
 
+    def test_dashboard_snapshot_combines_fresh_machine_online_counts_and_labels_stale(self):
+        self.db.create_proxy_user("alice")
+        self.service.accept_online_snapshot(
+            self.snapshot(self.nodes[0], 19, online={"alice": 2}),
+            remote_ip="203.0.113.1",
+        )
+        self.service.accept_online_snapshot(
+            self.snapshot(self.nodes[1], 20, online={"alice": 3}),
+            remote_ip="203.0.113.2",
+        )
+
+        class LocalStats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {"alice": 1}
+
+        manager = UsageManager(
+            self.db,
+            LocalStats(),
+            local_origin_id="local:" + "9" * 32,
+            local_origin_name="面板本机",
+            wall_clock=lambda: self.now[0],
+        )
+        fresh = manager.snapshot()
+        origins = {row["origin_id"]: row for row in fresh["machine_stats"]["origins"]}
+
+        self.assertEqual({"alice": 6}, fresh["online"])
+        self.assertTrue(fresh["online_complete"])
+        self.assertEqual(1, origins["local:" + "9" * 32]["online_devices"])
+        self.assertEqual(2, origins["node:" + self.nodes[0]]["online_devices"])
+        self.assertEqual("fresh", origins["node:" + self.nodes[0]]["online_state"])
+
+        self.now[0] += MAX_STATE_AGE_SECONDS + 1
+        stale = manager.snapshot()
+        origins = {row["origin_id"]: row for row in stale["machine_stats"]["origins"]}
+        self.assertEqual({"alice": 1}, stale["online"])
+        self.assertFalse(stale["online_complete"])
+        self.assertTrue(stale["machine_stats"]["has_stale_online"])
+        self.assertIsNone(origins["node:" + self.nodes[0]]["online_devices"])
+        self.assertEqual(2, origins["node:" + self.nodes[0]]["last_known_online_devices"])
+        self.assertEqual("stale", origins["node:" + self.nodes[0]]["online_state"])
+
 
 class DistributedAuthorizationTests(DistributedControlCase):
     def setUp(self):
@@ -503,6 +547,17 @@ class DistributedTrafficTests(DistributedControlCase):
         self.assertTrue(first["committed"])
         self.assertTrue(duplicate["duplicate"])
         self.assertEqual((20, 40), (user["tx_bytes"], user["rx_bytes"]))
+        origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
+        self.assertEqual(
+            (10, 20),
+            (origins["node:" + self.nodes[0]]["tx_bytes"], origins["node:" + self.nodes[0]]["rx_bytes"]),
+        )
+        self.assertEqual(
+            (10, 20),
+            (origins["node:" + self.nodes[1]]["tx_bytes"], origins["node:" + self.nodes[1]]["rx_bytes"]),
+        )
+        self.assertEqual("node-1", origins["node:" + self.nodes[0]]["display_name"])
+        self.assertEqual("node-2", origins["node:" + self.nodes[1]]["display_name"])
 
     def test_unknown_user_is_counted_without_blocking_known_traffic(self):
         result = self.service.apply_traffic_batch(
@@ -669,6 +724,7 @@ class DistributedTrafficTests(DistributedControlCase):
         for name in names:
             user = self.db.get_proxy_user_by_name(name)
             self.assertEqual((0, 0), (user["tx_bytes"], user["rx_bytes"]))
+        self.assertEqual([], self.db.list_usage_origins())
 
     def test_one_nodes_full_ledger_does_not_block_another_node(self):
         with sqlite3.connect(str(self.db_path)) as connection:
