@@ -570,6 +570,166 @@ class DistributedTrafficTests(DistributedControlCase):
             commands,
         )
 
+    def test_large_quota_crossing_batch_commits_and_chunks_kick_commands(self):
+        names = ["user-{:03d}".format(index) for index in range(101)]
+        for name in names:
+            self.db.create_proxy_user(name)
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.executemany(
+                "UPDATE proxy_users SET traffic_limit_bytes = 1 WHERE name = ?",
+                ((name,) for name in names),
+            )
+
+        batch_id = "e" * 32
+        result = self.db.apply_node_traffic_batch(
+            self.nodes[0],
+            batch_id,
+            {name: {"tx": 1, "rx": 1} for name in names},
+            "f" * 64,
+            accepted_at=self.now[0],
+        )
+
+        self.assertTrue(result["committed"])
+        duplicate = self.db.apply_node_traffic_batch(
+            self.nodes[0],
+            batch_id,
+            {name: {"tx": 1, "rx": 1} for name in names},
+            "e" * 64,
+            accepted_at=self.now[0] + 1,
+        )
+        self.assertTrue(duplicate["duplicate"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            self.assertIsNotNone(
+                connection.execute(
+                    """SELECT 1 FROM node_traffic_batches
+                    WHERE node_id = ? AND batch_id = ?""",
+                    (self.nodes[0], batch_id),
+                ).fetchone()
+            )
+            commands = connection.execute(
+                """SELECT node_id, payload FROM node_commands
+                WHERE kind = 'KICK_USERS' ORDER BY node_id, payload"""
+            ).fetchall()
+        self.assertEqual(4, len(commands))
+        for node_id in self.nodes:
+            chunks = [
+                json.loads(row["payload"])["users"]
+                for row in commands
+                if row["node_id"] == node_id
+            ]
+            self.assertEqual(names, sorted(name for chunk in chunks for name in chunk))
+            self.assertTrue(all(1 <= len(chunk) <= 100 for chunk in chunks))
+        for name in names:
+            user = self.db.get_proxy_user_by_name(name)
+            self.assertEqual((1, 1), (user["tx_bytes"], user["rx_bytes"]))
+
+    def test_large_quota_kick_failure_rolls_back_the_entire_traffic_batch(self):
+        names = ["rollback-{:03d}".format(index) for index in range(101)]
+        for name in names:
+            self.db.create_proxy_user(name)
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.executemany(
+                "UPDATE proxy_users SET traffic_limit_bytes = 1 WHERE name = ?",
+                ((name,) for name in names),
+            )
+            connection.execute(
+                """CREATE TRIGGER reject_second_kick_chunk
+                BEFORE INSERT ON node_commands
+                WHEN NEW.kind = 'KICK_USERS' AND NEW.payload LIKE '%rollback-100%'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected command failure');
+                END"""
+            )
+
+        batch_id = "6" * 32
+        result = self.db.apply_node_traffic_batch(
+            self.nodes[0],
+            batch_id,
+            {name: {"tx": 1, "rx": 1} for name in names},
+            "6" * 64,
+            accepted_at=self.now[0],
+        )
+
+        self.assertIsNone(result)
+        with sqlite3.connect(str(self.db_path)) as connection:
+            self.assertEqual(
+                0,
+                connection.execute(
+                    "SELECT COUNT(*) FROM node_commands WHERE kind = 'KICK_USERS'"
+                ).fetchone()[0],
+            )
+            self.assertIsNone(
+                connection.execute(
+                    """SELECT 1 FROM node_traffic_batches
+                    WHERE node_id = ? AND batch_id = ?""",
+                    (self.nodes[0], batch_id),
+                ).fetchone()
+            )
+        for name in names:
+            user = self.db.get_proxy_user_by_name(name)
+            self.assertEqual((0, 0), (user["tx_bytes"], user["rx_bytes"]))
+
+    def test_one_nodes_full_ledger_does_not_block_another_node(self):
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.executemany(
+                """INSERT INTO node_traffic_batches(
+                    node_id, batch_id, unknown_users, applied_at
+                ) VALUES (?, ?, 0, ?)""",
+                (
+                    (self.nodes[1], "{:032x}".format(index), self.now[0])
+                    for index in range(250000)
+                ),
+            )
+
+        result = self.db.apply_node_traffic_batch(
+            self.nodes[0],
+            "9" * 32,
+            {"alice": {"tx": 1, "rx": 1}},
+            "8" * 64,
+            accepted_at=self.now[0],
+        )
+
+        self.assertTrue(result["committed"])
+        self.assertEqual((1, 1), tuple(
+            self.db.get_proxy_user_by_name("alice")[key]
+            for key in ("tx_bytes", "rx_bytes")
+        ))
+
+    def test_node_traffic_ledger_evicts_oldest_row_instead_of_rejecting_batch(self):
+        with mock.patch.object(
+            Database, "NODE_TRAFFIC_LEDGER_MAX_ROWS", 3, create=True
+        ):
+            with sqlite3.connect(str(self.db_path)) as connection:
+                connection.executemany(
+                    """INSERT INTO node_traffic_batches(
+                        node_id, batch_id, unknown_users, applied_at
+                    ) VALUES (?, ?, 0, ?)""",
+                    (
+                        (self.nodes[0], "{:032x}".format(index), self.now[0] + index)
+                        for index in range(3)
+                    ),
+                )
+
+            result = self.db.apply_node_traffic_batch(
+                self.nodes[0],
+                "a" * 32,
+                {"alice": {"tx": 1, "rx": 1}},
+                "7" * 64,
+                accepted_at=self.now[0] + 3,
+            )
+
+        self.assertTrue(result["committed"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            batches = connection.execute(
+                """SELECT batch_id FROM node_traffic_batches
+                WHERE node_id = ? ORDER BY applied_at, batch_id""",
+                (self.nodes[0],),
+            ).fetchall()
+        self.assertEqual(3, len(batches))
+        self.assertNotIn(("0" * 32,), batches)
+        self.assertIn(("a" * 32,), batches)
+
     def test_spooled_batch_survives_a_control_plane_outage(self):
         observed_at = self.now[0]
         self.now[0] += 600
@@ -584,7 +744,7 @@ class DistributedTrafficTests(DistributedControlCase):
 
 class NodeCommandTests(DistributedControlCase):
     def test_broadcast_kick_rejects_invalid_names_without_partial_commands(self):
-        for names in (None, [object()], ["user-{:03d}".format(i) for i in range(101)]):
+        for names in (None, [object()], ["user-{:04d}".format(i) for i in range(1001)]):
             with self.subTest(names=names):
                 with self.assertRaises(ValueError):
                     self.db.queue_kick_users_on_ready_nodes(names, self.now[0])
@@ -592,6 +752,29 @@ class NodeCommandTests(DistributedControlCase):
             self.assertEqual(
                 0, connection.execute("SELECT COUNT(*) FROM node_commands").fetchone()[0]
             )
+
+    def test_broadcast_kick_chunks_large_valid_name_sets(self):
+        names = ["user-{:03d}".format(index) for index in range(101)]
+
+        self.assertEqual(
+            4, self.db.queue_kick_users_on_ready_nodes(names, self.now[0])
+        )
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            commands = connection.execute(
+                """SELECT node_id, payload FROM node_commands
+                WHERE kind = 'KICK_USERS' ORDER BY node_id, payload"""
+            ).fetchall()
+        self.assertEqual(4, len(commands))
+        for node_id in self.nodes:
+            chunks = [
+                json.loads(row["payload"])["users"]
+                for row in commands
+                if row["node_id"] == node_id
+            ]
+            self.assertEqual(names, sorted(name for chunk in chunks for name in chunk))
+            self.assertTrue(all(1 <= len(chunk) <= 100 for chunk in chunks))
 
     def test_only_fixed_commands_can_be_polled_and_acknowledged_idempotently(self):
         command = self.db.queue_node_command(
@@ -638,6 +821,38 @@ class NodeCommandTests(DistributedControlCase):
             self.service.poll_commands(retry, remote_ip="203.0.113.1")["commands"][0][
                 "commandId"
             ],
+        )
+
+    def test_unacked_commands_continue_retrying_after_attempt_cap(self):
+        command = self.db.queue_node_command(
+            self.nodes[0], "REFRESH_SNAPSHOT", {}, self.now[0]
+        )
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE node_commands SET attempts = 10, next_attempt_at = ?
+                WHERE command_id = ?""",
+                (self.now[0], command["commandId"]),
+            )
+
+        capped = self.common(self.nodes[0], 66)
+        capped["requestId"] = "f" * 32
+        delivered = self.service.poll_commands(capped, remote_ip="203.0.113.1")
+        self.assertEqual(command["commandId"], delivered["commands"][0]["commandId"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            attempts, next_attempt_at = connection.execute(
+                """SELECT attempts, next_attempt_at FROM node_commands
+                WHERE command_id = ?""",
+                (command["commandId"],),
+            ).fetchone()
+        self.assertEqual(10, attempts)
+        self.assertGreater(next_attempt_at, self.now[0])
+
+        self.now[0] = next_attempt_at
+        again = self.common(self.nodes[0], 67)
+        again["requestId"] = "1" * 32
+        redelivered = self.service.poll_commands(again, remote_ip="203.0.113.1")
+        self.assertEqual(
+            command["commandId"], redelivered["commands"][0]["commandId"]
         )
 
 

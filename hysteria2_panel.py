@@ -1692,6 +1692,11 @@ def _validate_token(token):
 
 
 class Database:
+    # The agent loop is clamped to no less than one batch per second. This keeps
+    # the complete eight-day idempotency window for a healthy node, while a
+    # misbehaving node can evict only its own oldest ledger entries.
+    NODE_TRAFFIC_LEDGER_MAX_ROWS = 700000
+
     def __init__(self, path, hmac_key):
         self.path = Path(path)
         if not isinstance(hmac_key, bytes) or len(hmac_key) < 32:
@@ -1856,6 +1861,8 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS node_traffic_batches_applied_at_idx
                     ON node_traffic_batches(applied_at);
+                CREATE INDEX IF NOT EXISTS node_traffic_batches_node_applied_at_idx
+                    ON node_traffic_batches(node_id, applied_at);
                 CREATE TABLE IF NOT EXISTS node_commands (
                     command_id TEXT PRIMARY KEY,
                     node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
@@ -3407,11 +3414,24 @@ class Database:
                     "DELETE FROM node_traffic_batches WHERE applied_at < ?",
                     (int(accepted_at) - 8 * 86400,),
                 )
-                ledger_rows = connection.execute(
-                    "SELECT COUNT(*) FROM node_traffic_batches"
-                ).fetchone()[0]
-                if int(ledger_rows) >= 250000:
-                    raise sqlite3.IntegrityError("traffic ledger is full")
+                ledger_rows = int(
+                    connection.execute(
+                        """SELECT COUNT(*) FROM node_traffic_batches
+                        WHERE node_id = ?""",
+                        (node_id,),
+                    ).fetchone()[0]
+                )
+                rows_to_evict = (
+                    ledger_rows - self.NODE_TRAFFIC_LEDGER_MAX_ROWS + 1
+                )
+                if rows_to_evict > 0:
+                    connection.execute(
+                        """DELETE FROM node_traffic_batches WHERE rowid IN (
+                            SELECT rowid FROM node_traffic_batches
+                            WHERE node_id = ? ORDER BY applied_at, batch_id LIMIT ?
+                        )""",
+                        (node_id, rows_to_evict),
+                    )
                 users = {
                     row["name"]: row
                     for row in connection.execute(
@@ -3480,7 +3500,7 @@ class Database:
     def _queue_kick_users_on_ready_nodes(self, connection, names, created_at):
         if (
             not isinstance(names, (list, tuple, set))
-            or len(names) > 100
+            or len(names) > 1000
             or not all(
                 isinstance(name, str) and NAME_PATTERN.fullmatch(name)
                 for name in names
@@ -3490,12 +3510,15 @@ class Database:
         names = sorted(set(names), key=str.casefold)
         if not names:
             return 0
-        payload = json.dumps(
-            {"users": names},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        payloads = [
+            json.dumps(
+                {"users": names[offset : offset + 100]},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for offset in range(0, len(names), 100)
+        ]
         queued = 0
         for row in connection.execute(
             """SELECT node_id FROM nodes
@@ -3503,27 +3526,28 @@ class Database:
                 AND status = 'pending_verification' AND verified_at IS NOT NULL
             ORDER BY node_id"""
         ):
-            existing = connection.execute(
-                """SELECT 1 FROM node_commands
-                WHERE node_id = ? AND kind = 'KICK_USERS' AND payload = ?
-                    AND acked_at IS NULL AND attempts < 10""",
-                (row["node_id"], payload),
-            ).fetchone()
-            if existing is not None:
-                continue
-            connection.execute(
-                """INSERT INTO node_commands(
-                    command_id, node_id, kind, payload, created_at, next_attempt_at
-                ) VALUES (?, ?, 'KICK_USERS', ?, ?, ?)""",
-                (
-                    uuid.uuid4().hex,
-                    row["node_id"],
-                    payload,
-                    int(created_at),
-                    int(created_at),
-                ),
-            )
-            queued += 1
+            for payload in payloads:
+                existing = connection.execute(
+                    """SELECT 1 FROM node_commands
+                    WHERE node_id = ? AND kind = 'KICK_USERS' AND payload = ?
+                        AND acked_at IS NULL""",
+                    (row["node_id"], payload),
+                ).fetchone()
+                if existing is not None:
+                    continue
+                connection.execute(
+                    """INSERT INTO node_commands(
+                        command_id, node_id, kind, payload, created_at, next_attempt_at
+                    ) VALUES (?, ?, 'KICK_USERS', ?, ?, ?)""",
+                    (
+                        uuid.uuid4().hex,
+                        row["node_id"],
+                        payload,
+                        int(created_at),
+                        int(created_at),
+                    ),
+                )
+                queued += 1
         return queued
 
     def queue_kick_users_on_ready_nodes(self, names, created_at=None):
@@ -3576,8 +3600,7 @@ class Database:
                     raise sqlite3.IntegrityError("node is not protocol ready")
                 rows = connection.execute(
                     """SELECT command_id, kind, payload, attempts FROM node_commands
-                    WHERE node_id = ? AND acked_at IS NULL AND attempts < 10
-                        AND next_attempt_at <= ?
+                    WHERE node_id = ? AND acked_at IS NULL AND next_attempt_at <= ?
                     ORDER BY created_at, command_id LIMIT 32""",
                     (node_id, int(accepted_at)),
                 ).fetchall()
@@ -3599,7 +3622,7 @@ class Database:
                     if encoded_size > 64 * 1024:
                         break
                     commands.append(command)
-                    attempt = int(row["attempts"]) + 1
+                    attempt = min(10, int(row["attempts"]) + 1)
                     delay = min(300, 2 ** min(attempt, 8))
                     connection.execute(
                         """UPDATE node_commands SET attempts = ?, delivered_at = ?,
@@ -4145,6 +4168,8 @@ def make_internal_server(address, database, usage_manager=None):
 
 
 class PanelApplication:
+    MAINTENANCE_DRAIN_SECONDS = 5
+
     def __init__(
         self,
         database,
@@ -4201,7 +4226,46 @@ class PanelApplication:
         self.node_name = node_name
         self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
+        self._mutation_gate_condition = threading.Condition()
+        self._active_mutations = 0
+        self._maintenance_active = False
         self.user_action_lock = threading.Lock()
+
+    def begin_mutation(self):
+        with self._mutation_gate_condition:
+            if self._maintenance_active:
+                return False
+            self._active_mutations += 1
+            return True
+
+    def finish_mutation(self):
+        with self._mutation_gate_condition:
+            if self._active_mutations <= 0:
+                raise RuntimeError("mutation gate is unbalanced")
+            self._active_mutations -= 1
+            self._mutation_gate_condition.notify_all()
+
+    def begin_maintenance(self):
+        deadline = time.monotonic() + self.MAINTENANCE_DRAIN_SECONDS
+        with self._mutation_gate_condition:
+            if self._maintenance_active:
+                return False
+            self._maintenance_active = True
+            while self._active_mutations:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self._maintenance_active = False
+                    self._mutation_gate_condition.notify_all()
+                    return False
+                self._mutation_gate_condition.wait(remaining)
+            return True
+
+    def finish_maintenance(self):
+        with self._mutation_gate_condition:
+            if not self._maintenance_active:
+                raise RuntimeError("maintenance gate is unbalanced")
+            self._maintenance_active = False
+            self._mutation_gate_condition.notify_all()
 
 
 def _human_bytes(value):
@@ -5416,6 +5480,15 @@ class PanelHandler(JsonHandler):
                 ),
             )
             return
+        if not self.app.begin_mutation():
+            self._error_page(503, "维护操作正在进行，请稍后重试")
+            return
+        try:
+            self._dispatch_authenticated_post(path, session, form)
+        finally:
+            self.app.finish_mutation()
+
+    def _dispatch_authenticated_post(self, path, session, form):
         if path == "/users":
             self._handle_create_user(session, form)
             return
@@ -5536,17 +5609,19 @@ class PanelHandler(JsonHandler):
             self._error_page(503, "恢复功能尚未配置")
             return
         self.server.begin_maintenance_request(self.connection)
+        if not self.app.begin_maintenance():
+            self._error_page(503, "维护操作正在进行，请稍后重试")
+            return
         staged = False
         try:
-            with self.app.user_action_lock:
-                manifest = self.app.backup_manager.stage_archive(
-                    self.rfile, content_length
-                )
-                staged = True
-                self.app.restore_controller.queue()
-                self._audit_safely(
-                    session["username"], "restore_queued", manifest["createdAt"]
-                )
+            manifest = self.app.backup_manager.stage_archive(
+                self.rfile, content_length
+            )
+            staged = True
+            self.app.restore_controller.queue()
+            self._audit_safely(
+                session["username"], "restore_queued", manifest["createdAt"]
+            )
         except BackupValidationError as exc:
             self._error_page(400, str(exc))
             return
@@ -5559,6 +5634,8 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("restore queue failed")
             self._error_page(500, "恢复任务启动失败，请检查服务日志")
             return
+        finally:
+            self.app.finish_maintenance()
         content = """<section class="card login"><h1>恢复任务已启动</h1>
 <p>面板与 Hysteria 服务将短暂重启。恢复完成后，当前登录会话会失效，请等待约 10 秒后重新登录。</p>
 <p class="notice">原节点域名、UDP 端口、签名密钥与证书已通过预检；恢复服务仍会再次独立校验后才替换数据。</p>
@@ -5888,7 +5965,7 @@ class PanelHandler(JsonHandler):
             self.send_json(202, self.app.update_controller.status())
             return
         content = """<section class="card login"><h1>在线更新任务已启动</h1>
-<p>系统会重新核验最新正式版本，建立升级前备份并保留用户、节点参数、签名密钥、证书和管理员账号。</p>
+<p>系统会重新核验并安装本次确认的固定正式版本，建立升级前备份并保留用户、节点参数、签名密钥、证书和管理员账号。</p>
 <p class="notice">面板与 Hysteria 服务会短暂重启。请等待约 30 秒后刷新；失败原因与升级前备份位置会保留在更新服务日志中。</p>
 <p><a class="button secondary" href="/">稍后刷新</a></p></section>"""
         self._send_html(202, self._page("正在更新", content))
@@ -7794,7 +7871,10 @@ def main(argv=None):
         "record-egress-policy-state", help=argparse.SUPPRESS
     )
     record_egress_parser.add_argument("policy", choices=("web", "full"))
-    subcommands.add_parser("apply-update", help="install the latest formal release as root")
+    update_parser = subcommands.add_parser(
+        "apply-update", help="install a verified formal release as root"
+    )
+    update_parser.add_argument("--queued-target", action="store_true")
     egress_parser = subcommands.add_parser(
         "apply-egress-policy", help="apply a fixed egress policy as root"
     )
@@ -7851,7 +7931,8 @@ def main(argv=None):
                 raise RuntimeError("apply-update must run as root")
             if EgressPolicyManager.TRANSACTION_PATH.exists():
                 raise RuntimeError("egress policy recovery must complete before update")
-            result = UpdateInstaller().apply()
+            target = UpdateController().pending_target() if args.queued_target else None
+            result = UpdateInstaller().apply(target)
             print(json.dumps(result, separators=(",", ":")))
             return 0
         if args.command == "apply-egress-policy":

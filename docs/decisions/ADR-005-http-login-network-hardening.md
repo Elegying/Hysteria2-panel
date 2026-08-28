@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受，2026-08-11。取代 ADR-002 中关于缺省协议、UDP 缓冲和 TCP 拥塞控制的决策；其中“不自动修改防火墙”的决定已于 2026-08-12 被 [ADR-012](ADR-012-managed-firewall-port-opening.md) 取代，其余决定继续有效。
+部分取代，2026-08-28。缺省 HTTP 的决定已由 [ADR-016](ADR-016-https-default-and-update-target-pinning.md) 取代；登录锁定、UDP 缓冲和 TCP 拥塞控制决定继续有效。“不自动修改防火墙”的决定已于 2026-08-12 被 [ADR-012](ADR-012-managed-firewall-port-opening.md) 取代。
 
 ## 背景
 
