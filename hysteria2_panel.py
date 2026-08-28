@@ -2431,6 +2431,75 @@ class Database:
                 (origin_id, origin_kind, node_id, origin_name, created_at),
             )
 
+    def fold_placeholder_local_usage_origin(self, active_origin_id):
+        placeholder_origin_id = "local:" + "0" * 32
+        if (
+            not isinstance(active_origin_id, str)
+            or not re.fullmatch(r"local:[0-9a-f]{32}", active_origin_id)
+            or active_origin_id == placeholder_origin_id
+        ):
+            return False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            target = connection.execute(
+                "SELECT kind FROM usage_origins WHERE origin_id = ?",
+                (LEGACY_USAGE_ORIGIN_ID,),
+            ).fetchone()
+            placeholder = connection.execute(
+                """SELECT kind, created_at, last_traffic_at FROM usage_origins
+                WHERE origin_id = ?""",
+                (placeholder_origin_id,),
+            ).fetchone()
+            if placeholder is None:
+                return False
+            if placeholder["kind"] != "local":
+                raise ValueError("placeholder traffic origin is invalid")
+            if target is None:
+                connection.execute(
+                    """INSERT INTO usage_origins(
+                        origin_id, kind, node_id, display_name, created_at,
+                        last_traffic_at
+                    ) VALUES (?, 'legacy', NULL, ?, ?, NULL)""",
+                    (
+                        LEGACY_USAGE_ORIGIN_ID,
+                        LEGACY_USAGE_ORIGIN_NAME,
+                        int(placeholder["created_at"]),
+                    ),
+                )
+            elif target["kind"] != "legacy":
+                raise ValueError("target traffic origin is invalid")
+            connection.execute(
+                """INSERT INTO usage_origin_users(
+                    origin_id, user_name, tx_bytes, rx_bytes, updated_at
+                ) SELECT ?, user_name, tx_bytes, rx_bytes, updated_at
+                FROM usage_origin_users WHERE origin_id = ?
+                ON CONFLICT(origin_id, user_name) DO UPDATE SET
+                    tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
+                    rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
+                    updated_at = MAX(
+                        usage_origin_users.updated_at, excluded.updated_at
+                    )""",
+                (LEGACY_USAGE_ORIGIN_ID, placeholder_origin_id),
+            )
+            connection.execute(
+                """UPDATE usage_origins SET
+                    created_at = MIN(created_at, ?),
+                    last_traffic_at = NULLIF(MAX(
+                        COALESCE(last_traffic_at, 0), COALESCE(?, 0)
+                    ), 0)
+                WHERE origin_id = ?""",
+                (
+                    int(placeholder["created_at"]),
+                    placeholder["last_traffic_at"],
+                    LEGACY_USAGE_ORIGIN_ID,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM usage_origins WHERE origin_id = ?",
+                (placeholder_origin_id,),
+            )
+        return True
+
     def list_node_online_states(self, now, freshness_seconds):
         now = int(now)
         freshness_seconds = max(1, int(freshness_seconds))
@@ -6667,6 +6736,7 @@ class UsageManager:
             self.local_origin_name,
             created_at=int(self.wall_clock()),
         )
+        self.database.fold_placeholder_local_usage_origin(self.local_origin_id)
         self.lock = threading.Lock()
         self._authorization_lock = threading.Lock()
         self.auth_stats_ttl = max(0, float(auth_stats_ttl))
@@ -7393,7 +7463,12 @@ def sync_traffic(
     )
     if quiesce:
         quiesce_stats_client(stats_client)
-    UsageManager(database, stats_client).collect_once()
+    UsageManager(
+        database,
+        stats_client,
+        local_origin_id=settings.local_origin_id,
+        local_origin_name=settings.node_name,
+    ).collect_once()
 
 
 def _probe_local_health(server, scheme, timeout=2):

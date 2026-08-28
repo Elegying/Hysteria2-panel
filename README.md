@@ -76,7 +76,7 @@ flowchart LR
 
 ```bash
 set -euo pipefail
-version=0.31.0
+version=0.31.1
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
