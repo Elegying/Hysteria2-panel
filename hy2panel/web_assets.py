@@ -358,6 +358,56 @@ document.addEventListener('submit', async function(event) {
   }
 });
 document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-data-plane-bootstrap-form]');
+  if (!form || event.defaultPrevented) return;
+  event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  const original = button.textContent;
+  const result = document.querySelector('[data-data-plane-bootstrap-result]');
+  const code = document.getElementById('data-plane-deployment-code');
+  const expiry = document.querySelector('[data-data-plane-bootstrap-expiry]');
+  button.disabled = true;
+  button.textContent = '生成中…';
+  try {
+    const payload = await submitInlineForm(form);
+    const command = payload && payload.deploymentCommand;
+    const forbidden = ['server.crt', 'server.key', 'HY2PANEL_HMAC_KEY', 'vpn.ssrvpn.vip'];
+    if (typeof command !== 'string' || !command.startsWith('set -euo pipefail') || !command.includes('--activate-data-plane') || forbidden.some(function(value) { return command.includes(value); })) {
+      throw new Error('数据面部署代码响应无效');
+    }
+    code.value = command;
+    expiry.textContent = '数据面授权将在 ' + new Date(Number(payload.expiresAt) * 1000).toLocaleTimeString() + ' 过期，最多允许获取配置 3 次；安装确认后立即失效。';
+    result.hidden = false;
+    code.focus();
+    notify('数据面一键部署代码已生成，请在有效期内使用', false);
+  } catch (error) {
+    notify(error.message || '生成数据面部署代码失败，请重试', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+});
+document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-data-plane-canary-form]');
+  if (!form || event.defaultPrevented) return;
+  event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = '确认中…';
+  try {
+    const payload = await submitInlineForm(form);
+    if (!payload || payload.directCanaryPassed !== true) {
+      throw new Error('直连灰度状态未更新');
+    }
+    notify('已记录直连灰度通过；DNS 仍未准入', false);
+    window.setTimeout(function() { window.location.reload(); }, 700);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = '确认直连灰度通过';
+    notify(error.message || '直连灰度确认失败，请重试', true);
+  }
+});
+document.addEventListener('submit', async function(event) {
   const form = event.target.closest('[data-restore-form]');
   if (!form || event.defaultPrevented) return;
   event.preventDefault();
@@ -392,9 +442,15 @@ if (nodeOnboardingDialog) nodeOnboardingDialog.addEventListener('close', functio
   const code = document.getElementById('node-deployment-code');
   const result = document.querySelector('[data-node-enrollment-result]');
   const expiry = document.querySelector('[data-node-enrollment-expiry]');
+  const dataPlaneCode = document.getElementById('data-plane-deployment-code');
+  const dataPlaneResult = document.querySelector('[data-data-plane-bootstrap-result]');
+  const dataPlaneExpiry = document.querySelector('[data-data-plane-bootstrap-expiry]');
   if (code) code.value = '';
   if (expiry) expiry.textContent = '';
   if (result) result.hidden = true;
+  if (dataPlaneCode) dataPlaneCode.value = '';
+  if (dataPlaneExpiry) dataPlaneExpiry.textContent = '';
+  if (dataPlaneResult) dataPlaneResult.hidden = true;
 });
 const editUserSelect = document.querySelector('[data-edit-user-select]');
 if (editUserSelect) {

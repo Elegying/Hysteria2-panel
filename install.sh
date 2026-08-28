@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.26.0"
+PANEL_VERSION="0.27.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -20,21 +20,22 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="b489863e9a687773bffcfe4295935f32f9059711b31fdd8dbeaf23424c0e9fce"
+PANEL_SHA256="86497777610165cd17d5a3e380d84882e060642d1d69510acc95265475ee5d5e"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="bd9390e1e6e138fde9d4938bd85fe0934be0d68dedf9e8a80b9dc9881cb5d0d9"
-HY2PANEL_WEB_ASSETS_SHA256="775fd5f19bafd35460e74b05e91be858ea7c2f3ad0fc0b17aa84cfc50c8b8e12"
+HY2PANEL_VERSION_SHA256="1926881d16a0110e2c2aaad68d94602f7c9b649aac7489176a86d7a79083d0c9"
+HY2PANEL_WEB_ASSETS_SHA256="333e186315f8b0f81e755ca8e71c60f4ea753ba6255eab9282fff8feb83f6110"
 HY2PANEL_OPERATIONS_SHA256="5f410c32713796e3d3f86370f1a9574f357e0fd43f5c7cbeda5cc3265f3a493b"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="ecf9104a65e5b94194511b4536e183e24775ff27bd0ba3586daef3a4f74b6c3c"
+HY2PANEL_NODES_SHA256="71724c20a8b792fb78156901e08b501f82435666aa2ef7ea141c6dd3d86bfafc"
 HY2PANEL_DISTRIBUTED_SHA256="59699bef3ddcf260ce47e339d8bf557f08df3b6695bd89615fdcb1c4d9d09f63"
-NODE_AGENT_SHA256="8efc37484c31a1096b064d4f1305eae545796eb3b31d2f5692b7d5cd95a64044"
+NODE_AGENT_SHA256="1683b8bbe19375da5a492ccea2288af0dfdf8bc0513c83e2e2e2e48c8983366c"
 HYSTERIA_VERSION="2.12.1"
+HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
 COSIGN_VERSION="3.1.3"
@@ -61,6 +62,9 @@ NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
 NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node
 NODE_AGENT_HEARTBEAT_SERVICE=/etc/systemd/system/hysteria2-panel-node-heartbeat.service
 NODE_AGENT_HEARTBEAT_TIMER=/etc/systemd/system/hysteria2-panel-node-heartbeat.timer
+NODE_DATA_PLANE_BACKUP_ROOT=/var/backups/hysteria2-panel-node
+NODE_DATA_PLANE_TRANSACTION=/etc/hysteria2-panel-node/.data-plane-transaction
+DATA_PLANE_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_DATA_PLANE_V1
 FRESH_IN_PROGRESS_MARKER=/etc/.hysteria2-panel-installing-by-installer
 LEGACY_FRESH_IN_PROGRESS_MARKER=/etc/hysteria2-panel/.installing-by-installer
 FRESH_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FRESH_TRANSACTION_V1
@@ -123,6 +127,12 @@ JOIN_NODE_MUTATED=0
 ACTIVATE_NODE_AGENT=0
 ACTIVATE_NODE_AGENT_MUTATED=0
 NODE_AGENT_BACKUP_FILE=""
+ACTIVATE_DATA_PLANE=0
+DATA_PLANE_MUTATED=0
+DATA_PLANE_BACKUP_DIR=""
+DATA_PLANE_NODE_AGENT_BACKUP_FILE=""
+DATA_PLANE_OWNED_FILES=()
+DATA_PLANE_OWNED_UNITS=()
 
 usage() {
   cat <<'EOF'
@@ -136,6 +146,9 @@ Hysteria2-panel 一键部署
 
 验证后启用签名心跳（不安装或修改 Hysteria）：
   sudo bash install.sh --activate-node-agent
+
+部署数据面（复制既有 Hysteria 身份，不安装面板、不修改 DNS）：
+  sudo -E bash install.sh --activate-data-plane
 
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
@@ -910,12 +923,18 @@ finalize_install() {
   local join_node_mutated="${JOIN_NODE_MUTATED:-0}"
   local activate_node_state="${ACTIVATE_NODE_AGENT:-0}"
   local activate_node_mutated="${ACTIVATE_NODE_AGENT_MUTATED:-0}"
+  local data_plane_state="${ACTIVATE_DATA_PLANE:-0}"
+  local data_plane_mutated="${DATA_PLANE_MUTATED:-0}"
   trap - EXIT ERR
   trap '' HUP INT TERM
   set +e
   (( INSTALL_FINALIZING == 0 )) || exit "${status}"
   INSTALL_FINALIZING=1
-  if (( status != 0 && activate_node_state == 1 )); then
+  if (( status != 0 && data_plane_state == 1 )); then
+    if (( data_plane_mutated == 1 )); then
+      rollback_data_plane_activation || status=1
+    fi
+  elif (( status != 0 && activate_node_state == 1 )); then
     if (( activate_node_mutated == 1 )); then
       rollback_node_agent_activation || status=1
     fi
@@ -1168,6 +1187,670 @@ EOF
   sync -f /etc/systemd/system
   ACTIVATE_NODE_AGENT_MUTATED=0
   echo "节点签名心跳已启用；未安装 Hysteria，也未修改网络、DNS 或任何节点证书。"
+}
+
+initialize_data_plane_owned_paths() {
+  DATA_PLANE_OWNED_FILES=(
+    "${NODE_AGENT_OPT_DIR}/bin/hysteria"
+    "${NODE_AGENT_OPT_DIR}/tcp_probe.py"
+    "${NODE_AGENT_CONFIG_DIR}/server.crt"
+    "${NODE_AGENT_CONFIG_DIR}/server.key"
+    "${NODE_AGENT_CONFIG_DIR}/hysteria-main.yaml"
+    "${NODE_AGENT_CONFIG_DIR}/hysteria-udp443.yaml"
+    "${NODE_AGENT_CONFIG_DIR}/stats.env"
+    "${NODE_AGENT_CONFIG_DIR}/bootstrap.json"
+    "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+  )
+  DATA_PLANE_OWNED_UNITS=(
+    /etc/systemd/system/hysteria2-panel-node-auth.service
+    /etc/systemd/system/hysteria2-panel-node-control.service
+    /etc/systemd/system/hysteria2-panel-node-hysteria-main.service
+    /etc/systemd/system/hysteria2-panel-node-hysteria-udp443.service
+    /etc/systemd/system/hysteria2-panel-node-tcp-probe-main.service
+    /etc/systemd/system/hysteria2-panel-node-tcp-probe-udp443.service
+  )
+}
+
+assert_data_plane_paths_unclaimed() {
+  local path
+  initialize_data_plane_owned_paths
+  for path in "${DATA_PLANE_OWNED_FILES[@]}" "${DATA_PLANE_OWNED_UNITS[@]}" \
+    "${NODE_AGENT_OPT_DIR}/bin" /var/lib/hysteria2-panel-node \
+    "${NODE_DATA_PLANE_TRANSACTION}"; do
+    [[ ! -e "${path}" && ! -L "${path}" ]] \
+      || fail "数据面路径已存在；为避免覆盖未知数据，部署已停止：${path}"
+  done
+}
+
+assert_data_plane_ports_available() {
+  local kind port
+  for kind in -lun -ltn; do
+    for port in 443 19995 19996 19997 19999; do
+      if ss -H "${kind}" "sport = :${port}" | grep -q .; then
+        fail "数据面端口已被占用；未修改系统：${port}"
+      fi
+    done
+  done
+}
+
+write_data_plane_backup_manifest() {
+  local timestamp manifest
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  DATA_PLANE_BACKUP_DIR="${NODE_DATA_PLANE_BACKUP_ROOT}/${timestamp}-phase4"
+  [[ ! -e "${DATA_PLANE_BACKUP_DIR}" && ! -L "${DATA_PLANE_BACKUP_DIR}" ]] \
+    || return 1
+  install -d -o root -g root -m 0700 "${NODE_DATA_PLANE_BACKUP_ROOT}"
+  install -d -o root -g root -m 0700 "${DATA_PLANE_BACKUP_DIR}"
+  DATA_PLANE_NODE_AGENT_BACKUP_FILE="${DATA_PLANE_BACKUP_DIR}/node_agent.py"
+  install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
+    "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}"
+  manifest="${DATA_PLANE_BACKUP_DIR}/manifest.sha256"
+  (
+    cd "${DATA_PLANE_BACKUP_DIR}"
+    sha256sum node_agent.py > manifest.sha256
+  )
+  chmod 0600 "${manifest}"
+  sync -f "${DATA_PLANE_BACKUP_DIR}" "${NODE_DATA_PLANE_BACKUP_ROOT}"
+}
+
+arm_data_plane_transaction() {
+  local stage="${TMP_DIR}/data-plane-transaction"
+  {
+    echo "${DATA_PLANE_TRANSACTION_MAGIC}"
+    echo "${DATA_PLANE_BACKUP_DIR}"
+  } > "${stage}"
+  durable_replace_file "${stage}" "${NODE_DATA_PLANE_TRANSACTION}" 0600
+}
+
+recover_interrupted_data_plane() {
+  local marker_magic marker_backup
+  local -a marker_lines=()
+  [[ -e "${NODE_DATA_PLANE_TRANSACTION}" || -L "${NODE_DATA_PLANE_TRANSACTION}" ]] \
+    || return 0
+  [[ -f "${NODE_DATA_PLANE_TRANSACTION}" && ! -L "${NODE_DATA_PLANE_TRANSACTION}" ]] \
+    || fail "数据面事务标记不安全，拒绝自动恢复"
+  [[ "$(stat -c '%u:%g:%a' "${NODE_DATA_PLANE_TRANSACTION}")" == "0:0:600" ]] \
+    || fail "数据面事务标记权限异常，拒绝自动恢复"
+  mapfile -t marker_lines < "${NODE_DATA_PLANE_TRANSACTION}"
+  [[ ${#marker_lines[@]} -eq 2 ]] \
+    || fail "数据面事务标记格式异常，拒绝自动恢复"
+  marker_magic="${marker_lines[0]}"
+  marker_backup="${marker_lines[1]}"
+  [[ "${marker_magic}" == "${DATA_PLANE_TRANSACTION_MAGIC}" ]] \
+    || fail "数据面事务标记版本未知，拒绝自动恢复"
+  [[ "${marker_backup}" =~ ^${NODE_DATA_PLANE_BACKUP_ROOT}/[0-9]{8}T[0-9]{6}Z-phase4$ ]] \
+    || fail "数据面回滚快照路径异常，拒绝自动恢复"
+  [[ -d "${marker_backup}" && ! -L "${marker_backup}" ]] \
+    || fail "数据面回滚快照缺失或不安全"
+  [[ "$(stat -c '%u:%g:%a' "${marker_backup}")" == "0:0:700" ]] \
+    || fail "数据面回滚快照权限异常"
+  [[ -f "${marker_backup}/node_agent.py" && ! -L "${marker_backup}/node_agent.py" ]] \
+    || fail "数据面回滚节点 Agent 缺失"
+  [[ -f "${marker_backup}/manifest.sha256" && ! -L "${marker_backup}/manifest.sha256" ]] \
+    || fail "数据面回滚 manifest 缺失"
+  (
+    cd "${marker_backup}"
+    sha256sum --check --status manifest.sha256
+  ) || fail "数据面回滚快照摘要不匹配"
+  DATA_PLANE_BACKUP_DIR="${marker_backup}"
+  DATA_PLANE_NODE_AGENT_BACKUP_FILE="${marker_backup}/node_agent.py"
+  DATA_PLANE_MUTATED=1
+  rollback_data_plane_activation \
+    || fail "中断的数据面部署无法自动恢复；事务标记已保留"
+  echo "已恢复中断的数据面部署；第二阶段节点身份和签名心跳保持不变。"
+}
+
+record_data_plane_firewall_change() {
+  local line="$1" stage="${TMP_DIR}/data-plane-firewall.state"
+  [[ "${line}" =~ ^(ufw|firewalld-runtime|firewalld-permanent)\|[-A-Za-z0-9_.]+\|(443|19999)\|(tcp|udp)$ ]] \
+    || return 1
+  if [[ -f "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" ]]; then
+    cp -- "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" "${stage}"
+  else
+    : > "${stage}"
+  fi
+  echo "${line}" >> "${stage}"
+  durable_replace_file "${stage}" \
+    "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" 0600
+}
+
+configure_data_plane_firewall() {
+  local active_firewalld=0 active_ufw=0 port protocol query_status rule scope
+  local status zone zones
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    if read_firewalld_state >/dev/null; then
+      active_firewalld=1
+    else
+      status=$?
+      (( status == 1 )) || fail "无法查询 firewalld 状态；数据面已安排回滚"
+    fi
+  fi
+  if command -v ufw >/dev/null 2>&1; then
+    if read_ufw_state >/dev/null; then
+      active_ufw=1
+    else
+      status=$?
+      (( status == 1 )) || fail "无法查询 UFW 状态；数据面已安排回滚"
+    fi
+  fi
+  (( active_firewalld + active_ufw <= 1 )) \
+    || fail "检测到多个活动主机防火墙，拒绝猜测数据面规则归属"
+  if (( active_firewalld == 1 )); then
+    if firewalld_has_global_conflicts; then
+      fail "firewalld 存在可能提前阻断入站的全局规则；数据面已安排回滚"
+    else
+      status=$?
+      (( status == 1 )) \
+        || fail "无法完整核验 firewalld 全局规则；数据面已安排回滚"
+    fi
+    zones="$(read_firewalld_zones)" \
+      || fail "无法读取 firewalld 活跃或默认区域；数据面已安排回滚"
+    [[ -n "${zones}" ]] \
+      || fail "firewalld 没有可验证区域；数据面已安排回滚"
+    while IFS= read -r zone; do
+      [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] \
+        || fail "firewalld 返回无效区域；数据面已安排回滚"
+      for scope in runtime permanent; do
+        if firewalld_zone_has_complex_rules "${scope}" "${zone}"; then
+          fail "firewalld ${zone} 存在 rich rule；数据面已安排回滚"
+        else
+          status=$?
+          (( status == 1 )) \
+            || fail "无法读取 firewalld ${zone} rich rules；数据面已安排回滚"
+        fi
+        for protocol in tcp udp; do
+          for port in 443 19999; do
+            rule="${port}/${protocol}"
+            if [[ "${scope}" == "permanent" ]]; then
+              if firewall-cmd --quiet --permanent --zone="${zone}" \
+                --query-port="${rule}"; then
+                continue
+              else
+                query_status=$?
+              fi
+            elif firewall-cmd --quiet --zone="${zone}" \
+              --query-port="${rule}"; then
+              continue
+            else
+              query_status=$?
+            fi
+            (( query_status == 1 )) \
+              || fail "无法查询 firewalld ${zone} ${scope} 规则；数据面已安排回滚"
+            record_data_plane_firewall_change \
+              "firewalld-${scope}|${zone}|${port}|${protocol}" \
+              || fail "无法持久化 firewalld 回滚归属"
+            if [[ "${scope}" == "permanent" ]]; then
+              firewall-cmd --quiet --permanent --zone="${zone}" \
+                --add-port="${rule}" \
+                || fail "无法开放 firewalld ${zone} ${scope} ${rule}"
+              firewall-cmd --quiet --permanent --zone="${zone}" \
+                --query-port="${rule}" \
+                || fail "firewalld ${zone} ${scope} ${rule} 复核失败"
+            else
+              firewall-cmd --quiet --zone="${zone}" --add-port="${rule}" \
+                || fail "无法开放 firewalld ${zone} ${scope} ${rule}"
+              firewall-cmd --quiet --zone="${zone}" --query-port="${rule}" \
+                || fail "firewalld ${zone} ${scope} ${rule} 复核失败"
+            fi
+          done
+        done
+      done
+    done <<< "${zones}"
+    return 0
+  fi
+  if (( active_ufw == 1 )); then
+    if ufw_has_framework_customization; then
+      fail "UFW framework 已自定义；数据面已安排回滚"
+    else
+      status=$?
+      (( status == 1 )) \
+        || fail "无法核验 UFW framework；数据面已安排回滚"
+    fi
+    if ufw_has_unmanaged_live_rules; then
+      fail "UFW 之外存在可能阻断入站的实时规则；数据面已安排回滚"
+    else
+      status=$?
+      (( status == 1 )) \
+        || fail "无法核验 UFW 实时规则；数据面已安排回滚"
+    fi
+    UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" \
+      || fail "无法读取 UFW 规则；数据面已安排回滚"
+    for protocol in tcp udp; do
+      for port in 443 19999; do
+        rule="${port}/${protocol}"
+        if ufw_rule_is_denied "${rule}"; then
+          fail "UFW 已存在拒绝 ${rule} 的规则；数据面已安排回滚"
+        else
+          status=$?
+          (( status == 1 )) \
+            || fail "无法解析 UFW ${rule} 规则；数据面已安排回滚"
+        fi
+        ufw_rule_is_recorded "${rule}" && continue
+        record_data_plane_firewall_change "ufw|-|${port}|${protocol}" \
+          || fail "无法持久化 UFW 回滚归属"
+        ufw allow "${rule}" comment 'Hysteria2-panel-node data-plane' >/dev/null \
+          || fail "UFW 无法开放 ${rule}"
+        UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" \
+          || fail "无法复核 UFW ${rule} 规则"
+        ufw_rule_is_recorded "${rule}" \
+          || fail "UFW ${rule} 开放后复核失败"
+      done
+    done
+    return 0
+  fi
+  if has_unmanaged_firewall_restrictions; then
+    fail "检测到未受支持的自定义 nftables/iptables 入站策略；数据面已安排回滚"
+  else
+    status=$?
+    (( status == 1 )) \
+      || fail "无法完整检查 nftables/iptables；数据面已安排回滚"
+  fi
+  echo "主机未启用 UFW/firewalld 且无自定义入站限制；数据面未修改防火墙。"
+}
+
+rollback_data_plane_firewall() {
+  local manager zone port protocol
+  local state="${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+  [[ -e "${state}" || -L "${state}" ]] || return 0
+  [[ -f "${state}" && ! -L "${state}" ]] || return 1
+  while IFS='|' read -r manager zone port protocol; do
+    [[ "${port}" =~ ^(443|19999)$ && "${protocol}" =~ ^(tcp|udp)$ ]] \
+      || return 1
+    case "${manager}" in
+      firewalld-runtime)
+        [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
+        firewall-cmd --zone="${zone}" --remove-port="${port}/${protocol}" \
+          >/dev/null 2>&1 || true
+        ;;
+      firewalld-permanent)
+        [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
+        firewall-cmd --permanent --zone="${zone}" \
+          --remove-port="${port}/${protocol}" >/dev/null 2>&1 || true
+        ;;
+      ufw)
+        [[ "${zone}" == "-" ]] || return 1
+        ufw --force delete allow proto "${protocol}" from any to any \
+          port "${port}" >/dev/null 2>&1 || true
+        ;;
+      *) return 1 ;;
+    esac
+  done < "${state}"
+  rm -f -- "${state}"
+}
+
+rollback_data_plane_activation() {
+  local path unit
+  initialize_data_plane_owned_paths
+  rollback_data_plane_firewall || return 1
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    unit="${path##*/}"
+    systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+  done
+  if [[ -n "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}" && \
+    -f "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}" && \
+    ! -L "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}" ]]; then
+    install -o root -g root -m 0755 "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}" \
+      "${NODE_AGENT_OPT_DIR}/node_agent.py" || return 1
+  fi
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}"; do
+    rm -f -- "${path}" || return 1
+  done
+  if [[ -e /var/lib/hysteria2-panel-node || -L /var/lib/hysteria2-panel-node ]]; then
+    [[ -d /var/lib/hysteria2-panel-node && ! -L /var/lib/hysteria2-panel-node ]] \
+      || return 1
+    rm -r -- /var/lib/hysteria2-panel-node || return 1
+  fi
+  if [[ -e "${NODE_AGENT_OPT_DIR}/bin" || -L "${NODE_AGENT_OPT_DIR}/bin" ]]; then
+    [[ -d "${NODE_AGENT_OPT_DIR}/bin" && ! -L "${NODE_AGENT_OPT_DIR}/bin" ]] \
+      || return 1
+    rmdir -- "${NODE_AGENT_OPT_DIR}/bin" || return 1
+  fi
+  rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
+  systemctl daemon-reload || return 1
+  sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
+    /etc/systemd/system || return 1
+  DATA_PLANE_MUTATED=0
+}
+
+activate_data_plane() {
+  local bootstrap_token command_name hysteria_arch hysteria_sha hysteria_url path unit
+  local -a data_plane_commands=(awk cat chmod cp curl date df grep install mkdir mktemp openssl rm rmdir sha256sum ss stat sync systemctl)
+
+  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
+    || fail "数据面只允许使用当前受签名正式版本 v${PANEL_VERSION}"
+  [[ -d /run/systemd/system ]] \
+    || fail "数据面部署需要使用 systemd 的 Linux 服务器"
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "完整面板服务器不能启用分流数据面"
+  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
+  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node-public.der" 644
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
+  require_node_agent_file "${NODE_AGENT_HEARTBEAT_SERVICE}" 644
+  require_node_agent_file "${NODE_AGENT_HEARTBEAT_TIMER}" 644
+  systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
+    || fail "节点签名心跳 timer 未运行；未修改系统"
+  systemctl start hysteria2-panel-node-heartbeat.service \
+    || fail "节点签名心跳未被中央面板接受；未修改系统"
+  recover_interrupted_data_plane
+  assert_data_plane_paths_unclaimed
+  for command_name in "${data_plane_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "数据面部署缺少命令 ${command_name}；未修改系统"
+  done
+  select_python || fail "数据面部署需要 Python 3.8 或更高版本；未修改系统"
+  (( $(df -Pk "${NODE_AGENT_OPT_DIR}" | awk 'NR == 2 {print $4}') >= 131072 )) \
+    || fail "数据面部署至少需要 128 MiB 可用磁盘；未修改系统"
+  assert_data_plane_ports_available
+  bootstrap_token="${HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN:-}"
+  unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
+  [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
+    || fail "缺少或无效的一次性数据面部署凭据"
+  case "$(uname -m)" in
+    x86_64|amd64)
+      hysteria_arch=amd64
+      hysteria_sha="${HYSTERIA_SHA_AMD64}"
+      ;;
+    aarch64|arm64)
+      hysteria_arch=arm64
+      hysteria_sha="${HYSTERIA_SHA_ARM64}"
+      ;;
+    *) fail "数据面仅支持 Linux amd64 和 arm64" ;;
+  esac
+  hysteria_url="${HYSTERIA_DATA_PLANE_URL}-${hysteria_arch}"
+
+  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
+  download_file "${TCP_PROBE_SOURCE_URL}" "${TMP_DIR}/tcp_probe.py"
+  download_file "${hysteria_url}" "${TMP_DIR}/hysteria"
+  printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
+    | sha256sum --check --status || fail "节点 Agent SHA-256 校验失败"
+  printf '%s  %s\n' "${TCP_PROBE_SHA256}" "${TMP_DIR}/tcp_probe.py" \
+    | sha256sum --check --status || fail "TCP probe SHA-256 校验失败"
+  printf '%s  %s\n' "${hysteria_sha}" "${TMP_DIR}/hysteria" \
+    | sha256sum --check --status || fail "Hysteria SHA-256 校验失败"
+  "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" "${TMP_DIR}/tcp_probe.py" \
+    || fail "数据节点 Python 构件语法检查失败"
+  chmod 0755 "${TMP_DIR}/hysteria"
+  HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN="${bootstrap_token}" \
+    "${PYTHON_BIN}" "${TMP_DIR}/node_agent.py" prepare-data-plane \
+      --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
+      --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+      --output-dir "${TMP_DIR}/data-plane" \
+    || fail "数据面身份取件或本地摘要验证失败；未修改系统"
+
+  write_data_plane_backup_manifest \
+    || fail "无法创建数据面 root-only 回滚快照；未修改系统"
+  arm_data_plane_transaction \
+    || fail "无法持久化数据面回滚事务；未修改系统"
+  DATA_PLANE_MUTATED=1
+  install -d -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/bin"
+  install -d -o root -g root -m 0700 \
+    /var/lib/hysteria2-panel-node \
+    /var/lib/hysteria2-panel-node/spool \
+    /var/lib/hysteria2-panel-node/state
+  install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
+    "${NODE_AGENT_OPT_DIR}/node_agent.py"
+  install -o root -g root -m 0755 "${TMP_DIR}/tcp_probe.py" \
+    "${NODE_AGENT_OPT_DIR}/tcp_probe.py"
+  durable_replace_file "${TMP_DIR}/hysteria" \
+    "${NODE_AGENT_OPT_DIR}/bin/hysteria" 0755
+  for path in server.crt server.key hysteria-main.yaml hysteria-udp443.yaml stats.env bootstrap.json; do
+    install -o root -g root -m 0600 "${TMP_DIR}/data-plane/${path}" \
+      "${NODE_AGENT_CONFIG_DIR}/${path}"
+  done
+
+  cat > "${TMP_DIR}/hysteria2-panel-node-auth.service" <<EOF
+[Unit]
+Description=Hysteria2-panel loopback node authentication proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py serve-auth-proxy --private-key ${NODE_AGENT_CONFIG_DIR}/node.key --state-file ${NODE_AGENT_CONFIG_DIR}/registration.json --port 19996
+Restart=always
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
+TasksMax=64
+MemoryMax=192M
+LimitNOFILE=4096
+EOF
+
+  cat > "${TMP_DIR}/hysteria2-panel-node-control.service" <<EOF
+[Unit]
+Description=Hysteria2-panel signed data-node control loop
+After=network-online.target hysteria2-panel-node-auth.service
+Wants=network-online.target
+Requires=hysteria2-panel-node-auth.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py control-loop --private-key ${NODE_AGENT_CONFIG_DIR}/node.key --state-file ${NODE_AGENT_CONFIG_DIR}/registration.json --protocol-state /var/lib/hysteria2-panel-node/state/protocol.json --spool-dir /var/lib/hysteria2-panel-node/spool --stats-url http://127.0.0.1:19997 --stats-url http://127.0.0.1:19995
+Restart=always
+RestartSec=2s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
+ReadWritePaths=/var/lib/hysteria2-panel-node
+TasksMax=64
+MemoryMax=256M
+LimitNOFILE=4096
+EOF
+
+  cat > "${TMP_DIR}/hysteria2-panel-node-hysteria-main.service" <<EOF
+[Unit]
+Description=Hysteria2-panel data node main UDP 19999
+After=network-online.target hysteria2-panel-node-auth.service hysteria2-panel-node-control.service
+Wants=network-online.target
+Requires=hysteria2-panel-node-auth.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env
+Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-main.yaml
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
+TasksMax=256
+MemoryMax=768M
+LimitNOFILE=1048576
+EOF
+
+  cat > "${TMP_DIR}/hysteria2-panel-node-hysteria-udp443.service" <<EOF
+[Unit]
+Description=Hysteria2-panel data node authorized UDP 443
+After=network-online.target hysteria2-panel-node-auth.service hysteria2-panel-node-control.service
+Wants=network-online.target
+Requires=hysteria2-panel-node-auth.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env
+Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-udp443.yaml
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=${NODE_AGENT_OPT_DIR} ${NODE_AGENT_CONFIG_DIR}
+TasksMax=256
+MemoryMax=768M
+LimitNOFILE=1048576
+EOF
+
+  cat > "${TMP_DIR}/hysteria2-panel-node-tcp-probe-main.service" <<EOF
+[Unit]
+Description=Hysteria2-panel data node TCP 19999 probe
+After=hysteria2-panel-node-hysteria-main.service
+Requires=hysteria2-panel-node-hysteria-main.service
+
+[Service]
+Type=simple
+DynamicUser=true
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/tcp_probe.py 19999
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+TasksMax=16
+MemoryMax=64M
+LimitNOFILE=4096
+EOF
+
+  cat > "${TMP_DIR}/hysteria2-panel-node-tcp-probe-udp443.service" <<EOF
+[Unit]
+Description=Hysteria2-panel data node TCP 443 probe
+After=hysteria2-panel-node-hysteria-udp443.service
+Requires=hysteria2-panel-node-hysteria-udp443.service
+
+[Service]
+Type=simple
+DynamicUser=true
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/tcp_probe.py 443
+Restart=on-failure
+RestartSec=3s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6
+TasksMax=16
+MemoryMax=64M
+LimitNOFILE=4096
+EOF
+
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    install -o root -g root -m 0644 "${TMP_DIR}/${path##*/}" "${path}"
+  done
+  systemctl daemon-reload
+  systemctl enable --now hysteria2-panel-node-auth.service
+  systemctl enable --now hysteria2-panel-node-control.service
+  systemctl enable --now hysteria2-panel-node-hysteria-main.service
+  systemctl enable --now hysteria2-panel-node-hysteria-udp443.service
+  systemctl enable --now hysteria2-panel-node-tcp-probe-main.service
+  systemctl enable --now hysteria2-panel-node-tcp-probe-udp443.service
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    unit="${path##*/}"
+    systemctl is-active --quiet "${unit}" || fail "数据面服务未能健康启动：${unit}"
+  done
+  systemctl is-active --quiet hysteria2-panel-node-control.service \
+    || fail "数据面控制循环未运行"
+  ss -H -lun "sport = :19999" | grep -q . || fail "Hysteria UDP 19999 未监听"
+  ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 未监听"
+  ss -H -ltn "sport = :19999" | grep -q . || fail "TCP 19999 probe 未监听"
+  ss -H -ltn "sport = :443" | grep -q . || fail "TCP 443 probe 未监听"
+  configure_data_plane_firewall
+  (
+    set -a
+    # shellcheck disable=SC1090,SC1091
+    source "${NODE_AGENT_CONFIG_DIR}/stats.env"
+    set +a
+    HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN="${bootstrap_token}" \
+      "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" ack-data-plane \
+        --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
+        --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+        --metadata "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" \
+        --certificate "${NODE_AGENT_CONFIG_DIR}/server.crt" \
+        --hysteria-key "${NODE_AGENT_CONFIG_DIR}/server.key"
+  ) || fail "数据面本地健康证明或中央 ACK 失败"
+  bootstrap_token=""
+  rm -f -- "${NODE_DATA_PLANE_TRANSACTION}"
+  sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
+    /var/lib/hysteria2-panel-node /etc/systemd/system
+  DATA_PLANE_MUTATED=0
+  echo "数据面部署完成；未安装管理面板、未修改 DNS，Hysteria 身份来自中央生产身份的逐字节副本。"
 }
 
 install_system_dependencies() {
@@ -3890,6 +4573,9 @@ elif [[ "${1:-}" == "--join-node" ]]; then
 elif [[ "${1:-}" == "--activate-node-agent" ]]; then
   ACTIVATE_NODE_AGENT=1
   shift
+elif [[ "${1:-}" == "--activate-data-plane" ]]; then
+  ACTIVATE_DATA_PLANE=1
+  shift
 fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
@@ -3904,6 +4590,12 @@ if (( ACTIVATE_NODE_AGENT == 1 )); then
   activate_node_agent
   INSTALL_COMMITTED=1
   ACTIVATE_NODE_AGENT_MUTATED=0
+  exit 0
+fi
+if (( ACTIVATE_DATA_PLANE == 1 )); then
+  activate_data_plane
+  INSTALL_COMMITTED=1
+  DATA_PLANE_MUTATED=0
   exit 0
 fi
 [[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"

@@ -8,3 +8,4 @@ __pycache__/
 *.key
 .DS_Store
 .codebase-memory/
+.venv-audit/

@@ -1,57 +1,85 @@
-# 分布式中央认证与计量第三阶段任务
+# 分流节点数据面第四阶段任务
 
-- [x] 通用签名信封与参与状态
-  - Acceptance: 每类请求域分离签名；nonce 原子消费；standby/revoked/IP/时间窗失败关闭。
-  - Verify: `python3 -m unittest tests.test_distributed_control.SignedNodeRequestTests -v`
-  - Dependencies: 无
-  - Files: `hy2panel/nodes.py`, `hysteria2_panel.py`, `tests/test_distributed_control.py`
+- [x] 第四阶段规格、计划与任务合同
+  - Acceptance: 状态、API、秘密、回滚、质量门和 DNS 排除范围均可测试。
+  - Verify: 人工审阅三个文档；`git diff --check`
+  - Dependencies: v0.26.0 正式发布和 `.201` 升级验收
+  - Files: `docs/specs/2026-08-28-data-plane-phase-4.md`, `tasks/plan.md`, `tasks/todo.md`
   - Scope: Medium
 
-- [x] 完整在线快照
-  - Acceptance: sequence 单调、完整替换、稀疏计数及在线/流量 ACK 的 5 秒 freshness 正确。
-  - Verify: `python3 -m unittest tests.test_distributed_control.OnlineSnapshotTests -v`
-  - Dependencies: 通用签名信封与参与状态
-  - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_distributed_control.py`
+- [x] bootstrap 状态机与 token 生命周期
+  - Acceptance: 仅 verified+protocol-ready 节点可创建；10 分钟/3 次/IP/节点绑定；ACK 烧毁。
+  - Verify: `python3 -m unittest tests.test_data_plane_bootstrap.DataPlaneBootstrapStateTests -v`
+  - Dependencies: 规格批准
+  - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_data_plane_bootstrap.py`
   - Scope: Medium
 
-- [x] 跨节点认证租约
-  - Acceptance: 两节点四并发/限额三恰好三次允许；重复 requestId 不重复占位。
-  - Verify: `python3 -m unittest tests.test_distributed_control.DistributedAuthorizationTests -v`
-  - Dependencies: 完整在线快照
-  - Files: `hysteria2_panel.py`, `hy2panel/distributed.py`, `tests/test_distributed_control.py`
+- [x] HTTPS bootstrap 与 ACK 接口
+  - Acceptance: Ed25519+nonce+token 全校验；响应内存流式发送；数据库/日志/审计无秘密。
+  - Verify: `python3 -m unittest tests.test_data_plane_bootstrap.DataPlaneBootstrapHttpTests -v`
+  - Dependencies: bootstrap 状态机
+  - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_data_plane_bootstrap.py`
   - Scope: Medium
 
-- [x] 中央认证接口与回环代理
-  - Acceptance: 标准 Hysteria JSON 可代理；中央异常一律映射为 HTTP 200 拒绝；token 不落盘。
-  - Verify: `python3 -m unittest tests.test_distributed_control.NodeAgentProtocolTests tests.test_panel -v`
-  - Dependencies: 跨节点认证租约
-  - Files: `hysteria2_panel.py`, `node_agent.py`, `hy2panel/distributed.py`, `tests/test_distributed_control.py`
+- [x] 节点身份验证与配置渲染
+  - Acceptance: PEM 可解析、证书/私钥匹配、三摘要一致；只生成固定 19999/443 配置。
+  - Verify: `python3 -m unittest tests.test_data_plane_bootstrap.NodeDataPlaneConfigTests -v`
+  - Dependencies: HTTPS bootstrap
+  - Files: `node_agent.py`, `tests/test_data_plane_bootstrap.py`
   - Scope: Medium
 
-- [x] durable 流量批次
-  - Acceptance: clear 后先 fsync spool；`(node_id,batch_id)` 只累计一次；ACK 前不删除。
-  - Verify: `python3 -m unittest tests.test_distributed_control.DistributedTrafficTests -v`
-  - Dependencies: 通用签名信封与参与状态
-  - Files: `hysteria2_panel.py`, `node_agent.py`, `hy2panel/distributed.py`, `tests/test_distributed_control.py`
+- [x] phase4 安装器事务与回滚
+  - Acceptance: 预检零写入；成功只写 owned paths；任一失败恢复 phase2 并清除节点 TLS 副本。
+  - Verify: `python3 -m unittest tests.test_installer.DataPlaneInstallerContractTests -v`
+  - Dependencies: 节点身份验证与配置渲染
+  - Files: `install.sh`, `tests/test_installer.py`
   - Scope: Medium
 
-- [x] 固定命令队列与 ACK
-  - Acceptance: 只执行三种枚举；KICK_USERS 幂等；任意 shell/路径/URL 参数被拒绝。
-  - Verify: `python3 -m unittest tests.test_distributed_control.NodeCommandTests -v`
-  - Dependencies: durable 流量批次
-  - Files: `hysteria2_panel.py`, `node_agent.py`, `hy2panel/distributed.py`, `tests/test_distributed_control.py`
+- [x] 数据节点 systemd 与本地健康证明
+  - Acceptance: auth proxy/control/Hysteria/probe 权限隔离；ACK 摘要和 stats/监听真实可验证。
+  - Verify: `python3 -m unittest tests.test_data_plane_bootstrap.DataPlaneAttestationTests tests.test_installer -v`
+  - Dependencies: phase4 安装器事务
+  - Files: `node_agent.py`, `install.sh`, `tests/test_data_plane_bootstrap.py`, `tests/test_installer.py`
   - Scope: Medium
 
-- [x] 协议状态 UI 与健康度
-  - Acceptance: standby/protocol-ready、快照新鲜度、spool/命令状态可见且无秘密。
-  - Verify: `python3 -m unittest tests.test_panel tests.test_distributed_control -v` + 320/768/1440px 浏览器
-  - Dependencies: 中央认证接口、durable 流量批次、固定命令
-  - Files: `hysteria2_panel.py`, `hy2panel/web_assets.py`, `tests/test_panel.py`, `tests/test_distributed_control.py`
+- [x] 管理员 UI、审计与版本文档
+  - Acceptance: 部署/installed/canary/DNS 状态独立；无秘密进 HTML/审计；版本 v0.27.0 一致。
+  - Verify: `python3 -m unittest tests.test_panel tests.test_data_plane_bootstrap -v` + 320/768/1440px
+  - Dependencies: 数据节点健康证明
+  - Files: `hysteria2_panel.py`, `hy2panel/web_assets.py`, `hy2panel/version.py`, `CHANGELOG.md`, `docs/API.md`
   - Scope: Medium
 
-- [x] 全量门禁与双节点合成验收
-  - Acceptance: 全部测试和静态门通过；身份不变量不变；无数据面/DNS/网络写入。
-  - Verify: 规格全量命令、故障注入矩阵、`git diff --check`
-  - Dependencies: 全部任务
+- [x] 全量门禁与安全审查
+  - Acceptance: 全量测试/静态门通过；无任意命令面、秘密持久化或 DNS 写路径。
+  - Verify: 规格全部命令、故障注入、`git diff --check`
+  - Dependencies: 所有代码任务
   - Files: 本阶段改动
   - Scope: Medium
+
+- [ ] v0.27.0 PR、受保护 CI 与签名发布
+  - Acceptance: exact-head PR/main/tag CI、六平台矩阵、Sigstore 和匿名 synthetic 全绿。
+  - Verify: GitHub runs + Release 资产逐字节/签名验证
+  - Dependencies: 全量门禁与审查
+  - Files: GitHub refs/Release
+  - Scope: Large
+
+- [ ] `.201` 升级与身份不变量
+  - Acceptance: 351 用户身份、URI、Hysteria cert/key/pin、HMAC、端口和 DNS 不变。
+  - Verify: root-only 快照、SQLite quick_check、前后 SHA-256、healthz/readyz
+  - Dependencies: v0.27.0 正式发布
+  - Files: `.201` 生产主机
+  - Scope: Large
+
+- [ ] `.210` 数据面部署与直连灰度
+  - Acceptance: 无面板/用户库/HMAC；19999/443、真实 204、全局设备/流量/故障语义通过。
+  - Verify: 独立直连 Hysteria、stats/central ledger、服务/端口/日志/身份哈希、回滚点
+  - Dependencies: `.201` v0.27.0、节点 verified+protocol-ready
+  - Files: `.210` 数据节点与 `.201` 控制面
+  - Scope: Large
+
+- [ ] 第五阶段 DNS admission（明确不在本阶段执行）
+  - Acceptance: 用户再次明确批准，且权威 DNS 变更与回滚方案已单独审查。
+  - Verify: 变更前后权威 DNS、多解析器、真实用户链路和回滚演练
+  - Dependencies: `.210` 直连灰度通过 + 新人工批准
+  - Files: Cloudflare DNS
+  - Scope: Large

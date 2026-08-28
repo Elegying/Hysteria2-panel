@@ -880,6 +880,66 @@ class NodeAgentProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             node_agent.LocalStatsClient("http://127.0.0.1:19997", "short")
 
+    def test_combined_stats_merges_both_entrypoints_and_kicks_both(self):
+        calls = []
+
+        class Stats:
+            def __init__(self, name, online, traffic):
+                self.name = name
+                self._online = online
+                self._traffic = traffic
+
+            def online(self):
+                calls.append((self.name, "online"))
+                return dict(self._online)
+
+            def collect_and_clear(self):
+                calls.append((self.name, "traffic"))
+                return dict(self._traffic)
+
+            def kick(self, users):
+                calls.append((self.name, "kick", list(users)))
+
+        combined = node_agent.CombinedLocalStatsClient(
+            Stats("main", {"alice": 2}, {"alice": {"tx": 10, "rx": 20}}),
+            Stats(
+                "udp443",
+                {"alice": 1, "bob": 1},
+                {"alice": {"tx": 3, "rx": 4}, "bob": {"tx": 5, "rx": 6}},
+            ),
+        )
+
+        self.assertEqual({"alice": 3, "bob": 1}, combined.online())
+        self.assertEqual(
+            {
+                "alice": {"tx": 13, "rx": 24},
+                "bob": {"tx": 5, "rx": 6},
+            },
+            combined.collect_and_clear(),
+        )
+        combined.kick(["alice"])
+        self.assertIn(("main", "kick", ["alice"]), calls)
+        self.assertIn(("udp443", "kick", ["alice"]), calls)
+
+    def test_combined_stats_fails_closed_when_either_entrypoint_fails(self):
+        class Good:
+            def online(self):
+                return {}
+
+            def collect_and_clear(self):
+                return {}
+
+            def kick(self, _users):
+                return None
+
+        class Bad(Good):
+            def online(self):
+                raise node_agent.ProtocolError("unavailable")
+
+        combined = node_agent.CombinedLocalStatsClient(Good(), Bad())
+        with self.assertRaises(node_agent.ProtocolError):
+            combined.online()
+
     def test_loopback_auth_server_maps_main_and_udp443_without_logging_secrets(self):
         captured = []
 

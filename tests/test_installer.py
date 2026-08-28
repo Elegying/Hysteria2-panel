@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.26.0"', source)
+        self.assertIn('PANEL_VERSION="0.27.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -558,6 +558,11 @@ esac
 
         self.assertIn('NODE_AGENT_SOURCE_URL=', source)
         self.assertRegex(source, r'NODE_AGENT_SHA256="[0-9a-f]{64}"')
+        node_agent_sha = source.split('NODE_AGENT_SHA256="', 1)[1].split('"', 1)[0]
+        self.assertEqual(
+            hashlib.sha256((ROOT / "node_agent.py").read_bytes()).hexdigest(),
+            node_agent_sha,
+        )
         self.assertIn('JOIN_NODE=1', source)
         self.assertIn('install_join_node', source)
         self.assertIn('openssl genpkey -algorithm ED25519', join_function)
@@ -3816,6 +3821,143 @@ exit "$status"
             "User=hy2panel\nEnvironmentFile=/etc/hysteria2-panel/panel.env\nExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py apply-update",
             source,
         )
+
+
+class DataPlaneInstallerContractTests(unittest.TestCase):
+    def setUp(self):
+        self.source = INSTALLER.read_text()
+        start = self.source.index("activate_data_plane()")
+        self.activation = self.source[
+            start:self.source.index("\n}\n", start) + 2
+        ]
+
+    def test_explicit_mode_requires_formal_phase2_node_and_zero_write_preflight(self):
+        self.assertIn("--activate-data-plane", self.source)
+        self.assertIn("ACTIVATE_DATA_PLANE=1", self.source)
+        self.assertIn('"${PANEL_REF}" == "v${PANEL_VERSION}"', self.activation)
+        for requirement in (
+            'require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755',
+            'require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700',
+            'require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600',
+            'require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600',
+            'systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer',
+            'systemctl start hysteria2-panel-node-heartbeat.service',
+            'assert_data_plane_paths_unclaimed',
+            'assert_data_plane_ports_available',
+        ):
+            self.assertIn(requirement, self.activation)
+        first_mutation = self.activation.index("DATA_PLANE_MUTATED=1")
+        self.assertLess(self.activation.index("assert_data_plane_ports_available"), first_mutation)
+        self.assertNotIn("configure_firewall", self.activation[:first_mutation])
+
+    def test_downloads_are_version_and_hash_pinned_before_identity_fetch(self):
+        for value in (
+            'NODE_AGENT_SHA256="',
+            'TCP_PROBE_SHA256="',
+            'HYSTERIA_SHA_AMD64="',
+            'HYSTERIA_SHA_ARM64="',
+            'NODE_AGENT_SOURCE_URL=',
+            'TCP_PROBE_SOURCE_URL=',
+            'HYSTERIA_DATA_PLANE_URL=',
+        ):
+            self.assertIn(value, self.source)
+        self.assertIn('sha256sum --check --status', self.activation)
+        self.assertIn('node_agent.py" prepare-data-plane', self.activation)
+        self.assertIn('HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN=', self.activation)
+        self.assertNotIn('server.crt', self.source.split("usage()", 1)[0])
+
+    def test_transaction_snapshot_and_rollback_touch_only_phase4_owned_paths(self):
+        self.assertIn("DATA_PLANE_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_DATA_PLANE_V1", self.source)
+        self.assertIn("/var/backups/hysteria2-panel-node", self.source)
+        self.assertIn("write_data_plane_backup_manifest", self.activation)
+        self.assertIn("rollback_data_plane_activation()", self.source)
+        rollback_start = self.source.index("rollback_data_plane_activation()")
+        rollback = self.source[
+            rollback_start:self.source.index("\n}\n", rollback_start) + 2
+        ]
+        for preserved in (
+            "node.key",
+            "node-public.der",
+            "registration.json",
+            "hysteria2-panel-node-heartbeat.timer",
+        ):
+            self.assertNotIn('rm -f -- "${NODE_AGENT_CONFIG_DIR}/' + preserved, rollback)
+        self.assertNotIn("rm -rf", rollback)
+        self.assertNotRegex(rollback, r"rm[^\n]*\*")
+        self.assertIn("DATA_PLANE_OWNED_FILES", rollback)
+        self.assertIn("DATA_PLANE_OWNED_UNITS", rollback)
+        self.assertIn("recover_interrupted_data_plane()", self.source)
+        self.assertIn('sha256sum --check --status manifest.sha256', self.source)
+        self.assertIn("recover_interrupted_data_plane", self.activation)
+
+    def test_six_services_are_sandboxed_and_stats_secret_is_not_persisted_in_yaml(self):
+        units = (
+            "hysteria2-panel-node-auth.service",
+            "hysteria2-panel-node-control.service",
+            "hysteria2-panel-node-hysteria-main.service",
+            "hysteria2-panel-node-hysteria-udp443.service",
+            "hysteria2-panel-node-tcp-probe-main.service",
+            "hysteria2-panel-node-tcp-probe-udp443.service",
+        )
+        for unit in units:
+            self.assertIn(unit, self.activation)
+        self.assertGreaterEqual(self.activation.count("NoNewPrivileges=true"), 6)
+        self.assertGreaterEqual(self.activation.count("ProtectSystem=strict"), 6)
+        self.assertIn("EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env", self.activation)
+        self.assertIn('node_agent.py run-hysteria', self.activation)
+        self.assertIn("CapabilityBoundingSet=CAP_NET_BIND_SERVICE", self.activation)
+        self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", self.activation)
+        self.assertIn("--stats-url http://127.0.0.1:19997", self.activation)
+        self.assertIn("--stats-url http://127.0.0.1:19995", self.activation)
+        self.assertIn("__HY2PANEL_STATS_SECRET__", (ROOT / "node_agent.py").read_text())
+
+    def test_ack_occurs_only_after_services_stats_and_all_four_listeners(self):
+        ack = self.activation.index('node_agent.py" ack-data-plane')
+        for check in (
+            "systemctl is-active --quiet hysteria2-panel-node-control.service",
+            'ss -H -lun "sport = :19999"',
+            'ss -H -lun "sport = :443"',
+            'ss -H -ltn "sport = :19999"',
+            'ss -H -ltn "sport = :443"',
+        ):
+            self.assertIn(check, self.activation)
+            self.assertLess(self.activation.index(check), ack)
+        self.assertIn('source "${NODE_AGENT_CONFIG_DIR}/stats.env"', self.activation)
+        self.assertNotIn("vpn.ssrvpn.vip", self.activation)
+        self.assertNotIn("cloudflare", self.activation.lower())
+        self.assertNotIn("HY2PANEL_HMAC_KEY", self.activation)
+
+    def test_firewall_changes_are_narrow_attributed_and_rollback_recorded(self):
+        self.assertIn("configure_data_plane_firewall", self.activation)
+        self.assertIn("data-plane-firewall.state", self.source)
+        firewall_start = self.source.index("configure_data_plane_firewall()")
+        firewall = self.source[
+            firewall_start:self.source.index("\n}\n", firewall_start) + 2
+        ]
+        self.assertIn('for protocol in tcp udp', firewall)
+        self.assertIn('for port in 443 19999', firewall)
+        self.assertIn("Hysteria2-panel-node data-plane", firewall)
+        for guard in (
+            "firewalld_has_global_conflicts",
+            "read_firewalld_zones",
+            "firewalld_zone_has_complex_rules",
+            "ufw_has_framework_customization",
+            "ufw_has_unmanaged_live_rules",
+            "ufw_rule_is_denied",
+            "ufw_rule_is_recorded",
+            "has_unmanaged_firewall_restrictions",
+            "firewalld-${scope}",
+        ):
+            self.assertIn(guard, firewall)
+        rollback_start = self.source.index("rollback_data_plane_firewall()")
+        rollback = self.source[
+            rollback_start:self.source.index("\n}\n", rollback_start) + 2
+        ]
+        self.assertIn("--remove-port", rollback)
+        self.assertIn("firewalld-runtime", rollback)
+        self.assertIn("firewalld-permanent", rollback)
+        self.assertIn("ufw --force delete allow", rollback)
+        self.assertIn("rollback_data_plane_firewall", self.source.split("rollback_data_plane_activation()", 1)[1])
 
 
 class TcpProbeTests(unittest.TestCase):
