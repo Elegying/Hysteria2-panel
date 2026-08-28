@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.31.1"
+PANEL_VERSION="0.31.2"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -24,7 +24,7 @@ PANEL_SHA256="8164c5ab6314160d3d2957118208616c2b42eb1030b27912e8e14ee14de44afa"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="1d20d2f11d282f183820ba51d1b04f808a36607beb045a7d32c94d850256261a"
+HY2PANEL_VERSION_SHA256="8c6b97cae1c9e71da44c2c571063694e336c52e2ccf0c460d9d18fd3a1c07b73"
 HY2PANEL_WEB_ASSETS_SHA256="e1535bbcb8a5b45733c1293f31e71281da87f785bc02c742bf3b45e4cc9a1fed"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
@@ -33,7 +33,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="25bb04215e3a78b25061b8a5d5fb5de8a05358d88b87bc38739d9da4e3705346"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="593f6fd9c8af32f02c239983aeae61c969d501e84628e90d34fc725fcf3b117d"
+NODE_AGENT_SHA256="e202f70f7e4863a4283c07ab1dd7f440b78593b45f63d65a132e608ccdbc8025"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -62,6 +62,7 @@ EGRESS_SWITCH_ACTIVE_MARKER=${MAINTENANCE_RUNTIME_DIR}/egress-switch-active
 MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
 NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
 NODE_AGENT_CONFIG_DIR=/etc/hysteria2-panel-node
+NODE_AGENT_STATE_DIR=/var/lib/hysteria2-panel-node
 NODE_AGENT_HEARTBEAT_SERVICE=/etc/systemd/system/hysteria2-panel-node-heartbeat.service
 NODE_AGENT_HEARTBEAT_TIMER=/etc/systemd/system/hysteria2-panel-node-heartbeat.timer
 NODE_ONBOARDING_INSTALLER=${NODE_AGENT_OPT_DIR}/onboarding-install.sh
@@ -1721,8 +1722,21 @@ print(port)
 PY
 }
 
+inspect_data_plane_state_item() {
+  local path="$1" metadata
+  if ! metadata="$(stat -c '%u:%g:%a:%F' -- "${path}" 2>/dev/null)"; then
+    if [[ "${path}" == "${NODE_AGENT_STATE_DIR}/spool/"* \
+      && ! -e "${path}" && ! -L "${path}" ]]; then
+      return 2
+    fi
+    return 1
+  fi
+  [[ "${metadata}" == "0:0:700:directory" \
+    || "${metadata}" == "0:0:600:regular file" ]]
+}
+
 assert_existing_data_plane_healthy() {
-  local mode path unit
+  local inspection_status mode path unit
   initialize_data_plane_owned_paths
   for path in "${DATA_PLANE_OWNED_FILES[@]}"; do
     [[ "${path}" == "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" ]] \
@@ -1749,28 +1763,27 @@ assert_existing_data_plane_healthy() {
     && ! -L "${NODE_AGENT_OPT_DIR}/bin" \
     && "$(stat -c '%u:%g:%a' "${NODE_AGENT_OPT_DIR}/bin")" == "0:0:755" ]] \
     || fail "已安装数据面二进制目录不安全"
-  [[ -d /var/lib/hysteria2-panel-node \
-    && ! -L /var/lib/hysteria2-panel-node \
-    && "$(stat -c '%u:%g:%a' /var/lib/hysteria2-panel-node)" == "0:0:700" ]] \
+  [[ -d "${NODE_AGENT_STATE_DIR}" \
+    && ! -L "${NODE_AGENT_STATE_DIR}" \
+    && "$(stat -c '%u:%g:%a' "${NODE_AGENT_STATE_DIR}")" == "0:0:700" ]] \
     || fail "已安装数据面状态目录不安全"
-  [[ -z "$(find /var/lib/hysteria2-panel-node -xdev -type l -print -quit)" ]] \
+  [[ -z "$(find "${NODE_AGENT_STATE_DIR}" -xdev -type l -print -quit)" ]] \
     || fail "已安装数据面状态目录包含符号链接"
-  [[ -z "$(find /var/lib/hysteria2-panel-node -xdev ! -type d ! -type f -print -quit)" ]] \
+  [[ -z "$(find "${NODE_AGENT_STATE_DIR}" -xdev ! -type d ! -type f -print -quit)" ]] \
     || fail "已安装数据面状态目录包含特殊文件"
   DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
     "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" \
     || fail "已安装数据面主端口元数据异常"
   while IFS= read -r -d '' path; do
-    [[ "$(stat -c '%u:%g' "${path}")" == "0:0" ]] \
-      || fail "已安装数据面状态项 owner 异常：${path}"
-    if [[ -d "${path}" ]]; then
-      [[ "$(stat -c '%a' "${path}")" == "700" ]] \
-        || fail "已安装数据面状态目录权限异常：${path}"
+    if inspect_data_plane_state_item "${path}"; then
+      :
     else
-      [[ "$(stat -c '%a' "${path}")" == "600" ]] \
-        || fail "已安装数据面状态文件权限异常：${path}"
+      inspection_status=$?
+      (( inspection_status == 2 )) && continue
+      fail "已安装数据面状态项身份或权限异常：${path}"
     fi
-  done < <(find /var/lib/hysteria2-panel-node -xdev \( -type d -o -type f \) -print0)
+  done < <(find "${NODE_AGENT_STATE_DIR}" -xdev \
+    \( -type d -o -type f \) -print0)
   ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
     || fail "既有数据面 UDP ${DATA_PLANE_MAIN_PORT} 未监听"
   ss -H -lun "sport = :443" | grep -q . || fail "既有数据面 UDP 443 未监听"
