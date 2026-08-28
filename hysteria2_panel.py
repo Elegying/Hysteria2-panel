@@ -2759,6 +2759,53 @@ class Database:
         except (sqlite3.IntegrityError, ValueError):
             return False
 
+    def mark_node_direct_canary_passed(self, node_id, actor, passed_at):
+        node_id = str(node_id or "")
+        actor = str(actor or "").strip()
+        passed_at = int(passed_at)
+        if (
+            not re.fullmatch(r"[0-9a-f]{32}", node_id)
+            or not actor
+            or len(actor) > 64
+            or passed_at <= 0
+        ):
+            raise ValueError("直连灰度确认参数无效")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT status, verified_at, policy_state, data_plane_state,
+                    data_plane_installed_at, dns_admitted_at
+                FROM nodes WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if node is None:
+                raise ValueError("节点不存在")
+            if node["data_plane_state"] == "direct_canary_passed":
+                return False
+            if (
+                node["status"] != "pending_verification"
+                or node["verified_at"] is None
+                or node["policy_state"] != "protocol_ready"
+                or node["data_plane_state"] != "data_plane_installed"
+                or node["data_plane_installed_at"] is None
+                or node["dns_admitted_at"] is not None
+            ):
+                raise ValueError("节点数据面尚未满足直连灰度确认条件")
+            updated = connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    direct_canary_passed_at = ?
+                WHERE node_id = ? AND status = 'pending_verification'
+                    AND verified_at IS NOT NULL
+                    AND policy_state = 'protocol_ready'
+                    AND data_plane_state = 'data_plane_installed'
+                    AND data_plane_installed_at IS NOT NULL
+                    AND dns_admitted_at IS NULL""",
+                (passed_at, node_id),
+            )
+            if updated.rowcount != 1:
+                raise sqlite3.IntegrityError("direct canary state conflict")
+            return True
+
     def set_node_policy_state(self, node_id, state, actor, changed_at):
         node_id = str(node_id or "")
         actor = str(actor or "").strip()
@@ -4497,6 +4544,38 @@ class PanelHandler(JsonHandler):
                 node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这里只启用中央控制协议，不会部署 Hysteria 或修改 DNS，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">启用控制协议</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
+            data_plane_state = node.get("data_plane_state") or "not_issued"
+            data_plane_labels = {
+                "not_issued": "数据面未部署",
+                "bootstrap_issued": "数据面部署码已签发 · 尚未确认安装",
+                "data_plane_installed": "数据面已安装 · 待直连灰度",
+                "direct_canary_passed": "直连灰度已通过 · 尚未加入 DNS",
+                "dns_admitted": "DNS 已准入",
+            }
+            details.append(data_plane_labels.get(data_plane_state, "数据面状态异常"))
+            data_plane_eligible = bool(
+                status == "pending_verification"
+                and verified
+                and policy_state == "protocol_ready"
+            )
+            if (
+                data_plane_eligible
+                and data_plane_state in {"not_issued", "bootstrap_issued"}
+                and self.app.secure_cookies
+                and self.app.data_plane_bootstrap_service is not None
+            ):
+                data_plane_action = (
+                    "部署数据面"
+                    if data_plane_state == "not_issued"
+                    else "重新生成部署码"
+                )
+                node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/bootstrap" data-data-plane-bootstrap-form><input type="hidden" name="csrf" value="{csrf}"><button class="success compact-button" type="submit">{action}</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf, action=data_plane_action
+                )
+            elif data_plane_eligible and data_plane_state == "data_plane_installed":
+                node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/canary/pass" data-data-plane-canary-form data-confirm="只记录该节点直连灰度通过，不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认直连灰度通过</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
             node_rows.append(
                 """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                     name=html.escape(node["name"]),
@@ -4535,9 +4614,10 @@ class PanelHandler(JsonHandler):
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
 <dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">生成短时、单用途的一键部署代码，新服务器先进入待验证状态。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
-<p class="notice"><strong>当前安全边界：</strong>只安装节点 Agent、核对节点公钥并接收签名心跳；不会复制 Hysteria 证书、HMAC、用户数据，不会启动 VPN 入口或修改 <code>vpn.ssrvpn.vip</code> DNS。</p>
+<p class="notice"><strong>注册阶段安全边界：</strong>首次对接只安装节点 Agent、核对节点公钥并接收签名心跳；不会复制 Hysteria 证书、HMAC、用户数据，不会启动 VPN 入口或修改 <code>vpn.ssrvpn.vip</code> DNS。数据面部署必须在节点验证和控制协议就绪后另行生成第二段代码。</p>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">新服务器公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
+<section class="enrollment-result" data-data-plane-bootstrap-result hidden><label for="data-plane-deployment-code">数据面一键部署代码</label><textarea id="data-plane-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="data-plane-deployment-code">复制数据面部署代码</button></div><p class="muted" data-data-plane-bootstrap-expiry role="status"></p><p class="notice"><strong>安全边界：</strong>代码只携带绑定节点与来源 IP 的短时授权；不会携带 Hysteria 证书私钥、HMAC、统计密钥、用户数据，也不会修改 DNS。</p></section>
 <div class="node-list-head"><h3>节点状态</h3><span class="muted">刷新页面可获取最新注册状态</span></div><div class="node-list">{node_rows}</div></div></dialog>
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">完整备份或恢复节点身份与全部用户数据。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">×</button></div>
 <p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS。当前面板管理员账号不会被替换。</p>
@@ -4809,6 +4889,24 @@ class PanelHandler(JsonHandler):
         )
         self.send_json(201, result)
 
+    def _handle_mark_data_plane_canary_passed(self, session, node_id):
+        try:
+            changed = self.app.database.mark_node_direct_canary_passed(
+                node_id,
+                session["username"],
+                int(time.time()),
+            )
+        except (sqlite3.IntegrityError, TypeError, ValueError) as exc:
+            self.send_json(409, {"error": str(exc)})
+            return
+        if changed:
+            self._audit_safely(
+                session["username"],
+                "node_data_plane_direct_canary_passed",
+                node_id,
+            )
+        self.send_json(200, {"directCanaryPassed": changed})
+
     def _handle_create_node_enrollment(self, session, form):
         service = self.app.node_enrollment_service
         if not self.app.secure_cookies or service is None:
@@ -5042,6 +5140,14 @@ class PanelHandler(JsonHandler):
         if data_plane_match:
             self._handle_issue_data_plane_bootstrap(
                 session, data_plane_match.group(1)
+            )
+            return
+        data_plane_canary_match = re.fullmatch(
+            r"/nodes/([0-9a-f]{32})/data-plane/canary/pass", path
+        )
+        if data_plane_canary_match:
+            self._handle_mark_data_plane_canary_passed(
+                session, data_plane_canary_match.group(1)
             )
             return
         if path == "/users/reset-traffic":

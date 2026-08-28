@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.26.0"
+PANEL_VERSION="0.27.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
@@ -20,22 +20,22 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION:-2.12.1}/hysteria-linux"
-PANEL_SHA256="1ef6909f8baff0730cfcae94b5eca2194a78b76bb033a50fb36939016b547fc6"
+PANEL_SHA256="86497777610165cd17d5a3e380d84882e060642d1d69510acc95265475ee5d5e"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="bd9390e1e6e138fde9d4938bd85fe0934be0d68dedf9e8a80b9dc9881cb5d0d9"
-HY2PANEL_WEB_ASSETS_SHA256="775fd5f19bafd35460e74b05e91be858ea7c2f3ad0fc0b17aa84cfc50c8b8e12"
+HY2PANEL_VERSION_SHA256="1926881d16a0110e2c2aaad68d94602f7c9b649aac7489176a86d7a79083d0c9"
+HY2PANEL_WEB_ASSETS_SHA256="333e186315f8b0f81e755ca8e71c60f4ea753ba6255eab9282fff8feb83f6110"
 HY2PANEL_OPERATIONS_SHA256="5f410c32713796e3d3f86370f1a9574f357e0fd43f5c7cbeda5cc3265f3a493b"
 HY2PANEL_RELEASE_SHA256="5b8489130dc1ba663294b0137bafa980770c01bdbe42a4b004286b84675eae45"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="121807de24f3c67798f12c8c7691105298e2d9a0721507295585855fde67a9f2"
+HY2PANEL_NODES_SHA256="71724c20a8b792fb78156901e08b501f82435666aa2ef7ea141c6dd3d86bfafc"
 HY2PANEL_DISTRIBUTED_SHA256="59699bef3ddcf260ce47e339d8bf557f08df3b6695bd89615fdcb1c4d9d09f63"
-NODE_AGENT_SHA256="c9db8bf2d7f7524f59533510b9e43a4ed5f763f6996579860b819945ac6bd96f"
+NODE_AGENT_SHA256="1683b8bbe19375da5a492ccea2288af0dfdf8bc0513c83e2e2e2e48c8983366c"
 HYSTERIA_VERSION="2.12.1"
+HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
 HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
 COSIGN_VERSION="3.1.3"
@@ -1302,7 +1302,7 @@ recover_interrupted_data_plane() {
 
 record_data_plane_firewall_change() {
   local line="$1" stage="${TMP_DIR}/data-plane-firewall.state"
-  [[ "${line}" =~ ^(ufw|-|firewalld)\|[-A-Za-z0-9_.]+\|(443|19999)\|(tcp|udp)$ ]] \
+  [[ "${line}" =~ ^(ufw|firewalld-runtime|firewalld-permanent)\|[-A-Za-z0-9_.]+\|(443|19999)\|(tcp|udp)$ ]] \
     || return 1
   if [[ -f "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" ]]; then
     cp -- "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" "${stage}"
@@ -1315,52 +1315,137 @@ record_data_plane_firewall_change() {
 }
 
 configure_data_plane_firewall() {
-  local active_firewalld=0 active_ufw=0 port protocol zone
-  if command -v firewall-cmd >/dev/null 2>&1 && \
-    firewall-cmd --state >/dev/null 2>&1; then
-    active_firewalld=1
+  local active_firewalld=0 active_ufw=0 port protocol query_status rule scope
+  local status zone zones
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    if read_firewalld_state >/dev/null; then
+      active_firewalld=1
+    else
+      status=$?
+      (( status == 1 )) || fail "无法查询 firewalld 状态；数据面已安排回滚"
+    fi
   fi
-  if command -v ufw >/dev/null 2>&1 && \
-    ufw status 2>/dev/null | grep -qx 'Status: active'; then
-    active_ufw=1
+  if command -v ufw >/dev/null 2>&1; then
+    if read_ufw_state >/dev/null; then
+      active_ufw=1
+    else
+      status=$?
+      (( status == 1 )) || fail "无法查询 UFW 状态；数据面已安排回滚"
+    fi
   fi
   (( active_firewalld + active_ufw <= 1 )) \
     || fail "检测到多个活动主机防火墙，拒绝猜测数据面规则归属"
   if (( active_firewalld == 1 )); then
-    zone="$(firewall-cmd --get-default-zone)"
-    [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] \
-      || fail "firewalld 默认 zone 无效，拒绝修改"
-    for protocol in tcp udp; do
-      for port in 443 19999; do
-        if firewall-cmd --zone="${zone}" --query-port="${port}/${protocol}" \
-          >/dev/null 2>&1; then
-          continue
+    if firewalld_has_global_conflicts; then
+      fail "firewalld 存在可能提前阻断入站的全局规则；数据面已安排回滚"
+    else
+      status=$?
+      (( status == 1 )) \
+        || fail "无法完整核验 firewalld 全局规则；数据面已安排回滚"
+    fi
+    zones="$(read_firewalld_zones)" \
+      || fail "无法读取 firewalld 活跃或默认区域；数据面已安排回滚"
+    [[ -n "${zones}" ]] \
+      || fail "firewalld 没有可验证区域；数据面已安排回滚"
+    while IFS= read -r zone; do
+      [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] \
+        || fail "firewalld 返回无效区域；数据面已安排回滚"
+      for scope in runtime permanent; do
+        if firewalld_zone_has_complex_rules "${scope}" "${zone}"; then
+          fail "firewalld ${zone} 存在 rich rule；数据面已安排回滚"
+        else
+          status=$?
+          (( status == 1 )) \
+            || fail "无法读取 firewalld ${zone} rich rules；数据面已安排回滚"
         fi
-        record_data_plane_firewall_change \
-          "firewalld|${zone}|${port}|${protocol}" \
-          || fail "无法持久化 firewalld 回滚归属"
-        firewall-cmd --permanent --zone="${zone}" \
-          --add-port="${port}/${protocol}" >/dev/null
-        firewall-cmd --zone="${zone}" --add-port="${port}/${protocol}" >/dev/null
+        for protocol in tcp udp; do
+          for port in 443 19999; do
+            rule="${port}/${protocol}"
+            if [[ "${scope}" == "permanent" ]]; then
+              if firewall-cmd --quiet --permanent --zone="${zone}" \
+                --query-port="${rule}"; then
+                continue
+              else
+                query_status=$?
+              fi
+            elif firewall-cmd --quiet --zone="${zone}" \
+              --query-port="${rule}"; then
+              continue
+            else
+              query_status=$?
+            fi
+            (( query_status == 1 )) \
+              || fail "无法查询 firewalld ${zone} ${scope} 规则；数据面已安排回滚"
+            record_data_plane_firewall_change \
+              "firewalld-${scope}|${zone}|${port}|${protocol}" \
+              || fail "无法持久化 firewalld 回滚归属"
+            if [[ "${scope}" == "permanent" ]]; then
+              firewall-cmd --quiet --permanent --zone="${zone}" \
+                --add-port="${rule}" \
+                || fail "无法开放 firewalld ${zone} ${scope} ${rule}"
+              firewall-cmd --quiet --permanent --zone="${zone}" \
+                --query-port="${rule}" \
+                || fail "firewalld ${zone} ${scope} ${rule} 复核失败"
+            else
+              firewall-cmd --quiet --zone="${zone}" --add-port="${rule}" \
+                || fail "无法开放 firewalld ${zone} ${scope} ${rule}"
+              firewall-cmd --quiet --zone="${zone}" --query-port="${rule}" \
+                || fail "firewalld ${zone} ${scope} ${rule} 复核失败"
+            fi
+          done
+        done
       done
-    done
+    done <<< "${zones}"
     return 0
   fi
   if (( active_ufw == 1 )); then
+    if ufw_has_framework_customization; then
+      fail "UFW framework 已自定义；数据面已安排回滚"
+    else
+      status=$?
+      (( status == 1 )) \
+        || fail "无法核验 UFW framework；数据面已安排回滚"
+    fi
+    if ufw_has_unmanaged_live_rules; then
+      fail "UFW 之外存在可能阻断入站的实时规则；数据面已安排回滚"
+    else
+      status=$?
+      (( status == 1 )) \
+        || fail "无法核验 UFW 实时规则；数据面已安排回滚"
+    fi
+    UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" \
+      || fail "无法读取 UFW 规则；数据面已安排回滚"
     for protocol in tcp udp; do
       for port in 443 19999; do
-        if ufw status | grep -Eq "^${port}/${protocol}[[:space:]]+ALLOW"; then
-          continue
+        rule="${port}/${protocol}"
+        if ufw_rule_is_denied "${rule}"; then
+          fail "UFW 已存在拒绝 ${rule} 的规则；数据面已安排回滚"
+        else
+          status=$?
+          (( status == 1 )) \
+            || fail "无法解析 UFW ${rule} 规则；数据面已安排回滚"
         fi
+        ufw_rule_is_recorded "${rule}" && continue
         record_data_plane_firewall_change "ufw|-|${port}|${protocol}" \
           || fail "无法持久化 UFW 回滚归属"
-        ufw allow proto "${protocol}" from any to any port "${port}" \
-          comment 'Hysteria2-panel-node data-plane' >/dev/null
+        ufw allow "${rule}" comment 'Hysteria2-panel-node data-plane' >/dev/null \
+          || fail "UFW 无法开放 ${rule}"
+        UFW_ADDED_RULES="$(LC_ALL=C ufw show added 2>/dev/null)" \
+          || fail "无法复核 UFW ${rule} 规则"
+        ufw_rule_is_recorded "${rule}" \
+          || fail "UFW ${rule} 开放后复核失败"
       done
     done
     return 0
   fi
-  echo "主机未启用 UFW/firewalld；数据面未猜测或修改 nftables/iptables 规则。"
+  if has_unmanaged_firewall_restrictions; then
+    fail "检测到未受支持的自定义 nftables/iptables 入站策略；数据面已安排回滚"
+  else
+    status=$?
+    (( status == 1 )) \
+      || fail "无法完整检查 nftables/iptables；数据面已安排回滚"
+  fi
+  echo "主机未启用 UFW/firewalld 且无自定义入站限制；数据面未修改防火墙。"
 }
 
 rollback_data_plane_firewall() {
@@ -1372,10 +1457,13 @@ rollback_data_plane_firewall() {
     [[ "${port}" =~ ^(443|19999)$ && "${protocol}" =~ ^(tcp|udp)$ ]] \
       || return 1
     case "${manager}" in
-      firewalld)
+      firewalld-runtime)
         [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
         firewall-cmd --zone="${zone}" --remove-port="${port}/${protocol}" \
           >/dev/null 2>&1 || true
+        ;;
+      firewalld-permanent)
+        [[ "${zone}" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || return 1
         firewall-cmd --permanent --zone="${zone}" \
           --remove-port="${port}/${protocol}" >/dev/null 2>&1 || true
         ;;

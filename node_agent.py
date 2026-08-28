@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.26.0"
+AGENT_VERSION = "0.27.0"
 MAX_RESPONSE_BYTES = 8192
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
@@ -1347,6 +1347,7 @@ def collect_data_plane_attestation(
         "certificateDerSha256": identity["certificate_der_sha256"],
         "privateKeyPublicSha256": identity["private_key_public_sha256"],
         "hysteriaVersion": identity["hysteria_version"],
+        "egressPolicy": metadata["egressPolicy"],
         "configProtocolVersion": 1,
         "servicesHealthy": True,
         "statsHealthy": True,

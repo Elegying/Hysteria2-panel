@@ -48,6 +48,7 @@ DATA_PLANE_ACK_FIELDS = DATA_PLANE_BOOTSTRAP_FIELDS | {
     "certificateDerSha256",
     "privateKeyPublicSha256",
     "hysteriaVersion",
+    "egressPolicy",
     "configProtocolVersion",
     "servicesHealthy",
     "statsHealthy",
@@ -879,6 +880,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
                 for field in digest_fields
             )
             or payload.get("hysteriaVersion") != self.HYSTERIA_VERSION
+            or payload.get("egressPolicy") not in {"web", "full"}
             or payload.get("configProtocolVersion") != 1
         ):
             self._reject()
@@ -889,6 +891,8 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
         if any(
             not secrets.compare_digest(payload[field], identity[field])
             for field in digest_fields
+        ) or not secrets.compare_digest(
+            payload["egressPolicy"], identity["egressPolicy"]
         ):
             self._reject()
         acknowledged = self.database.acknowledge_data_plane_bootstrap(

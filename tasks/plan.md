@@ -30,29 +30,29 @@ bootstrap 数据模型/状态机
 
 ### 切片 1：中央 bootstrap
 
-- [ ] 新增 additive SQLite 表/字段与一次性 token 生命周期。
-- [ ] 新增签名 HTTPS bootstrap/ACK 接口和稳定错误码。
+- [x] 新增 additive SQLite 表/字段与一次性 token 生命周期。
+- [x] 新增签名 HTTPS bootstrap/ACK 接口和稳定错误码。
 
 检查点：秘密只存在于创建响应与 HTTPS 响应内存；数据库/日志/审计扫描无泄漏。
 
 ### 切片 2：节点数据面构件
 
-- [ ] 节点 Agent 实现取件、身份三摘要验证、配置渲染和签名 ACK。
-- [ ] 安装器实现 phase4 专用预检、事务写入、systemd sandbox 和精确回滚。
+- [x] 节点 Agent 实现取件、身份三摘要验证、配置渲染和签名 ACK。
+- [x] 安装器实现 phase4 专用预检、事务写入、systemd sandbox 和精确回滚。
 
 检查点：合成安装成功；每个故障注入点恢复 phase2 心跳且不留 TLS 副本。
 
 ### 切片 3：管理员状态与 UX
 
-- [ ] 节点 UI 增加“部署数据面”、一次性代码、installed/canary/DNS 分离状态。
-- [ ] 增加脱敏审计和运维文档；版本提升到 v0.27.0。
+- [x] 节点 UI 增加“部署数据面”、一次性代码、installed/canary/DNS 分离状态。
+- [x] 增加脱敏审计和运维文档；版本提升到 v0.27.0。
 
 检查点：未验证/standby/撤销节点无部署入口；响应和页面源码无证书私钥。
 
 ### 切片 4：代码质量与独立审查
 
-- [ ] 全量 Python、Ruff、Bandit、Bash、ShellCheck、浏览器三宽度和差异门。
-- [ ] 针对认证、秘密、回滚、供应链和任意命令面做独立审查并修复。
+- [x] 全量 Python、Ruff、Bandit、Bash、ShellCheck、浏览器三宽度和差异门。
+- [x] 针对认证、秘密、回滚、供应链和任意命令面做独立审查并修复。
 
 检查点：工作区干净、每个提交可回滚、PR 精确 HEAD CI 全绿。
 
@@ -87,5 +87,5 @@ bootstrap 数据模型/状态机
 
 ## 人工批准门
 
-当前停在切片 0。用户确认本规格和假设后才进入切片 1；DNS admission 无论如何都需
-第五阶段再次确认。
+第四阶段规格已获用户确认，代码实施已推进到切片 4 质量门；DNS admission 无论如何
+仍需第五阶段再次确认。

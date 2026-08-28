@@ -311,6 +311,35 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
             )
         )
 
+    def test_direct_canary_is_a_separate_manual_transition_and_never_admits_dns(self):
+        with self.assertRaises(ValueError):
+            self.db.mark_node_direct_canary_passed(
+                self.node_id, "admin", self.now[0]
+            )
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'data_plane_installed',
+                    data_plane_installed_at = ? WHERE node_id = ?""",
+                (self.now[0] - 1, self.node_id),
+            )
+
+        self.assertTrue(
+            self.db.mark_node_direct_canary_passed(
+                self.node_id, "admin", self.now[0]
+            )
+        )
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+        self.assertEqual(self.now[0], node["direct_canary_passed_at"])
+        self.assertIsNone(node["dns_admitted_at"])
+        self.assertFalse(
+            self.db.mark_node_direct_canary_passed(
+                self.node_id, "admin", self.now[0] + 1
+            )
+        )
+
 
 class DataPlaneBootstrapContractTests(unittest.TestCase):
     _insert_node = DataPlaneBootstrapStateTests._insert_node
@@ -377,6 +406,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
                     "privateKeyPublicSha256"
                 ],
                 "hysteriaVersion": "2.12.1",
+                "egressPolicy": "web",
                 "configProtocolVersion": 1,
                 "servicesHealthy": True,
                 "statsHealthy": True,
@@ -452,6 +482,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
         invalid = (
             {"certificateDerSha256": "d" * 64},
             {"hysteriaVersion": "2.12.0"},
+            {"egressPolicy": "full"},
             {"statsHealthy": False},
             {"udp443Listening": False},
             {"configProtocolVersion": 2},
@@ -722,6 +753,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
                 "certificateDerSha256": "b" * 64,
                 "privateKeyPublicSha256": "c" * 64,
                 "hysteriaVersion": "2.12.1",
+                "egressPolicy": "web",
                 "configProtocolVersion": 1,
                 "servicesHealthy": True,
                 "statsHealthy": True,
@@ -737,6 +769,55 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             .decode("utf-8")
         )
         self.assertEqual("DATA_PLANE_INSTALLED", result["status"])
+
+    def test_dashboard_exposes_only_eligible_deploy_and_separate_canary_controls(self):
+        raw_session, csrf = self.db.create_session(self.admin_id)
+        headers = {"Cookie": "hy2panel_session={}".format(raw_session)}
+        request = urllib.request.Request(self.base_url + "/", headers=headers)
+
+        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
+
+        self.assertIn(
+            '/nodes/{}/data-plane/bootstrap'.format(self.node_id), body
+        )
+        self.assertIn("部署数据面", body)
+        self.assertIn("数据面未部署", body)
+        self.assertIn("data-data-plane-bootstrap-form", body)
+        self.assertNotIn("data-plane/canary/pass", body)
+        self.assertNotIn("dns/admit", body)
+
+        with sqlite3.connect(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'data_plane_installed',
+                    data_plane_installed_at = ? WHERE node_id = ?""",
+                (self.now[0], self.node_id),
+            )
+        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
+        self.assertIn("数据面已安装 · 待直连灰度", body)
+        self.assertIn(
+            '/nodes/{}/data-plane/canary/pass'.format(self.node_id), body
+        )
+        self.assertIn("data-data-plane-canary-form", body)
+        self.assertNotIn(
+            '/nodes/{}/data-plane/bootstrap'.format(self.node_id), body
+        )
+
+        canary_request = urllib.request.Request(
+            self.base_url
+            + "/nodes/{}/data-plane/canary/pass".format(self.node_id),
+            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
+            headers={**headers, "Accept": "application/json"},
+            method="POST",
+        )
+        result = json.loads(
+            urllib.request.urlopen(canary_request, timeout=2).read().decode("utf-8")
+        )
+        self.assertEqual({"directCanaryPassed": True}, result)
+        node = next(
+            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
+        )
+        self.assertIsNotNone(node["direct_canary_passed_at"])
+        self.assertIsNone(node["dns_admitted_at"])
 
 
 class NodeDataPlaneConfigTests(unittest.TestCase):
@@ -1096,6 +1177,7 @@ class DataPlaneAttestationTests(unittest.TestCase):
                 "certificateDerSha256",
                 "privateKeyPublicSha256",
                 "hysteriaVersion",
+                "egressPolicy",
                 "configProtocolVersion",
                 "servicesHealthy",
                 "statsHealthy",

@@ -479,7 +479,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.26.0"', source)
+        self.assertIn('PANEL_VERSION="0.27.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -558,6 +558,11 @@ esac
 
         self.assertIn('NODE_AGENT_SOURCE_URL=', source)
         self.assertRegex(source, r'NODE_AGENT_SHA256="[0-9a-f]{64}"')
+        node_agent_sha = source.split('NODE_AGENT_SHA256="', 1)[1].split('"', 1)[0]
+        self.assertEqual(
+            hashlib.sha256((ROOT / "node_agent.py").read_bytes()).hexdigest(),
+            node_agent_sha,
+        )
         self.assertIn('JOIN_NODE=1', source)
         self.assertIn('install_join_node', source)
         self.assertIn('openssl genpkey -algorithm ED25519', join_function)
@@ -3932,12 +3937,25 @@ class DataPlaneInstallerContractTests(unittest.TestCase):
         self.assertIn('for protocol in tcp udp', firewall)
         self.assertIn('for port in 443 19999', firewall)
         self.assertIn("Hysteria2-panel-node data-plane", firewall)
-        self.assertIn("firewall-cmd", firewall)
+        for guard in (
+            "firewalld_has_global_conflicts",
+            "read_firewalld_zones",
+            "firewalld_zone_has_complex_rules",
+            "ufw_has_framework_customization",
+            "ufw_has_unmanaged_live_rules",
+            "ufw_rule_is_denied",
+            "ufw_rule_is_recorded",
+            "has_unmanaged_firewall_restrictions",
+            "firewalld-${scope}",
+        ):
+            self.assertIn(guard, firewall)
         rollback_start = self.source.index("rollback_data_plane_firewall()")
         rollback = self.source[
             rollback_start:self.source.index("\n}\n", rollback_start) + 2
         ]
         self.assertIn("--remove-port", rollback)
+        self.assertIn("firewalld-runtime", rollback)
+        self.assertIn("firewalld-permanent", rollback)
         self.assertIn("ufw --force delete allow", rollback)
         self.assertIn("rollback_data_plane_firewall", self.source.split("rollback_data_plane_activation()", 1)[1])
 

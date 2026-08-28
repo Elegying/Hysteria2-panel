@@ -53,10 +53,14 @@
 | `POST` | `/api/v1/node-traffic-batches` | 256 KiB | 以 `(nodeId,batchId)` 幂等累计已持久化的增量流量，提交后返回 ACK |
 | `POST` | `/api/v1/node-commands/poll` | 8 KiB | 立即返回至多 32 条且总响应不超过 64 KiB 的固定枚举命令 |
 | `POST` | `/api/v1/node-commands/ack` | 16 KiB | 幂等确认发给同一节点的既有命令，不能修改命令内容 |
+| `POST` | `/api/v1/node-data-plane/bootstrap` | 16 KiB | 使用短时 token 与节点签名获取固定数据面身份和配置，最多成功取件 3 次 |
+| `POST` | `/api/v1/node-data-plane/ack` | 16 KiB | 提交本机服务、端口、统计和身份三摘要证明；成功后烧毁 bootstrap 授权 |
 
 节点侧 Hysteria 只访问 `127.0.0.1` 认证代理；代理删除客户端地址后签名转发。中央超时、非 200、无效 JSON、节点快照或计量检查点超过 5 秒时，新认证统一映射为 Hysteria 所需的 HTTP 200 拒绝，既有会话不会被控制面故障主动中断。流量批次先写入 0600 有界 spool 并 `fsync`，收到中央提交 ACK 后才删除；签名与验签消息通过标准输入交给 OpenSSL，不把用户 token 写入临时文件。
 
-本阶段的控制协议与未来数据面/DNS 入池是两个独立管理员门禁。它不会安装或启动远端 Hysteria，也不会传输或修改 Hysteria TLS 身份、HMAC、`vpn.ssrvpn.vip`、用户链接或证书指纹。
+数据面 bootstrap 只允许 `verified + protocol_ready` 节点，由管理员从 HTTPS 面板按节点签发。授权有效 10 分钟、最多成功取件 3 次，并同时绑定节点 ID、注册来源 IP 与 Ed25519 签名；服务端只保存 token SHA-256 摘要。响应传输当前生产 Hysteria TLS 身份的原始字节及固定数据面参数，不传输数据库、HMAC、用户 token 或统计 secret。节点必须在内存中核验证书/私钥配对、证书文件 SHA-256、DER SHA-256 和私钥公钥 DER SHA-256，完成本机六个服务、双 stats 和四个 TCP/UDP 监听证明后才能 ACK。
+
+安装 ACK 只把节点推进到 `data_plane_installed`。管理员完成独立直连真实流量验收后，才能通过面板把它推进到 `direct_canary_passed`；这两个状态都不会改变 DNS。第四阶段没有 DNS admission API，`dns_admitted_at` 始终由未来独立审批阶段管理。任何 bootstrap、中央认证或新鲜度校验失败都拒绝新认证，已经建立的 Hysteria 会话不会被控制面故障主动停止。
 
 ## 管理面板
 
@@ -83,6 +87,8 @@
 | `POST` | `/nodes/{id}/verify` | 逐字核对并确认节点 Ed25519 公钥 SHA-256 指纹 |
 | `POST` | `/nodes/{id}/revoke` | 撤销节点身份并拒绝后续心跳与控制协议请求 |
 | `POST` | `/nodes/{id}/protocol/{enable,disable}` | 独立启停中央控制协议参与状态；不部署 Hysteria 或修改 DNS |
+| `POST` | `/nodes/{id}/data-plane/bootstrap` | 为已验证且协议就绪节点生成短时数据面一键部署代码；要求面板 HTTPS |
+| `POST` | `/nodes/{id}/data-plane/canary/pass` | 仅记录独立直连灰度已通过；不修改或准入 DNS |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
 | `POST` | `/egress/{web,full}` | 切换整台节点的出站策略；通过固定 root oneshot 同步更新两份 Hysteria 配置和持久状态，重启失败时恢复旧策略 |
 | `POST` | `/system/reboot` | 二次确认后通过固定 sudoers 白名单排队重启整台服务器，成功返回 HTTP 202 |
