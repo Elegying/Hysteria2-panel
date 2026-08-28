@@ -206,6 +206,50 @@ class OnlineSnapshotTests(DistributedControlCase):
 
         self.assertEqual(1, result["sequence"])
 
+    def test_dashboard_snapshot_combines_fresh_machine_online_counts_and_labels_stale(self):
+        self.db.create_proxy_user("alice")
+        self.service.accept_online_snapshot(
+            self.snapshot(self.nodes[0], 19, online={"alice": 2}),
+            remote_ip="203.0.113.1",
+        )
+        self.service.accept_online_snapshot(
+            self.snapshot(self.nodes[1], 20, online={"alice": 3}),
+            remote_ip="203.0.113.2",
+        )
+
+        class LocalStats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {"alice": 1}
+
+        manager = UsageManager(
+            self.db,
+            LocalStats(),
+            local_origin_id="local:" + "9" * 32,
+            local_origin_name="面板本机",
+            wall_clock=lambda: self.now[0],
+        )
+        fresh = manager.snapshot()
+        origins = {row["origin_id"]: row for row in fresh["machine_stats"]["origins"]}
+
+        self.assertEqual({"alice": 6}, fresh["online"])
+        self.assertTrue(fresh["online_complete"])
+        self.assertEqual(1, origins["local:" + "9" * 32]["online_devices"])
+        self.assertEqual(2, origins["node:" + self.nodes[0]]["online_devices"])
+        self.assertEqual("fresh", origins["node:" + self.nodes[0]]["online_state"])
+
+        self.now[0] += MAX_STATE_AGE_SECONDS + 1
+        stale = manager.snapshot()
+        origins = {row["origin_id"]: row for row in stale["machine_stats"]["origins"]}
+        self.assertEqual({"alice": 1}, stale["online"])
+        self.assertFalse(stale["online_complete"])
+        self.assertTrue(stale["machine_stats"]["has_stale_online"])
+        self.assertIsNone(origins["node:" + self.nodes[0]]["online_devices"])
+        self.assertEqual(2, origins["node:" + self.nodes[0]]["last_known_online_devices"])
+        self.assertEqual("stale", origins["node:" + self.nodes[0]]["online_state"])
+
 
 class DistributedAuthorizationTests(DistributedControlCase):
     def setUp(self):

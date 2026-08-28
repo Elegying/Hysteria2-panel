@@ -2402,6 +2402,85 @@ class Database:
                 )
             ]
 
+    def register_usage_origin(
+        self, origin_id, origin_kind, origin_name, node_id=None, created_at=None
+    ):
+        created_at = int(time.time()) if created_at is None else int(created_at)
+        if (
+            not isinstance(origin_id, str)
+            or not re.fullmatch(r"(?:local:|node:)[0-9a-f]{32}", origin_id)
+            or origin_kind not in {"local", "remote"}
+            or not isinstance(origin_name, str)
+            or not NAME_PATTERN.fullmatch(origin_name)
+        ):
+            raise ValueError("traffic origin is invalid")
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO usage_origins(
+                    origin_id, kind, node_id, display_name, created_at,
+                    last_traffic_at
+                ) VALUES (?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(origin_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    node_id = COALESCE(excluded.node_id, usage_origins.node_id)""",
+                (origin_id, origin_kind, node_id, origin_name, created_at),
+            )
+
+    def list_node_online_states(self, now, freshness_seconds):
+        now = int(now)
+        freshness_seconds = max(1, int(freshness_seconds))
+        with self._connect() as connection:
+            nodes = [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT n.node_id, n.name, n.status, n.policy_state,
+                        n.data_plane_state, s.observed_at, s.traffic_acked_at,
+                        s.accepted_at
+                    FROM nodes AS n
+                    LEFT JOIN node_online_snapshots AS s ON s.node_id = n.node_id
+                    ORDER BY n.created_at, n.node_id"""
+                )
+            ]
+            counts = {}
+            for row in connection.execute(
+                """SELECT node_id, user_name, count FROM node_online_counts
+                ORDER BY node_id, user_name COLLATE NOCASE"""
+            ):
+                counts.setdefault(row["node_id"], {})[row["user_name"]] = int(
+                    row["count"]
+                )
+        results = []
+        for node in nodes:
+            online = counts.get(node["node_id"], {})
+            fresh = bool(
+                node["policy_state"] == "protocol_ready"
+                and node["status"] == "pending_verification"
+                and node["accepted_at"] is not None
+                and int(node["accepted_at"]) >= now - freshness_seconds
+                and int(node["observed_at"]) >= now - freshness_seconds
+                and int(node["traffic_acked_at"]) >= now - freshness_seconds
+            )
+            if node["status"] == "revoked":
+                online_state = "revoked"
+            elif node["policy_state"] != "protocol_ready":
+                online_state = "standby"
+            elif fresh:
+                online_state = "fresh"
+            elif node["accepted_at"] is None:
+                online_state = "unavailable"
+            else:
+                online_state = "stale"
+            node.update(
+                {
+                    "online": online,
+                    "online_devices": sum(online.values()) if fresh else None,
+                    "last_known_online_devices": sum(online.values()),
+                    "online_state": online_state,
+                }
+            )
+            results.append(node)
+        return results
+
     def apply_traffic_batch(
         self,
         batch_id,
@@ -4965,6 +5044,102 @@ class PanelHandler(JsonHandler):
             "udp443_allowed": " selected" if udp443_filter == "allowed" else "",
             "udp443_blocked": " selected" if udp443_filter == "blocked" else "",
         }
+        machine_stats = snapshot.get("machine_stats", {})
+        machine_origins = machine_stats.get("origins", [])
+        machine_status_labels = {
+            "fresh": ("新鲜", "ok"),
+            "stale": ("数据过期", "warning"),
+            "standby": ("已停用", "muted"),
+            "revoked": ("已撤销", "bad"),
+            "unavailable": ("等待上报", "warning"),
+            "history": ("历史记录", "muted"),
+        }
+
+        def machine_breakdown(field, limit=3):
+            ranked = sorted(
+                machine_origins,
+                key=lambda origin: int(origin.get(field) or 0),
+                reverse=True,
+            )[:limit]
+            return "".join(
+                '<span class="metric-breakdown-row"><span>{name}</span><strong>{value}</strong></span>'.format(
+                    name=html.escape(str(origin.get("display_name") or "未命名节点")),
+                    value=_human_bytes(int(origin.get(field) or 0)),
+                )
+                for origin in ranked
+                if int(origin.get(field) or 0) > 0
+            )
+
+        online_ranked = sorted(
+            machine_origins,
+            key=lambda origin: int(origin.get("online_devices") or 0),
+            reverse=True,
+        )[:3]
+        online_breakdown = "".join(
+            '<span class="metric-breakdown-row"><span>{name}</span><strong>{value}</strong></span>'.format(
+                name=html.escape(str(origin.get("display_name") or "未命名节点")),
+                value=int(origin["online_devices"]),
+            )
+            for origin in online_ranked
+            if origin.get("online_devices") is not None
+        )
+        online_note = (
+            '<small class="metric-warning">设备统计暂不完整：部分节点上报已过期</small>'
+            if not snapshot.get("online_complete", True)
+            else '<small class="muted">按 Hysteria 客户端实例统计</small>'
+        )
+        machine_rows = []
+        for origin in machine_origins:
+            online_state = origin.get("online_state", "history")
+            status_label, status_class = machine_status_labels.get(
+                online_state, ("状态未知", "warning")
+            )
+            online_devices = origin.get("online_devices")
+            if online_devices is None:
+                last_known = int(origin.get("last_known_online_devices") or 0)
+                online_text = "—（上次 {}）".format(last_known) if last_known else "—"
+            else:
+                online_text = str(int(online_devices))
+            observed_at = origin.get("observed_at")
+            observed_text = (
+                time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(int(observed_at))
+                )
+                if observed_at
+                else "尚未上报"
+            )
+            kind_label = {
+                "local": "面板节点",
+                "remote": "远端数据节点",
+                "legacy": "历史归属",
+            }.get(origin.get("kind"), "历史归属")
+            machine_rows.append(
+                """<tr><td data-label="节点"><strong>{name}</strong><small class="muted machine-kind">{kind}</small></td><td data-label="状态"><span class="{status_class}">{status}</span></td><td data-label="在线设备">{online}</td><td data-label="上传">{tx}</td><td data-label="下载">{rx}</td><td data-label="合计">{total}</td><td data-label="最后上报">{observed}</td></tr>""".format(
+                    name=html.escape(str(origin.get("display_name") or "未命名节点")),
+                    kind=kind_label,
+                    status_class=status_class,
+                    status=status_label,
+                    online=online_text,
+                    tx=_human_bytes(int(origin.get("tx_bytes") or 0)),
+                    rx=_human_bytes(int(origin.get("rx_bytes") or 0)),
+                    total=_human_bytes(
+                        int(origin.get("tx_bytes") or 0)
+                        + int(origin.get("rx_bytes") or 0)
+                    ),
+                    observed=observed_text,
+                )
+            )
+        machine_warning = (
+            '<p class="notice machine-warning"><strong>设备统计暂不完整：</strong>过期节点的上次设备数仅供参考，不计入当前总数；流量仍按幂等批次继续结算。</p>'
+            if machine_stats.get("has_stale_online")
+            else ""
+        )
+        machine_stats_section = "" if not machine_origins else (
+            """<section class="card machine-stats"><div class="section-head"><div><h2>节点统计</h2><p class="muted">设备数与 Hysteria 已结算用户流量按实际入口机器拆分；不等同于云厂商/NIC 计费流量。</p></div></div>{warning}<div class="table-wrap machine-table"><table><thead><tr><th>节点</th><th>状态</th><th>在线设备</th><th>上传</th><th>下载</th><th>合计</th><th>最后上报</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
+                warning=machine_warning,
+                rows="".join(machine_rows),
+            )
+        )
         stats_state = "正常" if summary["service_available"] else "异常"
         service_running = service_status == "active"
         service_label = "Hysteria 运行中" if service_running else "Hysteria 已停止"
@@ -5250,10 +5425,11 @@ class PanelHandler(JsonHandler):
 <button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
 <section class="metrics" aria-label="服务概览">
 <div class="metric"><span>不活跃用户</span><strong>{inactive_users}</strong><small class="muted">上传与下载均为 0</small></div>
-<div class="metric"><span>在线设备</span><strong>{online_devices}</strong><small class="muted">按 Hysteria 客户端实例统计</small></div>
-<div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">全部用户累计上传</small></div>
-<div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">全部用户累计下载</small></div>
+<div class="metric"><span>在线设备</span><strong>{online_devices}</strong>{online_note}<span class="metric-breakdown">{online_breakdown}</span></div>
+<div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">全部用户累计上传</small><span class="metric-breakdown">{tx_breakdown}</span></div>
+<div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">全部用户累计下载</small><span class="metric-breakdown">{rx_breakdown}</span></div>
 </section>
+{machine_stats_section}
 <section class="operations dashboard-trio">
 <article class="card"><div class="section-head"><div><h2>服务控制</h2><p class="muted">启停、重启和版本检查集中在这里。</p></div><span class="service-badge{service_class}">{service_label}</span></div>
 <div class="button-row"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动 Hysteria</button></form>
@@ -5312,6 +5488,11 @@ class PanelHandler(JsonHandler):
             online_devices=summary["online_devices"],
             total_tx=_human_bytes(summary["total_tx"]),
             total_rx=_human_bytes(summary["total_rx"]),
+            online_note=online_note,
+            online_breakdown=online_breakdown,
+            tx_breakdown=machine_breakdown("tx_bytes"),
+            rx_breakdown=machine_breakdown("rx_bytes"),
+            machine_stats_section=machine_stats_section,
             csrf=csrf,
             onboarding_disabled=onboarding_disabled,
             node_rows=node_rows_html,
@@ -6450,12 +6631,22 @@ class UsageManager:
         health_monitor=None,
         auth_stats_ttl=1,
         wall_clock=time.time,
+        local_origin_id="local:" + "0" * 32,
+        local_origin_name="面板本机",
     ):
         self.database = database
         self.stats_client = stats_client
         self.pending_ttl = max(1, int(pending_ttl))
         self.clock = clock
         self.wall_clock = wall_clock
+        self.local_origin_id = str(local_origin_id)
+        self.local_origin_name = str(local_origin_name)
+        self.database.register_usage_origin(
+            self.local_origin_id,
+            "local",
+            self.local_origin_name,
+            created_at=int(self.wall_clock()),
+        )
         self.lock = threading.Lock()
         self._authorization_lock = threading.Lock()
         self.auth_stats_ttl = max(0, float(auth_stats_ttl))
@@ -6477,6 +6668,22 @@ class UsageManager:
             return
         self.health_monitor.refresh_database()
         self.health_monitor.record_stats_sync(success)
+
+    def _apply_local_traffic_batch(self, batch_id, traffic):
+        try:
+            return self.database.apply_traffic_batch(
+                batch_id,
+                traffic,
+                origin_id=self.local_origin_id,
+                origin_kind="local",
+                origin_name=self.local_origin_name,
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            # Keep compatibility with narrow Database test doubles and legacy
+            # maintenance adapters that still expose the original two-argument API.
+            return self.database.apply_traffic_batch(batch_id, traffic)
 
     def _load_pending_traffic(self):
         try:
@@ -6546,7 +6753,7 @@ class UsageManager:
             database_error = None
             for _attempt in range(3):
                 try:
-                    self.database.apply_traffic_batch(batch_id, traffic)
+                    self._apply_local_traffic_batch(batch_id, traffic)
                     database_error = None
                     break
                 except Exception as exc:
@@ -6582,7 +6789,7 @@ class UsageManager:
     def _flush_pending_traffic_locked(self):
         if not self.pending_traffic:
             return
-        self.database.apply_traffic_batch(
+        self._apply_local_traffic_batch(
             self.pending_traffic_batch_id, self.pending_traffic
         )
         self._remove_pending_traffic_locked()
@@ -6711,13 +6918,121 @@ class UsageManager:
                 online = {}
                 available = False
             users = self.database.list_proxy_users_for_usage()
+            now = int(self.wall_clock())
+            node_states = self.database.list_node_online_states(
+                now, MAX_STATE_AGE_SECONDS
+            )
+            origin_rows = self.database.list_usage_origins()
+        global_online = dict(online)
+        for node in node_states:
+            if node["online_state"] != "fresh":
+                continue
+            for name, count in node["online"].items():
+                global_online[name] = int(global_online.get(name, 0)) + int(count)
+        origins = {row["origin_id"]: dict(row) for row in origin_rows}
+        current_local = origins.setdefault(
+            self.local_origin_id,
+            {
+                "origin_id": self.local_origin_id,
+                "kind": "local",
+                "node_id": None,
+                "display_name": self.local_origin_name,
+                "created_at": now,
+                "last_traffic_at": None,
+                "tx_bytes": 0,
+                "rx_bytes": 0,
+            },
+        )
+        current_local.update(
+            {
+                "display_name": self.local_origin_name,
+                "online_devices": sum(online.values()) if available else None,
+                "last_known_online_devices": sum(online.values()),
+                "online_state": "fresh" if available else "unavailable",
+                "observed_at": now if available else None,
+            }
+        )
+        current_node_ids = set()
+        for node in node_states:
+            current_node_ids.add(node["node_id"])
+            origin_id = "node:" + node["node_id"]
+            origin = origins.setdefault(
+                origin_id,
+                {
+                    "origin_id": origin_id,
+                    "kind": "remote",
+                    "node_id": node["node_id"],
+                    "display_name": node["name"],
+                    "created_at": node["accepted_at"] or now,
+                    "last_traffic_at": None,
+                    "tx_bytes": 0,
+                    "rx_bytes": 0,
+                },
+            )
+            origin.update(
+                {
+                    "display_name": node["name"],
+                    "online_devices": node["online_devices"],
+                    "last_known_online_devices": node[
+                        "last_known_online_devices"
+                    ],
+                    "online_state": node["online_state"],
+                    "observed_at": node["accepted_at"],
+                    "data_plane_state": node["data_plane_state"],
+                }
+            )
+        for origin in origins.values():
+            if origin["origin_id"] == self.local_origin_id:
+                continue
+            if origin["kind"] == "local" or origin["kind"] == "legacy":
+                origin.update(
+                    {
+                        "online_devices": None,
+                        "last_known_online_devices": 0,
+                        "online_state": "history",
+                        "observed_at": origin.get("last_traffic_at"),
+                    }
+                )
+            elif origin.get("node_id") not in current_node_ids:
+                origin.update(
+                    {
+                        "online_devices": None,
+                        "last_known_online_devices": 0,
+                        "online_state": "history",
+                        "observed_at": origin.get("last_traffic_at"),
+                    }
+                )
+        machine_origins = sorted(
+            origins.values(),
+            key=lambda row: (
+                row["kind"] == "legacy",
+                row["online_state"] == "history",
+                str(row["display_name"]).casefold(),
+                row["origin_id"],
+            ),
+        )
+        has_stale_online = (not available) or any(
+            node["online_state"] in {"stale", "unavailable"}
+            for node in node_states
+            if node["policy_state"] == "protocol_ready"
+            and node["status"] == "pending_verification"
+        )
         return {
             "traffic": {
                 user["name"]: {"tx": user["tx_bytes"], "rx": user["rx_bytes"]}
                 for user in users
             },
-            "online": online,
+            "online": global_online,
+            "online_complete": not has_stale_online,
             "available": available,
+            "machine_stats": {
+                "origins": machine_origins,
+                "has_stale_online": has_stale_online,
+                "tracking_started_at": min(
+                    (int(row["created_at"]) for row in machine_origins),
+                    default=now,
+                ),
+            },
         }
 
     def reset_user(self, user_id, expected_generation=None):
@@ -6794,6 +7109,9 @@ class Settings:
             raise ValueError("HY2PANEL_HMAC_KEY must decode to at least 32 bytes")
         public_host = mapping.get("HY2PANEL_PUBLIC_HOST", "").strip()
         node_name = mapping.get("HY2PANEL_NODE_NAME", "Hysteria 2").strip()
+        usage_origin_id = mapping.get(
+            "HY2PANEL_USAGE_ORIGIN_ID", "0" * 32
+        ).strip().lower()
         panel_scheme = mapping.get("HY2PANEL_PANEL_SCHEME", "http").strip().lower()
         panel_public_host = mapping.get("HY2PANEL_PANEL_PUBLIC_HOST", "").strip().lower()
         panel_tls_cert_value = mapping.get("HY2PANEL_PANEL_TLS_CERT", "").strip()
@@ -6804,6 +7122,10 @@ class Settings:
             raise ValueError("HY2PANEL_PUBLIC_HOST is required")
         if not node_name or len(node_name) > 64 or any(ord(character) < 32 for character in node_name):
             raise ValueError("HY2PANEL_NODE_NAME must contain 1 to 64 printable characters")
+        if not re.fullmatch(r"[0-9a-f]{32}", usage_origin_id):
+            raise ValueError(
+                "HY2PANEL_USAGE_ORIGIN_ID must contain exactly 32 hexadecimal characters"
+            )
         if panel_scheme not in {"http", "https"}:
             raise ValueError("HY2PANEL_PANEL_SCHEME must be http or https")
         if panel_scheme == "https":
@@ -6844,6 +7166,7 @@ class Settings:
             hmac_key=hmac_key,
             public_host=public_host,
             node_name=node_name,
+            local_origin_id="local:" + usage_origin_id,
             hysteria_port=hysteria_port,
             # Remote panel access is an explicit deployment feature.
             panel_host=mapping.get("HY2PANEL_PANEL_HOST", "0.0.0.0"),  # nosec B104
@@ -7278,7 +7601,12 @@ def run_service(settings):
     # node has published a new traffic checkpoint and online snapshot.
     database.begin_runtime_epoch()
     stats_client = make_stats_client(settings)
-    usage_manager = UsageManager(database, stats_client)
+    usage_manager = UsageManager(
+        database,
+        stats_client,
+        local_origin_id=settings.local_origin_id,
+        local_origin_name=settings.node_name,
+    )
     backup_manager = BackupManager(
         database=database,
         hmac_key=settings.hmac_key,

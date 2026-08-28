@@ -817,6 +817,22 @@ class UsageManagerTests(unittest.TestCase):
         self.assertEqual([True, False], health.events)
         self.assertEqual(2, health.database_refreshes)
 
+    def test_local_collection_uses_the_configured_stable_machine_identity(self):
+        self.db.create_proxy_user("alice")
+        stats = PolicyStatsClient(traffic={"alice": {"tx": 7, "rx": 11}})
+        manager = UsageManager(
+            self.db,
+            stats,
+            local_origin_id="local:" + "a" * 32,
+            local_origin_name="主面板",
+        )
+
+        manager.collect_once()
+
+        origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
+        self.assertEqual((7, 11), (origins["local:" + "a" * 32]["tx_bytes"], origins["local:" + "a" * 32]["rx_bytes"]))
+        self.assertEqual("主面板", origins["local:" + "a" * 32]["display_name"])
+
     def test_failed_online_snapshot_marks_runtime_not_ready(self):
         class FakeHealth:
             def __init__(self):
@@ -6245,6 +6261,74 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('value="3"', body)
         self.assertIn('value="250"', body)
 
+    def test_dashboard_renders_per_machine_devices_traffic_and_stale_warning(self):
+        headers, _ = self.authenticated_headers()
+        snapshot = {
+            "traffic": {},
+            "online": {},
+            "online_complete": False,
+            "available": True,
+            "machine_stats": {
+                "has_stale_online": True,
+                "tracking_started_at": 1_700_000_000,
+                "origins": [
+                    {
+                        "origin_id": "local:" + "1" * 32,
+                        "kind": "local",
+                        "display_name": "面板本机",
+                        "online_devices": 10,
+                        "last_known_online_devices": 10,
+                        "online_state": "fresh",
+                        "tx_bytes": 35 * 1024**3,
+                        "rx_bytes": 1024**4,
+                        "observed_at": 1_700_000_100,
+                        "created_at": 1_700_000_000,
+                        "last_traffic_at": 1_700_000_100,
+                    },
+                    {
+                        "origin_id": "node:" + "2" * 32,
+                        "kind": "remote",
+                        "display_name": "香港分流-02",
+                        "online_devices": None,
+                        "last_known_online_devices": 5,
+                        "online_state": "stale",
+                        "tx_bytes": 50 * 1024**3,
+                        "rx_bytes": 850 * 1024**3,
+                        "observed_at": 1_700_000_050,
+                        "created_at": 1_700_000_000,
+                        "last_traffic_at": 1_700_000_050,
+                    },
+                    {
+                        "origin_id": "legacy-unattributed",
+                        "kind": "legacy",
+                        "display_name": "升级前历史（未归属）",
+                        "online_devices": None,
+                        "last_known_online_devices": 0,
+                        "online_state": "history",
+                        "tx_bytes": 1,
+                        "rx_bytes": 2,
+                        "observed_at": 1_700_000_000,
+                        "created_at": 1_700_000_000,
+                        "last_traffic_at": 1_700_000_000,
+                    },
+                ],
+            },
+        }
+
+        with mock.patch.object(
+            self.application.usage_manager, "snapshot", return_value=snapshot
+        ):
+            with self.request("/", headers=headers) as response:
+                body = response.read().decode()
+
+        self.assertIn("节点统计", body)
+        self.assertIn("面板本机", body)
+        self.assertIn("香港分流-02", body)
+        self.assertIn("升级前历史（未归属）", body)
+        self.assertIn("设备统计暂不完整", body)
+        self.assertIn("上次 5", body)
+        self.assertIn("Hysteria 已结算用户流量", body)
+
     def test_dashboard_uses_dialogs_and_compact_mobile_user_rows(self):
         created = self.db.create_proxy_user("alice")
         headers, _ = self.authenticated_headers()
@@ -6969,7 +7053,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.30.1", body)
+        self.assertIn("v0.31.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
@@ -7610,6 +7694,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual("http://127.0.0.1:19995", settings.stats_443_url)
         self.assertEqual("Hysteria 2", settings.node_name)
         self.assertEqual("http", settings.panel_scheme)
+        self.assertEqual("local:" + "0" * 32, settings.local_origin_id)
 
         invalid = dict(os.environ)
         invalid["HY2PANEL_HMAC_KEY"] = "too-short"
@@ -7630,6 +7715,24 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual("私家车-2026", settings.node_name)
         self.assertEqual("http", settings.panel_scheme)
+
+    def test_usage_origin_identity_is_validated_and_namespaced(self):
+        base = {
+            "HY2PANEL_HMAC_KEY": "ab" * 32,
+            "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
+            "HY2PANEL_STATS_SECRET": "stats-secret",
+            "HY2PANEL_CERT_PIN": "AA:BB:CC",
+        }
+        settings = Settings.from_mapping(
+            {**base, "HY2PANEL_USAGE_ORIGIN_ID": "12" * 16}
+        )
+        self.assertEqual("local:" + "12" * 16, settings.local_origin_id)
+        for invalid in ("", "abc", "g" * 32, "1" * 64):
+            with self.subTest(invalid=invalid):
+                values = dict(base)
+                values["HY2PANEL_USAGE_ORIGIN_ID"] = invalid
+                with self.assertRaisesRegex(ValueError, "USAGE_ORIGIN_ID"):
+                    Settings.from_mapping(values)
 
     def test_https_uses_an_independent_panel_hostname_and_certificate(self):
         settings = Settings.from_mapping(

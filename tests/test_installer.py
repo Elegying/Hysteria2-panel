@@ -17,6 +17,19 @@ TCP_PROBE = ROOT / "tcp_probe.py"
 
 
 class InstallerContractTests(unittest.TestCase):
+    def test_panel_install_generates_and_preserves_a_stable_usage_origin_identity(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn(
+            'USAGE_ORIGIN_ID="${HY2PANEL_USAGE_ORIGIN_ID:-$(openssl rand -hex 16)}"',
+            source,
+        )
+        self.assertIn("HY2PANEL_USAGE_ORIGIN_ID=${USAGE_ORIGIN_ID}", source)
+        self.assertLess(
+            source.index('USAGE_ORIGIN_ID="${HY2PANEL_USAGE_ORIGIN_ID:-'),
+            source.index("HY2PANEL_USAGE_ORIGIN_ID=${USAGE_ORIGIN_ID}"),
+        )
+
     def run_firewall_function(self, mocks):
         source = INSTALLER.read_text()
         start = source.index("ufw_rule_is_recorded()")
@@ -489,7 +502,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.30.1"', source)
+        self.assertIn('PANEL_VERSION="0.31.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
