@@ -9330,20 +9330,19 @@ def main(argv=None):
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("offsite-backup must run as root")
             with defer_termination_signals():
-                database = Database(settings.database_path, settings.hmac_key)
-                database.initialize()
-                manager = BackupManager(
-                    database=database,
-                    hmac_key=settings.hmac_key,
-                    tls_cert=settings.tls_cert,
-                    tls_key=settings.tls_key,
-                    public_host=settings.public_host,
-                    hysteria_port=settings.hysteria_port,
-                    node_name=settings.node_name,
-                    work_dir=settings.database_path.parent / "backup-restore",
-                )
-
                 def create_current_archive():
+                    database = Database(settings.database_path, settings.hmac_key)
+                    database.initialize()
+                    manager = BackupManager(
+                        database=database,
+                        hmac_key=settings.hmac_key,
+                        tls_cert=settings.tls_cert,
+                        tls_key=settings.tls_key,
+                        public_host=settings.public_host,
+                        hysteria_port=settings.hysteria_port,
+                        node_name=settings.node_name,
+                        work_dir=settings.database_path.parent / "backup-restore",
+                    )
                     sync_traffic(settings)
                     return manager.create_archive()
 

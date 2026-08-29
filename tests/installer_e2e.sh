@@ -148,6 +148,19 @@ systemctl is-active --quiet hysteria2-panel-server.service
 systemctl is-active --quiet hysteria2-panel-tcp-probe.service
 curl -fsS "http://127.0.0.1:${PANEL_PORT}/healthz" >/dev/null
 curl -fsS "http://127.0.0.1:${PANEL_PORT}/readyz" >/dev/null
+systemctl start hysteria2-panel-offsite-backup.service
+systemctl show hysteria2-panel-offsite-backup.service \
+  --property=Result --value | grep -Fxq success
+python3 -c '
+import json
+import pathlib
+
+status = json.loads(
+    pathlib.Path("/var/lib/hysteria2-panel/offsite-backup-status.json").read_text()
+)
+assert status["state"] == "not_configured"
+assert status["errorCode"] is None
+'
 grep -Fxq 'HY2PANEL_EGRESS_POLICY=full' /etc/hysteria2-panel/panel.env
 test ! -e /var/backups/hysteria2-panel/.upgrade-active
 test ! -e /etc/.hysteria2-panel-installing-by-installer

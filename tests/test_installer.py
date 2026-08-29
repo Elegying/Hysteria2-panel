@@ -502,7 +502,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.32.0"', source)
+        self.assertIn('PANEL_VERSION="0.32.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -577,6 +577,11 @@ esac
         source = INSTALLER.read_text()
         expected = hashlib.sha256((ROOT / "offsite_backup.py").read_bytes()).hexdigest()
         actual = source.split('OFFSITE_BACKUP_SHA256="', 1)[1].split('"', 1)[0]
+        unit_start = source.index(
+            "cat > /etc/systemd/system/hysteria2-panel-offsite-backup.service"
+        )
+        unit_end = source.index("\nEOF", unit_start)
+        offsite_unit = source[unit_start:unit_end]
 
         self.assertEqual(expected, actual)
         self.assertIn("offsite_backup.py", source)
@@ -585,9 +590,13 @@ esac
         self.assertIn("OnCalendar=*-*-* 03:30:00", source)
         self.assertIn("RandomizedDelaySec=2h", source)
         self.assertIn("Persistent=true", source)
-        self.assertIn("Group=hy2panel", source)
-        self.assertIn("ProtectSystem=strict", source)
-        self.assertIn("ReadOnlyPaths=/opt/hysteria2-panel /etc/hysteria2-panel", source)
+        self.assertIn("Group=hy2panel", offsite_unit)
+        self.assertIn("ProtectSystem=strict", offsite_unit)
+        self.assertIn(
+            "ReadOnlyPaths=/opt/hysteria2-panel /etc/hysteria2-panel", offsite_unit
+        )
+        self.assertIn("CapabilityBoundingSet=CAP_DAC_OVERRIDE", offsite_unit)
+        self.assertIn("AmbientCapabilities=CAP_DAC_OVERRIDE", offsite_unit)
         self.assertIn("systemctl enable hysteria2-panel-offsite-backup.timer", source)
 
     def test_join_node_mode_is_isolated_from_hysteria_identity_and_network_mutations(self):
