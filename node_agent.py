@@ -27,14 +27,16 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.33.9"
+AGENT_VERSION = "0.34.0"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
+NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
 CONTROL_LOOP_INTERVAL_SECONDS = 2
 CONTROL_LOOP_MAX_INTERVAL_SECONDS = 5
 CONTROL_LOOP_MAX_BACKOFF_SECONDS = 30
+CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES = 480 * 1024
 MAX_STATE_AGE_SECONDS = (
-    CONTROL_REQUEST_TIMEOUT_SECONDS
+    NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS
     + CONTROL_LOOP_MAX_BACKOFF_SECONDS
     + CONTROL_LOOP_MAX_INTERVAL_SECONDS
 )
@@ -57,6 +59,10 @@ class HeartbeatError(RuntimeError):
 
 class ProtocolError(RuntimeError):
     """Distributed control failed without exposing credentials or node identity."""
+
+
+class ProtocolNotSupported(ProtocolError):
+    """The panel does not yet support an additive node protocol endpoint."""
 
 
 def _panel_url(value):
@@ -702,7 +708,14 @@ def heartbeat(
 
 
 def _canonical_node_request(purpose, payload):
-    if purpose not in {"auth", "online", "traffic", "command-poll", "command-ack"}:
+    if purpose not in {
+        "auth",
+        "online",
+        "traffic",
+        "command-poll",
+        "command-ack",
+        "control-cycle",
+    }:
         raise ProtocolError("node request purpose is invalid")
     return "hy2panel-node-{}-v1\n".format(purpose).encode("ascii") + json.dumps(
         payload,
@@ -1556,6 +1569,7 @@ class NodeProtocolClient:
         "auth": ("/api/v1/node-auth-decisions", 16 * 1024),
         "online": ("/api/v1/node-online-snapshots", 8 * 1024),
         "traffic": ("/api/v1/node-traffic-batches", 8 * 1024),
+        "control-cycle": ("/api/v1/node-control-cycles", 128 * 1024),
         "command-poll": ("/api/v1/node-commands/poll", 64 * 1024),
         "command-ack": ("/api/v1/node-commands/ack", 8 * 1024),
     }
@@ -1604,7 +1618,7 @@ class NodeProtocolClient:
         )
         try:
             with self.opener(
-                request, timeout=CONTROL_REQUEST_TIMEOUT_SECONDS
+                request, timeout=NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS
             ) as response:
                 status = getattr(
                     response,
@@ -1612,7 +1626,13 @@ class NodeProtocolClient:
                     response.getcode() if hasattr(response, "getcode") else 0,
                 )
                 body = response.read(maximum + 1)
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        except urllib.error.HTTPError as exc:
+            if purpose == "control-cycle" and exc.code == 404:
+                raise ProtocolNotSupported(
+                    "the panel does not support combined node control cycles"
+                ) from exc
+            raise ProtocolError("the panel rejected or could not receive the node request") from exc
+        except (urllib.error.URLError, OSError) as exc:
             raise ProtocolError("the panel rejected or could not receive the node request") from exc
         if status != 200 or len(body) > maximum:
             raise ProtocolError("the panel returned an invalid node response")
@@ -1663,6 +1683,83 @@ class NodeProtocolClient:
         if not isinstance(batch, dict) or set(batch) != {"batchId", "observedAt", "traffic"}:
             raise ProtocolError("traffic batch is invalid")
         return self._post("traffic", batch)
+
+    def send_control_cycle(self, traffic_batches, online_snapshot):
+        if (
+            not isinstance(traffic_batches, list)
+            or len(traffic_batches) > 8
+            or any(
+                not isinstance(batch, dict)
+                or set(batch) != {"batchId", "observedAt", "traffic"}
+                for batch in traffic_batches
+            )
+            or (
+                online_snapshot is not None
+                and (
+                    not isinstance(online_snapshot, dict)
+                    or set(online_snapshot)
+                    != {
+                        "snapshotId",
+                        "sequence",
+                        "observedAt",
+                        "trafficAckedAt",
+                        "online",
+                    }
+                )
+            )
+        ):
+            raise ProtocolError("combined node control cycle is invalid")
+        cycle_id = uuid.uuid4().hex
+        result = self._post(
+            "control-cycle",
+            {
+                "cycleId": cycle_id,
+                "trafficBatches": traffic_batches,
+                "onlineSnapshot": online_snapshot,
+                "commandPoll": {"requestId": uuid.uuid4().hex},
+            },
+        )
+        expected_fields = {
+            "cycleId",
+            "acceptedAt",
+            "traffic",
+            "online",
+            "commands",
+            "polledAt",
+        }
+        traffic_results = result.get("traffic")
+        commands = result.get("commands")
+        online_result = result.get("online")
+        if (
+            set(result) != expected_fields
+            or result.get("cycleId") != cycle_id
+            or isinstance(result.get("acceptedAt"), bool)
+            or not isinstance(result.get("acceptedAt"), int)
+            or not isinstance(traffic_results, list)
+            or len(traffic_results) != len(traffic_batches)
+            or not isinstance(commands, list)
+            or len(commands) > 32
+            or isinstance(result.get("polledAt"), bool)
+            or not isinstance(result.get("polledAt"), int)
+        ):
+            raise ProtocolError("the panel returned an invalid combined control cycle")
+        for batch, acknowledgement in zip(traffic_batches, traffic_results):
+            if (
+                not isinstance(acknowledgement, dict)
+                or acknowledgement.get("batchId") != batch["batchId"]
+                or acknowledgement.get("committed") is not True
+            ):
+                raise ProtocolError("central traffic ACK is invalid")
+        if online_snapshot is None:
+            if online_result is not None:
+                raise ProtocolError("central online snapshot ACK is invalid")
+        elif (
+            not isinstance(online_result, dict)
+            or online_result.get("snapshotId") != online_snapshot["snapshotId"]
+            or online_result.get("sequence") != online_snapshot["sequence"]
+        ):
+            raise ProtocolError("central online snapshot ACK is invalid")
+        return result
 
     def poll_commands(self):
         result = self._post("command-poll", {"requestId": uuid.uuid4().hex})
@@ -2041,6 +2138,7 @@ class NodeControlCycle:
         self.clock = clock
         self.stop_data_plane = stop_data_plane
         self.start_data_plane = start_data_plane
+        self._combined_supported = hasattr(protocol_client, "send_control_cycle")
 
     def _upload_pending(self):
         last_ack = None
@@ -2079,12 +2177,103 @@ class NodeControlCycle:
             raise ProtocolError("central online snapshot ACK is invalid")
         return result
 
+    def _run_combined(self, stopped):
+        snapshot = None
+        selected = []
+        if not stopped:
+            if self.spool.can_collect():
+                traffic = self.stats_client.collect_and_clear()
+                self.spool.enqueue(traffic, observed_at=int(self.clock()))
+            pending = self.spool.pending()
+            for batch in pending[:8]:
+                candidate = selected + [batch]
+                encoded_size = len(
+                    json.dumps(
+                        {"trafficBatches": candidate, "onlineSnapshot": None},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                if encoded_size > CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES:
+                    break
+                selected = candidate
+            if len(selected) == len(pending):
+                snapshot = {
+                    "snapshotId": uuid.uuid4().hex,
+                    "sequence": self.state.next_sequence(),
+                    "observedAt": int(self.clock()),
+                    "trafficAckedAt": self.state.traffic_acked_at(),
+                    "online": self.stats_client.online(),
+                }
+                encoded_size = len(
+                    json.dumps(
+                        {
+                            "trafficBatches": selected,
+                            "onlineSnapshot": snapshot,
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                if encoded_size > CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES:
+                    snapshot = None
+        result = self.protocol_client.send_control_cycle(selected, snapshot)
+        for batch, acknowledgement in zip(selected, result["traffic"]):
+            if (
+                acknowledgement.get("batchId") != batch["batchId"]
+                or acknowledgement.get("committed") is not True
+            ):
+                raise ProtocolError("central traffic ACK is invalid")
+            self.spool.ack(batch["batchId"])
+        if selected:
+            self.state.set_traffic_ack(int(result["acceptedAt"]))
+        if snapshot is not None and (
+            not isinstance(result.get("online"), dict)
+            or result["online"].get("sequence") != snapshot["sequence"]
+        ):
+            raise ProtocolError("central online snapshot ACK is invalid")
+        return result["commands"]
+
+    def _legacy_control(self, stopped, collect=True):
+        control_error = None
+        if not stopped:
+            try:
+                if collect:
+                    self.flush_traffic()
+                else:
+                    self._upload_pending()
+                self.refresh_snapshot()
+            except (OSError, ProtocolError) as exc:
+                control_error = exc
+        try:
+            commands = self.protocol_client.poll_commands()
+        except (OSError, ProtocolError):
+            if control_error is not None:
+                raise control_error
+            raise
+        return commands, control_error
+
     def run_once(self):
         stopped = self.state.data_plane_stopped()
-        if not stopped:
-            self.flush_traffic()
-            self.refresh_snapshot()
-        commands = self.protocol_client.poll_commands()
+        control_error = None
+        commands = None
+        legacy_collect = True
+        if self._combined_supported:
+            try:
+                commands = self._run_combined(stopped)
+            except ProtocolNotSupported:
+                self._combined_supported = False
+                legacy_collect = False
+            except (OSError, ProtocolError) as exc:
+                control_error = exc
+                try:
+                    commands = self.protocol_client.poll_commands()
+                except (OSError, ProtocolError):
+                    raise control_error
+        if commands is None:
+            commands, control_error = self._legacy_control(
+                stopped, collect=legacy_collect
+            )
         for command in commands:
             command_id = command.get("commandId", "")
             if self.state.command_completed(command_id):
@@ -2107,6 +2296,8 @@ class NodeControlCycle:
                 continue
             self.state.record_command_completed(command_id, int(self.clock()))
             self.protocol_client.ack_command(command_id, True, "")
+        if control_error is not None:
+            raise control_error
 
 
 def run_control_loop(
@@ -2115,10 +2306,14 @@ def run_control_loop(
     interval_seconds=CONTROL_LOOP_INTERVAL_SECONDS,
     maximum_backoff_seconds=CONTROL_LOOP_MAX_BACKOFF_SECONDS,
     sleeper=None,
+    jitter_source=None,
 ):
-    """Run fixed short polling while backing off boundedly on control failures."""
+    """Run short jittered polling while backing off boundedly on failures."""
     interval = max(1, min(CONTROL_LOOP_MAX_INTERVAL_SECONDS, int(interval_seconds)))
     maximum_backoff = max(interval, min(300, int(maximum_backoff_seconds)))
+    if jitter_source is None:
+        random_source = secrets.SystemRandom()
+        jitter_source = random_source.random
     delay = interval
     while not stop_event.is_set():
         try:
@@ -2128,10 +2323,12 @@ def run_control_loop(
         else:
             next_delay = interval
             delay = interval
+        jitter = 0.8 + 0.4 * max(0.0, min(1.0, float(jitter_source())))
+        wait_delay = min(float(maximum_backoff), max(1.0, delay * jitter))
         if sleeper is None:
-            stop_event.wait(delay)
+            stop_event.wait(wait_delay)
         else:
-            sleeper(delay)
+            sleeper(wait_delay)
         delay = next_delay
 
 

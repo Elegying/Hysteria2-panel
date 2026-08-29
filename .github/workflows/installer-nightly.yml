@@ -37,27 +37,27 @@ jobs:
           - platform: ubuntu-24.04
             architecture: amd64
             runner: ubuntu-24.04
-            base_image: ubuntu:24.04
+            base_image: ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
           - platform: ubuntu-24.04
             architecture: arm64
             runner: ubuntu-24.04-arm
-            base_image: ubuntu:24.04
+            base_image: ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
           - platform: debian-stable
             architecture: amd64
             runner: ubuntu-24.04
-            base_image: debian:stable
+            base_image: debian:stable@sha256:7fa362f5e7c036d7f45621a6c721c03493cdcb5889adfcd65587759e34fe4c6f
           - platform: debian-stable
             architecture: arm64
             runner: ubuntu-24.04-arm
-            base_image: debian:stable
+            base_image: debian:stable@sha256:7fa362f5e7c036d7f45621a6c721c03493cdcb5889adfcd65587759e34fe4c6f
           - platform: rocky-9
             architecture: amd64
             runner: ubuntu-24.04
-            base_image: rockylinux:9
+            base_image: rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6
           - platform: rocky-9
             architecture: arm64
             runner: ubuntu-24.04-arm
-            base_image: rockylinux:9
+            base_image: rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build a clean systemd host

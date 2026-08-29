@@ -76,6 +76,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -148,6 +151,18 @@ jobs:
           if missing:
               raise SystemExit("README signed bootstrap is incomplete: {}".format(missing))
           PY
+      - name: Reject secrets and retired infrastructure in publication history
+        env:
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${BASE_REVISION}"
+          if ! git rev-parse --verify "${base}^{commit}" >/dev/null 2>&1; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          python .github/scripts/check_history_privacy.py \
+            --current-tree --base "${base}" --head "${GITHUB_SHA}"
       - name: Install pinned audit tools
         run: python -m pip install ruff==0.12.11 bandit==1.8.6
       - name: Lint Python

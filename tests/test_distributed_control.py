@@ -151,6 +151,49 @@ class SignedNodeRequestTests(DistributedControlCase):
                 self.snapshot(self.nodes[1], 10), remote_ip="203.0.113.2"
             )
 
+    def test_control_cycle_batches_accounting_snapshot_and_command_poll(self):
+        self.db.create_proxy_user("alice")
+        command = self.db.queue_node_command(
+            self.nodes[0], "REFRESH_SNAPSHOT", {}, self.now[0]
+        )
+        payload = self.common(self.nodes[0], 91)
+        payload.update(
+            {
+                "cycleId": "9" * 32,
+                "trafficBatches": [
+                    {
+                        "batchId": "8" * 32,
+                        "observedAt": self.now[0],
+                        "traffic": {"alice": {"tx": 10, "rx": 20}},
+                    }
+                ],
+                "onlineSnapshot": {
+                    "snapshotId": "7" * 32,
+                    "sequence": 1,
+                    "observedAt": self.now[0],
+                    "trafficAckedAt": self.now[0] - MAX_STATE_AGE_SECONDS - 1,
+                    "online": {"alice": 1},
+                },
+                "commandPoll": {"requestId": "6" * 32},
+            }
+        )
+
+        result = self.service.control_cycle(payload, remote_ip="203.0.113.1")
+
+        self.assertEqual("9" * 32, result["cycleId"])
+        self.assertEqual("8" * 32, result["traffic"][0]["batchId"])
+        self.assertTrue(result["traffic"][0]["committed"])
+        self.assertEqual(1, result["online"]["sequence"])
+        self.assertEqual(command["commandId"], result["commands"][0]["commandId"])
+        with sqlite3.connect(str(self.db_path)) as connection:
+            counters = connection.execute(
+                "SELECT tx_bytes, rx_bytes FROM proxy_users WHERE name = 'alice'"
+            ).fetchone()
+        self.assertEqual((10, 20), counters)
+        self.assertEqual({"alice": 1}, self.db.node_online_counts(self.nodes[0]))
+        with self.assertRaises(NodeRequestRejected):
+            self.service.control_cycle(payload, remote_ip="203.0.113.1")
+
 
 class OnlineSnapshotTests(DistributedControlCase):
     def test_snapshot_replaces_counts_monotonically_and_exposes_freshness(self):
@@ -1055,10 +1098,84 @@ class NodeAgentProtocolTests(unittest.TestCase):
             "https://panel.example.com:19998/api/v1/node-auth-decisions",
             captured["url"],
         )
-        self.assertEqual(10, captured["timeout"])
+        self.assertEqual(8, captured["timeout"])
         self.assertTrue(captured["message"].startswith(b"hy2panel-node-auth-v1\n"))
         self.assertNotIn(b"signature", captured["message"])
         self.assertEqual(base64.b64encode(b"s" * 64).decode(), captured["body"]["signature"])
+
+    def test_protocol_client_sends_one_bounded_control_cycle_request(self):
+        state = self.root / "registration.json"
+        state.write_text(
+            json.dumps(
+                {
+                    "nodeId": "d" * 32,
+                    "panelUrl": "https://panel.example.com:19998",
+                    "registeredAt": 1,
+                    "status": "PENDING_VERIFICATION",
+                }
+            )
+        )
+        state.chmod(0o600)
+        private_key = self.root / "private.pem"
+        private_key.write_text("not-read-by-test-signer")
+        private_key.chmod(0o600)
+        captured = {}
+
+        def opener(request, timeout):
+            captured["url"] = request.full_url
+            captured["body"] = json.loads(request.data)
+            captured["timeout"] = timeout
+            return self.Response(
+                json.dumps(
+                    {
+                        "cycleId": captured["body"]["cycleId"],
+                        "acceptedAt": 2_000_000_000,
+                        "traffic": [
+                            {
+                                "batchId": "a" * 32,
+                                "committed": True,
+                                "duplicate": False,
+                                "unknownUsers": 0,
+                            }
+                        ],
+                        "online": {
+                            "snapshotId": "b" * 32,
+                            "sequence": 1,
+                            "acceptedAt": 2_000_000_000,
+                        },
+                        "commands": [],
+                        "polledAt": 2_000_000_000,
+                    }
+                ).encode()
+            )
+
+        messages = []
+        client = node_agent.NodeProtocolClient(
+            state,
+            private_key,
+            opener=opener,
+            signer=lambda _path, message: messages.append(message) or b"s" * 64,
+            clock=lambda: 2_000_000_000,
+            nonce_factory=lambda _size: nonce(92),
+        )
+        result = client.send_control_cycle(
+            [{"batchId": "a" * 32, "observedAt": 2_000_000_000, "traffic": {}}],
+            {
+                "snapshotId": "b" * 32,
+                "sequence": 1,
+                "observedAt": 2_000_000_000,
+                "trafficAckedAt": 2_000_000_000,
+                "online": {},
+            },
+        )
+
+        self.assertEqual(
+            "https://panel.example.com:19998/api/v1/node-control-cycles",
+            captured["url"],
+        )
+        self.assertEqual(8, captured["timeout"])
+        self.assertTrue(messages[0].startswith(b"hy2panel-node-control-cycle-v1\n"))
+        self.assertEqual("a" * 32, result["traffic"][0]["batchId"])
 
     def test_signer_streams_secret_bearing_requests_without_a_temp_file(self):
         message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
@@ -1347,11 +1464,157 @@ class NodeAgentProtocolTests(unittest.TestCase):
             cycle.run_once()
 
         self.assertIn("collect", calls)
+        self.assertIn("poll", calls)
         self.assertEqual(2, len(spool.pending()))
         self.assertIn(
             {"alice": {"tx": 30, "rx": 40}},
             [batch["traffic"] for batch in spool.pending()],
         )
+
+    def test_control_cycle_combines_upload_snapshot_and_command_poll(self):
+        calls = []
+
+        class Stats:
+            def collect_and_clear(self):
+                calls.append("collect")
+                return {"alice": {"tx": 10, "rx": 20}}
+
+            def online(self):
+                calls.append("online")
+                return {"alice": 1}
+
+        class Protocol:
+            def send_control_cycle(self, batches, snapshot):
+                calls.append(("combined", len(batches), snapshot["online"]))
+                return {
+                    "acceptedAt": 2_000_000_000,
+                    "traffic": [
+                        {"batchId": batch["batchId"], "committed": True}
+                        for batch in batches
+                    ],
+                    "online": {
+                        "snapshotId": snapshot["snapshotId"],
+                        "sequence": snapshot["sequence"],
+                    },
+                    "commands": [],
+                }
+
+            def poll_commands(self):
+                calls.append("legacy-poll")
+                return []
+
+        root = Path(self.temp_dir.name)
+        spool = node_agent.DurableTrafficSpool(root / "combined-spool")
+        state = node_agent.ProtocolState(root / "combined-state.json")
+        node_agent.NodeControlCycle(
+            Protocol(), Stats(), spool, state, clock=lambda: 2_000_000_000
+        ).run_once()
+
+        self.assertEqual([], spool.pending())
+        self.assertEqual(2_000_000_000, state.traffic_acked_at())
+        self.assertIn(("combined", 1, {"alice": 1}), calls)
+        self.assertNotIn("legacy-poll", calls)
+
+    def test_control_cycle_falls_back_only_once_when_old_panel_returns_404(self):
+        calls = []
+
+        class Stats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {}
+
+        class Protocol:
+            def send_control_cycle(self, _batches, _snapshot):
+                calls.append("combined")
+                raise node_agent.ProtocolNotSupported("old panel")
+
+            def send_traffic(self, batch):
+                calls.append("traffic")
+                return {"batchId": batch["batchId"], "committed": True}
+
+            def send_online(self, sequence, _online, _traffic_acked_at):
+                calls.append("snapshot")
+                return {"sequence": sequence}
+
+            def poll_commands(self):
+                calls.append("poll")
+                return []
+
+        root = Path(self.temp_dir.name)
+        cycle = node_agent.NodeControlCycle(
+            Protocol(),
+            Stats(),
+            node_agent.DurableTrafficSpool(root / "fallback-spool"),
+            node_agent.ProtocolState(root / "fallback-state.json"),
+            clock=lambda: 2_000_000_000,
+        )
+        cycle.run_once()
+        cycle.run_once()
+
+        self.assertEqual(1, calls.count("combined"))
+        self.assertEqual(2, calls.count("poll"))
+        self.assertEqual(2, calls.count("traffic"))
+
+    def test_combined_cycle_keeps_the_serialized_request_below_the_http_limit(self):
+        captured = {}
+
+        class Stats:
+            def collect_and_clear(self):
+                raise AssertionError("full spool must be drained before collecting")
+
+            def online(self):
+                return {}
+
+        class Protocol:
+            def send_control_cycle(self, batches, snapshot):
+                captured["count"] = len(batches)
+                captured["size"] = len(
+                    json.dumps(
+                        {"trafficBatches": batches, "onlineSnapshot": snapshot},
+                        separators=(",", ":"),
+                    ).encode()
+                )
+                return {
+                    "acceptedAt": 2_000_000_000,
+                    "traffic": [
+                        {"batchId": batch["batchId"], "committed": True}
+                        for batch in batches
+                    ],
+                    "online": (
+                        None
+                        if snapshot is None
+                        else {
+                            "snapshotId": snapshot["snapshotId"],
+                            "sequence": snapshot["sequence"],
+                        }
+                    ),
+                    "commands": [],
+                }
+
+        root = Path(self.temp_dir.name)
+        spool = node_agent.DurableTrafficSpool(
+            root / "bounded-combined-spool", max_entries=8
+        )
+        traffic = {
+            "user-{:055d}".format(index): {"tx": 1, "rx": 1}
+            for index in range(1000)
+        }
+        for observed_at in range(2_000_000_000, 2_000_000_008):
+            spool.enqueue(traffic, observed_at)
+        cycle = node_agent.NodeControlCycle(
+            Protocol(),
+            Stats(),
+            spool,
+            node_agent.ProtocolState(root / "bounded-combined-state.json"),
+            clock=lambda: 2_000_000_010,
+        )
+        cycle.run_once()
+
+        self.assertLess(captured["count"], 8)
+        self.assertLessEqual(captured["size"], 480 * 1024)
+        self.assertGreater(len(spool.pending()), 0)
 
     def test_control_cycle_persists_success_before_command_ack(self):
         calls = []
@@ -1564,7 +1827,7 @@ class NodeAgentProtocolTests(unittest.TestCase):
         finally:
             second.server_close()
 
-    def test_control_loop_uses_fixed_polling_and_bounded_failure_backoff(self):
+    def test_control_loop_uses_jittered_polling_and_bounded_failure_backoff(self):
         calls = []
         stopped = threading.Event()
 
@@ -1581,9 +1844,13 @@ class NodeAgentProtocolTests(unittest.TestCase):
             if len(delays) == 2:
                 stopped.set()
 
-        node_agent.run_control_loop(Cycle(), stopped, sleeper=sleeper)
+        node_agent.run_control_loop(
+            Cycle(), stopped, sleeper=sleeper, jitter_source=lambda: 1.0
+        )
         self.assertEqual([("cycle",), ("cycle",)], calls)
-        self.assertEqual([2, 2], delays)
+        self.assertEqual(2, len(delays))
+        self.assertAlmostEqual(2.4, delays[0])
+        self.assertAlmostEqual(2.4, delays[1])
 
     def test_snapshot_refresh_allows_the_bounded_control_retry_budget(self):
         now = 2_000_000_000

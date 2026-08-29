@@ -1,4 +1,6 @@
 import importlib.util
+import hashlib
+import json
 import unittest
 from pathlib import Path
 
@@ -10,6 +12,10 @@ VERIFY_RUN_SPEC = importlib.util.spec_from_file_location(
 )
 verify_release_run = importlib.util.module_from_spec(VERIFY_RUN_SPEC)
 VERIFY_RUN_SPEC.loader.exec_module(verify_release_run)
+SBOM_PATH = ROOT / ".github" / "scripts" / "generate_release_sbom.py"
+SBOM_SPEC = importlib.util.spec_from_file_location("generate_release_sbom", SBOM_PATH)
+generate_release_sbom = importlib.util.module_from_spec(SBOM_SPEC)
+SBOM_SPEC.loader.exec_module(generate_release_sbom)
 
 
 class ReleaseRunVerifierTests(unittest.TestCase):
@@ -225,17 +231,19 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         self.assertIn("--draft", source)
         self.assertIn("release is not a draft", source)
         self.assertIn(
-            'gh release upload "${RELEASE_TAG}" install.sh install.sh.sigstore.json --clobber',
+            'gh release upload "${RELEASE_TAG}" install.sh install.sh.sigstore.json sbom.spdx.json sbom.spdx.json.sigstore.json --clobber',
             source,
         )
         self.assertIn("gh release download", source)
         self.assertIn(
-            'expected = {"install.sh", "install.sh.sigstore.json"}',
+            'expected = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}',
             source,
         )
         self.assertIn("draft release has unexpected asset set", source)
         self.assertIn("cmp --silent install.sh", source)
         self.assertIn("cosign sign-blob --yes --bundle install.sh.sigstore.json install.sh", source)
+        self.assertIn("generate_release_sbom.py", source)
+        self.assertIn("cosign sign-blob --yes --bundle sbom.spdx.json.sigstore.json sbom.spdx.json", source)
         self.assertIn("cosign verify-blob install.sh", source)
         self.assertIn("--certificate-identity", source)
         self.assertIn(
@@ -267,7 +275,7 @@ class InstallerPlatformWorkflowTests(unittest.TestCase):
         ).read_text()
 
         self.assertEqual(source.count("platform: debian-stable"), 2)
-        self.assertGreaterEqual(source.count("base_image: debian:stable"), 2)
+        self.assertGreaterEqual(source.count("base_image: debian:stable@sha256:"), 2)
         debian_entries = source.split("platform: debian-stable")[1:]
         self.assertTrue(any("architecture: amd64" in entry[:180] for entry in debian_entries))
         self.assertTrue(any("architecture: arm64" in entry[:180] for entry in debian_entries))
@@ -294,12 +302,13 @@ class DistributionSyntheticWorkflowTests(unittest.TestCase):
         )
         self.assertIn("install.sh.sigstore.json", source)
         self.assertIn(
-            'expected = {"install.sh", "install.sh.sigstore.json"}',
+            'expected = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}',
             source,
         )
         self.assertIn("latest release has unexpected asset set", source)
         self.assertIn("cmp --silent", source)
         self.assertIn("cosign verify-blob", source)
+        self.assertIn("sbom.spdx.json", source)
         self.assertIn("@refs/tags/${RELEASE_TAG}", source)
         self.assertIn("if: failure()", source)
         self.assertIn("::error title=Anonymous release distribution unavailable", source)
@@ -307,6 +316,22 @@ class DistributionSyntheticWorkflowTests(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", source)
         self.assertNotIn("github.token", source)
         self.assertNotIn("secrets.", source)
+
+
+class ReleaseSbomTests(unittest.TestCase):
+    def test_generator_inventory_is_bound_to_the_source_tree(self):
+        document = generate_release_sbom.build_sbom(ROOT)
+        self.assertEqual("SPDX-2.3", document["spdxVersion"])
+        package = document["packages"][0]
+        self.assertEqual("Hysteria2-panel", package["name"])
+        installer = next(
+            entry for entry in document["files"] if entry["fileName"] == "./install.sh"
+        )
+        self.assertEqual(
+            hashlib.sha256((ROOT / "install.sh").read_bytes()).hexdigest(),
+            installer["checksums"][0]["checksumValue"],
+        )
+        self.assertNotIn(".git/", json.dumps(document))
 
 
 class ReleaseDocumentationTests(unittest.TestCase):
