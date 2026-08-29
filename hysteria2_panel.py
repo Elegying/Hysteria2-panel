@@ -9,6 +9,7 @@ import errno
 import fcntl
 import functools
 import getpass
+import grp
 import gzip
 import hashlib
 import heapq
@@ -78,6 +79,7 @@ from hy2panel.release import UpdateChecker, UpdateInstaller
 from hy2panel.systemd import SystemdNotifier
 from hy2panel.version import PANEL_VERSION
 from hy2panel.web_assets import FAVICON_SVG, PAGE_SCRIPT, PAGE_STYLE
+from offsite_backup import OffsiteBackupRunner
 
 
 SCRYPT_N = 1 << 14
@@ -1792,6 +1794,26 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS usage_origin_users_name_idx
                     ON usage_origin_users(user_name COLLATE NOCASE);
+                CREATE TABLE IF NOT EXISTS origin_traffic_daily (
+                    origin_id TEXT NOT NULL,
+                    usage_date TEXT NOT NULL CHECK (
+                        length(usage_date) = 10
+                        AND substr(usage_date, 5, 1) = '-'
+                        AND substr(usage_date, 8, 1) = '-'
+                    ),
+                    tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (tx_bytes >= 0),
+                    rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (rx_bytes >= 0),
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (origin_id, usage_date)
+                );
+                CREATE TABLE IF NOT EXISTS origin_traffic_budgets (
+                    origin_id TEXT PRIMARY KEY,
+                    limit_bytes INTEGER NOT NULL CHECK (limit_bytes >= 0),
+                    warning_percent INTEGER NOT NULL DEFAULT 80
+                        CHECK (warning_percent BETWEEN 1 AND 99),
+                    updated_by TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS nodes (
                     node_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -1965,6 +1987,16 @@ class Database:
                 "dns_admitted_by": "ALTER TABLE nodes ADD COLUMN dns_admitted_by TEXT",
                 "dns_removed_at": "ALTER TABLE nodes ADD COLUMN dns_removed_at INTEGER",
                 "dns_removed_by": "ALTER TABLE nodes ADD COLUMN dns_removed_by TEXT",
+                "lifecycle_state": (
+                    "ALTER TABLE nodes ADD COLUMN lifecycle_state "
+                    "TEXT NOT NULL DEFAULT 'active'"
+                ),
+                "lifecycle_changed_at": (
+                    "ALTER TABLE nodes ADD COLUMN lifecycle_changed_at INTEGER"
+                ),
+                "lifecycle_changed_by": (
+                    "ALTER TABLE nodes ADD COLUMN lifecycle_changed_by TEXT"
+                ),
             }
             for column, statement in node_migrations.items():
                 if column not in node_columns:
@@ -2385,6 +2417,17 @@ class Database:
                 updated_at = excluded.updated_at""",
             (origin_id, user_name, tx, rx, now),
         )
+        usage_date = time.strftime("%Y-%m-%d", time.gmtime(int(now)))
+        connection.execute(
+            """INSERT INTO origin_traffic_daily(
+                origin_id, usage_date, tx_bytes, rx_bytes, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(origin_id, usage_date) DO UPDATE SET
+                tx_bytes = origin_traffic_daily.tx_bytes + excluded.tx_bytes,
+                rx_bytes = origin_traffic_daily.rx_bytes + excluded.rx_bytes,
+                updated_at = MAX(origin_traffic_daily.updated_at, excluded.updated_at)""",
+            (origin_id, usage_date, tx, rx, int(now)),
+        )
 
     def list_usage_origins(self):
         with self._connect() as connection:
@@ -2401,6 +2444,142 @@ class Database:
                     ORDER BY o.created_at, o.origin_id"""
                 )
             ]
+
+    @staticmethod
+    def _validate_budget_origin_id(origin_id):
+        origin_id = str(origin_id or "")
+        if not re.fullmatch(r"(?:local|node):[0-9a-f]{32}", origin_id):
+            raise ValueError("traffic budget origin is invalid")
+        return origin_id
+
+    def set_origin_budget(
+        self, origin_id, limit_bytes, warning_percent, actor, updated_at=None
+    ):
+        origin_id = self._validate_budget_origin_id(origin_id)
+        if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int):
+            raise ValueError("traffic budget limit is invalid")
+        if not 0 <= limit_bytes <= 2**63 - 1:
+            raise ValueError("traffic budget limit is invalid")
+        if (
+            isinstance(warning_percent, bool)
+            or not isinstance(warning_percent, int)
+            or not 1 <= warning_percent <= 99
+        ):
+            raise ValueError("traffic budget warning threshold is invalid")
+        actor = str(actor or "")
+        if not NAME_PATTERN.fullmatch(actor):
+            raise ValueError("traffic budget actor is invalid")
+        updated_at = int(time.time()) if updated_at is None else int(updated_at)
+        with self._connect() as connection:
+            if origin_id.startswith("node:"):
+                node_id = origin_id[5:]
+                if connection.execute(
+                    "SELECT 1 FROM nodes WHERE node_id = ?", (node_id,)
+                ).fetchone() is None:
+                    raise ValueError("traffic budget node does not exist")
+            connection.execute(
+                """INSERT INTO origin_traffic_budgets(
+                    origin_id, limit_bytes, warning_percent, updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(origin_id) DO UPDATE SET
+                    limit_bytes = excluded.limit_bytes,
+                    warning_percent = excluded.warning_percent,
+                    updated_by = excluded.updated_by,
+                    updated_at = excluded.updated_at""",
+                (origin_id, limit_bytes, warning_percent, actor, updated_at),
+            )
+        return self.get_origin_budget(origin_id, updated_at)
+
+    @staticmethod
+    def _origin_budget_result(origin_id, period, budget, used):
+        limit_bytes = int(budget["limit_bytes"]) if budget is not None else 0
+        warning_percent = (
+            int(budget["warning_percent"]) if budget is not None else 80
+        )
+        used = int(used)
+        if limit_bytes <= 0:
+            percent = 0.0
+            status = "disabled"
+        else:
+            percent = round(used * 100.0 / limit_bytes, 1)
+            if used >= limit_bytes:
+                status = "exhausted"
+            elif used * 100 >= limit_bytes * warning_percent:
+                status = "warning"
+            else:
+                status = "normal"
+        return {
+            "origin_id": origin_id,
+            "period": period,
+            "limit_bytes": limit_bytes,
+            "warning_percent": warning_percent,
+            "used_bytes": used,
+            "remaining_bytes": max(0, limit_bytes - used) if limit_bytes else None,
+            "percent": percent,
+            "status": status,
+            "updated_by": budget["updated_by"] if budget is not None else None,
+            "updated_at": budget["updated_at"] if budget is not None else None,
+        }
+
+    def get_origin_budget(self, origin_id, now=None):
+        return self.list_origin_budgets([origin_id], now)[0]
+
+    def list_origin_budgets(self, origin_ids, now=None):
+        if not isinstance(origin_ids, (list, tuple, set)) or len(origin_ids) > 1024:
+            raise ValueError("traffic budget origins are invalid")
+        origin_ids = [self._validate_budget_origin_id(item) for item in origin_ids]
+        if not origin_ids:
+            return []
+        if len(set(origin_ids)) != len(origin_ids):
+            raise ValueError("traffic budget origins are invalid")
+        now = int(time.time()) if now is None else int(now)
+        current = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
+        period = current.strftime("%Y-%m")
+        period_start = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if period_start.month == 12:
+            period_end = period_start.replace(year=period_start.year + 1, month=1)
+        else:
+            period_end = period_start.replace(month=period_start.month + 1)
+        first_usage_date = period_start.strftime("%Y-%m-%d")
+        next_usage_date = period_end.strftime("%Y-%m-%d")
+        budgets = {}
+        usage = {}
+        with self._connect() as connection:
+            for row in connection.execute(
+                """SELECT origin_id, limit_bytes, warning_percent,
+                    updated_by, updated_at FROM origin_traffic_budgets"""
+            ):
+                budgets[row["origin_id"]] = row
+            for row in connection.execute(
+                """SELECT origin_id, COALESCE(SUM(tx_bytes + rx_bytes), 0) AS used
+                FROM origin_traffic_daily
+                WHERE usage_date >= ? AND usage_date < ? GROUP BY origin_id""",
+                (first_usage_date, next_usage_date),
+            ):
+                usage[row["origin_id"]] = int(row["used"])
+        return [
+            self._origin_budget_result(
+                origin_id,
+                period,
+                budgets.get(origin_id),
+                usage.get(origin_id, 0),
+            )
+            for origin_id in origin_ids
+        ]
+
+    def origin_budget_status_counts(self, now=None):
+        with self._connect() as connection:
+            origin_ids = [
+                row["origin_id"]
+                for row in connection.execute(
+                    "SELECT origin_id FROM origin_traffic_budgets "
+                    "ORDER BY origin_id LIMIT 1024"
+                )
+            ]
+        counts = {"disabled": 0, "normal": 0, "warning": 0, "exhausted": 0}
+        for budget in self.list_origin_budgets(origin_ids, now):
+            counts[budget["status"]] += 1
+        return counts
 
     def register_usage_origin(
         self, origin_id, origin_kind, origin_name, node_id=None, created_at=None
@@ -3475,12 +3654,16 @@ class Database:
                     connection, node_id, "online", nonce_digest, accepted_at
                 )
                 node = connection.execute(
-                    """SELECT policy_state FROM nodes
+                    """SELECT policy_state, lifecycle_state FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
                 ).fetchone()
-                if node is None or node["policy_state"] != "protocol_ready":
+                if (
+                    node is None
+                    or node["policy_state"] != "protocol_ready"
+                    or node["lifecycle_state"] not in {"active", "draining"}
+                ):
                     raise sqlite3.IntegrityError("node is not protocol ready")
                 previous_snapshot = connection.execute(
                     "SELECT sequence FROM node_online_snapshots WHERE node_id = ?",
@@ -3580,12 +3763,16 @@ class Database:
                     connection, node_id, "auth", nonce_digest, now
                 )
                 node = connection.execute(
-                    """SELECT policy_state FROM nodes
+                    """SELECT policy_state, lifecycle_state FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
                 ).fetchone()
-                if node is None or node["policy_state"] != "protocol_ready":
+                if (
+                    node is None
+                    or node["policy_state"] != "protocol_ready"
+                    or node["lifecycle_state"] not in {"active", "draining"}
+                ):
                     raise sqlite3.IntegrityError("node is not protocol ready")
                 existing = connection.execute(
                     """SELECT decision_id, allowed, user_name, expires_at
@@ -3621,7 +3808,8 @@ class Database:
                         """SELECT COUNT(*) FROM nodes
                         WHERE policy_state = 'protocol_ready'
                             AND status = 'pending_verification'
-                            AND verified_at IS NOT NULL"""
+                            AND verified_at IS NOT NULL
+                            AND lifecycle_state IN ('active', 'draining')"""
                     ).fetchone()[0]
                     fresh_count = connection.execute(
                         """SELECT COUNT(*) FROM nodes AS n
@@ -3629,6 +3817,7 @@ class Database:
                         WHERE n.policy_state = 'protocol_ready'
                             AND n.status = 'pending_verification'
                             AND n.verified_at IS NOT NULL
+                            AND n.lifecycle_state IN ('active', 'draining')
                             AND s.accepted_at >= ? AND s.observed_at >= ?
                             AND s.traffic_acked_at >= ?""",
                         (
@@ -3655,7 +3844,8 @@ class Database:
                             JOIN nodes AS n ON n.node_id = c.node_id
                             WHERE c.user_name = ? COLLATE NOCASE
                                 AND n.policy_state = 'protocol_ready'
-                                AND n.status = 'pending_verification'""",
+                                AND n.status = 'pending_verification'
+                                AND n.lifecycle_state IN ('active', 'draining')""",
                             (user_name,),
                         ).fetchone()[0]
                         pending = connection.execute(
@@ -3735,13 +3925,15 @@ class Database:
                 ready_count = connection.execute(
                     """SELECT COUNT(*) FROM nodes
                     WHERE policy_state = 'protocol_ready'
-                        AND status = 'pending_verification' AND verified_at IS NOT NULL"""
+                        AND status = 'pending_verification' AND verified_at IS NOT NULL
+                        AND lifecycle_state IN ('active', 'draining')"""
                 ).fetchone()[0]
                 fresh_count = connection.execute(
                     """SELECT COUNT(*) FROM nodes AS n
                     JOIN node_online_snapshots AS s ON s.node_id = n.node_id
                     WHERE n.policy_state = 'protocol_ready'
                         AND n.status = 'pending_verification' AND n.verified_at IS NOT NULL
+                        AND n.lifecycle_state IN ('active', 'draining')
                         AND s.accepted_at >= ? AND s.observed_at >= ?
                         AND s.traffic_acked_at >= ?""",
                     (
@@ -3766,7 +3958,8 @@ class Database:
                     JOIN nodes AS n ON n.node_id = c.node_id
                     WHERE c.user_name = ? COLLATE NOCASE
                         AND n.policy_state = 'protocol_ready'
-                        AND n.status = 'pending_verification'""",
+                        AND n.status = 'pending_verification'
+                        AND n.lifecycle_state IN ('active', 'draining')""",
                     (user["name"],),
                 ).fetchone()[0]
                 remote_pending = connection.execute(
@@ -3953,7 +4146,203 @@ class Database:
                 and len(set(payload["users"])) == len(payload["users"])
                 and all(NAME_PATTERN.fullmatch(str(name or "")) for name in payload["users"])
             )
-        return kind in {"REFRESH_SNAPSHOT", "FLUSH_TRAFFIC"} and payload == {}
+        return kind in {
+            "REFRESH_SNAPSHOT",
+            "FLUSH_TRAFFIC",
+            "STOP_DATA_PLANE",
+            "START_DATA_PLANE",
+        } and payload == {}
+
+    @staticmethod
+    def _insert_fixed_node_command(connection, node_id, kind, created_at):
+        command_id = uuid.uuid4().hex
+        payload = "{}"
+        connection.execute(
+            """INSERT INTO node_commands(
+                command_id, node_id, kind, payload, created_at, next_attempt_at
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (command_id, node_id, kind, payload, int(created_at), int(created_at)),
+        )
+        return {"commandId": command_id, "kind": kind, "payload": {}}
+
+    def begin_node_drain(self, node_id, actor, changed_at=None):
+        node_id = str(node_id or "")
+        actor = str(actor or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id) or not NAME_PATTERN.fullmatch(actor):
+            raise ValueError("node drain request is invalid")
+        changed_at = int(time.time()) if changed_at is None else int(changed_at)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT lifecycle_state, data_plane_state, policy_state, status
+                FROM nodes WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if (
+                node is None
+                or node["status"] != "pending_verification"
+                or node["policy_state"] != "protocol_ready"
+                or node["data_plane_state"] != "dns_admitted"
+                or node["lifecycle_state"] not in {"active", "draining"}
+            ):
+                raise ValueError("node is not eligible for safe drain")
+            if node["lifecycle_state"] == "draining":
+                return False
+            connection.execute(
+                """UPDATE nodes SET lifecycle_state = 'draining',
+                    lifecycle_changed_at = ?, lifecycle_changed_by = ?
+                WHERE node_id = ?""",
+                (changed_at, actor, node_id),
+            )
+            return True
+
+    def request_node_stop(
+        self,
+        node_id,
+        actor,
+        changed_at=None,
+        dns_removed_verified=False,
+        emergency=False,
+        freshness_seconds=MAX_STATE_AGE_SECONDS,
+    ):
+        node_id = str(node_id or "")
+        actor = str(actor or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id) or not NAME_PATTERN.fullmatch(actor):
+            raise ValueError("node stop request is invalid")
+        if not isinstance(dns_removed_verified, bool) or not isinstance(emergency, bool):
+            raise ValueError("node stop request is invalid")
+        changed_at = int(time.time()) if changed_at is None else int(changed_at)
+        freshness_seconds = max(1, int(freshness_seconds))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT lifecycle_state, policy_state, status
+                FROM nodes WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if (
+                node is None
+                or node["status"] != "pending_verification"
+                or node["policy_state"] != "protocol_ready"
+                or node["lifecycle_state"] not in {"active", "draining"}
+            ):
+                raise ValueError("node is not eligible for stop")
+            if not emergency:
+                if node["lifecycle_state"] != "draining":
+                    raise ValueError("start draining the node before stopping it")
+                if not dns_removed_verified:
+                    raise ValueError("remove the node IP from DNS before stopping it")
+                snapshot = connection.execute(
+                    """SELECT accepted_at, observed_at, traffic_acked_at
+                    FROM node_online_snapshots WHERE node_id = ?""",
+                    (node_id,),
+                ).fetchone()
+                if (
+                    snapshot is None
+                    or min(
+                        int(snapshot["accepted_at"]),
+                        int(snapshot["observed_at"]),
+                        int(snapshot["traffic_acked_at"]),
+                    )
+                    < changed_at - freshness_seconds
+                ):
+                    raise ValueError("node state is stale; wait for a fresh zero-device snapshot")
+                online = connection.execute(
+                    """SELECT COALESCE(SUM(count), 0) FROM node_online_counts
+                    WHERE node_id = ?""",
+                    (node_id,),
+                ).fetchone()[0]
+                if int(online) != 0:
+                    raise ValueError("node still has online devices")
+            if connection.execute(
+                """SELECT 1 FROM node_commands
+                WHERE node_id = ? AND acked_at IS NULL LIMIT 1""",
+                (node_id,),
+            ).fetchone() is not None:
+                raise ValueError("node still has a pending command")
+            command = self._insert_fixed_node_command(
+                connection, node_id, "STOP_DATA_PLANE", changed_at
+            )
+            connection.execute(
+                """UPDATE nodes SET lifecycle_state = 'stopping',
+                    lifecycle_changed_at = ?, lifecycle_changed_by = ?,
+                    dns_removed_at = CASE WHEN ? THEN ? ELSE dns_removed_at END,
+                    dns_removed_by = CASE WHEN ? THEN ? ELSE dns_removed_by END
+                WHERE node_id = ?""",
+                (
+                    changed_at,
+                    actor,
+                    int(dns_removed_verified),
+                    changed_at,
+                    int(dns_removed_verified),
+                    actor,
+                    node_id,
+                ),
+            )
+            return command
+
+    def request_node_resume(self, node_id, actor, changed_at=None):
+        node_id = str(node_id or "")
+        actor = str(actor or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id) or not NAME_PATTERN.fullmatch(actor):
+            raise ValueError("node resume request is invalid")
+        changed_at = int(time.time()) if changed_at is None else int(changed_at)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT lifecycle_state, policy_state, status FROM nodes
+                WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if (
+                node is None
+                or node["status"] != "pending_verification"
+                or node["policy_state"] != "protocol_ready"
+                or node["lifecycle_state"] != "stopped"
+            ):
+                raise ValueError("node is not stopped")
+            if connection.execute(
+                """SELECT 1 FROM node_commands
+                WHERE node_id = ? AND acked_at IS NULL LIMIT 1""",
+                (node_id,),
+            ).fetchone() is not None:
+                raise ValueError("node still has a pending command")
+            command = self._insert_fixed_node_command(
+                connection, node_id, "START_DATA_PLANE", changed_at
+            )
+            connection.execute(
+                """UPDATE nodes SET lifecycle_state = 'starting',
+                    lifecycle_changed_at = ?, lifecycle_changed_by = ?
+                WHERE node_id = ?""",
+                (changed_at, actor, node_id),
+            )
+            return command
+
+    def archive_stopped_node(self, node_id, actor, changed_at=None):
+        node_id = str(node_id or "")
+        actor = str(actor or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id) or not NAME_PATTERN.fullmatch(actor):
+            raise ValueError("node archive request is invalid")
+        changed_at = int(time.time()) if changed_at is None else int(changed_at)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            pending = connection.execute(
+                """SELECT COUNT(*) FROM node_commands
+                WHERE node_id = ? AND acked_at IS NULL""",
+                (node_id,),
+            ).fetchone()[0]
+            if int(pending) != 0:
+                raise ValueError("node still has a pending command")
+            updated = connection.execute(
+                """UPDATE nodes SET lifecycle_state = 'archived',
+                    lifecycle_changed_at = ?, lifecycle_changed_by = ?
+                WHERE node_id = ? AND lifecycle_state = 'stopped'
+                    AND status = 'pending_verification'""",
+                (changed_at, actor, node_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("only a stopped node can be archived")
+            return True
 
     def _queue_kick_users_on_ready_nodes(self, connection, names, created_at):
         if (
@@ -3982,6 +4371,7 @@ class Database:
             """SELECT node_id FROM nodes
             WHERE policy_state = 'protocol_ready'
                 AND status = 'pending_verification' AND verified_at IS NOT NULL
+                AND lifecycle_state IN ('active', 'draining')
             ORDER BY node_id"""
         ):
             for payload in payloads:
@@ -4028,7 +4418,8 @@ class Database:
         with self._connect() as connection:
             node = connection.execute(
                 """SELECT 1 FROM nodes WHERE node_id = ?
-                AND policy_state = 'protocol_ready' AND status = 'pending_verification'""",
+                AND policy_state = 'protocol_ready' AND status = 'pending_verification'
+                AND lifecycle_state IN ('active', 'draining')""",
                 (node_id,),
             ).fetchone()
             if node is None:
@@ -4051,7 +4442,8 @@ class Database:
                 node = connection.execute(
                     """SELECT 1 FROM nodes WHERE node_id = ?
                     AND policy_state = 'protocol_ready' AND status = 'pending_verification'
-                    AND verified_at IS NOT NULL""",
+                    AND verified_at IS NOT NULL
+                    AND lifecycle_state <> 'archived'""",
                     (node_id,),
                 ).fetchone()
                 if node is None:
@@ -4108,7 +4500,7 @@ class Database:
                     connection, node_id, "command-ack", nonce_digest, accepted_at
                 )
                 row = connection.execute(
-                    """SELECT acked_at FROM node_commands
+                    """SELECT acked_at, kind FROM node_commands
                     WHERE command_id = ? AND node_id = ?""",
                     (command_id, node_id),
                 ).fetchone()
@@ -4122,6 +4514,22 @@ class Database:
                         WHERE command_id = ? AND node_id = ?""",
                         (int(accepted_at), command_id, node_id),
                     )
+                    if row["kind"] == "STOP_DATA_PLANE":
+                        connection.execute(
+                            """UPDATE nodes SET lifecycle_state = 'stopped',
+                                lifecycle_changed_at = ?, data_plane_state = 'direct_canary_passed',
+                                dns_admitted_at = NULL, dns_admitted_by = NULL
+                            WHERE node_id = ? AND lifecycle_state = 'stopping'""",
+                            (int(accepted_at), node_id),
+                        )
+                    elif row["kind"] == "START_DATA_PLANE":
+                        connection.execute(
+                            """UPDATE nodes SET lifecycle_state = 'active',
+                                lifecycle_changed_at = ?, data_plane_state = 'direct_canary_passed',
+                                dns_removed_at = NULL, dns_removed_by = NULL
+                            WHERE node_id = ? AND lifecycle_state = 'starting'""",
+                            (int(accepted_at), node_id),
+                        )
                     connection.execute(
                         "DELETE FROM node_commands WHERE acked_at < ?",
                         (int(accepted_at) - 30 * 86400,),
@@ -4669,6 +5077,9 @@ class PanelApplication:
         node_heartbeat_service=None,
         node_control_service=None,
         data_plane_bootstrap_service=None,
+        offsite_backup_status_path=Path(
+            "/var/lib/hysteria2-panel/offsite-backup-status.json"
+        ),
     ):
         self.database = database
         self.public_host = public_host
@@ -4696,6 +5107,7 @@ class PanelApplication:
         self.node_heartbeat_service = node_heartbeat_service
         self.node_control_service = node_control_service
         self.data_plane_bootstrap_service = data_plane_bootstrap_service
+        self.offsite_backup_status_path = Path(offsite_backup_status_path)
         self.update_result = None
         self.update_lock = threading.Lock()
         self.node_name = node_name
@@ -4796,7 +5208,22 @@ class PanelHandler(JsonHandler):
         return is_loopback_address(self.client_address[0])
 
     def _send_metrics(self):
-        body = self.app.health_monitor.prometheus_metrics().encode("utf-8")
+        metrics = self.app.health_monitor.prometheus_metrics()
+        try:
+            budget_counts = self.app.database.origin_budget_status_counts()
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            LOGGER.exception("traffic budget metrics failed")
+            budget_counts = {
+                "disabled": 0,
+                "normal": 0,
+                "warning": 0,
+                "exhausted": 0,
+            }
+        metrics += "".join(
+            "hy2panel_node_budget_{}_total {}\n".format(status, count)
+            for status, count in budget_counts.items()
+        )
+        body = metrics.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -5135,6 +5562,21 @@ class PanelHandler(JsonHandler):
         }
         machine_stats = snapshot.get("machine_stats", {})
         machine_origins = machine_stats.get("origins", [])
+        budget_origin_ids = [
+            origin["origin_id"]
+            for origin in machine_origins
+            if origin.get("kind") in {"local", "remote"}
+        ]
+        try:
+            machine_budgets = {
+                budget["origin_id"]: budget
+                for budget in self.app.database.list_origin_budgets(
+                    budget_origin_ids, int(time.time())
+                )
+            }
+        except (TypeError, ValueError):
+            LOGGER.exception("machine traffic budgets failed")
+            machine_budgets = {}
         machine_status_labels = {
             "fresh": ("新鲜", "ok"),
             "stale": ("数据过期", "warning"),
@@ -5202,8 +5644,40 @@ class PanelHandler(JsonHandler):
                 "remote": "远端数据节点",
                 "legacy": "历史归属",
             }.get(origin.get("kind"), "历史归属")
+            budget = machine_budgets.get(origin["origin_id"])
+            if budget is None:
+                budget_html = '<span class="muted">历史数据不可设置预算</span>'
+            else:
+                budget_status = {
+                    "disabled": ("未设置", "muted"),
+                    "normal": ("正常", "ok"),
+                    "warning": ("接近预算", "warning"),
+                    "exhausted": ("预算已用尽", "bad"),
+                }.get(budget["status"], ("状态未知", "warning"))
+                limit_gib = (
+                    int(budget["limit_bytes"]) // 1024**3
+                    if budget["limit_bytes"]
+                    else 0
+                )
+                used_text = _human_bytes(budget["used_bytes"])
+                limit_text = (
+                    _human_bytes(budget["limit_bytes"])
+                    if budget["limit_bytes"]
+                    else "不限"
+                )
+                budget_html = """<div class="budget-summary"><span class="{status_class}">{status}</span><small>{used} / {limit} · {percent:.1f}%</small></div><form class="budget-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><button class="compact-button secondary" type="submit">保存</button></form>""".format(
+                    status_class=budget_status[1],
+                    status=budget_status[0],
+                    used=used_text,
+                    limit=limit_text,
+                    percent=budget["percent"],
+                    origin_id=html.escape(origin["origin_id"], quote=True),
+                    csrf=csrf,
+                    limit_gib=limit_gib,
+                    warning=budget["warning_percent"],
+                )
             machine_rows.append(
-                """<tr><td data-label="节点"><strong>{name}</strong><small class="muted machine-kind">{kind}</small></td><td data-label="状态"><span class="{status_class}">{status}</span></td><td data-label="在线设备">{online}</td><td data-label="上传">{tx}</td><td data-label="下载">{rx}</td><td data-label="合计">{total}</td><td data-label="最后上报">{observed}</td></tr>""".format(
+                """<tr><td data-label="节点"><strong>{name}</strong><small class="muted machine-kind">{kind}</small></td><td data-label="状态"><span class="{status_class}">{status}</span></td><td data-label="在线设备">{online}</td><td data-label="上传">{tx}</td><td data-label="下载">{rx}</td><td data-label="合计">{total}</td><td data-label="本月预算">{budget}</td><td data-label="最后上报">{observed}</td></tr>""".format(
                     name=html.escape(str(origin.get("display_name") or "未命名节点")),
                     kind=kind_label,
                     status_class=status_class,
@@ -5215,6 +5689,7 @@ class PanelHandler(JsonHandler):
                         int(origin.get("tx_bytes") or 0)
                         + int(origin.get("rx_bytes") or 0)
                     ),
+                    budget=budget_html,
                     observed=observed_text,
                 )
             )
@@ -5224,7 +5699,7 @@ class PanelHandler(JsonHandler):
             else ""
         )
         machine_stats_section = "" if not machine_origins else (
-            """<section class="card machine-stats"><div class="section-head"><div><h2>节点统计</h2><p class="muted">设备数与 Hysteria 已结算用户流量按实际入口机器拆分；不等同于云厂商/NIC 计费流量。</p></div></div>{warning}<div class="table-wrap machine-table"><table><thead><tr><th>节点</th><th>状态</th><th>在线设备</th><th>上传</th><th>下载</th><th>合计</th><th>最后上报</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
+            """<section class="card machine-stats"><div class="section-head"><div><h2>节点统计与流量预算</h2><p class="muted">设备数与 Hysteria 已结算用户流量按实际入口机器拆分；月预算从 v0.32.0 起按 UTC 自然月统计，0 表示不限制。</p></div></div>{warning}<div class="table-wrap machine-table"><table><thead><tr><th>节点</th><th>状态</th><th>在线设备</th><th>上传</th><th>下载</th><th>合计</th><th>本月预算</th><th>最后上报</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
                 warning=machine_warning,
                 rows="".join(machine_rows),
             )
@@ -5340,6 +5815,7 @@ class PanelHandler(JsonHandler):
         current_time = int(time.time())
         for node in self.app.database.list_nodes():
             status = node["status"]
+            lifecycle_state = node.get("lifecycle_state") or "active"
             expired = bool(
                 status == "pending_registration"
                 and node.get("expires_at")
@@ -5363,6 +5839,15 @@ class PanelHandler(JsonHandler):
                 status_label, status_class = "注册链接已过期", "bad"
             else:
                 status_label, status_class = "待注册", "warning"
+            lifecycle_labels = {
+                "draining": ("摘流中", "warning"),
+                "stopping": ("正在停用", "warning"),
+                "stopped": ("已安全停用", "muted"),
+                "starting": ("正在恢复", "warning"),
+                "archived": ("已归档", "muted"),
+            }
+            if lifecycle_state in lifecycle_labels:
+                status_label, status_class = lifecycle_labels[lifecycle_state]
             node_actions = ""
             if (
                 status == "pending_registration"
@@ -5389,7 +5874,7 @@ class PanelHandler(JsonHandler):
                     fingerprint=fingerprint,
                     short_fingerprint=fingerprint[:16],
                 )
-            if status == "pending_verification":
+            if status == "pending_verification" and lifecycle_state != "archived":
                 node_actions += """<form method="post" action="/nodes/{node_id}/revoke" data-confirm="撤销后该节点的后续心跳会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">撤销节点</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
@@ -5410,7 +5895,7 @@ class PanelHandler(JsonHandler):
                     )
                 )
             policy_state = node.get("policy_state") or "standby"
-            if policy_state == "protocol_ready":
+            if policy_state == "protocol_ready" and lifecycle_state != "archived":
                 snapshot_fresh = bool(
                     node.get("last_snapshot_at")
                     and node.get("last_traffic_ack_at")
@@ -5427,6 +5912,18 @@ class PanelHandler(JsonHandler):
                     )
                 )
                 details.append(
+                    "节点运营状态：{}".format(
+                        {
+                            "active": "正常服务",
+                            "draining": "等待 DNS 撤出和设备归零",
+                            "stopping": "停止命令等待节点确认",
+                            "stopped": "数据面已停止，身份与流量队列保留",
+                            "starting": "启动命令等待节点确认",
+                            "archived": "历史记录已归档",
+                        }.get(lifecycle_state, "未知")
+                    )
+                )
+                details.append(
                     "待确认命令：{}{}".format(
                         int(node.get("pending_commands") or 0),
                         "（含失败重试 {}）".format(
@@ -5436,9 +5933,10 @@ class PanelHandler(JsonHandler):
                         else "",
                     )
                 )
-                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/disable" data-confirm="停用后该节点的中央认证、快照、流量和命令都会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">停用控制协议</button></form>""".format(
-                    node_id=node["node_id"], csrf=csrf
-                )
+                if lifecycle_state == "active":
+                    node_actions += """<form method="post" action="/nodes/{node_id}/protocol/disable" data-confirm="停用后该节点的中央认证、快照、流量和命令都会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">停用控制协议</button></form>""".format(
+                        node_id=node["node_id"], csrf=csrf
+                    )
             elif verified and status == "pending_verification":
                 details.append("自动部署等待中（通常 30 秒内开始）")
                 node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这是旧节点故障恢复入口，只启用中央控制协议，不会部署 Hysteria 或修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">旧节点手动启用</button></form>""".format(
@@ -5459,6 +5957,7 @@ class PanelHandler(JsonHandler):
                 status == "pending_verification"
                 and verified
                 and policy_state == "protocol_ready"
+                and lifecycle_state == "active"
             )
             if (
                 data_plane_eligible
@@ -5490,10 +5989,28 @@ class PanelHandler(JsonHandler):
                 node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/canary/pass" data-data-plane-canary-form data-confirm="只记录该节点直连灰度通过，不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认直连灰度通过</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
-            if data_plane_eligible and data_plane_state == "dns_admitted":
-                node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/dns/remove" data-node-dns-action-form data-confirm="请先从外部 DNS 移除该节点；此操作只记录撤出并保留直连灰度状态。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">确认已撤出 DNS</button></form>""".format(
+            if (
+                lifecycle_state == "active"
+                and data_plane_state == "dns_admitted"
+                and heartbeat_fresh
+            ):
+                node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/drain" data-confirm="开始摘流不会立刻断开用户。下一步请手工从 DNS 删除此节点 IP，再等待在线设备归零。确定开始吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">1. 开始摘流</button></form>""".format(
                     node_id=node["node_id"], csrf=csrf
                 )
+            if lifecycle_state == "draining":
+                node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/stop" data-confirm="面板会先确认 DNS 已移除、设备数为 0、流量已结算；任何一项不满足都会拒绝停机。确定检查并停用吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">3. 检查并安全停用</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
+            if lifecycle_state in {"active", "draining"}:
+                node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/emergency-stop" data-confirm="紧急停用会立即停止数据面。若 DNS 仍包含此 IP，部分用户会立刻连接失败。仅在故障或流量耗尽时使用，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">紧急停用</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
+            if lifecycle_state == "stopped":
+                node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/resume" data-confirm="恢复后还需要把节点 IP 重新加入 DNS，面板检测和真实验收通过后用户才会使用。确定恢复吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="success compact-button" type="submit">恢复此节点</button></form><form method="post" action="/nodes/{node_id}/lifecycle/archive" data-confirm="请先把替换服务器按“全新节点对接”完成并加入 DNS。归档只隐藏旧节点操作入口，统计和审计仍保留。确定归档吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">换机完成，归档旧节点</button></form>""".format(
+                    node_id=node["node_id"], csrf=csrf
+                )
+            if lifecycle_state == "archived":
+                node_actions = '<span class="muted">统计与审计记录已保留</span>'
             node_rows.append(
                 """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                     name=html.escape(node["name"]),
@@ -5509,6 +6026,32 @@ class PanelHandler(JsonHandler):
             if self.app.secure_cookies and self.app.node_enrollment_service is not None
             else " disabled title=\"请先为面板启用 HTTPS\""
         )
+        offsite_backup_label = "未配置"
+        offsite_backup_class = "muted"
+        offsite_backup_detail = "配置 root-only HTTPS WebDAV 后每天自动上传并保留 30 天"
+        try:
+            status_path = self.app.offsite_backup_status_path
+            if status_path.is_file() and not status_path.is_symlink():
+                raw_status = status_path.read_bytes()
+                if len(raw_status) > 4096:
+                    raise ValueError("offsite backup status is too large")
+                offsite_status = json.loads(raw_status.decode("utf-8"))
+                state = offsite_status.get("state")
+                if state == "success":
+                    offsite_backup_label = "最近备份成功"
+                    offsite_backup_class = "ok"
+                    offsite_backup_detail = "每天一次，远端精确保留 30 天"
+                elif state == "failed":
+                    offsite_backup_label = "最近备份失败"
+                    offsite_backup_class = "bad"
+                    offsite_backup_detail = "请检查 systemctl status hysteria2-panel-offsite-backup.service"
+                elif state != "not_configured":
+                    raise ValueError("offsite backup status is invalid")
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+            LOGGER.warning("offsite backup status is unreadable")
+            offsite_backup_label = "状态不可用"
+            offsite_backup_class = "warning"
+            offsite_backup_detail = "状态文件无效；备份不会被误报为成功"
         content = """<header class="topbar"><span class="eyebrow brand">HYSTERIA CONTROL CENTER</span><h1>Hysteria 2 用户管理面板</h1><span class="topbar-spacer"></span>
 <span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">最近刷新 <strong>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
 <button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
@@ -5532,8 +6075,9 @@ class PanelHandler(JsonHandler):
 <div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong><small class="muted">180 / 90 / 30 天分级提醒</small></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
-<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">对接节点</h2><p class="muted">一条签名部署代码；随后只需核对短码并手工添加 DNS。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭对接节点弹窗">×</button></div>
-<p class="notice"><strong>自动流程：</strong>在新服务器运行下方代码 → 回到节点卡片核对 16 位指纹短码 → 等待自动完成签名心跳、FULL、主 UDP {port}/443、fq/BBR、16 MiB UDP 缓冲和双入口真实出口验收 → 按提示手工添加 <code>{public_host}</code> DNS。面板只读检测 DNS，不会写入或删除 DNS；Hysteria 长期身份只会原样复制，不会自动轮换。</p>
+<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">节点对接与停用</h2><p class="muted">按 1-2-3-4 操作；面板会把可以自动完成的步骤全部完成。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">×</button></div>
+<p class="notice"><strong>固定安全边界：</strong>面板不会自动写入或删除 DNS；Hysteria 长期身份只会原样复制，不会自动轮换；现有用户配置不会改变。</p>
+<div class="operation-guides"><section class="operation-guide"><h3>对接新节点：4 步完成</h3><ol class="numbered-steps"><li><strong>生成代码</strong><span>填写名称和公网 IP，点击“生成部署代码”。</span></li><li><strong>新机执行</strong><span>在新服务器用 root 运行整条代码，等待它显示 16 位短码。</span></li><li><strong>核对短码</strong><span>回到节点卡片逐字核对。相同后点击确认，面板自动配置 FULL、UDP {port}/443、fq/BBR 和 16 MiB 缓冲。</span></li><li><strong>添加 DNS</strong><span>真实出口验收通过后，把节点 IP 加入 <code>{public_host}</code> 的 A/AAAA；面板只读检测并自动准入。</span></li></ol></section><section class="operation-guide danger-guide"><h3>安全停用或换机：4 步完成</h3><ol class="numbered-steps"><li><strong>开始摘流</strong><span>在节点卡片点击“1. 开始摘流”，此时不会断开用户。</span></li><li><strong>删除 DNS</strong><span>手工从 <code>{public_host}</code> 删除旧节点 IP，等待 DNS 生效和在线设备归零。</span></li><li><strong>安全停用</strong><span>点击“3. 检查并安全停用”。面板确认 DNS、设备和流量 ACK 后才会停止 Hysteria，Agent、私钥和 spool 保留。</span></li><li><strong>恢复或换机</strong><span>原机恢复可直接点击“恢复此节点”；换服务器请在新机选择“全新节点对接”，加入 DNS 后再归档旧节点。“安全重绑定”只用于已部署节点重新连接面板。</span></li></ol></section></div>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">节点公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-mode">操作类型</label><select id="node-enrollment-mode" name="mode"><option value="join" selected>全新节点对接</option><option value="rebind">已有数据节点安全重绑定</option></select></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <section class="enrollment-result" data-data-plane-bootstrap-result hidden><label for="data-plane-deployment-code">数据面一键部署代码</label><textarea id="data-plane-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="data-plane-deployment-code">复制数据面部署代码</button></div><p class="muted" data-data-plane-bootstrap-expiry role="status"></p><p class="notice"><strong>安全边界：</strong>代码只携带绑定节点与来源 IP 的短时授权；不会携带 Hysteria 证书私钥、HMAC、统计密钥、用户数据，也不会修改 DNS。</p></section>
@@ -5541,7 +6085,7 @@ class PanelHandler(JsonHandler):
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">完整备份或恢复节点身份与全部用户数据。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">×</button></div>
 <p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS。当前面板管理员账号不会被替换。</p>
 <div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载完整备份</button></form></article>
-<article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article></div></div></dialog>
+<article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article><article class="detail wide-detail"><h3>每日异地备份</h3><p><strong class="{offsite_backup_class}">{offsite_backup_label}</strong></p><p class="muted">{offsite_backup_detail}。凭据只允许保存在服务器的 <code>/etc/hysteria2-panel/offsite-backup.json</code>（root:root 0600），不会进入网页、数据库或备份。</p></article></div></div></dialog>
 <dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>节点信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点信息弹窗">×</button></div>
 <div class="qr-panel" data-qr-panel hidden><canvas id="credentials-qr" class="qr-canvas" role="img" aria-label="Hysteria 2 节点配置二维码"></canvas><p class="muted">可直接扫描导入，或保存 PNG 到受信任的设备。</p></div>
 <label for="credentials-uri">Hysteria 2 节点代码</label><textarea id="credentials-uri" rows="5" readonly></textarea><div class="credential-actions"><button type="button" data-copy-target="credentials-uri">复制节点代码</button><button class="secondary" type="button" data-save-qr hidden>保存二维码 PNG</button></div><p class="notice" data-credentials-notice>关闭弹窗后会刷新当前用户列表。</p></div></dialog>
@@ -5585,6 +6129,9 @@ class PanelHandler(JsonHandler):
             csrf=csrf,
             onboarding_disabled=onboarding_disabled,
             node_rows=node_rows_html,
+            offsite_backup_class=offsite_backup_class,
+            offsite_backup_label=offsite_backup_label,
+            offsite_backup_detail=html.escape(offsite_backup_detail),
             version=PANEL_VERSION,
             update_text=update_text,
             update_action=update_action,
@@ -5854,6 +6401,93 @@ class PanelHandler(JsonHandler):
             self._audit_safely(session["username"], audit_action, node_id)
         self.send_json(200, payload)
 
+    def _handle_origin_budget(self, session, origin_id, form):
+        try:
+            limit_gib = int(form.get("limit_gib", "0"))
+            warning_percent = int(form.get("warning_percent", "80"))
+            if not 0 <= limit_gib <= (2**63 - 1) // 1024**3:
+                raise ValueError("节点预算超出允许范围")
+            allowed = {self.app.usage_manager.local_origin_id}
+            allowed.update(
+                "node:" + node["node_id"]
+                for node in self.app.database.list_nodes()
+            )
+            if origin_id not in allowed:
+                raise ValueError("节点预算来源不存在")
+            self.app.database.set_origin_budget(
+                origin_id,
+                limit_gib * 1024**3,
+                warning_percent,
+                session["username"],
+                int(time.time()),
+            )
+            self._audit_safely(
+                session["username"], "node_traffic_budget_updated", origin_id
+            )
+            self._redirect("/")
+        except (TypeError, ValueError, OverflowError) as exc:
+            self._error_page(409, str(exc))
+
+    def _handle_node_lifecycle(self, session, node_id, action):
+        now = int(time.time())
+        actor = session["username"]
+        try:
+            if action == "drain":
+                self.app.database.begin_node_drain(node_id, actor, now)
+                audit_action = "node_drain_started"
+            elif action in {"stop", "emergency-stop"}:
+                emergency = action == "emergency-stop"
+                dns_removed = False
+                if not emergency:
+                    node = next(
+                        (
+                            row
+                            for row in self.app.database.list_nodes()
+                            if row["node_id"] == node_id
+                        ),
+                        None,
+                    )
+                    if node is None:
+                        raise ValueError("节点不存在")
+                    expected = node.get("expected_ip") or node.get("observed_ip")
+                    if not expected:
+                        raise ValueError("节点没有可验证的公网 IP")
+                    try:
+                        expected = str(ipaddress.ip_address(expected))
+                        addresses = {
+                            str(ipaddress.ip_address(item[4][0]))
+                            for item in socket.getaddrinfo(
+                                self.app.public_host,
+                                None,
+                                type=socket.SOCK_STREAM,
+                            )
+                        }
+                    except (OSError, TypeError, ValueError) as exc:
+                        raise ValueError("暂时无法验证 DNS，请稍后重试") from exc
+                    dns_removed = expected not in addresses
+                self.app.database.request_node_stop(
+                    node_id,
+                    actor,
+                    now,
+                    dns_removed_verified=dns_removed,
+                    emergency=emergency,
+                )
+                audit_action = (
+                    "node_emergency_stop_requested"
+                    if emergency
+                    else "node_safe_stop_requested"
+                )
+            elif action == "resume":
+                self.app.database.request_node_resume(node_id, actor, now)
+                audit_action = "node_resume_requested"
+            else:
+                self.app.database.archive_stopped_node(node_id, actor, now)
+                audit_action = "node_archived"
+            self._audit_safely(actor, audit_action, node_id)
+            self._redirect("/")
+        except (sqlite3.IntegrityError, TypeError, ValueError) as exc:
+            self._error_page(409, str(exc))
+
     def _handle_create_node_enrollment(self, session, form):
         service = self.app.node_enrollment_service
         if not self.app.secure_cookies or service is None:
@@ -6081,6 +6715,12 @@ class PanelHandler(JsonHandler):
         if path == "/node-enrollments":
             self._handle_create_node_enrollment(session, form)
             return
+        budget_match = re.fullmatch(
+            r"/usage-origins/((?:local|node):[0-9a-f]{32})/budget", path
+        )
+        if budget_match:
+            self._handle_origin_budget(session, budget_match.group(1), form)
+            return
         enrollment_match = re.fullmatch(
             r"/node-enrollments/([0-9a-f]{32})/revoke", path
         )
@@ -6093,6 +6733,16 @@ class PanelHandler(JsonHandler):
                 self._handle_verify_node(session, node_match.group(1), form)
             else:
                 self._handle_revoke_node(session, node_match.group(1))
+            return
+        lifecycle_match = re.fullmatch(
+            r"/nodes/([0-9a-f]{32})/lifecycle/"
+            r"(drain|stop|emergency-stop|resume|archive)",
+            path,
+        )
+        if lifecycle_match:
+            self._handle_node_lifecycle(
+                session, lifecycle_match.group(1), lifecycle_match.group(2)
+            )
             return
         protocol_match = re.fullmatch(
             r"/nodes/([0-9a-f]{32})/protocol/(enable|disable)", path
@@ -8622,6 +9272,9 @@ def main(argv=None):
     sync_endpoints.add_argument("--secondary-only", action="store_true")
     sync_parser.add_argument("--quiesce", action="store_true")
     subcommands.add_parser("restore-pending", help="apply the staged backup as root")
+    subcommands.add_parser(
+        "offsite-backup", help="create and upload the daily configured WebDAV backup"
+    )
     subcommands.add_parser("recover-restore-files", help=argparse.SUPPRESS)
     subcommands.add_parser("resume-after-restore", help=argparse.SUPPRESS)
     subcommands.add_parser("recover-egress-policy", help=argparse.SUPPRESS)
@@ -8672,6 +9325,37 @@ def main(argv=None):
             if EgressPolicyManager.TRANSACTION_PATH.exists():
                 raise RuntimeError("egress policy recovery must complete before restore")
             restore_pending(settings)
+            return 0
+        if args.command == "offsite-backup":
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                raise RuntimeError("offsite-backup must run as root")
+            with defer_termination_signals():
+                database = Database(settings.database_path, settings.hmac_key)
+                database.initialize()
+                manager = BackupManager(
+                    database=database,
+                    hmac_key=settings.hmac_key,
+                    tls_cert=settings.tls_cert,
+                    tls_key=settings.tls_key,
+                    public_host=settings.public_host,
+                    hysteria_port=settings.hysteria_port,
+                    node_name=settings.node_name,
+                    work_dir=settings.database_path.parent / "backup-restore",
+                )
+
+                def create_current_archive():
+                    sync_traffic(settings)
+                    return manager.create_archive()
+
+                result = OffsiteBackupRunner(
+                    config_path="/etc/hysteria2-panel/offsite-backup.json",
+                    status_path=settings.database_path.parent
+                    / "offsite-backup-status.json",
+                    archive_factory=create_current_archive,
+                    expected_uid=0,
+                    status_gid=grp.getgrnam("hy2panel").gr_gid,
+                ).run()
+            print(json.dumps(result, separators=(",", ":")))
             return 0
         if args.command == "sync-traffic":
             if hasattr(os, "geteuid") and os.geteuid() != 0:

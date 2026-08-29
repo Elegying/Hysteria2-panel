@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.31.2"
+AGENT_VERSION = "0.32.0"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 CONTROL_LOOP_INTERVAL_SECONDS = 2
@@ -1373,6 +1373,48 @@ def _systemd_service_active(unit):
     return completed.returncode == 0
 
 
+DATA_PLANE_UNITS = (
+    "hysteria2-panel-node-hysteria-main.service",
+    "hysteria2-panel-node-hysteria-udp443.service",
+    "hysteria2-panel-node-tcp-probe-main.service",
+    "hysteria2-panel-node-tcp-probe-udp443.service",
+)
+
+
+def _set_fixed_data_plane_running(running):
+    if not isinstance(running, bool):
+        raise ProtocolError("data-plane action is invalid")
+    environment = os.environ.copy()
+    for name in ("NOTIFY_SOCKET", "WATCHDOG_PID", "WATCHDOG_USEC"):
+        environment.pop(name, None)
+    action = "start" if running else "stop"
+    try:
+        completed = subprocess.run(  # nosec B603 -- fixed executable and unit allowlist.
+            ["/bin/systemctl", action] + list(DATA_PLANE_UNITS),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=environment,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProtocolError("fixed data-plane action failed") from exc
+    if completed.returncode != 0:
+        raise ProtocolError("fixed data-plane action failed")
+    states = [_systemd_service_active(unit) for unit in DATA_PLANE_UNITS]
+    if (running and not all(states)) or (not running and any(states)):
+        raise ProtocolError("fixed data-plane state did not converge")
+
+
+def stop_node_data_plane():
+    _set_fixed_data_plane_running(False)
+
+
+def start_node_data_plane():
+    _set_fixed_data_plane_running(True)
+
+
 def _socket_is_listening(kind, port):
     if kind not in {"tcp", "udp"} or port not in {443, 19999}:
         return False
@@ -1773,7 +1815,13 @@ class CombinedLocalStatsClient:
 
 
 def execute_control_command(
-    command, stats_client, refresh_snapshot=None, flush_traffic=None
+    command,
+    stats_client,
+    refresh_snapshot=None,
+    flush_traffic=None,
+    protocol_state=None,
+    stop_data_plane=None,
+    start_data_plane=None,
 ):
     """Execute one fixed command without exposing a generic execution surface."""
     if not isinstance(command, dict) or set(command) != {"commandId", "kind", "payload"}:
@@ -1794,6 +1842,20 @@ def execute_control_command(
         if flush_traffic is None:
             raise ProtocolError("durable traffic flush callback is unavailable")
         flush_traffic()
+        return
+    if kind == "STOP_DATA_PLANE" and payload == {}:
+        if protocol_state is None or flush_traffic is None or stop_data_plane is None:
+            raise ProtocolError("data-plane stop callbacks are unavailable")
+        if not protocol_state.data_plane_stopped():
+            flush_traffic()
+            protocol_state.set_data_plane_stopped(True)
+        stop_data_plane()
+        return
+    if kind == "START_DATA_PLANE" and payload == {}:
+        if protocol_state is None or start_data_plane is None:
+            raise ProtocolError("data-plane start callbacks are unavailable")
+        start_data_plane()
+        protocol_state.set_data_plane_stopped(False)
         return
     raise ProtocolError("node command is invalid")
 
@@ -1822,7 +1884,12 @@ class ProtocolState:
             self._read()
         else:
             self._write(
-                {"sequence": 0, "trafficAckedAt": 0, "completedCommands": []}
+                {
+                    "sequence": 0,
+                    "trafficAckedAt": 0,
+                    "completedCommands": [],
+                    "dataPlaneStopped": False,
+                }
             )
 
     def _read(self):
@@ -1835,16 +1902,29 @@ class ProtocolState:
             raise ProtocolError("node protocol state is invalid") from exc
         if isinstance(state, dict) and set(state) == {"sequence", "trafficAckedAt"}:
             state["completedCommands"] = []
+        if isinstance(state, dict) and set(state) == {
+            "sequence",
+            "trafficAckedAt",
+            "completedCommands",
+        }:
+            state["dataPlaneStopped"] = False
         commands = state.get("completedCommands") if isinstance(state, dict) else None
         if (
             not isinstance(state, dict)
-            or set(state) != {"sequence", "trafficAckedAt", "completedCommands"}
+            or set(state)
+            != {
+                "sequence",
+                "trafficAckedAt",
+                "completedCommands",
+                "dataPlaneStopped",
+            }
             or any(
                 isinstance(state[key], bool) or not isinstance(state[key], int)
                 for key in ("sequence", "trafficAckedAt")
             )
             or state["sequence"] < 0
             or state["trafficAckedAt"] < 0
+            or not isinstance(state["dataPlaneStopped"], bool)
             or not isinstance(commands, list)
             or len(commands) > 256
             or not all(
@@ -1860,6 +1940,18 @@ class ProtocolState:
         ):
             raise ProtocolError("node protocol state is invalid")
         return state
+
+    def data_plane_stopped(self):
+        with self._lock:
+            return self._read()["dataPlaneStopped"]
+
+    def set_data_plane_stopped(self, stopped):
+        if not isinstance(stopped, bool):
+            raise ProtocolError("data-plane state is invalid")
+        with self._lock:
+            state = self._read()
+            state["dataPlaneStopped"] = stopped
+            self._write(state)
 
     def _write(self, state):
         encoded = json.dumps(state, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
@@ -1932,12 +2024,23 @@ class ProtocolState:
 class NodeControlCycle:
     """One crash-safe traffic, snapshot and fixed-command control cycle."""
 
-    def __init__(self, protocol_client, stats_client, spool, state, clock=time.time):
+    def __init__(
+        self,
+        protocol_client,
+        stats_client,
+        spool,
+        state,
+        clock=time.time,
+        stop_data_plane=stop_node_data_plane,
+        start_data_plane=start_node_data_plane,
+    ):
         self.protocol_client = protocol_client
         self.stats_client = stats_client
         self.spool = spool
         self.state = state
         self.clock = clock
+        self.stop_data_plane = stop_data_plane
+        self.start_data_plane = start_data_plane
 
     def _upload_pending(self):
         last_ack = None
@@ -1986,8 +2089,10 @@ class NodeControlCycle:
         return result
 
     def run_once(self):
-        self.flush_traffic()
-        self.refresh_snapshot()
+        stopped = self.state.data_plane_stopped()
+        if not stopped:
+            self.flush_traffic()
+            self.refresh_snapshot()
         commands = self.protocol_client.poll_commands()
         for command in commands:
             command_id = command.get("commandId", "")
@@ -2000,6 +2105,9 @@ class NodeControlCycle:
                     self.stats_client,
                     refresh_snapshot=self.refresh_snapshot,
                     flush_traffic=self.flush_traffic,
+                    protocol_state=self.state,
+                    stop_data_plane=self.stop_data_plane,
+                    start_data_plane=self.start_data_plane,
                 )
             except Exception:
                 self.protocol_client.ack_command(
