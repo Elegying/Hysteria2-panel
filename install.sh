@@ -2275,10 +2275,10 @@ restore_existing_data_plane() {
   done
   DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
     "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" || return 1
-  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
-  ss -H -lun "sport = :443" | grep -q . || return 1
-  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
-  ss -H -ltn "sport = :443" | grep -q . || return 1
+  wait_for_listener udp "${DATA_PLANE_MAIN_PORT}" || return 1
+  wait_for_listener udp 443 || return 1
+  wait_for_listener tcp "${DATA_PLANE_MAIN_PORT}" || return 1
+  wait_for_listener tcp 443 || return 1
   rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
   sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
     /var/lib/hysteria2-panel-node /etc/systemd/system || return 1
@@ -2681,12 +2681,12 @@ EOF
   done
   systemctl is-active --quiet hysteria2-panel-node-control.service \
     || fail "数据面控制循环未运行"
-  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+  wait_for_listener udp "${DATA_PLANE_MAIN_PORT}" \
     || fail "Hysteria UDP ${DATA_PLANE_MAIN_PORT} 未监听"
-  ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 未监听"
-  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+  wait_for_listener udp 443 || fail "Hysteria UDP 443 未监听"
+  wait_for_listener tcp "${DATA_PLANE_MAIN_PORT}" \
     || fail "TCP ${DATA_PLANE_MAIN_PORT} probe 未监听"
-  ss -H -ltn "sport = :443" | grep -q . || fail "TCP 443 probe 未监听"
+  wait_for_listener tcp 443 || fail "TCP 443 probe 未监听"
   configure_data_plane_firewall
   (
     set -a
