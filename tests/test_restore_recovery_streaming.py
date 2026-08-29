@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,13 +62,34 @@ class RestoreRecoveryStreamingTests(unittest.TestCase):
 
     def test_current_identity_hashes_database_without_materializing_it(self):
         original = hysteria2_panel._read_secure_regular
-        with mock.patch(
-            "hysteria2_panel._read_secure_regular",
-            side_effect=self._reject_large_reads(original),
-        ):
-            identity = hysteria2_panel._validate_current_restore_identity(
-                self.record, root_uid=os.getuid()
-            )
+        validation = hysteria2_panel.BackupManager._validate_database_path
+        keeper = sqlite3.connect(str(self.database_path))
+        keeper.execute("PRAGMA journal_mode = WAL")
+        writer = sqlite3.connect(str(self.database_path))
+        try:
+            writer.execute("CREATE TABLE identity_checkpoint_probe (value TEXT)")
+            writer.commit()
+        finally:
+            writer.close()
+
+        def checkpoint_then_validate(manager, database_path, hmac_key):
+            keeper.close()
+            return validation(manager, database_path, hmac_key)
+
+        try:
+            with mock.patch(
+                "hysteria2_panel._read_secure_regular",
+                side_effect=self._reject_large_reads(original),
+            ), mock.patch.object(
+                hysteria2_panel.BackupManager,
+                "_validate_database_path",
+                checkpoint_then_validate,
+            ):
+                identity = hysteria2_panel._validate_current_restore_identity(
+                    self.record, root_uid=os.getuid()
+                )
+        finally:
+            keeper.close()
 
         self.assertEqual(
             hashlib.sha256(self.database_path.read_bytes()).hexdigest(),

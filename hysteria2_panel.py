@@ -8975,7 +8975,7 @@ def _validate_current_restore_identity(record, root_uid=0):
     env_bytes, hmac_key, pin = _restore_env_identity(record["envFile"], root_uid)
     database_path = Path(record["databasePath"])
     database_uid = os.lstat(database_path.parent).st_uid
-    database_details = _secure_regular_details(
+    database_preflight = _secure_regular_details(
         database_path,
         manager.FILE_LIMITS["data/panel.db"],
         allowed_uids={database_uid},
@@ -9000,6 +9000,16 @@ def _validate_current_restore_identity(record, root_uid=0):
         cert_path.write_bytes(cert)
         key_path.write_bytes(key)
         manager._certificate_details(cert_path, key_path)
+    database_details = _secure_regular_details(
+        database_path,
+        manager.FILE_LIMITS["data/panel.db"],
+        allowed_uids={database_uid},
+        required_mode=0o600,
+    )
+    before = database_preflight["metadata"]
+    after = database_details["metadata"]
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise RuntimeError("restore database changed during identity validation")
     if not hmac.compare_digest(manager._certificate_pin(cert), pin):
         raise RuntimeError("restore certificate pin is inconsistent")
     return {
