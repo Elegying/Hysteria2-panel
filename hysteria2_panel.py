@@ -5333,6 +5333,76 @@ def summarize_dashboard(user_names, snapshot):
     return summary
 
 
+def dashboard_online_payload(user_names, snapshot):
+    def count(value):
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+    if (
+        not isinstance(snapshot, dict)
+        or not count(snapshot.get("observed_at"))
+        or snapshot["observed_at"] == 0
+        or not isinstance(snapshot.get("online_complete"), bool)
+        or not isinstance(snapshot.get("online"), dict)
+        or not isinstance(snapshot.get("machines"), list)
+        or not all(
+            isinstance(name, str) and count(value)
+            for name, value in snapshot["online"].items()
+        )
+    ):
+        raise ValueError("dashboard online snapshot is invalid")
+
+    machines = []
+    seen_origins = set()
+    valid_states = {
+        "fresh",
+        "stale",
+        "standby",
+        "revoked",
+        "unavailable",
+        "history",
+    }
+    for machine in snapshot["machines"]:
+        if not isinstance(machine, dict):
+            raise ValueError("dashboard online machine is invalid")
+        origin_id = machine.get("origin_id")
+        online_devices = machine.get("online_devices")
+        last_known = machine.get("last_known_online_devices")
+        online_state = machine.get("online_state")
+        observed_at = machine.get("observed_at")
+        if (
+            not isinstance(origin_id, str)
+            or not origin_id
+            or origin_id in seen_origins
+            or (online_devices is not None and not count(online_devices))
+            or not count(last_known)
+            or online_state not in valid_states
+            or (observed_at is not None and not count(observed_at))
+        ):
+            raise ValueError("dashboard online machine is invalid")
+        seen_origins.add(origin_id)
+        machines.append(
+            {
+                "originId": origin_id,
+                "onlineDevices": online_devices,
+                "lastKnownOnlineDevices": last_known,
+                "onlineState": online_state,
+                "observedAt": observed_at,
+            }
+        )
+
+    users = [
+        {"name": name, "onlineDevices": snapshot["online"].get(name, 0)}
+        for name in user_names
+    ]
+    return {
+        "observedAt": snapshot["observed_at"],
+        "onlineComplete": snapshot["online_complete"],
+        "onlineDevices": sum(user["onlineDevices"] for user in users),
+        "users": users,
+        "machines": machines,
+    }
+
+
 class PanelHandler(JsonHandler):
     @property
     def cookie_name(self):
@@ -5629,8 +5699,8 @@ class PanelHandler(JsonHandler):
             action_label = "禁用" if enabled else "启用"
             action_class = "danger" if enabled else "secondary"
             rows.append(
-                """<tr data-user-name="{search_name}" data-enabled="{enabled_value}" data-online="{online}" data-allow-udp443="{allow_udp_443}" data-over-device-limit="{over_device_limit}"><td data-label="名称"><strong{name_class}>{name}</strong>{limit_alert}</td>
-<td data-label="状态"><span class="status {state_class}">{state}</span></td><td data-label="在线设备">{online} / {device_limit}</td><td data-label="上传 / 下载">{tx} / {rx}</td>
+                """<tr data-user-name="{search_name}" data-enabled="{enabled_value}" data-online="{online}" data-device-limit="{device_limit}" data-allow-udp443="{allow_udp_443}" data-over-device-limit="{over_device_limit}"><td data-label="名称" data-live-user-name><strong{name_class}>{name}</strong>{limit_alert}</td>
+<td data-label="状态"><span class="status {state_class}">{state}</span></td><td data-label="在线设备"><span data-live-user-online>{online}</span> / {device_limit}</td><td data-label="上传 / 下载">{tx} / {rx}</td>
 <td class="traffic-cell" data-label="总流量"><progress max="100" value="{percent:.1f}" aria-label="{name} 总流量使用 {percent:.1f}%"></progress><div class="traffic-label"><span>{used} / {limit}</span><span>{percent:.1f}%</span></div></td>
 <td data-label="操作"><div class="actions">
 <form class="inline" method="post" action="/users/{id}/toggle"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="{action_class}" type="submit">{action}</button></form>
@@ -5643,10 +5713,8 @@ class PanelHandler(JsonHandler):
                     name=html.escape(name),
                     search_name=html.escape(name, quote=True),
                     name_class=' class="over-limit-name"' if over_device_limit else "",
-                    limit_alert=(
-                        '<span class="limit-alert">客户端实例超限</span>'
-                        if over_device_limit
-                        else ""
+                    limit_alert='<span class="limit-alert" data-live-limit-alert{}>客户端实例超限</span>'.format(
+                        "" if over_device_limit else " hidden"
                     ),
                     over_device_limit="1" if over_device_limit else "0",
                     enabled_value="1" if enabled else "0",
@@ -5727,9 +5795,9 @@ class PanelHandler(JsonHandler):
         }
 
         online_note = (
-            '<small class="metric-warning">设备统计暂不完整：部分节点上报已过期</small>'
+            '<small class="metric-warning" data-live-online-note>设备统计暂不完整：部分节点上报已过期</small>'
             if not snapshot.get("online_complete", True)
-            else '<small class="muted">按 Hysteria 客户端实例统计</small>'
+            else '<small class="muted" data-live-online-note>按 Hysteria 客户端实例统计</small>'
         )
         machine_rows = []
         for origin in machine_origins:
@@ -5798,7 +5866,8 @@ class PanelHandler(JsonHandler):
                     next_reset=budget["next_reset_date"],
                 )
             machine_rows.append(
-                """<article class="machine-card"><div class="machine-card-head"><div><strong>{name}</strong><small class="muted machine-kind">{kind}</small></div><span class="{status_class}">{status}</span></div><div class="machine-facts"><div class="machine-fact"><span>在线设备</span><strong>{online}</strong></div><div class="machine-fact"><span>上传</span><strong>{tx}</strong></div><div class="machine-fact"><span>下载</span><strong>{rx}</strong></div><div class="machine-fact"><span>合计</span><strong>{total}</strong></div></div><div class="machine-budget">{budget}</div><small class="muted machine-observed">最后上报 {observed}</small></article>""".format(
+                """<article class="machine-card" data-origin-id="{origin_id}"><div class="machine-card-head"><div><strong>{name}</strong><small class="muted machine-kind">{kind}</small></div><span class="{status_class}" data-live-machine-state>{status}</span></div><div class="machine-facts"><div class="machine-fact"><span>在线设备</span><strong data-live-machine-online>{online}</strong></div><div class="machine-fact"><span>上传</span><strong>{tx}</strong></div><div class="machine-fact"><span>下载</span><strong>{rx}</strong></div><div class="machine-fact"><span>合计</span><strong>{total}</strong></div></div><div class="machine-budget">{budget}</div><small class="muted machine-observed">最后上报 <span data-live-machine-observed>{observed}</span></small></article>""".format(
+                    origin_id=html.escape(origin["origin_id"], quote=True),
                     name=html.escape(str(origin.get("display_name") or "未命名节点")),
                     kind=kind_label,
                     status_class=status_class,
@@ -6177,11 +6246,11 @@ class PanelHandler(JsonHandler):
             offsite_backup_class = "warning"
             offsite_backup_detail = "状态文件无效；备份不会被误报为成功"
         content = """<header class="topbar"><span class="eyebrow brand">HYSTERIA CONTROL CENTER</span><h1>Hysteria 2 用户管理面板</h1><span class="topbar-spacer"></span>
-<span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">最近刷新 <strong>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
+<span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">最近刷新 <strong data-live-refreshed>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
 <button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
 <section class="metrics" aria-label="服务概览">
 <div class="metric"><span>不活跃用户</span><strong>{inactive_users}</strong><small class="muted">上传与下载均为 0</small></div>
-<div class="metric"><span>在线设备</span><strong>{online_devices}</strong>{online_note}</div>
+<div class="metric"><span>在线设备</span><strong data-live-online-total aria-live="polite">{online_devices}</strong>{online_note}</div>
 <div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">全部用户累计上传</small></div>
 <div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">全部用户累计下载</small></div>
 </section>
@@ -6769,6 +6838,22 @@ class PanelHandler(JsonHandler):
             if not session:
                 return
             self.send_json(200, self.app.update_controller.status())
+            return
+        if path == "/api/v1/dashboard-online":
+            session = self._require_session()
+            if not session:
+                return
+            try:
+                snapshot = self.app.usage_manager.online_snapshot()
+                users = self.app.database.list_proxy_users_for_usage()
+                payload = dashboard_online_payload(
+                    [user["name"] for user in users], snapshot
+                )
+            except Exception:
+                LOGGER.debug("live dashboard online snapshot unavailable", exc_info=True)
+                self.send_json(503, {"error": "online device status unavailable"})
+                return
+            self.send_json(200, payload)
             return
         if path == "/":
             session = self._require_session()
@@ -7536,6 +7621,10 @@ class UsageManager:
         )
         self.database.fold_placeholder_local_usage_origin(self.local_origin_id)
         self.lock = threading.Lock()
+        self._live_snapshot_lock = threading.Lock()
+        self._live_snapshot_cached_at = None
+        self._live_snapshot_cache = None
+        self._live_snapshot_refreshing = False
         self._authorization_lock = threading.Lock()
         self.auth_stats_ttl = max(0, float(auth_stats_ttl))
         self._auth_stats_at = None
@@ -7928,6 +8017,79 @@ class UsageManager:
                 ),
             },
         }
+
+    def online_snapshot(self):
+        """Return current device counts without collecting or clearing traffic."""
+        with self._live_snapshot_lock:
+            monotonic_now = self.clock()
+            if (
+                self._live_snapshot_cache is not None
+                and self._live_snapshot_cached_at is not None
+                and monotonic_now - self._live_snapshot_cached_at < 1.0
+            ):
+                return self._live_snapshot_cache
+            if self._live_snapshot_refreshing:
+                if self._live_snapshot_cache is not None:
+                    return self._live_snapshot_cache
+                raise RuntimeError("dashboard online snapshot is already refreshing")
+            self._live_snapshot_refreshing = True
+
+        completed = False
+        try:
+            local_online = self.stats_client.online()
+            now = int(self.wall_clock())
+            node_states = self.database.list_node_online_states(
+                now, MAX_STATE_AGE_SECONDS
+            )
+            global_online = dict(local_online)
+            for node in node_states:
+                if node["online_state"] != "fresh":
+                    continue
+                for name, count in node["online"].items():
+                    global_online[name] = int(global_online.get(name, 0)) + int(count)
+
+            local_total = sum(local_online.values())
+            machines = [
+                {
+                    "origin_id": self.local_origin_id,
+                    "online_devices": local_total,
+                    "last_known_online_devices": local_total,
+                    "online_state": "fresh",
+                    "observed_at": now,
+                }
+            ]
+            machines.extend(
+                {
+                    "origin_id": "node:" + node["node_id"],
+                    "online_devices": node["online_devices"],
+                    "last_known_online_devices": node[
+                        "last_known_online_devices"
+                    ],
+                    "online_state": node["online_state"],
+                    "observed_at": node["accepted_at"],
+                }
+                for node in node_states
+            )
+            has_stale_online = any(
+                node["online_state"] in {"stale", "unavailable"}
+                for node in node_states
+                if node["policy_state"] == "protocol_ready"
+                and node["status"] == "pending_verification"
+            )
+            snapshot = {
+                "online": global_online,
+                "online_complete": not has_stale_online,
+                "observed_at": now,
+                "machines": machines,
+            }
+            completed = True
+        finally:
+            with self._live_snapshot_lock:
+                if completed:
+                    self._live_snapshot_cache = snapshot
+                    self._live_snapshot_cached_at = self.clock()
+                self._live_snapshot_refreshing = False
+        return snapshot
 
     def reset_user(self, user_id, expected_generation=None):
         with self.lock:

@@ -544,4 +544,136 @@ if (filterForm) {
   });
   filterUsers();
 }
+function isOnlineCount(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+function dashboardOnlinePayload(value) {
+  const states = new Set(['fresh', 'stale', 'standby', 'revoked', 'unavailable', 'history']);
+  if (!value || typeof value !== 'object' || !isOnlineCount(value.observedAt) ||
+      typeof value.onlineComplete !== 'boolean' || !isOnlineCount(value.onlineDevices) ||
+      !Array.isArray(value.users) || !Array.isArray(value.machines)) return null;
+  if (!value.users.every(function(user) {
+    return user && typeof user.name === 'string' && isOnlineCount(user.onlineDevices);
+  })) return null;
+  if (!value.machines.every(function(machine) {
+    return machine && typeof machine.originId === 'string' &&
+      (machine.onlineDevices === null || isOnlineCount(machine.onlineDevices)) &&
+      isOnlineCount(machine.lastKnownOnlineDevices) && states.has(machine.onlineState) &&
+      (machine.observedAt === null || isOnlineCount(machine.observedAt));
+  })) return null;
+  return value;
+}
+function liveTime(timestamp, dateOnly) {
+  const date = new Date(timestamp * 1000);
+  if (!Number.isFinite(date.getTime())) return '尚未上报';
+  if (dateOnly) return date.toLocaleString('zh-CN', {hour12: false});
+  return date.toLocaleTimeString('zh-CN', {hour12: false});
+}
+function sortOnlineUserRows() {
+  const params = new URL(window.location.href).searchParams;
+  if (params.get('sort') !== 'online' || !['asc', 'desc'].includes(params.get('order'))) return;
+  const rows = Array.from(document.querySelectorAll('[data-user-name]'));
+  const body = rows.length ? rows[0].parentElement : null;
+  if (!body) return;
+  const direction = params.get('order') === 'asc' ? 1 : -1;
+  rows.sort(function(left, right) {
+    return direction * (Number(left.dataset.online || '0') - Number(right.dataset.online || '0'));
+  });
+  rows.forEach(function(row) { body.appendChild(row); });
+}
+function applyOnlineStatus(payload) {
+  const total = document.querySelector('[data-live-online-total]');
+  const refreshed = document.querySelector('[data-live-refreshed]');
+  const note = document.querySelector('[data-live-online-note]');
+  if (total && total.textContent !== String(payload.onlineDevices)) {
+    total.textContent = String(payload.onlineDevices);
+  }
+  if (refreshed) refreshed.textContent = liveTime(payload.observedAt, false);
+  if (note) {
+    note.className = payload.onlineComplete ? 'muted' : 'metric-warning';
+    note.textContent = payload.onlineComplete
+      ? '按 Hysteria 客户端实例统计'
+      : '设备统计暂不完整：部分节点上报已过期';
+  }
+
+  const users = new Map(payload.users.map(function(user) { return [user.name, user.onlineDevices]; }));
+  let userCountsChanged = false;
+  document.querySelectorAll('[data-user-name]').forEach(function(row) {
+    if (!users.has(row.dataset.userName)) return;
+    const count = users.get(row.dataset.userName);
+    const oldCount = Number(row.dataset.online || '0');
+    row.dataset.online = String(count);
+    const online = row.querySelector('[data-live-user-online]');
+    if (online && online.textContent !== String(count)) online.textContent = String(count);
+    const limit = Number(row.dataset.deviceLimit || '0');
+    const overLimit = count > limit;
+    row.dataset.overDeviceLimit = overLimit ? '1' : '0';
+    const name = row.querySelector('[data-live-user-name] strong');
+    const alert = row.querySelector('[data-live-limit-alert]');
+    if (name) name.classList.toggle('over-limit-name', overLimit);
+    if (alert) alert.hidden = !overLimit;
+    if (oldCount !== count) userCountsChanged = true;
+  });
+  if (userCountsChanged && filterForm) {
+    sortOnlineUserRows();
+    filterForm.dispatchEvent(new Event('change'));
+  }
+
+  const machineStates = {
+    fresh: ['新鲜', 'ok'], stale: ['数据过期', 'warning'], standby: ['已停用', 'muted'],
+    revoked: ['已撤销', 'bad'], unavailable: ['等待上报', 'warning'], history: ['历史记录', 'muted']
+  };
+  const machines = new Map(
+    Array.from(document.querySelectorAll('[data-origin-id]')).map(function(card) {
+      return [card.dataset.originId, card];
+    })
+  );
+  payload.machines.forEach(function(machine) {
+    const card = machines.get(machine.originId);
+    if (!card) return;
+    const online = card.querySelector('[data-live-machine-online]');
+    const state = card.querySelector('[data-live-machine-state]');
+    const observed = card.querySelector('[data-live-machine-observed]');
+    const onlineText = machine.onlineDevices === null
+      ? (machine.lastKnownOnlineDevices ? '—（上次 ' + machine.lastKnownOnlineDevices + '）' : '—')
+      : String(machine.onlineDevices);
+    if (online) online.textContent = onlineText;
+    if (state) {
+      state.textContent = machineStates[machine.onlineState][0];
+      state.className = machineStates[machine.onlineState][1];
+    }
+    if (observed) {
+      observed.textContent = machine.observedAt === null
+        ? '尚未上报'
+        : liveTime(machine.observedAt, true);
+    }
+  });
+}
+async function refreshOnlineStatus() {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(function() { controller.abort(); }, 1800);
+  try {
+    const response = await fetch('/api/v1/dashboard-online', {
+      headers: {'Accept': 'application/json'},
+      credentials: 'same-origin',
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('在线设备状态读取失败');
+    const payload = dashboardOnlinePayload(await response.json());
+    if (!payload) throw new Error('在线设备状态响应无效');
+    applyOnlineStatus(payload);
+  } catch (_) {
+    // 短暂断网或面板重启时保留最后一次可信数据，下一轮自动重试。
+  }
+  window.clearTimeout(timeout);
+  window.setTimeout(
+    refreshOnlineStatus,
+    Math.max(0, 2000 - (Date.now() - startedAt))
+  );
+}
+if (document.querySelector('[data-live-online-total]')) {
+  window.setTimeout(refreshOnlineStatus, 2000);
+}
 """
