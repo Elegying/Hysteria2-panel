@@ -242,7 +242,12 @@ class BackupStreamingTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        original_database_digest = self.manager._sha256(self.database.path.read_bytes())
+        def logical_database_digest():
+            with sqlite3.connect(str(self.database.path)) as connection:
+                dump = "\n".join(connection.iterdump()).encode("utf-8")
+            return self.manager._sha256(dump)
+
+        original_database_digest = logical_database_digest()
         no_space = type("DiskUsage", (), {"total": 1, "used": 1, "free": 0})()
 
         with mock.patch("hysteria2_panel.shutil.disk_usage", return_value=no_space):
@@ -255,7 +260,7 @@ class BackupStreamingTests(unittest.TestCase):
 
         self.assertEqual(
             original_database_digest,
-            self.manager._sha256(self.database.path.read_bytes()),
+            logical_database_digest(),
         )
 
     def test_restore_artifact_retention_is_bounded_by_age_and_count(self):
