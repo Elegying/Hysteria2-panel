@@ -4,9 +4,10 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.31.2"
+PANEL_VERSION="0.32.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
+OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
 QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/qrcodegen.py"
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
 HY2PANEL_INIT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/__init__.py"
@@ -20,12 +21,13 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="8164c5ab6314160d3d2957118208616c2b42eb1030b27912e8e14ee14de44afa"
+PANEL_SHA256="36ab6645452bc739cd70d399e90dba2843615cec0248fd3ec8cf827e1ac69277"
+OFFSITE_BACKUP_SHA256="cebe6588728ccae872838f996c71eb1fc5c651b90f8247240f4982f23b205b64"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="8c6b97cae1c9e71da44c2c571063694e336c52e2ccf0c460d9d18fd3a1c07b73"
-HY2PANEL_WEB_ASSETS_SHA256="e1535bbcb8a5b45733c1293f31e71281da87f785bc02c742bf3b45e4cc9a1fed"
+HY2PANEL_VERSION_SHA256="5734a25adef4510e24622b395b617d27ede0d72ce89fcb443a52d5074c3f3068"
+HY2PANEL_WEB_ASSETS_SHA256="4c021e41480c302e8049ae078c79d4b58a4721c03337937527c9040983efa6d8"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
@@ -33,7 +35,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="25bb04215e3a78b25061b8a5d5fb5de8a05358d88b87bc38739d9da4e3705346"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="e202f70f7e4863a4283c07ab1dd7f440b78593b45f63d65a132e608ccdbc8025"
+NODE_AGENT_SHA256="7f071d64fd0deb176206bbf87f083387f0e2cdeb8787dccb9d36bffcd1c6cc20"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -276,6 +278,10 @@ stop_panel_preserving_hysteria() {
   if [[ -f /etc/systemd/system/hysteria2-panel-node-dns-admission.timer ]]; then
     systemctl stop hysteria2-panel-node-dns-admission.timer \
       hysteria2-panel-node-dns-admission.service || return 1
+  fi
+  if [[ -f /etc/systemd/system/hysteria2-panel-offsite-backup.timer ]]; then
+    systemctl stop hysteria2-panel-offsite-backup.timer \
+      hysteria2-panel-offsite-backup.service || return 1
   fi
   for server_unit in hysteria2-panel-server.service hysteria2-panel-server-443.service; do
     active_state="$(systemctl show --no-pager --property=ActiveState --value "${server_unit}" 2>/dev/null)" \
@@ -803,6 +809,8 @@ rollback_existing_install() {
   if ! stop_loaded_units \
     hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-node-dns-admission.service \
+    hysteria2-panel-offsite-backup.timer \
+    hysteria2-panel-offsite-backup.service \
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-tcp-probe-443.service \
@@ -836,7 +844,7 @@ rollback_existing_install() {
       || { echo "警告：无法恢复 ACME 运行目录权限" >&2; return 1; }
   fi
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-backup.timer hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -863,6 +871,13 @@ rollback_existing_install() {
   else
     systemctl disable hysteria2-panel-node-dns-admission.timer >/dev/null 2>&1 || true
     rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-offsite-backup.wants" ]]; then
+    systemctl enable hysteria2-panel-offsite-backup.timer >/dev/null 2>&1 \
+      || echo "警告：无法恢复异地备份 timer 的启用状态" >&2
+  else
+    systemctl disable hysteria2-panel-offsite-backup.timer >/dev/null 2>&1 || true
+    rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer
   fi
   if [[ -f "${BACKUP_DIR}/99-hysteria2-panel.conf" ]]; then
     cp -a "${BACKUP_DIR}/99-hysteria2-panel.conf" "${SYSCTL_FILE}"
@@ -912,6 +927,10 @@ rollback_existing_install() {
   if [[ -L "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants" ]]; then
     systemctl start hysteria2-panel-node-dns-admission.timer \
       || echo "警告：旧面板已恢复，但节点 DNS 监测 timer 未能立即启动" >&2
+  fi
+  if [[ -L "${BACKUP_DIR}/hysteria2-panel-offsite-backup.wants" ]]; then
+    systemctl start hysteria2-panel-offsite-backup.timer \
+      || echo "警告：旧面板已恢复，但异地备份 timer 未能立即启动" >&2
   fi
   rollback_firewall_after_service_recovery || true
   if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
@@ -2928,6 +2947,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/hysteria2-panel-cert-renew.timer \
     /etc/systemd/system/hysteria2-panel-node-dns-admission.service \
     /etc/systemd/system/hysteria2-panel-node-dns-admission.timer \
+    /etc/systemd/system/hysteria2-panel-offsite-backup.service \
+    /etc/systemd/system/hysteria2-panel-offsite-backup.timer \
     "${FRESH_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_UNIT}" \
     "${UPGRADE_RECOVERY_DROPIN_DIR}" \
@@ -2938,7 +2959,8 @@ assert_no_unmanaged_install_paths() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel.service \
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
-    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer; do
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer; do
     [[ ! -e "${path}" && ! -L "${path}" ]] \
       || fail "发现非本安装器管理的同名路径或服务：${path}；为避免覆盖，安装已停止"
   done
@@ -3291,6 +3313,7 @@ verify_fresh_install_commit_payload() {
     '/opt/hysteria2-panel/bin/hysteria|root:root:755:1|1'
     '/opt/hysteria2-panel/bin/cosign|root:root:755:1|1'
     '/opt/hysteria2-panel/hysteria2_panel.py|root:root:755:1|1'
+    '/opt/hysteria2-panel/offsite_backup.py|root:root:755:1|1'
     '/opt/hysteria2-panel/qrcodegen.py|root:root:644:1|1'
     '/opt/hysteria2-panel/tcp_probe.py|root:root:755:1|1'
     '/opt/hysteria2-panel/hy2panel/systemd.py|root:root:644:1|1'
@@ -3303,6 +3326,8 @@ verify_fresh_install_commit_payload() {
     '/etc/systemd/system/hysteria2-panel-server.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-node-dns-admission.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-node-dns-admission.timer|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-offsite-backup.service|root:root:644:1|1'
+    '/etc/systemd/system/hysteria2-panel-offsite-backup.timer|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-upgrade-recover.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel.service.d/10-hysteria2-panel-upgrade-recovery.conf|root:root:644:1|1'
     '/etc/sudoers.d/hysteria2-panel|root:root:440:1|1'
@@ -3340,6 +3365,8 @@ verify_fresh_install_commit_payload() {
   fi
   [[ -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
     || return 1
+  [[ -L /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer ]] \
+    || return 1
 }
 
 flush_fresh_cleanup_before_disarm() {
@@ -3361,6 +3388,8 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/hysteria2-panel-cert-renew.timer
     /etc/systemd/system/hysteria2-panel-node-dns-admission.service
     /etc/systemd/system/hysteria2-panel-node-dns-admission.timer
+    /etc/systemd/system/hysteria2-panel-offsite-backup.service
+    /etc/systemd/system/hysteria2-panel-offsite-backup.timer
     /etc/systemd/system/hysteria2-panel-egress-full.service
     /etc/systemd/system/hysteria2-panel-egress-web.service
     /etc/systemd/system/hysteria2-panel-egress-recover.service
@@ -3373,6 +3402,7 @@ flush_fresh_cleanup_before_disarm() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer
     /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer
     /etc/sudoers.d/hysteria2-panel
     "${SYSCTL_FILE}"
     "${TMPFILES_FILE}"
@@ -3567,6 +3597,8 @@ recover_interrupted_fresh_install() {
     hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-node-dns-admission.timer \
     hysteria2-panel-node-dns-admission.service \
+    hysteria2-panel-offsite-backup.timer \
+    hysteria2-panel-offsite-backup.service \
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-cert-renew.service \
     hysteria2-panel-restore.service \
@@ -3585,6 +3617,7 @@ recover_interrupted_fresh_install() {
   systemctl disable hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-offsite-backup.timer \
     hysteria2-panel-server.service hysteria2-panel.service \
     >/dev/null 2>&1 || true
   if declare -F rollback_persisted_firewall_transaction >/dev/null 2>&1; then
@@ -3605,6 +3638,8 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/hysteria2-panel-cert-renew.timer \
     /etc/systemd/system/hysteria2-panel-node-dns-admission.service \
     /etc/systemd/system/hysteria2-panel-node-dns-admission.timer \
+    /etc/systemd/system/hysteria2-panel-offsite-backup.service \
+    /etc/systemd/system/hysteria2-panel-offsite-backup.timer \
     /etc/systemd/system/hysteria2-panel-egress-full.service \
     /etc/systemd/system/hysteria2-panel-egress-web.service \
     /etc/systemd/system/hysteria2-panel-egress-recover.service \
@@ -3616,6 +3651,7 @@ recover_interrupted_fresh_install() {
     /etc/systemd/system/multi-user.target.wants/hysteria2-panel-server.service \
     /etc/systemd/system/timers.target.wants/hysteria2-panel-cert-renew.timer \
     /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
+    /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer \
     /etc/sudoers.d/hysteria2-panel "${SYSCTL_FILE}" "${TMPFILES_FILE}"
   rm -f -- "${UPGRADE_RECOVERY_DROPIN}"
   rmdir -- "${UPGRADE_RECOVERY_DROPIN_DIR}" >/dev/null 2>&1 || true
@@ -3722,6 +3758,8 @@ assert_units_unclaimed() {
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-node-dns-admission.service \
     hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-offsite-backup.service \
+    hysteria2-panel-offsite-backup.timer \
     hysteria2-panel-update.service; do
     output="$(systemctl show --no-pager \
       --property=LoadState --property=ActiveState \
@@ -3768,6 +3806,8 @@ assert_units_claimed_by_installer() {
     hysteria2-panel-cert-renew.timer \
     hysteria2-panel-node-dns-admission.service \
     hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-offsite-backup.service \
+    hysteria2-panel-offsite-backup.timer \
     hysteria2-panel-update.service; do
     expected_path="/etc/systemd/system/${unit_file}"
     output="$(systemctl show --no-pager \
@@ -5883,6 +5923,7 @@ else
 fi
 install -d -m 0755 "${TMP_DIR}/hy2panel"
 download_file "${PANEL_SOURCE_URL}" "${TMP_DIR}/hysteria2_panel.py"
+download_file "${OFFSITE_BACKUP_SOURCE_URL}" "${TMP_DIR}/offsite_backup.py"
 download_file "${QRCODEGEN_SOURCE_URL}" "${TMP_DIR}/qrcodegen.py"
 download_file "${TCP_PROBE_SOURCE_URL}" "${TMP_DIR}/tcp_probe.py"
 download_file "${HY2PANEL_INIT_SOURCE_URL}" "${TMP_DIR}/hy2panel/__init__.py"
@@ -5897,6 +5938,8 @@ download_file "${HY2PANEL_NODES_SOURCE_URL}" "${TMP_DIR}/hy2panel/nodes.py"
 download_file "${HY2PANEL_DISTRIBUTED_SOURCE_URL}" "${TMP_DIR}/hy2panel/distributed.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
+printf '%s  %s\n' "${OFFSITE_BACKUP_SHA256}" "${TMP_DIR}/offsite_backup.py" | sha256sum --check --status \
+  || fail "异地备份源码 SHA-256 校验失败"
 printf '%s  %s\n' "${QRCODEGEN_SHA256}" "${TMP_DIR}/qrcodegen.py" | sha256sum --check --status \
   || fail "二维码编码器 SHA-256 校验失败"
 printf '%s  %s\n' "${TCP_PROBE_SHA256}" "${TMP_DIR}/tcp_probe.py" | sha256sum --check --status \
@@ -5922,6 +5965,7 @@ printf '%s  %s\n' "${HY2PANEL_NODES_SHA256}" "${TMP_DIR}/hy2panel/nodes.py" | sh
 printf '%s  %s\n' "${HY2PANEL_DISTRIBUTED_SHA256}" "${TMP_DIR}/hy2panel/distributed.py" | sha256sum --check --status \
   || fail "hy2panel/distributed.py SHA-256 校验失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hysteria2_panel.py" || fail "面板源码语法检查失败"
+"${PYTHON_BIN}" -m py_compile "${TMP_DIR}/offsite_backup.py" || fail "异地备份源码语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/qrcodegen.py" || fail "二维码编码器语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hy2panel/"*.py || fail "面板模块语法检查失败"
@@ -5935,7 +5979,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   install -d -m 0700 "${BACKUP_DIR}"
   [[ ! -d /opt/hysteria2-panel ]] || cp -a /opt/hysteria2-panel "${BACKUP_DIR}/opt"
   [[ ! -d /etc/hysteria2-panel ]] || cp -a /etc/hysteria2-panel "${BACKUP_DIR}/etc"
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-backup.timer hysteria2-panel-update.service; do
     [[ ! -f "/etc/systemd/system/${unit_file}" ]] || cp -a "/etc/systemd/system/${unit_file}" "${BACKUP_DIR}/${unit_file}"
   done
   [[ ! -L /etc/systemd/system/multi-user.target.wants/hysteria2-panel-restore-resume.service ]] \
@@ -5947,6 +5991,9 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   [[ ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
     || cp -a /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
       "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants"
+  [[ ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer ]] \
+    || cp -a /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer \
+      "${BACKUP_DIR}/hysteria2-panel-offsite-backup.wants"
   [[ ! -f "${SYSCTL_FILE}" ]] || cp -a "${SYSCTL_FILE}" "${BACKUP_DIR}/99-hysteria2-panel.conf"
   [[ ! -f /etc/sudoers.d/hysteria2-panel ]] || cp -a /etc/sudoers.d/hysteria2-panel "${BACKUP_DIR}/hysteria2-panel.sudoers"
   [[ ! -f "${TMPFILES_FILE}" ]] || cp -a "${TMPFILES_FILE}" "${BACKUP_DIR}/hysteria2-panel.tmpfiles"
@@ -6031,6 +6078,7 @@ systemd-tmpfiles --create "${TMPFILES_FILE}" \
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria" /opt/hysteria2-panel/bin/hysteria
 install -o root -g root -m 0755 "${TMP_DIR}/cosign" /opt/hysteria2-panel/bin/cosign
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria2_panel.py" /opt/hysteria2-panel/hysteria2_panel.py
+install -o root -g root -m 0755 "${TMP_DIR}/offsite_backup.py" /opt/hysteria2-panel/offsite_backup.py
 install -o root -g root -m 0644 "${TMP_DIR}/qrcodegen.py" /opt/hysteria2-panel/qrcodegen.py
 install -o root -g root -m 0755 "${TMP_DIR}/tcp_probe.py" /opt/hysteria2-panel/tcp_probe.py
 install -d -o root -g root -m 0755 /opt/hysteria2-panel/hy2panel
@@ -6792,6 +6840,56 @@ Unit=hysteria2-panel-node-dns-admission.service
 WantedBy=timers.target
 EOF
 
+cat > /etc/systemd/system/hysteria2-panel-offsite-backup.service <<EOF
+[Unit]
+Description=Create and upload the daily Hysteria2-panel backup
+After=network-online.target hysteria2-panel.service hysteria2-panel-server.service
+Requires=hysteria2-panel.service hysteria2-panel-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=hy2panel
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py offsite-backup
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/opt/hysteria2-panel /etc/hysteria2-panel
+ReadWritePaths=/var/lib/hysteria2-panel /run/hysteria2-panel-maintenance
+TasksMax=48
+MemoryMax=512M
+TimeoutStartSec=30min
+EOF
+cat > /etc/systemd/system/hysteria2-panel-offsite-backup.timer <<'EOF'
+[Unit]
+Description=Run the Hysteria2-panel offsite backup once daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=2h
+Persistent=true
+Unit=hysteria2-panel-offsite-backup.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat > /etc/systemd/system/hysteria2-panel-update.service <<EOF
 [Unit]
 Description=Install the latest formal Hysteria 2 panel release
@@ -6842,6 +6940,7 @@ systemctl enable hysteria2-panel-restore-resume.service
 systemctl enable hysteria2-panel.service
 systemctl enable hysteria2-panel-server.service
 systemctl enable hysteria2-panel-node-dns-admission.timer
+systemctl enable hysteria2-panel-offsite-backup.timer
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
   systemctl enable hysteria2-panel-cert-renew.timer
   systemctl start hysteria2-panel-cert-renew.timer
@@ -6893,6 +6992,8 @@ wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
 systemctl start hysteria2-panel-node-dns-admission.timer \
   || fail "节点 DNS 只读监测 timer 启动失败"
+systemctl start hysteria2-panel-offsite-backup.timer \
+  || fail "异地备份 timer 启动失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"
 if (( UDP_443_ENABLED == 1 )); then
   ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 端口未监听"

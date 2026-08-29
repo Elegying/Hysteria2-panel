@@ -5655,6 +5655,8 @@ class PanelHttpTests(unittest.TestCase):
                     "trafficAckedAt": int(time.time()),
                 },
             ),
+            offsite_backup_status_path=Path(self.temp_dir.name)
+            / "offsite-backup-status.json",
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -5722,6 +5724,10 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("待注册 &lt;节点&gt;", body)
         self.assertNotIn("待注册 <节点>", body)
         self.assertIn("Hysteria 长期身份只会原样复制", body)
+        self.assertIn("对接新节点：4 步完成", body)
+        self.assertIn("安全停用或换机：4 步完成", body)
+        self.assertIn("1. 开始摘流", body)
+        self.assertIn("3. 检查并安全停用", body)
 
     def test_node_enrollment_creation_and_revocation_require_session_and_csrf(self):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
@@ -6153,7 +6159,9 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/metrics") as response:
             metrics = response.read().decode()
             self.assertEqual("text/plain; version=0.0.4; charset=utf-8", response.headers["Content-Type"])
-            self.assertEqual("hy2panel_ready 1\n", metrics)
+            self.assertIn("hy2panel_ready 1\n", metrics)
+            self.assertIn("hy2panel_node_budget_warning_total 0\n", metrics)
+            self.assertIn("hy2panel_node_budget_exhausted_total 0\n", metrics)
 
         with mock.patch.object(PanelHandler, "_is_loopback_client", return_value=False):
             with self.assertRaises(urllib.error.HTTPError) as external:
@@ -6430,6 +6438,61 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("设备统计暂不完整", body)
         self.assertIn("上次 5", body)
         self.assertIn("Hysteria 已结算用户流量", body)
+        self.assertIn("节点统计与流量预算", body)
+        self.assertIn('name="limit_gib"', body)
+        self.assertIn('name="warning_percent"', body)
+        self.assertIn("0 表示不限制", body)
+
+    def test_budget_update_requires_csrf_and_persists_for_panel_local_node(self):
+        headers, csrf = self.authenticated_headers()
+        origin_id = self.application.usage_manager.local_origin_id
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request(
+                "/usage-origins/{}/budget".format(origin_id),
+                data={"limit_gib": "100", "warning_percent": "85"},
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(403, missing_csrf.exception.code)
+
+        with self.assertRaises(urllib.error.HTTPError) as redirect:
+            self.request(
+                "/usage-origins/{}/budget".format(origin_id),
+                data={
+                    "csrf": csrf,
+                    "limit_gib": "100",
+                    "warning_percent": "85",
+                },
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(303, redirect.exception.code)
+        budget = self.db.get_origin_budget(origin_id)
+        self.assertEqual(100 * 1024**3, budget["limit_bytes"])
+        self.assertEqual(85, budget["warning_percent"])
+
+    def test_migration_dialog_never_embeds_offsite_credentials(self):
+        status_path = self.application.offsite_backup_status_path
+        status_path.write_text(
+            json.dumps(
+                {
+                    "state": "success",
+                    "checkedAt": "2033-05-18T00:00:00Z",
+                    "lastSuccessAt": "2033-05-18T00:00:00Z",
+                    "errorCode": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        headers, _csrf = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertIn("每日异地备份", body)
+        self.assertIn("最近备份成功", body)
+        self.assertIn("offsite-backup.json", body)
+        self.assertNotIn("password", body)
 
     def test_dashboard_uses_dialogs_and_compact_mobile_user_rows(self):
         created = self.db.create_proxy_user("alice")
@@ -7155,7 +7218,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.31.2", body)
+        self.assertIn("v0.32.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

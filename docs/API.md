@@ -75,7 +75,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 |---|---|---|
 | `GET` | `/healthz` | 仅表示 HTTP 进程存活；返回固定的 `{"status":"ok"}` |
 | `GET` | `/readyz` | 数据库、内部认证、流量采集工作线程和最近统计同步均正常时返回 200，否则返回 503；不暴露内部故障细节 |
-| `GET` | `/metrics` | 仅回环来源可访问的有界 Prometheus 文本指标；外部来源返回 404，不包含用户名或来源 IP 标签 |
+| `GET` | `/metrics` | 仅回环来源可访问的有界 Prometheus 文本指标；含预算状态汇总但不含节点名、用户名或来源 IP 标签，外部来源返回 404 |
 | `GET` | `/login` | 登录页 |
 | `POST` | `/login` | 创建 HttpOnly、SameSite=Strict 会话；HTTPS 模式额外设置 Secure；按来源 IP 执行登录限速 |
 | `GET` | `/` | 服务控制、系统资源、版本、全局统计、高流量前五、完整用户列表、即时搜索与限额进度 |
@@ -87,6 +87,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/users/{id}/share` | 携带当前 `generation`，显示可复制的当前连接 URI |
 | `POST` | `/users/{id}/reset` | 携带当前 `generation`，重置该用户流量并断开旧连接 |
 | `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
+| `POST` | `/usage-origins/{local或node来源ID}/budget` | 为面板本机或已有数据节点设置 GiB 月预算与 1–99% 告警阈值；0 GiB 关闭预算 |
 | `POST` | `/node-enrollments` | 生成短时、单用途节点对接代码；要求面板 HTTPS |
 | `POST` | `/node-enrollments/{id}/revoke` | 作废尚未消费的节点对接码 |
 | `POST` | `/nodes/{id}/verify` | UI 核对双方 16 位短码，服务端仍精确确认完整 Ed25519 公钥 SHA-256 指纹 |
@@ -95,6 +96,10 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/nodes/{id}/data-plane/bootstrap` | 为已验证且协议就绪节点生成短时数据面一键部署代码；要求面板 HTTPS |
 | `POST` | `/nodes/{id}/data-plane/canary/pass` | 仅记录独立直连灰度已通过；不修改或准入 DNS |
 | `POST` | `/nodes/{id}/data-plane/dns/{admit,remove}` | 故障恢复用的 DNS 准入/撤出状态记录；不调用外部 DNS API |
+| `POST` | `/nodes/{id}/lifecycle/drain` | 进入摘流状态但继续服务；等待管理员从外部 DNS 删除该节点 IP |
+| `POST` | `/nodes/{id}/lifecycle/stop` | 只读确认 DNS 已删除、在线设备为 0 且流量 ACK 新鲜后，下发固定停用命令 |
+| `POST` | `/nodes/{id}/lifecycle/emergency-stop` | 跳过 DNS 与设备门禁的紧急停用；旧 DNS 仍命中时用户会连接失败 |
+| `POST` | `/nodes/{id}/lifecycle/{resume,archive}` | 固定恢复数据面，或在已停用且无待处理命令时归档旧节点记录 |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
 | `POST` | `/egress/{web,full}` | 切换整台节点的出站策略；通过固定 root oneshot 同步更新两份 Hysteria 配置和持久状态，重启失败时恢复旧策略 |
 | `POST` | `/system/reboot` | 二次确认后通过固定 sudoers 白名单排队重启整台服务器，成功返回 HTTP 202 |
@@ -106,6 +111,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/logout` | 撤销管理会话 |
 
 面板没有对公网提供通用 JSON 管理 API，避免扩大认证和 CORS 攻击面。
+节点生命周期命令只有 `STOP_DATA_PLANE` 与 `START_DATA_PLANE` 两个固定空参数枚举；节点 Agent 不接收 unit 名、文件路径或 shell。安全停用只停止两路 Hysteria 和相应 TCP 探针，Agent、Ed25519 私钥、Hysteria TLS 身份和 durable traffic spool 均保留。恢复成功后回到直连灰度已通过状态，必须重新加入 DNS 并通过只读准入检查后用户才会到达。
 版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。编辑用户时设备限制范围为 1 到 100，总流量必须为正值，`allow_udp_443=1` 表示开放 UDP `443`，缺少该字段表示关闭；该操作递增 `generation`，保留名称、认证 token 派生种子和累计流量。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成的新凭据。
 
 登录错误响应不区分账号不存在与密码错误。每个来源 IP 在 15 分钟窗口内前 4 次错误返回 HTTP `401`，第 5 次立即返回 HTTP `429` 并设置整数秒 `Retry-After`；同一 IPv6 `/64` 前缀按一个来源统计。锁定期间正确密码也会被拒绝，成功登录清除该来源的失败记录。限速表最多记录 4096 个来源并仅保存在进程内存，面板重启后清空。所有登录响应均带 `no-store`、CSP、`nosniff`、拒绝嵌入和禁止 Referrer 等安全头。

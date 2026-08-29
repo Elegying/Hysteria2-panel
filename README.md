@@ -56,9 +56,10 @@ flowchart LR
 | 多用户管理 | 创建、禁用、轮换凭据、分享 URI/二维码，并设置流量和设备限制 |
 | 多节点对接 | 网页生成短时签名命令，支持全新接入和保留私钥、证书、流量 spool 的安全重绑定 |
 | 统一鉴权与分机器统计 | 面板本机和数据节点共用用户、设备数、流量额度及 UDP `443` 权限，并按实际入口机器拆分设备与流量 |
+| 节点预算与安全换机 | 面板本机和每个数据节点独立设置月流量预算；按 DNS、设备归零和流量 ACK 门禁一键摘流、停用、恢复或归档 |
 | 双入口与 FULL | 主 UDP 端口和账号专属 UDP `443`，节点默认自动部署 `FULL` 公网出站策略 |
 | 网络优化 | Hysteria `standard` + `bbr`，以及事务化的内核 `bbr/fq` 和至少 16 MiB UDP 缓冲 |
-| 备份迁移 | 一键导出/恢复用户、流量、签名身份和 Hysteria TLS 身份，保持旧客户端配置可用 |
+| 备份迁移 | 一键导出/恢复用户、流量、签名身份和 Hysteria TLS 身份；可每日上传 HTTPS WebDAV 并精确保留 30 天 |
 | 健康与恢复 | systemd 保活、面板 watchdog、健康/就绪探针，以及安装、恢复和升级事务回滚 |
 | 可信发布 | 固定 Release、SHA-256 与 GitHub Actions OIDC/Sigstore 签名验证 |
 
@@ -76,7 +77,7 @@ flowchart LR
 
 ```bash
 set -euo pipefail
-version=0.31.2
+version=0.32.0
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -167,12 +168,14 @@ TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后
 - 轮换用户认证密钥，一键复制可导入的连接 URI；每个用户节点还可按需弹出配置二维码，并保存为 PNG；
 - 查看全局在线设备数、上传/下载流量、总流量进度和高流量前五用户，并在卡片和“节点统计”表中按面板本机、各数据节点拆分；
 - 分机器流量表示 Hysteria 已结算的用户上传/下载，不等同于云厂商或网卡计费流量；升级前无法反推来源的累计值单列为“升级前历史（未归属）”；
+- 给面板本机和每个数据节点分别设置 UTC 自然月流量预算与告警阈值；预算从 v0.32.0 实际增量开始记录，重置用户配额不会抹掉机器已经消耗的月流量，达到阈值只告警、不擅自停机；
+- 按弹窗内的 1-2-3-4 步骤安全摘流：开始摘流、手工删除 DNS、等待设备归零、由面板核对 DNS 与流量 ACK 后停用。Agent、Ed25519 私钥和 durable spool 始终保留；紧急停用会明确提醒仍命中旧 DNS 的用户将连接失败；
 - 重置单个用户或全部用户的累计流量；
 - 查看服务状态、当前用户数、不活跃用户数、在线设备总数以及总上传/下载流量；
 - 查看 CPU、内存、磁盘、运行时长、面板版本，并检查和在线安装正式更新；更新安装器会先核验固定 GitHub Actions 身份的 Sigstore 签名，签名缺失或不匹配时不会执行；系统资源模块提供带二次确认的整机重启入口；
 - 在面板内启动、停止或重启项目专用 Hysteria 服务。
 - 使用响应式桌面/手机布局；手机端用户表格会自动转为便于触控的卡片。
-- 从顶部“数据迁移”弹窗一键下载完整备份，或在新服务器上传恢复用户、流量、签名密钥和 TLS 节点身份。
+- 从顶部“数据迁移”弹窗一键下载完整备份，或在新服务器上传恢复用户、流量、签名密钥和 TLS 节点身份；安装器同时部署每日异地备份 timer，配置 HTTPS WebDAV 后自动上传并保留 30 天。
 
 管理员登录按来源 IP 防破解：15 分钟内第 5 次密码错误会立即返回 HTTP `429` 并锁定该来源 15 分钟，锁定期间正确密码也不能登录；成功登录会清除该 IP 的失败记录。同一 IPv6 `/64` 前缀按一个来源统计，避免轮换接口地址绕过锁定。锁定状态保存在进程内存中，重启面板会清空；它用于阻挡普通单源爆破，不替代安全组来源限制或独立的主机级入侵防护。设计同时考虑了 [OWASP 对通用错误、登录限速和拒绝服务风险的建议](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)。
 
@@ -216,6 +219,27 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 
 面板的“用户数据迁移”模块可下载一个 ZIP，包含只保留代理用户数据的一致性 `panel.db` 快照、用户 token 派生所需的 HMAC 签名密钥、当前 TLS 证书和私钥，以及记录源节点域名、UDP 端口、节点名、证书指纹、证书有效期和各文件 SHA-256 的清单。当前格式会保留每个账号的 `443` 授权；从缺少该字段的旧备份恢复时默认关闭，必须由管理员重新开启。旧管理员密码哈希、面板会话和审计日志不会写入 ZIP。这个 ZIP 仍等同于全部节点登录凭据，尤其在 HTTP 面板模式下下载和上传都没有传输层加密，必须只在可信网络操作并离线保管。
 
+一键安装会自动安装并启用 `hysteria2-panel-offsite-backup.timer`。异地目标属于服务器秘密，项目不会猜测或把凭据塞进可迁移 ZIP；管理员只需在服务器建立下面这个 root-only 文件，之后每天自动生成自验证备份、以临时名上传并原子改名，成功后只清理超过 30 天且名称精确匹配本项目格式的远端文件：
+
+```bash
+install -o root -g root -m 0600 /dev/null /etc/hysteria2-panel/offsite-backup.json
+editor /etc/hysteria2-panel/offsite-backup.json
+systemctl start hysteria2-panel-offsite-backup.service
+systemctl status hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-backup.timer
+```
+
+文件内容固定为以下三个字段；`endpoint` 必须是以 `/` 结尾的 HTTPS WebDAV 目录，不能在 URL 中夹带账号、查询参数或片段：
+
+```json
+{
+  "endpoint": "https://backup.example.com/hysteria2-panel/",
+  "username": "专用备份账号",
+  "password": "专用备份密码"
+}
+```
+
+未配置时定时任务只写入“未配置”状态，不生成重复本地 ZIP，也不会误报成功。面板只显示脱敏后的成功、失败或未配置状态；错误日志、数据库、网页、Git 和备份内都不会出现目标地址或凭据。更换面板服务器后，一键部署会恢复相同 timer 和功能，但出于秘密隔离要求仍需在新服务器重新放置这个 `0600` 配置文件。
+
 恢复 ZIP 上传和预检期间，面板使用独立的非阻塞维护门：新的管理变更会立即返回 `503`，不会占满工作线程或在客户端超时后继续排队执行；健康检查、节点控制协议和已有数据面会话不因此改变。
 
 推荐迁移顺序：
@@ -240,8 +264,8 @@ Hysteria 自身的 QUIC BBR 与 Linux `net.ipv4.tcp_congestion_control` 是两�
 多台节点请遵循 [`max-unavailable=1` 发布与回滚流程](docs/DEPLOYMENT.md)，每次只升级并验收一台。
 
 ```bash
-systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-restore hysteria2-panel-restore-recover hysteria2-panel-restore-resume hysteria2-panel-cert-renew.timer hysteria2-panel-update
-journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-restore -u hysteria2-panel-restore-recover -u hysteria2-panel-restore-resume -u hysteria2-panel-cert-renew.service -u hysteria2-panel-update --since today
+systemctl status hysteria2-panel hysteria2-panel-server hysteria2-panel-server-443 hysteria2-panel-tcp-probe hysteria2-panel-tcp-probe-443 hysteria2-panel-restore hysteria2-panel-restore-recover hysteria2-panel-restore-resume hysteria2-panel-cert-renew.timer hysteria2-panel-offsite-backup.timer hysteria2-panel-update
+journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-server-443 -u hysteria2-panel-tcp-probe -u hysteria2-panel-tcp-probe-443 -u hysteria2-panel-restore -u hysteria2-panel-restore-recover -u hysteria2-panel-restore-resume -u hysteria2-panel-cert-renew.service -u hysteria2-panel-offsite-backup.service -u hysteria2-panel-update --since today
 curl http://127.0.0.1:19998/healthz
 curl http://127.0.0.1:19998/readyz
 curl http://127.0.0.1:19998/metrics
@@ -254,7 +278,9 @@ curl http://127.0.0.1:19998/metrics
 | `/opt/hysteria2-panel/` | 面板程序和项目专用 Hysteria 二进制 |
 | `/etc/hysteria2-panel/` | Hysteria 配置、TLS 证书和运行环境 |
 | `/etc/hysteria2-panel/acme/` | 面板 ACME 账户、续期配置与 Let’s Encrypt lineage |
+| `/etc/hysteria2-panel/offsite-backup.json` | 可选的 HTTPS WebDAV 异地备份凭据；仅允许 `root:root 0600`，不进入备份 |
 | `/var/lib/hysteria2-panel/panel.db` | 用户、会话和审计记录 |
+| `/var/lib/hysteria2-panel/offsite-backup-status.json` | 面板可读的脱敏异地备份状态，不含目标地址或凭据 |
 | `/var/backups/hysteria2-panel/` | 每次覆盖部署和恢复前的自动备份 |
 | `/etc/sysctl.d/99-hysteria2-panel.conf` | 16 MiB QUIC UDP 缓冲，以及内核支持时的 `fq`/TCP BBR |
 | `/etc/sysctl.d/99-hysteria2-panel-node.conf` | 数据节点事务化纳管的 16 MiB UDP 缓冲、`fq` 与内核 BBR |
@@ -299,6 +325,7 @@ bandit -q -r hysteria2_panel.py tcp_probe.py hy2panel
 - [ADR-013：无密钥签名更新、模块边界与运行时就绪](docs/decisions/ADR-013-keyless-update-modules-readiness.md)
 - [ADR-014：面板内受限切换节点全局出站策略](docs/decisions/ADR-014-runtime-egress-policy-switch.md)
 - [ADR-015：可跨重启恢复的安装器升级事务](docs/decisions/ADR-015-crash-consistent-installer-upgrades.md)
+- [ADR-019：节点运营生命周期与异地备份](docs/decisions/ADR-019-node-operations-and-offsite-backup.md)
 - [HTTP 接口契约](docs/API.md)
 
 ## 许可证

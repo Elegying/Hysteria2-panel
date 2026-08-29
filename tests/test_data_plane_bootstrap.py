@@ -1558,7 +1558,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
         self.assertIn("DNS 已检测并自动准入", body)
         self.assertIn(
-            '/nodes/{}/data-plane/dns/remove'.format(self.node_id), body
+            '/nodes/{}/lifecycle/drain'.format(self.node_id), body
         )
 
         remove_request = urllib.request.Request(

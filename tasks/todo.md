@@ -1,43 +1,26 @@
-# 数据节点极简对接任务
+# v0.32.0 节点运营任务
 
-- [x] 签名 bootstrap claim 与自动协议门
-  - Acceptance: 仅已核对指纹且心跳在线的节点可领取；重复领取废止旧 grant；无管理员凭据下发。
-  - Verify: `python3 -m unittest tests.test_data_plane_bootstrap.AutoBootstrapClaimTests -v`
-  - Dependencies: None
-  - Files: `hy2panel/nodes.py`, `hysteria2_panel.py`, `node_agent.py`, `tests/test_data_plane_bootstrap.py`
-  - Scope: Medium
+- [x] 月度预算数据库与模型
+  - Acceptance: 本机/远端、幂等、跨日、重置和历史不回填全部正确。
+  - Verify: `python3 -m unittest tests.test_node_operations.NodeBudgetTests -v`
+  - Files: `hysteria2_panel.py`, `tests/test_node_operations.py`
 
-- [x] 持久 onboarding 完成器
-  - Acceptance: 首次命令返回后 timer 持续等待；重启可恢复；成功自动运行现有 heartbeat/data-plane 事务并自清理。
-  - Verify: `python3 -m unittest tests.test_installer.StreamlinedOnboardingInstallerTests -v`
-  - Dependencies: 签名 claim
-  - Files: `install.sh`, `tests/test_installer.py`
-  - Scope: Medium
+- [x] 节点生命周期和固定 STOP/START 命令
+  - Acceptance: 安全停用门禁失败关闭；Agent/spool/身份保留；恢复可收敛。
+  - Verify: `python3 -m unittest tests.test_node_operations.NodeLifecycleTests -v`
+  - Files: `hysteria2_panel.py`, `node_agent.py`, `tests/test_node_operations.py`
 
-- [x] bootstrap 绑定的真实 Hysteria 灰度
-  - Acceptance: 不创建真实用户；仅活动 grant 可认证；中央通过节点公网 IP 获得外部响应；失败不 ACK。
-  - Verify: `python3 -m unittest tests.test_data_plane_bootstrap.HysteriaCanaryRunnerTests -v`
-  - Dependencies: 持久完成器
-  - Files: `hysteria2_panel.py`, `hy2panel/nodes.py`, `tests/test_data_plane_bootstrap.py`
-  - Scope: Medium
+- [x] 每日 HTTPS WebDAV 异地备份
+  - Acceptance: 未配置可见；上传原子；仅精确删除超过 30 天的本项目文件。
+  - Verify: `python3 -m unittest tests.test_offsite_backup -v`
+  - Files: `offsite_backup.py`, `install.sh`, `tests/test_offsite_backup.py`, `tests/test_installer.py`
 
-- [x] DNS 只读检测和自动准入
-  - Acceptance: 只在解析含预期公网 IP、灰度已过及控制状态新鲜时准入；不写 DNS、不自动移除。
-  - Verify: `python3 -m unittest tests.test_data_plane_bootstrap.NodeDnsAdmissionReconcilerTests -v`
-  - Dependencies: 自动灰度
-  - Files: `hysteria2_panel.py`, `install.sh`, `tests/test_data_plane_bootstrap.py`, `tests/test_installer.py`
-  - Scope: Medium
+- [x] 节点运营向导和预算 UI
+  - Acceptance: 对接/停用均有 1-2-3-4；320/768/1024/1440 无溢出；危险操作文案准确。
+  - Verify: `python3 -m unittest tests.test_panel.PanelHttpTests -v` 加浏览器验收。
+  - Files: `hysteria2_panel.py`, `hy2panel/web_assets.py`, `tests/test_panel.py`
 
-- [x] 向导 UI、API/运维文档与版本说明
-  - Acceptance: 管理员日常只需一条命令、一次指纹确认、一次 DNS 修改；所有不可自动化边界明确可见。
-  - Verify: `python3 -m unittest tests.test_panel tests.test_node_onboarding -v`
-  - Dependencies: 全部行为切片
-  - Files: `hy2panel/web_assets.py`, `docs/API.md`, `docs/DEPLOYMENT.md`, `README.md`, `CHANGELOG.md`
-  - Scope: Medium
-
-- [x] 完整质量门和对抗审查
-  - Acceptance: 行为测试与静态门全绿；无任意 root 命令、秘密泄漏、自动证书轮换或用户配置变化。
-  - Verify: 仓库全量测试与静态检查；`git diff --check`
-  - Dependencies: 全部实现
-  - Files: 本分支改动
-  - Scope: Medium
+- [ ] 文档、版本、全量门禁和发布部署
+  - Acceptance: 一键安装/升级/恢复覆盖新能力；签名发布；生产身份与用户配置不变。
+  - Verify: 仓库质量门、CI、Release 验签、真实控制面和数据面验收。
+  - Files: `README.md`, `docs/API.md`, `docs/DEPLOYMENT.md`, `CHANGELOG.md`, `hy2panel/version.py`
