@@ -6437,8 +6437,15 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("升级前历史（未归属）", body)
         self.assertIn("设备统计暂不完整", body)
         self.assertIn("上次 5", body)
-        self.assertIn("Hysteria 已结算用户流量", body)
+        self.assertIn("按实际入口机器拆分", body)
+        self.assertIn("预算编辑默认收起", body)
         self.assertIn("节点统计与流量预算", body)
+        self.assertIn('class="machine-grid"', body)
+        self.assertEqual(3, body.count('class="machine-card"'))
+        self.assertEqual(2, body.count('class="budget-editor"'))
+        self.assertIn("<summary>编辑预算</summary>", body)
+        self.assertNotIn('<span class="metric-breakdown">', body)
+        self.assertNotIn('class="table-wrap machine-table"', body)
         self.assertIn('name="limit_gib"', body)
         self.assertIn('name="warning_percent"', body)
         self.assertIn('name="used_gib"', body)
@@ -6594,7 +6601,14 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('@media(max-width:640px)', body)
         self.assertIn('.user-heading{flex-basis:auto}', body)
         self.assertIn('.user-table tr{display:grid;', body)
-        self.assertIn('.machine-table td::before{content:attr(data-label)', body)
+        self.assertIn('.machine-grid{grid-template-columns:1fr}', body)
+        self.assertIn('.machine-facts{grid-template-columns:repeat(2,minmax(0,1fr))}', body)
+        self.assertIn(
+            '.user-filters{grid-template-columns:minmax(200px,2fr) '
+            'repeat(3,minmax(105px,1fr)) auto}.budget-form{'
+            'grid-template-columns:repeat(2,minmax(0,1fr))}',
+            body,
+        )
         self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', body)
         self.assertIn('.user-table th{position:sticky;', body)
         self.assertIn('.node-row small{margin-top:2px;overflow-wrap:anywhere}', body)
@@ -7292,7 +7306,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.33.0", body)
+        self.assertIn("v0.33.1", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
@@ -7348,15 +7362,11 @@ class PanelHttpTests(unittest.TestCase):
 
         self.assertIn('class="resource certificate-resource"', warning_body)
         self.assertIn(
-            ".certificate-resource{grid-column:1/-1;display:grid;"
-            "grid-template-columns:auto minmax(0,1fr) auto;",
+            ".certificate-resource{grid-column:1/-1;display:flex;"
+            "align-items:baseline;gap:8px;",
             warning_body,
         )
-        self.assertIn(
-            "@media(max-width:640px){.certificate-resource{"
-            "grid-template-columns:auto minmax(0,1fr)}",
-            warning_body,
-        )
+        self.assertNotIn("180 / 90 / 30 天分级提醒", warning_body)
         self.assertIn('class="bad">警告 · 剩余 90 天</strong>', warning_body)
 
         health.certificate_status.return_value.update(

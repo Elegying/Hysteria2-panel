@@ -5723,34 +5723,6 @@ class PanelHandler(JsonHandler):
             "history": ("历史记录", "muted"),
         }
 
-        def machine_breakdown(field, limit=3):
-            ranked = sorted(
-                machine_origins,
-                key=lambda origin: int(origin.get(field) or 0),
-                reverse=True,
-            )[:limit]
-            return "".join(
-                '<span class="metric-breakdown-row"><span>{name}</span><strong>{value}</strong></span>'.format(
-                    name=html.escape(str(origin.get("display_name") or "未命名节点")),
-                    value=_human_bytes(int(origin.get(field) or 0)),
-                )
-                for origin in ranked
-                if int(origin.get(field) or 0) > 0
-            )
-
-        online_ranked = sorted(
-            machine_origins,
-            key=lambda origin: int(origin.get("online_devices") or 0),
-            reverse=True,
-        )[:3]
-        online_breakdown = "".join(
-            '<span class="metric-breakdown-row"><span>{name}</span><strong>{value}</strong></span>'.format(
-                name=html.escape(str(origin.get("display_name") or "未命名节点")),
-                value=int(origin["online_devices"]),
-            )
-            for origin in online_ranked
-            if origin.get("online_devices") is not None
-        )
         online_note = (
             '<small class="metric-warning">设备统计暂不完整：部分节点上报已过期</small>'
             if not snapshot.get("online_complete", True)
@@ -5806,7 +5778,7 @@ class PanelHandler(JsonHandler):
                     if budget["limit_bytes"]
                     else "不限"
                 )
-                budget_html = """<div class="budget-summary"><span class="{status_class}">{status}</span><small>{used} / {limit} · {percent:.1f}%</small><small>本周期 {period_start} 至 {period_end}（UTC），下次重置 {next_reset}</small></div><form class="budget-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button class="compact-button secondary" type="submit">保存预算与基线</button></form>""".format(
+                budget_html = """<div class="budget-summary"><div class="budget-main"><span class="{status_class}">{status}</span><strong>{used} / {limit} · {percent:.1f}%</strong></div><small>本周期 {period_start} 至 {period_end}（UTC） · 下次重置 {next_reset}</small></div><details class="budget-editor"><summary>编辑预算</summary><form class="budget-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button class="compact-button secondary" type="submit">保存预算与基线</button></form></details>""".format(
                     status_class=budget_status[1],
                     status=budget_status[0],
                     used=used_text,
@@ -5823,7 +5795,7 @@ class PanelHandler(JsonHandler):
                     next_reset=budget["next_reset_date"],
                 )
             machine_rows.append(
-                """<tr><td data-label="节点"><strong>{name}</strong><small class="muted machine-kind">{kind}</small></td><td data-label="状态"><span class="{status_class}">{status}</span></td><td data-label="在线设备">{online}</td><td data-label="上传">{tx}</td><td data-label="下载">{rx}</td><td data-label="合计">{total}</td><td data-label="本月预算">{budget}</td><td data-label="最后上报">{observed}</td></tr>""".format(
+                """<article class="machine-card"><div class="machine-card-head"><div><strong>{name}</strong><small class="muted machine-kind">{kind}</small></div><span class="{status_class}">{status}</span></div><div class="machine-facts"><div class="machine-fact"><span>在线设备</span><strong>{online}</strong></div><div class="machine-fact"><span>上传</span><strong>{tx}</strong></div><div class="machine-fact"><span>下载</span><strong>{rx}</strong></div><div class="machine-fact"><span>合计</span><strong>{total}</strong></div></div><div class="machine-budget">{budget}</div><small class="muted machine-observed">最后上报 {observed}</small></article>""".format(
                     name=html.escape(str(origin.get("display_name") or "未命名节点")),
                     kind=kind_label,
                     status_class=status_class,
@@ -5845,8 +5817,9 @@ class PanelHandler(JsonHandler):
             else ""
         )
         machine_stats_section = "" if not machine_origins else (
-            """<section class="card machine-stats"><div class="section-head"><div><h2>节点统计与流量预算</h2><p class="muted">设备数与 Hysteria 已结算用户流量按实际入口机器拆分；每台机器可独立填写当前周期已用流量、告警阈值和每月 UTC 重置日，保存后只继续累加新流量。月预算 0 表示不限制。</p></div></div>{warning}<div class="table-wrap machine-table"><table><thead><tr><th>节点</th><th>状态</th><th>在线设备</th><th>上传</th><th>下载</th><th>合计</th><th>月流量预算</th><th>最后上报</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
+            """<section class="card machine-stats"><div class="section-head machine-section-head"><div><h2>节点统计与流量预算</h2><p class="muted">按实际入口机器拆分；预算编辑默认收起，月预算 0 表示不限制。</p></div><span class="machine-count">{count} 台机器</span></div>{warning}<div class="machine-grid">{rows}</div></section>""".format(
                 warning=machine_warning,
+                count=len(machine_origins),
                 rows="".join(machine_rows),
             )
         )
@@ -6203,9 +6176,9 @@ class PanelHandler(JsonHandler):
 <button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
 <section class="metrics" aria-label="服务概览">
 <div class="metric"><span>不活跃用户</span><strong>{inactive_users}</strong><small class="muted">上传与下载均为 0</small></div>
-<div class="metric"><span>在线设备</span><strong>{online_devices}</strong>{online_note}<span class="metric-breakdown">{online_breakdown}</span></div>
-<div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">全部用户累计上传</small><span class="metric-breakdown">{tx_breakdown}</span></div>
-<div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">全部用户累计下载</small><span class="metric-breakdown">{rx_breakdown}</span></div>
+<div class="metric"><span>在线设备</span><strong>{online_devices}</strong>{online_note}</div>
+<div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">全部用户累计上传</small></div>
+<div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">全部用户累计下载</small></div>
 </section>
 {machine_stats_section}
 <section class="operations dashboard-trio">
@@ -6218,7 +6191,7 @@ class PanelHandler(JsonHandler):
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
 <div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu:.1f}%</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory:.1f}%</strong><small class="muted">{memory_used} / {memory_total}</small></div>
 <div class="resource"><span class="muted">磁盘占用</span><strong>{disk:.1f}%</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div>
-<div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong><small class="muted">180 / 90 / 30 天分级提醒</small></div></div></article>
+<div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
 <dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">节点对接与停用</h2><p class="muted">按 1-2-3-4 操作；面板会把可以自动完成的步骤全部完成。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">×</button></div>
@@ -6268,9 +6241,6 @@ class PanelHandler(JsonHandler):
             total_tx=_human_bytes(summary["total_tx"]),
             total_rx=_human_bytes(summary["total_rx"]),
             online_note=online_note,
-            online_breakdown=online_breakdown,
-            tx_breakdown=machine_breakdown("tx_bytes"),
-            rx_breakdown=machine_breakdown("rx_bytes"),
             machine_stats_section=machine_stats_section,
             csrf=csrf,
             onboarding_disabled=onboarding_disabled,
