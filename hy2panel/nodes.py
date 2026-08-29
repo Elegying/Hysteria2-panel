@@ -79,7 +79,10 @@ class DataPlaneBootstrapRejected(ValueError):
 class HysteriaCanaryRunner:
     """Prove both node entrypoints and their external egress with no user account."""
 
-    TRACE_URL = "https://cloudflare.com/cdn-cgi/trace"
+    TRACE_URLS = {
+        4: "https://1.1.1.1/cdn-cgi/trace",
+        6: "https://[2606:4700:4700::1111]/cdn-cgi/trace",
+    }
 
     def __init__(
         self,
@@ -122,7 +125,7 @@ class HysteriaCanaryRunner:
         if not secrets.compare_digest(observed, expected_ip):
             raise RuntimeError("canary egress address does not match the node")
 
-    def _check_entrypoint(self, node_ip, port, token, pin_sha256):
+    def _check_entrypoint(self, node_ip, port, token, pin_sha256, trace_url):
         local_port = int(self.port_factory())
         if not 1024 <= local_port <= 65535:
             raise RuntimeError("canary local port is invalid")
@@ -204,7 +207,7 @@ class HysteriaCanaryRunner:
                         "8192",
                         "--proxy",
                         "socks5h://127.0.0.1:{}".format(local_port),
-                        self.TRACE_URL,
+                        trace_url,
                     ],
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
@@ -239,6 +242,7 @@ class HysteriaCanaryRunner:
         if not address.is_global:
             raise ValueError("canary node address must be public")
         node_ip = str(address)
+        trace_url = self.TRACE_URLS[address.version]
         if (
             isinstance(main_port, bool)
             or not isinstance(main_port, int)
@@ -251,7 +255,7 @@ class HysteriaCanaryRunner:
         if not isinstance(pin_sha256, str) or not SHA256_PATTERN.fullmatch(pin_sha256):
             raise ValueError("canary certificate pin is invalid")
         for port in (main_port, 443):
-            self._check_entrypoint(node_ip, port, token, pin_sha256)
+            self._check_entrypoint(node_ip, port, token, pin_sha256, trace_url)
 
 
 class NodeDnsAdmissionReconciler:

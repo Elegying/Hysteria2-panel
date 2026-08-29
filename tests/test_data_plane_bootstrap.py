@@ -75,33 +75,56 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
             return Process()
 
         curl_calls = []
+        ipv4_trace = "https://1.1.1.1/cdn-cgi/trace"
+        ipv6_trace = "https://[2606:4700:4700::1111]/cdn-cgi/trace"
 
         def run(argv, **kwargs):
             curl_calls.append(argv)
-            return subprocess.CompletedProcess(argv, 0, "ip=8.8.8.8\nwarp=off\n", "")
+            if argv[-1] == ipv4_trace:
+                observed_ip = "8.8.8.8"
+            elif argv[-1] == ipv6_trace:
+                observed_ip = "2001:4860:4860::8888"
+            else:
+                self.fail("canary trace target did not match the node address family")
+            return subprocess.CompletedProcess(
+                argv, 0, "ip={}\nwarp=off\n".format(observed_ip), ""
+            )
 
         with mock.patch("hy2panel.nodes.subprocess.Popen", side_effect=popen), mock.patch(
             "hy2panel.nodes.subprocess.run", side_effect=run
         ), mock.patch("hy2panel.nodes.socket.create_connection"):
-            HysteriaCanaryRunner(
+            runner = HysteriaCanaryRunner(
                 server_name="vpn.example.test",
-                port_factory=iter((39001, 39002)).__next__,
+                port_factory=iter((39001, 39002, 39003, 39004)).__next__,
                 sleep=lambda _seconds: None,
-            )(
+            )
+            runner(
                 node_ip="8.8.8.8",
                 main_port=24443,
                 token="canary_" + "T" * 40,
                 pin_sha256="ab" * 32,
             )
+            runner(
+                node_ip="2001:4860:4860::8888",
+                main_port=24443,
+                token="canary_" + "T" * 40,
+                pin_sha256="ab" * 32,
+            )
 
-        self.assertEqual([24443, 443], [int(c["server"].rsplit(":", 1)[1]) for c in configs])
+        self.assertEqual(
+            [24443, 443, 24443, 443],
+            [int(c["server"].rsplit(":", 1)[1]) for c in configs],
+        )
         self.assertTrue(all("--max-filesize" in command for command in curl_calls))
         self.assertTrue(all(c["auth"].startswith("canary_") for c in configs))
         self.assertTrue(all(c["tls"]["insecure"] is True for c in configs))
         self.assertTrue(
             all(c["tls"]["pinSHA256"] == ":".join(["AB"] * 32) for c in configs)
         )
-        self.assertEqual(2, len(curl_calls))
+        self.assertEqual(
+            [ipv4_trace, ipv4_trace, ipv6_trace, ipv6_trace],
+            [command[-1] for command in curl_calls],
+        )
         self.assertTrue(all("socks5h://127.0.0.1:" in " ".join(c) for c in curl_calls))
         self.assertTrue(all(process.returncode == 0 for process in processes))
 
