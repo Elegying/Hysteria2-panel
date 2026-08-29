@@ -68,6 +68,10 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
             self.assertEqual(0o600, stat.S_IMODE(config_path.stat().st_mode))
             configs.append(json.loads(config_path.read_text()))
             self.assertNotIn("shell", kwargs)
+            self.assertIs(kwargs["stdout"], kwargs["stderr"])
+            log_stat = os.fstat(kwargs["stdout"].fileno())
+            self.assertTrue(stat.S_ISREG(log_stat.st_mode))
+            self.assertEqual(0o600, stat.S_IMODE(log_stat.st_mode))
             return Process()
 
         curl_calls = []
