@@ -142,8 +142,11 @@ class HysteriaCanaryRunner:
             "socks5": {"listen": "127.0.0.1:{}".format(local_port)},
         }
         process = None
+        log_handle = None
+        log_descriptor = -1
         with tempfile.TemporaryDirectory(prefix="hy2panel-canary-") as directory:
             config_path = Path(directory) / "client.json"
+            log_path = Path(directory) / "client.log"
             descriptor = os.open(
                 str(config_path),
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -155,11 +158,18 @@ class HysteriaCanaryRunner:
                     json.dump(config, handle, ensure_ascii=True, separators=(",", ":"))
                     handle.flush()
                     os.fsync(handle.fileno())
+                log_descriptor = os.open(
+                    str(log_path),
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                log_handle = os.fdopen(log_descriptor, "wb", buffering=0)
+                log_descriptor = -1
                 process = subprocess.Popen(  # nosec B603 -- fixed binary and argv.
                     [self.hysteria_path, "client", "--config", str(config_path)],
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=log_handle,
+                    stderr=log_handle,
                     close_fds=True,
                     start_new_session=True,
                     env={
@@ -209,6 +219,8 @@ class HysteriaCanaryRunner:
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)
+                if log_descriptor >= 0:
+                    os.close(log_descriptor)
                 if process is not None and process.poll() is None:
                     process.terminate()
                     try:
@@ -216,6 +228,8 @@ class HysteriaCanaryRunner:
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait(timeout=3)
+                if log_handle is not None:
+                    log_handle.close()
 
     def __call__(self, *, node_ip, main_port, token, pin_sha256):
         try:
