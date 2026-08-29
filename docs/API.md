@@ -87,7 +87,8 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/users/{id}/share` | 携带当前 `generation`，显示可复制的当前连接 URI |
 | `POST` | `/users/{id}/reset` | 携带当前 `generation`，重置该用户流量并断开旧连接 |
 | `POST` | `/users/reset-traffic` | 重置所有用户的持久累计流量 |
-| `POST` | `/usage-origins/{local或node来源ID}/budget` | 为面板本机或已有数据节点设置 GiB 月预算与 1–99% 告警阈值；0 GiB 关闭预算 |
+| `POST` | `/usage-origins/{local或node来源ID}/budget` | 为面板本机或已有数据节点设置 GiB 月预算、当前周期已用 GiB、1–99% 告警阈值和每月 UTC 重置日（1–31）；保存后只追加新流量，0 GiB 关闭预算 |
+| `POST` | `/usage-origins/legacy-unattributed/delete` | 明确确认后只删除固定的升级前未归属来源、拆分明细和日账本；不修改用户总流量或已归属节点统计 |
 | `POST` | `/node-enrollments` | 生成短时、单用途节点对接代码；要求面板 HTTPS |
 | `POST` | `/node-enrollments/{id}/revoke` | 作废尚未消费的节点对接码 |
 | `POST` | `/nodes/{id}/verify` | UI 核对双方 16 位短码，服务端仍精确确认完整 Ed25519 公钥 SHA-256 指纹 |

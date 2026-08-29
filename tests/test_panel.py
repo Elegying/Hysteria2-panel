@@ -6594,6 +6594,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('@media(max-width:640px)', body)
         self.assertIn('.user-heading{flex-basis:auto}', body)
         self.assertIn('.user-table tr{display:grid;', body)
+        self.assertIn('.machine-table td::before{content:attr(data-label)', body)
         self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', body)
         self.assertIn('.user-table th{position:sticky;', body)
         self.assertIn('.node-row small{margin-top:2px;overflow-wrap:anywhere}', body)
@@ -6605,7 +6606,7 @@ class PanelHttpTests(unittest.TestCase):
             body,
         )
         self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
-        self.assertNotIn('td::before{content:attr(data-label)', body)
+        self.assertNotIn('.user-table td::before{content:attr(data-label)', body)
         self.assertNotIn('限 3 个并发连接', body)
 
     def test_dashboard_marks_users_over_the_client_instance_limit(self):
@@ -7291,7 +7292,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.32.2", body)
+        self.assertIn("v0.33.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

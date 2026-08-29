@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.32.2"
+PANEL_VERSION="0.33.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -12,6 +12,7 @@ QRCODEGEN_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel
 TCP_PROBE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/tcp_probe.py"
 HY2PANEL_INIT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/__init__.py"
 HY2PANEL_VERSION_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/version.py"
+HY2PANEL_BUDGETS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/budgets.py"
 HY2PANEL_WEB_ASSETS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/web_assets.py"
 HY2PANEL_OPERATIONS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/operations.py"
 HY2PANEL_RELEASE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/release.py"
@@ -21,13 +22,14 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="7c93ebc9e925fcd1f02c1fed958a22095600934b0c841ed4fca179eb1fc50428"
+PANEL_SHA256="4695ee179045a744a70e1e0580635ccdd9fd745ba5aa1f55928849861627cac6"
 OFFSITE_BACKUP_SHA256="cebe6588728ccae872838f996c71eb1fc5c651b90f8247240f4982f23b205b64"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="3a83aaf02411c9bd3c19f312dd7cde10b509e1562996edb7b3a82bef55250f1d"
-HY2PANEL_WEB_ASSETS_SHA256="4c021e41480c302e8049ae078c79d4b58a4721c03337937527c9040983efa6d8"
+HY2PANEL_VERSION_SHA256="d7ff8a6d18c57797681965628ddd17a308f648816846778800441c3252c35808"
+HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
+HY2PANEL_WEB_ASSETS_SHA256="0f0b639e8b4c78ef2ff7ffe010bcc37607d9060e87d8e6a046cfad96576e113f"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
@@ -35,7 +37,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="238d40e634edc9e700546a65be2ea9bfa185c86d6ffaca2388caaa51cba72959"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="8ca7e2d33aa03be27dcd1eb097340de8ef0d5031e1b5351d86eeb553278a73fc"
+NODE_AGENT_SHA256="ae74255cc7424d159d29b8a49c260faa82b5c74481c4a53b76e6d1411249c3e0"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -5928,6 +5930,7 @@ download_file "${QRCODEGEN_SOURCE_URL}" "${TMP_DIR}/qrcodegen.py"
 download_file "${TCP_PROBE_SOURCE_URL}" "${TMP_DIR}/tcp_probe.py"
 download_file "${HY2PANEL_INIT_SOURCE_URL}" "${TMP_DIR}/hy2panel/__init__.py"
 download_file "${HY2PANEL_VERSION_SOURCE_URL}" "${TMP_DIR}/hy2panel/version.py"
+download_file "${HY2PANEL_BUDGETS_SOURCE_URL}" "${TMP_DIR}/hy2panel/budgets.py"
 download_file "${HY2PANEL_WEB_ASSETS_SOURCE_URL}" "${TMP_DIR}/hy2panel/web_assets.py"
 download_file "${HY2PANEL_OPERATIONS_SOURCE_URL}" "${TMP_DIR}/hy2panel/operations.py"
 download_file "${HY2PANEL_RELEASE_SOURCE_URL}" "${TMP_DIR}/hy2panel/release.py"
@@ -5948,6 +5951,8 @@ printf '%s  %s\n' "${HY2PANEL_INIT_SHA256}" "${TMP_DIR}/hy2panel/__init__.py" | 
   || fail "hy2panel/__init__.py SHA-256 校验失败"
 printf '%s  %s\n' "${HY2PANEL_VERSION_SHA256}" "${TMP_DIR}/hy2panel/version.py" | sha256sum --check --status \
   || fail "hy2panel/version.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_BUDGETS_SHA256}" "${TMP_DIR}/hy2panel/budgets.py" | sha256sum --check --status \
+  || fail "hy2panel/budgets.py SHA-256 校验失败"
 printf '%s  %s\n' "${HY2PANEL_WEB_ASSETS_SHA256}" "${TMP_DIR}/hy2panel/web_assets.py" | sha256sum --check --status \
   || fail "hy2panel/web_assets.py SHA-256 校验失败"
 printf '%s  %s\n' "${HY2PANEL_OPERATIONS_SHA256}" "${TMP_DIR}/hy2panel/operations.py" | sha256sum --check --status \

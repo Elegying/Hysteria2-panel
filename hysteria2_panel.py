@@ -2531,6 +2531,7 @@ class Database:
             raise ValueError("traffic budget actor is invalid")
         updated_at = int(time.time()) if updated_at is None else int(updated_at)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             if origin_id.startswith("node:"):
                 node_id = origin_id[5:]
                 if connection.execute(

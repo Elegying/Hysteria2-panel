@@ -1,7 +1,10 @@
 import base64
+import contextlib
 import datetime
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -188,6 +191,78 @@ class NodeBudgetTests(NodeOperationsCase):
         self.assertEqual(15, budget["reset_day"])
         self.assertEqual("2033-05-15", budget["period_start"])
         self.assertEqual("2033-06-15", budget["next_reset_date"])
+
+    def test_manual_baseline_waterline_is_atomic_with_concurrent_traffic(self):
+        self.db.create_proxy_user("atomic", token="a" * 32)
+        origin_id = "local:" + "9" * 32
+        saved_at = self.utc_timestamp(2033, 5, 18, 12)
+        baseline_read = threading.Event()
+        traffic_started = threading.Event()
+        failures = []
+        original_connect = self.db._connect
+
+        @contextlib.contextmanager
+        def gated_connect():
+            with original_connect() as connection:
+                class ConnectionProxy:
+                    def execute(self, statement, parameters=()):
+                        if "SELECT COALESCE(SUM(tx_bytes + rx_bytes), 0)" in statement:
+                            baseline_read.set()
+                            if not traffic_started.wait(2):
+                                raise AssertionError("concurrent traffic did not start")
+                            time.sleep(0.1)
+                        return connection.execute(statement, parameters)
+
+                    def __getattr__(self, name):
+                        return getattr(connection, name)
+
+                yield ConnectionProxy()
+
+        def save_budget():
+            try:
+                self.db.set_origin_budget(
+                    origin_id,
+                    20_000,
+                    80,
+                    "admin",
+                    saved_at,
+                    manual_used_bytes=5_000,
+                    reset_day=15,
+                )
+            except Exception as exc:  # pragma: no cover - surfaced below
+                failures.append(exc)
+
+        def add_concurrent_traffic():
+            try:
+                if not baseline_read.wait(2):
+                    raise AssertionError("baseline read did not start")
+                traffic_started.set()
+                with mock.patch("hysteria2_panel.time.time", return_value=saved_at + 1):
+                    self.db.apply_traffic_batch(
+                        "9" * 32,
+                        {"atomic": {"tx": 200, "rx": 100}},
+                        origin_id=origin_id,
+                        origin_kind="local",
+                        origin_name="面板本机",
+                    )
+            except Exception as exc:  # pragma: no cover - surfaced below
+                failures.append(exc)
+
+        with mock.patch.object(self.db, "_connect", gated_connect):
+            saver = threading.Thread(target=save_budget)
+            traffic = threading.Thread(target=add_concurrent_traffic)
+            saver.start()
+            traffic.start()
+            saver.join(5)
+            traffic.join(5)
+
+        self.assertFalse(saver.is_alive())
+        self.assertFalse(traffic.is_alive())
+        self.assertEqual([], failures)
+        self.assertEqual(
+            5_300,
+            self.db.get_origin_budget(origin_id, saved_at + 60)["used_bytes"],
+        )
 
     def test_editing_manual_used_reanchors_without_counting_old_delta_twice(self):
         self.db.create_proxy_user("reanchor", token="r" * 32)

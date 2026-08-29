@@ -7,8 +7,8 @@
 - [x] 预算 HTTP 输入验证、CSRF、审计
 - [x] Dashboard 可编辑已用流量和重置日
 - [x] `legacy-unattributed` 精确清理与确认 UI
-- [ ] API/部署/README/CHANGELOG/版本更新
-- [ ] 全量测试、静态门、浏览器和对抗审查
+- [x] API/部署/README/CHANGELOG/版本更新
+- [x] 全量测试、静态门、浏览器和对抗审查
 - [ ] PR/CI/签名发布/六平台/生产部署与清理验收
 
 ## 固定边界
