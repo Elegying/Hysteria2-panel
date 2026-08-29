@@ -2828,6 +2828,9 @@ class Database:
                         s.accepted_at
                     FROM nodes AS n
                     LEFT JOIN node_online_snapshots AS s ON s.node_id = n.node_id
+                    WHERE NOT (
+                        n.status = 'revoked' AND n.registered_at IS NULL
+                    )
                     ORDER BY n.created_at, n.node_id"""
                 )
             ]
@@ -5934,6 +5937,8 @@ class PanelHandler(JsonHandler):
         current_time = int(time.time())
         for node in self.app.database.list_nodes():
             status = node["status"]
+            if status == "revoked" and node.get("registered_at") is None:
+                continue
             lifecycle_state = node.get("lifecycle_state") or "active"
             expired = bool(
                 status == "pending_registration"

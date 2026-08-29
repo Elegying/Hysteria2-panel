@@ -5789,6 +5789,28 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertEqual({"revoked": True}, json.loads(revoke.read()))
 
+    def test_revoking_unused_enrollment_hides_placeholder_from_dashboard(self):
+        issued = self.application.node_enrollment_service.create(
+            "cancelled-unused-node", "", 10, "Elegy"
+        )
+        headers, csrf = self.authenticated_headers()
+
+        response = self.request(
+            "/node-enrollments/{}/revoke".format(issued["enrollmentId"]),
+            data={"csrf": csrf},
+            headers={**headers, "Accept": "application/json"},
+        )
+        self.assertEqual({"revoked": True}, json.loads(response.read()))
+
+        dashboard = self.request("/", headers=headers).read().decode("utf-8")
+        self.assertNotIn("cancelled-unused-node", dashboard)
+        stored = next(
+            node
+            for node in self.db.list_nodes()
+            if node["node_id"] == issued["nodeId"]
+        )
+        self.assertEqual("revoked", stored["status"])
+
     def test_node_verification_requires_admin_csrf_and_exact_fingerprint(self):
         service = self.application.node_enrollment_service
         issued = service.create("edge-verify", "", 10, "Elegy")
@@ -7306,7 +7328,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.33.5", body)
+        self.assertIn("v0.33.6", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
