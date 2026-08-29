@@ -6441,6 +6441,11 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("节点统计与流量预算", body)
         self.assertIn('name="limit_gib"', body)
         self.assertIn('name="warning_percent"', body)
+        self.assertIn('name="used_gib"', body)
+        self.assertIn('name="reset_day"', body)
+        self.assertIn("每月重置日", body)
+        self.assertIn("只会删除这条未归属历史", body)
+        self.assertIn('/usage-origins/legacy-unattributed/delete', body)
         self.assertIn("0 表示不限制", body)
 
     def test_budget_update_requires_csrf_and_persists_for_panel_local_node(self):
@@ -6462,6 +6467,8 @@ class PanelHttpTests(unittest.TestCase):
                     "csrf": csrf,
                     "limit_gib": "100",
                     "warning_percent": "85",
+                    "used_gib": "12.50",
+                    "reset_day": "31",
                 },
                 headers=headers,
                 follow_redirects=False,
@@ -6470,6 +6477,72 @@ class PanelHttpTests(unittest.TestCase):
         budget = self.db.get_origin_budget(origin_id)
         self.assertEqual(100 * 1024**3, budget["limit_bytes"])
         self.assertEqual(85, budget["warning_percent"])
+        self.assertEqual(12.5 * 1024**3, budget["manual_used_bytes"])
+        self.assertEqual(31, budget["reset_day"])
+
+    def test_budget_update_rejects_invalid_manual_usage_and_reset_day(self):
+        headers, csrf = self.authenticated_headers()
+        origin_id = self.application.usage_manager.local_origin_id
+        invalid_values = (
+            {"used_gib": "-1", "reset_day": "1"},
+            {"used_gib": "1.0000000000001", "reset_day": "1"},
+            {"used_gib": "not-a-number", "reset_day": "1"},
+            {"used_gib": "1", "reset_day": "0"},
+            {"used_gib": "1", "reset_day": "32"},
+        )
+        for invalid in invalid_values:
+            with self.subTest(invalid=invalid), self.assertRaises(
+                urllib.error.HTTPError
+            ) as raised:
+                self.request(
+                    "/usage-origins/{}/budget".format(origin_id),
+                    data={
+                        "csrf": csrf,
+                        "limit_gib": "100",
+                        "warning_percent": "85",
+                        **invalid,
+                    },
+                    headers=headers,
+                    follow_redirects=False,
+                )
+            self.assertEqual(409, raised.exception.code)
+
+    def test_unattributed_history_cleanup_requires_csrf_and_is_precise(self):
+        self.db.create_proxy_user("legacy-cleanup", token="l" * 32)
+        self.db.add_traffic({"legacy-cleanup": {"tx": 123, "rx": 456}})
+        headers, csrf = self.authenticated_headers()
+        before = self.db.list_proxy_users_for_usage()[0]
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request(
+                "/usage-origins/legacy-unattributed/delete",
+                data={},
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(403, missing_csrf.exception.code)
+
+        with self.assertRaises(urllib.error.HTTPError) as redirect:
+            self.request(
+                "/usage-origins/legacy-unattributed/delete",
+                data={"csrf": csrf, "confirm": "DELETE_UNATTRIBUTED"},
+                headers=headers,
+                follow_redirects=False,
+            )
+        self.assertEqual(303, redirect.exception.code)
+        after = self.db.list_proxy_users_for_usage()[0]
+        self.assertEqual(
+            (before["tx_bytes"], before["rx_bytes"]),
+            (after["tx_bytes"], after["rx_bytes"]),
+        )
+        self.assertNotIn(
+            "legacy-unattributed",
+            {origin["origin_id"] for origin in self.db.list_usage_origins()},
+        )
+        with sqlite3.connect(str(self.db.path)) as connection:
+            actions = {
+                row[0] for row in connection.execute("SELECT action FROM audit_log")
+            }
+        self.assertIn("unattributed_history_deleted", actions)
 
     def test_migration_dialog_never_embeds_offsite_credentials(self):
         status_path = self.application.offsite_backup_status_path

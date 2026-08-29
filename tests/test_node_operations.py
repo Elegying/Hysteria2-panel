@@ -1,4 +1,5 @@
 import base64
+import datetime
 import sqlite3
 import tempfile
 import unittest
@@ -6,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 import node_agent
+from hy2panel.budgets import budget_period
 from hysteria2_panel import Database
 
 
@@ -51,6 +53,44 @@ class NodeOperationsCase(unittest.TestCase):
 
 
 class NodeBudgetTests(NodeOperationsCase):
+    @staticmethod
+    def utc_timestamp(year, month, day, hour=0):
+        return int(
+            datetime.datetime(
+                year, month, day, hour, tzinfo=datetime.timezone.utc
+            ).timestamp()
+        )
+
+    def test_initialize_migrates_existing_budgets_with_compatible_cycle_defaults(self):
+        legacy_path = Path(self.temp_dir.name) / "legacy-budget.db"
+        with sqlite3.connect(str(legacy_path)) as connection:
+            connection.execute(
+                """CREATE TABLE origin_traffic_budgets (
+                    origin_id TEXT PRIMARY KEY,
+                    limit_bytes INTEGER NOT NULL,
+                    warning_percent INTEGER NOT NULL,
+                    updated_by TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )"""
+            )
+            connection.execute(
+                "INSERT INTO origin_traffic_budgets VALUES (?, 1000, 80, 'admin', ?)",
+                ("local:" + "b" * 32, self.now),
+            )
+
+        legacy_db = Database(legacy_path, b"p" * 32)
+        legacy_db.initialize()
+
+        with sqlite3.connect(str(legacy_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                "SELECT * FROM origin_traffic_budgets"
+            ).fetchone()
+        self.assertEqual(1, row["reset_day"])
+        self.assertEqual(0, row["manual_used_bytes"])
+        self.assertEqual(0, row["baseline_total_bytes"])
+        self.assertIsNone(row["baseline_at"])
+
     def test_local_budget_uses_only_new_idempotent_monthly_deltas(self):
         self.db.create_proxy_user("alice", token="t" * 32)
         origin_id = "local:" + "a" * 32
@@ -110,6 +150,179 @@ class NodeBudgetTests(NodeOperationsCase):
         self.assertEqual(1000, current["used_bytes"])
         self.assertEqual(0, following["used_bytes"])
         self.assertEqual("normal", following["status"])
+
+    def test_manual_used_baseline_adds_only_traffic_recorded_after_save(self):
+        self.db.create_proxy_user("baseline", token="b" * 32)
+        origin_id = "local:" + "c" * 32
+        saved_at = self.utc_timestamp(2033, 5, 18, 12)
+        with mock.patch("hysteria2_panel.time.time", return_value=saved_at - 60):
+            self.db.apply_traffic_batch(
+                "c" * 32,
+                {"baseline": {"tx": 700, "rx": 300}},
+                origin_id=origin_id,
+                origin_kind="local",
+                origin_name="面板本机",
+            )
+        self.db.set_origin_budget(
+            origin_id,
+            20_000,
+            80,
+            "admin",
+            saved_at,
+            manual_used_bytes=5_000,
+            reset_day=15,
+        )
+        with mock.patch("hysteria2_panel.time.time", return_value=saved_at + 60):
+            self.db.apply_traffic_batch(
+                "d" * 32,
+                {"baseline": {"tx": 200, "rx": 100}},
+                origin_id=origin_id,
+                origin_kind="local",
+                origin_name="面板本机",
+            )
+
+        budget = self.db.get_origin_budget(origin_id, saved_at + 120)
+
+        self.assertEqual(5_300, budget["used_bytes"])
+        self.assertEqual(5_000, budget["manual_used_bytes"])
+        self.assertEqual(15, budget["reset_day"])
+        self.assertEqual("2033-05-15", budget["period_start"])
+        self.assertEqual("2033-06-15", budget["next_reset_date"])
+
+    def test_editing_manual_used_reanchors_without_counting_old_delta_twice(self):
+        self.db.create_proxy_user("reanchor", token="r" * 32)
+        origin_id = "node:" + self.node_id
+        first_save = self.utc_timestamp(2033, 5, 18, 10)
+        with mock.patch("hysteria2_panel.time.time", return_value=first_save - 60):
+            self.db.apply_traffic_batch(
+                "e" * 32,
+                {"reanchor": {"tx": 1_000, "rx": 0}},
+                origin_id=origin_id,
+                origin_kind="remote",
+                origin_name="数据节点一",
+            )
+        self.db.set_origin_budget(
+            origin_id, 20_000, 80, "admin", first_save,
+            manual_used_bytes=5_000, reset_day=1,
+        )
+        with mock.patch("hysteria2_panel.time.time", return_value=first_save + 60):
+            self.db.apply_traffic_batch(
+                "f" * 32,
+                {"reanchor": {"tx": 300, "rx": 0}},
+                origin_id=origin_id,
+                origin_kind="remote",
+                origin_name="数据节点一",
+            )
+        self.db.set_origin_budget(
+            origin_id, 20_000, 80, "admin", first_save + 120,
+            manual_used_bytes=7_000, reset_day=1,
+        )
+        with mock.patch("hysteria2_panel.time.time", return_value=first_save + 180):
+            self.db.apply_traffic_batch(
+                "1" * 32,
+                {"reanchor": {"tx": 200, "rx": 0}},
+                origin_id=origin_id,
+                origin_kind="remote",
+                origin_name="数据节点一",
+            )
+
+        budget = self.db.get_origin_budget(origin_id, first_save + 240)
+
+        self.assertEqual(7_200, budget["used_bytes"])
+
+    def test_manual_baseline_expires_at_custom_reset_and_new_cycle_uses_ledger(self):
+        self.db.create_proxy_user("cycle", token="y" * 32)
+        origin_id = "local:" + "d" * 32
+        saved_at = self.utc_timestamp(2033, 5, 18, 12)
+        self.db.set_origin_budget(
+            origin_id, 20_000, 80, "admin", saved_at,
+            manual_used_bytes=9_000, reset_day=19,
+        )
+        after_reset = self.utc_timestamp(2033, 5, 19, 1)
+        with mock.patch("hysteria2_panel.time.time", return_value=after_reset):
+            self.db.apply_traffic_batch(
+                "2" * 32,
+                {"cycle": {"tx": 250, "rx": 50}},
+                origin_id=origin_id,
+                origin_kind="local",
+                origin_name="面板本机",
+            )
+
+        budget = self.db.get_origin_budget(origin_id, after_reset + 60)
+
+        self.assertEqual(300, budget["used_bytes"])
+        self.assertEqual("2033-05-19", budget["period_start"])
+        self.assertEqual("2033-06-19", budget["period_end"])
+
+    def test_reset_day_31_clamps_to_month_end_without_drifting(self):
+        origin_id = "local:" + "e" * 32
+        february = self.utc_timestamp(2024, 2, 28, 12)
+        self.db.set_origin_budget(
+            origin_id, 20_000, 80, "admin", february,
+            manual_used_bytes=400, reset_day=31,
+        )
+
+        before_reset = self.db.get_origin_budget(origin_id, february)
+        after_reset = self.db.get_origin_budget(
+            origin_id, self.utc_timestamp(2024, 2, 29, 1)
+        )
+
+        self.assertEqual("2024-01-31", before_reset["period_start"])
+        self.assertEqual("2024-02-29", before_reset["next_reset_date"])
+        self.assertEqual(400, before_reset["used_bytes"])
+        self.assertEqual("2024-02-29", after_reset["period_start"])
+        self.assertEqual("2024-03-31", after_reset["next_reset_date"])
+        self.assertEqual(0, after_reset["used_bytes"])
+
+    def test_reset_days_29_30_and_31_each_clamp_against_the_current_month(self):
+        cases = (
+            ((2023, 2, 28, 12), 31, "2023-02-28", "2023-03-31"),
+            ((2024, 2, 29, 12), 30, "2024-02-29", "2024-03-30"),
+            ((2024, 4, 30, 12), 31, "2024-04-30", "2024-05-31"),
+        )
+        for timestamp_parts, reset_day, expected_start, expected_end in cases:
+            with self.subTest(reset_day=reset_day, timestamp=timestamp_parts):
+                start, end = budget_period(
+                    self.utc_timestamp(*timestamp_parts), reset_day
+                )
+                self.assertEqual(expected_start, start.strftime("%Y-%m-%d"))
+                self.assertEqual(expected_end, end.strftime("%Y-%m-%d"))
+
+    def test_unattributed_history_cleanup_does_not_touch_users_or_assigned_origins(self):
+        created = self.db.create_proxy_user("cleanup", token="z" * 32)
+        local_origin = "local:" + "f" * 32
+        with mock.patch("hysteria2_panel.time.time", return_value=self.now):
+            self.db.apply_traffic_batch(
+                "3" * 32, {"cleanup": {"tx": 100, "rx": 50}}
+            )
+            self.db.apply_traffic_batch(
+                "4" * 32,
+                {"cleanup": {"tx": 30, "rx": 20}},
+                origin_id=local_origin,
+                origin_kind="local",
+                origin_name="面板本机",
+            )
+        before_user = self.db.get_proxy_user(created["id"])
+
+        deleted = self.db.delete_unattributed_history()
+        repeated = self.db.delete_unattributed_history()
+
+        after_user = self.db.get_proxy_user(created["id"])
+        origins = {row["origin_id"]: row for row in self.db.list_usage_origins()}
+        self.assertEqual({"origins": 1, "users": 1, "daily": 1}, deleted)
+        self.assertEqual({"origins": 0, "users": 0, "daily": 0}, repeated)
+        self.assertEqual(
+            (before_user["tx_bytes"], before_user["rx_bytes"]),
+            (after_user["tx_bytes"], after_user["rx_bytes"]),
+        )
+        self.assertNotIn("legacy-unattributed", origins)
+        self.assertEqual((30, 20), (origins[local_origin]["tx_bytes"], origins[local_origin]["rx_bytes"]))
+        with sqlite3.connect(str(self.db_path)) as connection:
+            assigned_daily = connection.execute(
+                "SELECT tx_bytes, rx_bytes FROM origin_traffic_daily WHERE origin_id = ?",
+                (local_origin,),
+            ).fetchone()
+        self.assertEqual((30, 20), assigned_daily)
 
     def test_user_counter_reset_does_not_erase_machine_bandwidth_budget_usage(self):
         with sqlite3.connect(str(self.db_path)) as connection:

@@ -48,6 +48,12 @@ from qrcodegen import DataTooLongError, QrCode
 from hy2panel.certificate import (
     certificate_validity_timestamps,
 )
+from hy2panel.budgets import (
+    budget_period,
+    budget_result,
+    bytes_to_gib_input,
+    gib_input_to_bytes,
+)
 from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.distributed import (
     DistributedControlService,
@@ -1811,6 +1817,13 @@ class Database:
                     limit_bytes INTEGER NOT NULL CHECK (limit_bytes >= 0),
                     warning_percent INTEGER NOT NULL DEFAULT 80
                         CHECK (warning_percent BETWEEN 1 AND 99),
+                    reset_day INTEGER NOT NULL DEFAULT 1
+                        CHECK (reset_day BETWEEN 1 AND 31),
+                    manual_used_bytes INTEGER NOT NULL DEFAULT 0
+                        CHECK (manual_used_bytes >= 0),
+                    baseline_total_bytes INTEGER NOT NULL DEFAULT 0
+                        CHECK (baseline_total_bytes >= 0),
+                    baseline_at INTEGER,
                     updated_by TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -1959,6 +1972,34 @@ class Database:
             }
             for column, statement in migrations.items():
                 if column not in columns:
+                    connection.execute(statement)
+            budget_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(origin_traffic_budgets)"
+                )
+            }
+            budget_migrations = {
+                "reset_day": (
+                    "ALTER TABLE origin_traffic_budgets ADD COLUMN reset_day "
+                    "INTEGER NOT NULL DEFAULT 1 CHECK (reset_day BETWEEN 1 AND 31)"
+                ),
+                "manual_used_bytes": (
+                    "ALTER TABLE origin_traffic_budgets ADD COLUMN "
+                    "manual_used_bytes INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (manual_used_bytes >= 0)"
+                ),
+                "baseline_total_bytes": (
+                    "ALTER TABLE origin_traffic_budgets ADD COLUMN "
+                    "baseline_total_bytes INTEGER NOT NULL DEFAULT 0 "
+                    "CHECK (baseline_total_bytes >= 0)"
+                ),
+                "baseline_at": (
+                    "ALTER TABLE origin_traffic_budgets ADD COLUMN baseline_at INTEGER"
+                ),
+            }
+            for column, statement in budget_migrations.items():
+                if column not in budget_columns:
                     connection.execute(statement)
             node_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(nodes)")
@@ -2453,7 +2494,14 @@ class Database:
         return origin_id
 
     def set_origin_budget(
-        self, origin_id, limit_bytes, warning_percent, actor, updated_at=None
+        self,
+        origin_id,
+        limit_bytes,
+        warning_percent,
+        actor,
+        updated_at=None,
+        manual_used_bytes=None,
+        reset_day=None,
     ):
         origin_id = self._validate_budget_origin_id(origin_id)
         if isinstance(limit_bytes, bool) or not isinstance(limit_bytes, int):
@@ -2466,6 +2514,18 @@ class Database:
             or not 1 <= warning_percent <= 99
         ):
             raise ValueError("traffic budget warning threshold is invalid")
+        if manual_used_bytes is not None and (
+            isinstance(manual_used_bytes, bool)
+            or not isinstance(manual_used_bytes, int)
+            or not 0 <= manual_used_bytes <= 2**63 - 1
+        ):
+            raise ValueError("traffic budget used amount is invalid")
+        if reset_day is not None and (
+            isinstance(reset_day, bool)
+            or not isinstance(reset_day, int)
+            or not 1 <= reset_day <= 31
+        ):
+            raise ValueError("traffic budget reset day is invalid")
         actor = str(actor or "")
         if not NAME_PATTERN.fullmatch(actor):
             raise ValueError("traffic budget actor is invalid")
@@ -2477,49 +2537,68 @@ class Database:
                     "SELECT 1 FROM nodes WHERE node_id = ?", (node_id,)
                 ).fetchone() is None:
                     raise ValueError("traffic budget node does not exist")
+            existing = connection.execute(
+                """SELECT reset_day, manual_used_bytes, baseline_total_bytes,
+                    baseline_at FROM origin_traffic_budgets WHERE origin_id = ?""",
+                (origin_id,),
+            ).fetchone()
+            effective_reset_day = (
+                int(reset_day)
+                if reset_day is not None
+                else int(existing["reset_day"])
+                if existing is not None
+                else 1
+            )
+            if manual_used_bytes is None:
+                effective_manual_used = (
+                    int(existing["manual_used_bytes"])
+                    if existing is not None
+                    else 0
+                )
+                baseline_total = (
+                    int(existing["baseline_total_bytes"])
+                    if existing is not None
+                    else 0
+                )
+                baseline_at = existing["baseline_at"] if existing is not None else None
+            else:
+                effective_manual_used = int(manual_used_bytes)
+                baseline_total = int(
+                    connection.execute(
+                        """SELECT COALESCE(SUM(tx_bytes + rx_bytes), 0)
+                        FROM origin_traffic_daily WHERE origin_id = ?""",
+                        (origin_id,),
+                    ).fetchone()[0]
+                )
+                baseline_at = updated_at
             connection.execute(
                 """INSERT INTO origin_traffic_budgets(
-                    origin_id, limit_bytes, warning_percent, updated_by, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    origin_id, limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes, baseline_total_bytes, baseline_at,
+                    updated_by, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin_id) DO UPDATE SET
                     limit_bytes = excluded.limit_bytes,
                     warning_percent = excluded.warning_percent,
+                    reset_day = excluded.reset_day,
+                    manual_used_bytes = excluded.manual_used_bytes,
+                    baseline_total_bytes = excluded.baseline_total_bytes,
+                    baseline_at = excluded.baseline_at,
                     updated_by = excluded.updated_by,
                     updated_at = excluded.updated_at""",
-                (origin_id, limit_bytes, warning_percent, actor, updated_at),
+                (
+                    origin_id,
+                    limit_bytes,
+                    warning_percent,
+                    effective_reset_day,
+                    effective_manual_used,
+                    baseline_total,
+                    baseline_at,
+                    actor,
+                    updated_at,
+                ),
             )
         return self.get_origin_budget(origin_id, updated_at)
-
-    @staticmethod
-    def _origin_budget_result(origin_id, period, budget, used):
-        limit_bytes = int(budget["limit_bytes"]) if budget is not None else 0
-        warning_percent = (
-            int(budget["warning_percent"]) if budget is not None else 80
-        )
-        used = int(used)
-        if limit_bytes <= 0:
-            percent = 0.0
-            status = "disabled"
-        else:
-            percent = round(used * 100.0 / limit_bytes, 1)
-            if used >= limit_bytes:
-                status = "exhausted"
-            elif used * 100 >= limit_bytes * warning_percent:
-                status = "warning"
-            else:
-                status = "normal"
-        return {
-            "origin_id": origin_id,
-            "period": period,
-            "limit_bytes": limit_bytes,
-            "warning_percent": warning_percent,
-            "used_bytes": used,
-            "remaining_bytes": max(0, limit_bytes - used) if limit_bytes else None,
-            "percent": percent,
-            "status": status,
-            "updated_by": budget["updated_by"] if budget is not None else None,
-            "updated_at": budget["updated_at"] if budget is not None else None,
-        }
 
     def get_origin_budget(self, origin_id, now=None):
         return self.list_origin_budgets([origin_id], now)[0]
@@ -2535,37 +2614,94 @@ class Database:
         now = int(time.time()) if now is None else int(now)
         current = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc)
         period = current.strftime("%Y-%m")
-        period_start = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        if period_start.month == 12:
-            period_end = period_start.replace(year=period_start.year + 1, month=1)
-        else:
-            period_end = period_start.replace(month=period_start.month + 1)
-        first_usage_date = period_start.strftime("%Y-%m-%d")
-        next_usage_date = period_end.strftime("%Y-%m-%d")
         budgets = {}
-        usage = {}
         with self._connect() as connection:
             for row in connection.execute(
-                """SELECT origin_id, limit_bytes, warning_percent,
+                """SELECT origin_id, limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes, baseline_total_bytes, baseline_at,
                     updated_by, updated_at FROM origin_traffic_budgets"""
             ):
                 budgets[row["origin_id"]] = row
+            periods = {
+                origin_id: budget_period(
+                    now,
+                    int(budgets[origin_id]["reset_day"])
+                    if origin_id in budgets
+                    else 1,
+                )
+                for origin_id in origin_ids
+            }
+            first_usage_date = min(
+                item[0].strftime("%Y-%m-%d") for item in periods.values()
+            )
+            next_usage_date = max(
+                item[1].strftime("%Y-%m-%d") for item in periods.values()
+            )
+            cycle_usage = {origin_id: 0 for origin_id in origin_ids}
             for row in connection.execute(
-                """SELECT origin_id, COALESCE(SUM(tx_bytes + rx_bytes), 0) AS used
-                FROM origin_traffic_daily
-                WHERE usage_date >= ? AND usage_date < ? GROUP BY origin_id""",
+                """SELECT origin_id, usage_date, tx_bytes + rx_bytes AS used
+                FROM origin_traffic_daily WHERE usage_date >= ? AND usage_date < ?""",
                 (first_usage_date, next_usage_date),
             ):
-                usage[row["origin_id"]] = int(row["used"])
-        return [
-            self._origin_budget_result(
-                origin_id,
-                period,
-                budgets.get(origin_id),
-                usage.get(origin_id, 0),
+                origin_id = row["origin_id"]
+                if origin_id not in cycle_usage:
+                    continue
+                start, end = periods[origin_id]
+                if (
+                    start.strftime("%Y-%m-%d")
+                    <= row["usage_date"]
+                    < end.strftime("%Y-%m-%d")
+                ):
+                    cycle_usage[origin_id] += int(row["used"])
+            totals = {origin_id: 0 for origin_id in origin_ids}
+            for row in connection.execute(
+                """SELECT origin_id, COALESCE(SUM(tx_bytes + rx_bytes), 0) AS used
+                FROM origin_traffic_daily GROUP BY origin_id"""
+            ):
+                if row["origin_id"] in totals:
+                    totals[row["origin_id"]] = int(row["used"])
+        results = []
+        for origin_id in origin_ids:
+            budget = budgets.get(origin_id)
+            period_start, period_end = periods[origin_id]
+            used = cycle_usage[origin_id]
+            if budget is not None and budget["baseline_at"] is not None:
+                baseline_at = int(budget["baseline_at"])
+                if int(period_start.timestamp()) <= baseline_at < int(
+                    period_end.timestamp()
+                ):
+                    used = int(budget["manual_used_bytes"]) + max(
+                        0,
+                        totals[origin_id] - int(budget["baseline_total_bytes"]),
+                    )
+            results.append(
+                budget_result(
+                    origin_id,
+                    period,
+                    period_start,
+                    period_end,
+                    budget,
+                    used,
+                )
             )
-            for origin_id in origin_ids
-        ]
+        return results
+
+    def delete_unattributed_history(self):
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            users = connection.execute(
+                "DELETE FROM usage_origin_users WHERE origin_id = ?",
+                (LEGACY_USAGE_ORIGIN_ID,),
+            ).rowcount
+            daily = connection.execute(
+                "DELETE FROM origin_traffic_daily WHERE origin_id = ?",
+                (LEGACY_USAGE_ORIGIN_ID,),
+            ).rowcount
+            origins = connection.execute(
+                "DELETE FROM usage_origins WHERE origin_id = ? AND kind = 'legacy'",
+                (LEGACY_USAGE_ORIGIN_ID,),
+            ).rowcount
+        return {"origins": origins, "users": users, "daily": daily}
 
     def origin_budget_status_counts(self, now=None):
         with self._connect() as connection:
@@ -5645,7 +5781,11 @@ class PanelHandler(JsonHandler):
                 "legacy": "历史归属",
             }.get(origin.get("kind"), "历史归属")
             budget = machine_budgets.get(origin["origin_id"])
-            if budget is None:
+            if budget is None and origin.get("kind") == "legacy":
+                budget_html = """<div class="budget-summary"><span class="muted">升级前未归属历史</span><small>不计入任何机器预算</small></div><form class="legacy-cleanup-form" method="post" action="/usage-origins/legacy-unattributed/delete" data-confirm="只会删除这条未归属历史，不会删除用户流量或已归属节点统计。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="confirm" value="DELETE_UNATTRIBUTED"><button class="compact-button danger" type="submit">删除未归属历史</button></form>""".format(
+                    csrf=csrf
+                )
+            elif budget is None:
                 budget_html = '<span class="muted">历史数据不可设置预算</span>'
             else:
                 budget_status = {
@@ -5665,7 +5805,7 @@ class PanelHandler(JsonHandler):
                     if budget["limit_bytes"]
                     else "不限"
                 )
-                budget_html = """<div class="budget-summary"><span class="{status_class}">{status}</span><small>{used} / {limit} · {percent:.1f}%</small></div><form class="budget-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><button class="compact-button secondary" type="submit">保存</button></form>""".format(
+                budget_html = """<div class="budget-summary"><span class="{status_class}">{status}</span><small>{used} / {limit} · {percent:.1f}%</small><small>本周期 {period_start} 至 {period_end}（UTC），下次重置 {next_reset}</small></div><form class="budget-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button class="compact-button secondary" type="submit">保存预算与基线</button></form>""".format(
                     status_class=budget_status[1],
                     status=budget_status[0],
                     used=used_text,
@@ -5674,7 +5814,12 @@ class PanelHandler(JsonHandler):
                     origin_id=html.escape(origin["origin_id"], quote=True),
                     csrf=csrf,
                     limit_gib=limit_gib,
+                    used_gib=bytes_to_gib_input(budget["used_bytes"]),
                     warning=budget["warning_percent"],
+                    reset_day=budget["reset_day"],
+                    period_start=budget["period_start"],
+                    period_end=budget["period_end"],
+                    next_reset=budget["next_reset_date"],
                 )
             machine_rows.append(
                 """<tr><td data-label="节点"><strong>{name}</strong><small class="muted machine-kind">{kind}</small></td><td data-label="状态"><span class="{status_class}">{status}</span></td><td data-label="在线设备">{online}</td><td data-label="上传">{tx}</td><td data-label="下载">{rx}</td><td data-label="合计">{total}</td><td data-label="本月预算">{budget}</td><td data-label="最后上报">{observed}</td></tr>""".format(
@@ -5699,7 +5844,7 @@ class PanelHandler(JsonHandler):
             else ""
         )
         machine_stats_section = "" if not machine_origins else (
-            """<section class="card machine-stats"><div class="section-head"><div><h2>节点统计与流量预算</h2><p class="muted">设备数与 Hysteria 已结算用户流量按实际入口机器拆分；月预算从 v0.32.0 起按 UTC 自然月统计，0 表示不限制。</p></div></div>{warning}<div class="table-wrap machine-table"><table><thead><tr><th>节点</th><th>状态</th><th>在线设备</th><th>上传</th><th>下载</th><th>合计</th><th>本月预算</th><th>最后上报</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
+            """<section class="card machine-stats"><div class="section-head"><div><h2>节点统计与流量预算</h2><p class="muted">设备数与 Hysteria 已结算用户流量按实际入口机器拆分；每台机器可独立填写当前周期已用流量、告警阈值和每月 UTC 重置日，保存后只继续累加新流量。月预算 0 表示不限制。</p></div></div>{warning}<div class="table-wrap machine-table"><table><thead><tr><th>节点</th><th>状态</th><th>在线设备</th><th>上传</th><th>下载</th><th>合计</th><th>月流量预算</th><th>最后上报</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
                 warning=machine_warning,
                 rows="".join(machine_rows),
             )
@@ -6414,12 +6559,23 @@ class PanelHandler(JsonHandler):
             )
             if origin_id not in allowed:
                 raise ValueError("节点预算来源不存在")
+            used_gib = form.get("used_gib")
+            reset_day_raw = form.get("reset_day")
+            if (used_gib is None) != (reset_day_raw is None):
+                raise ValueError("已用流量和重置日必须同时填写")
+            budget_options = {}
+            if used_gib is not None:
+                budget_options = {
+                    "manual_used_bytes": gib_input_to_bytes(used_gib),
+                    "reset_day": int(reset_day_raw),
+                }
             self.app.database.set_origin_budget(
                 origin_id,
                 limit_gib * 1024**3,
                 warning_percent,
                 session["username"],
                 int(time.time()),
+                **budget_options,
             )
             self._audit_safely(
                 session["username"], "node_traffic_budget_updated", origin_id
@@ -6427,6 +6583,19 @@ class PanelHandler(JsonHandler):
             self._redirect("/")
         except (TypeError, ValueError, OverflowError) as exc:
             self._error_page(409, str(exc))
+
+    def _handle_delete_unattributed_history(self, session, form):
+        if form.get("confirm") != "DELETE_UNATTRIBUTED":
+            self._error_page(409, "请确认只删除升级前未归属历史")
+            return
+        deleted = self.app.database.delete_unattributed_history()
+        if any(deleted.values()):
+            self._audit_safely(
+                session["username"],
+                "unattributed_history_deleted",
+                LEGACY_USAGE_ORIGIN_ID,
+            )
+        self._redirect("/")
 
     def _handle_node_lifecycle(self, session, node_id, action):
         now = int(time.time())
@@ -6714,6 +6883,9 @@ class PanelHandler(JsonHandler):
             return
         if path == "/node-enrollments":
             self._handle_create_node_enrollment(session, form)
+            return
+        if path == "/usage-origins/legacy-unattributed/delete":
+            self._handle_delete_unattributed_history(session, form)
             return
         budget_match = re.fullmatch(
             r"/usage-origins/((?:local|node):[0-9a-f]{32})/budget", path
