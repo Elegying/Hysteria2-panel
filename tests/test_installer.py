@@ -502,7 +502,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.32.2"', source)
+        self.assertIn('PANEL_VERSION="0.33.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -552,6 +552,7 @@ esac
         modules = {
             "hy2panel/__init__.py": "HY2PANEL_INIT_SHA256",
             "hy2panel/version.py": "HY2PANEL_VERSION_SHA256",
+            "hy2panel/budgets.py": "HY2PANEL_BUDGETS_SHA256",
             "hy2panel/web_assets.py": "HY2PANEL_WEB_ASSETS_SHA256",
             "hy2panel/operations.py": "HY2PANEL_OPERATIONS_SHA256",
             "hy2panel/release.py": "HY2PANEL_RELEASE_SHA256",
