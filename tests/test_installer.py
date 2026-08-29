@@ -449,12 +449,13 @@ assert_reopenable_installer_entrypoint
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
         quick_command = (
-            '(umask 077; installer="$(mktemp)" && '
-            "trap 'rm -f -- \"$installer\"' EXIT && "
+            "(umask 077;i=$(mktemp)&&"
+            "trap 'rm -f \"$i\"' EXIT&&"
             "curl -fsSL https://raw.githubusercontent.com/Elegying/"
-            'Hysteria2-panel/main/install.sh -o "$installer" && bash "$installer")'
+            'Hysteria2-panel/main/install.sh -o "$i"&&bash "$i")'
         )
         self.assertIn(quick_command, source)
+        self.assertLess(len(quick_command), 160)
         self.assertNotRegex(source, r"(?m)^bash <\(curl")
         syntax = subprocess.run(
             ["bash", "-n", "-c", quick_command], capture_output=True, text=True

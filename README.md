@@ -16,7 +16,7 @@
 新服务器先把面板域名的 DNS A/AAAA 记录指向服务器，并在云安全组放行 TCP `80`、面板端口以及 Hysteria 所需的 TCP/UDP 端口，然后用 `root` 执行这一行：
 
 ```bash
-(umask 077; installer="$(mktemp)" && trap 'rm -f -- "$installer"' EXIT && curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$installer" && bash "$installer")
+(umask 077;i=$(mktemp)&&trap 'rm -f "$i"' EXIT&&curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$i"&&bash "$i")
 ```
 
 这条命令会部署管理面板和本机 Hysteria 节点，自动配置 systemd 保活、证书、主端口与账号专属 UDP `443`、`FULL` 出站策略、`fq`/内核 BBR，以及至少 16 MiB UDP 缓冲。安装完成后即可登录网页；恢复旧服务器时先上传备份，再从“对接节点”生成命令，把后续服务器接入即可。

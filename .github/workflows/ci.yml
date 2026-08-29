@@ -128,9 +128,9 @@ jobs:
               "Elegying/Hysteria2-panel/main/install.sh"
           )
           quick_command = (
-              '(umask 077; installer="$(mktemp)" && '
-              "trap 'rm -f -- \"$installer\"' EXIT && "
-              'curl -fsSL {} -o "$installer" && bash "$installer")'
+              "(umask 077;i=$(mktemp)&&"
+              "trap 'rm -f \"$i\"' EXIT&&"
+              'curl -fsSL {} -o "$i"&&bash "$i")'
           ).format(versionless_url)
           if quick_command not in readme:
               raise SystemExit("README one-line main installer is missing")
