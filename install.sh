@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.32.0"
+PANEL_VERSION="0.32.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -21,12 +21,12 @@ HY2PANEL_SYSTEMD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria
 HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/nodes.py"
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="36ab6645452bc739cd70d399e90dba2843615cec0248fd3ec8cf827e1ac69277"
+PANEL_SHA256="7c93ebc9e925fcd1f02c1fed958a22095600934b0c841ed4fca179eb1fc50428"
 OFFSITE_BACKUP_SHA256="cebe6588728ccae872838f996c71eb1fc5c651b90f8247240f4982f23b205b64"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="5734a25adef4510e24622b395b617d27ede0d72ce89fcb443a52d5074c3f3068"
+HY2PANEL_VERSION_SHA256="d8250b4bc415a0ea6ce43a6ad8969755b77b278b7270f7fe7ec3d7076f8da9bc"
 HY2PANEL_WEB_ASSETS_SHA256="4c021e41480c302e8049ae078c79d4b58a4721c03337937527c9040983efa6d8"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
@@ -35,7 +35,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="25bb04215e3a78b25061b8a5d5fb5de8a05358d88b87bc38739d9da4e3705346"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="7f071d64fd0deb176206bbf87f083387f0e2cdeb8787dccb9d36bffcd1c6cc20"
+NODE_AGENT_SHA256="a01290a335e6290c096d6f91a86b64b35501eeb0982da298b1b56c417a70a83e"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -6867,8 +6867,8 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-CapabilityBoundingSet=
-AmbientCapabilities=
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_DAC_OVERRIDE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadOnlyPaths=/opt/hysteria2-panel /etc/hysteria2-panel
 ReadWritePaths=/var/lib/hysteria2-panel /run/hysteria2-panel-maintenance
