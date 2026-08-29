@@ -961,6 +961,46 @@ class AutoBootstrapClaimClientTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             node_agent.write_bootstrap_claim(client, self.output)
 
+    def test_claim_file_is_consumable_by_installer_with_errexit(self):
+        token = "claim_" + "C" * 40
+        client = mock.Mock()
+        client.claim.return_value = {
+            "nodeId": "5" * 32,
+            "grantId": "6" * 32,
+            "expiresAt": 2_000_000_600,
+            "maxFetchAttempts": 3,
+            "status": "AUTO_BOOTSTRAP_ISSUED",
+            "bootstrapToken": token,
+        }
+        node_agent.write_bootstrap_claim(client, self.output)
+
+        source = (Path(__file__).resolve().parents[1] / "install.sh").read_text()
+        start = source.index("complete_node_onboarding()")
+        end = source.index("\n}\n", start) + 2
+        completion = source[start:end]
+        read_command = next(
+            line.strip()
+            for line in completion.splitlines()
+            if "bootstrap_token" in line and "NODE_ONBOARDING_TOKEN_FILE" in line
+        )
+        script = "\n".join(
+            (
+                "set -Eeuo pipefail",
+                'NODE_ONBOARDING_TOKEN_FILE="$1"',
+                'bootstrap_token=""',
+                read_command,
+                'printf "%s" "$bootstrap_token"',
+            )
+        )
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(self.output)],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(token, result.stdout)
+
     def test_claim_cli_heartbeats_before_requesting_the_secret(self):
         state = Path(self.temp_dir.name) / "registration.json"
         private_key = Path(self.temp_dir.name) / "node.key"
