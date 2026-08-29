@@ -906,6 +906,109 @@ class UsageManagerTests(unittest.TestCase):
         self.assertEqual(2, local["online_devices"])
         self.assertEqual("fresh", local["online_state"])
 
+    def test_online_snapshot_combines_local_and_remote_without_collecting_traffic(self):
+        self.db.create_proxy_user("alice")
+        self.db.create_proxy_user("bob")
+        stats = PolicyStatsClient(
+            traffic={"alice": {"tx": 99, "rx": 101}},
+            online={"alice": 1},
+        )
+        manager = UsageManager(
+            self.db,
+            stats,
+            local_origin_id="local:" + "b" * 32,
+            local_origin_name="主面板",
+        )
+        node_states = [
+            {
+                "node_id": "c" * 32,
+                "name": "远端节点",
+                "online": {"alice": 1, "bob": 1},
+                "online_devices": 2,
+                "last_known_online_devices": 2,
+                "online_state": "fresh",
+                "accepted_at": 1_700_000_100,
+                "policy_state": "protocol_ready",
+                "status": "pending_verification",
+                "data_plane_state": "dns_admitted",
+            }
+        ]
+
+        with mock.patch.object(
+            self.db, "list_node_online_states", return_value=node_states
+        ):
+            snapshot = manager.online_snapshot()
+
+        self.assertEqual({"alice": 2, "bob": 1}, snapshot["online"])
+        self.assertTrue(snapshot["online_complete"])
+        self.assertEqual(
+            ["local:" + "b" * 32, "node:" + "c" * 32],
+            [row["origin_id"] for row in snapshot["machines"]],
+        )
+        self.assertEqual(1, snapshot["machines"][0]["online_devices"])
+        self.assertEqual(2, snapshot["machines"][1]["online_devices"])
+        self.assertEqual(
+            {"alice": {"tx": 99, "rx": 101}}, stats.traffic_values
+        )
+
+    def test_online_snapshot_failure_does_not_replace_the_last_trusted_snapshot(self):
+        ticks = [0.0]
+        stats = PolicyStatsClient(online={"alice": 2})
+        manager = UsageManager(self.db, stats, clock=lambda: ticks[0])
+
+        trusted = manager.online_snapshot()
+        ticks[0] = 2.0
+        stats.online = lambda: (_ for _ in ()).throw(TimeoutError("stats timeout"))
+
+        with self.assertRaises(TimeoutError):
+            manager.online_snapshot()
+        self.assertEqual({"alice": 2}, trusted["online"])
+        self.assertIs(trusted, manager._live_snapshot_cache)
+
+    def test_online_snapshot_does_not_wait_for_the_usage_mutation_lock(self):
+        manager = UsageManager(
+            self.db,
+            PolicyStatsClient(online={"alice": 1}),
+        )
+        completed = threading.Event()
+        manager.lock.acquire()
+        try:
+            worker = threading.Thread(
+                target=lambda: (manager.online_snapshot(), completed.set())
+            )
+            worker.start()
+            self.assertTrue(completed.wait(1))
+        finally:
+            manager.lock.release()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+
+    def test_online_snapshot_single_flight_does_not_queue_followers(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        class BlockingStats(PolicyStatsClient):
+            def online(self):
+                entered.set()
+                release.wait(2)
+                return {"alice": 1}
+
+        manager = UsageManager(self.db, BlockingStats())
+        result = []
+        worker = threading.Thread(target=lambda: result.append(manager.online_snapshot()))
+        worker.start()
+        self.assertTrue(entered.wait(1))
+
+        started = time.monotonic()
+        with self.assertRaisesRegex(RuntimeError, "already refreshing"):
+            manager.online_snapshot()
+        self.assertLess(time.monotonic() - started, 0.2)
+
+        release.set()
+        worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual({"alice": 1}, result[0]["online"])
+
     def test_failed_online_snapshot_marks_runtime_not_ready(self):
         class FakeHealth:
             def __init__(self):
@@ -5729,6 +5832,121 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("1. 开始摘流", body)
         self.assertIn("3. 检查并安全停用", body)
 
+    def test_dashboard_online_endpoint_is_authenticated_and_returns_stable_contract(self):
+        with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
+            self.request(
+                "/api/v1/dashboard-online",
+                follow_redirects=False,
+            )
+        self.assertEqual(303, unauthenticated.exception.code)
+
+        headers, _csrf = self.authenticated_headers()
+        live = {
+            "online": {"ceshi": 1},
+            "online_complete": True,
+            "observed_at": 1_700_000_200,
+            "machines": [
+                {
+                    "origin_id": "node:" + "d" * 32,
+                    "online_devices": 1,
+                    "last_known_online_devices": 1,
+                    "online_state": "fresh",
+                    "observed_at": 1_700_000_199,
+                }
+            ],
+        }
+        self.db.create_proxy_user("ceshi")
+        with mock.patch.object(
+            self.application.usage_manager,
+            "online_snapshot",
+            return_value=live,
+            create=True,
+        ):
+            with self.request(
+                "/api/v1/dashboard-online", headers=headers
+            ) as response:
+                payload = json.load(response)
+                self.assertEqual("no-store", response.headers["Cache-Control"])
+
+        self.assertEqual(
+            {
+                "observedAt": 1_700_000_200,
+                "onlineComplete": True,
+                "onlineDevices": 1,
+                "users": [{"name": "ceshi", "onlineDevices": 1}],
+                "machines": [
+                    {
+                        "originId": "node:" + "d" * 32,
+                        "onlineDevices": 1,
+                        "lastKnownOnlineDevices": 1,
+                        "onlineState": "fresh",
+                        "observedAt": 1_700_000_199,
+                    }
+                ],
+            },
+            payload,
+        )
+
+    def test_dashboard_online_endpoint_preserves_the_dom_on_transient_failure(self):
+        headers, _csrf = self.authenticated_headers()
+        with mock.patch.object(
+            self.application.usage_manager,
+            "online_snapshot",
+            side_effect=TimeoutError("stats timeout"),
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as failed:
+                self.request("/api/v1/dashboard-online", headers=headers)
+
+        self.assertEqual(503, failed.exception.code)
+        self.assertEqual("no-store", failed.exception.headers["Cache-Control"])
+        self.assertEqual(
+            {"error": "online device status unavailable"},
+            json.loads(failed.exception.read().decode()),
+        )
+
+    def test_dashboard_online_endpoint_rejects_a_malformed_snapshot(self):
+        headers, _csrf = self.authenticated_headers()
+        with mock.patch.object(
+            self.application.usage_manager,
+            "online_snapshot",
+            return_value={},
+        ):
+            with self.assertRaises(urllib.error.HTTPError) as failed:
+                self.request("/api/v1/dashboard-online", headers=headers)
+
+        self.assertEqual(503, failed.exception.code)
+        self.assertEqual(
+            {"error": "online device status unavailable"},
+            json.loads(failed.exception.read().decode()),
+        )
+
+    def test_dashboard_marks_live_device_targets_and_polls_without_page_reload(self):
+        self.db.create_proxy_user("ceshi", device_limit=3)
+        self.stats.online = lambda: {"ceshi": 2}
+        headers, _csrf = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertIn('data-live-refreshed', body)
+        self.assertIn('data-live-online-total', body)
+        self.assertIn('data-live-online-note', body)
+        self.assertIn('data-device-limit="3"', body)
+        self.assertIn('data-live-user-online', body)
+        self.assertIn('data-live-limit-alert', body)
+        self.assertIn('data-origin-id="local:', body)
+        self.assertIn('data-live-machine-online', body)
+        self.assertIn('data-live-machine-state', body)
+        self.assertIn("fetch('/api/v1/dashboard-online'", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn(
+            "window.setTimeout(refreshOnlineStatus, 2000)",
+            hysteria2_panel.PAGE_SCRIPT,
+        )
+        self.assertIn("new AbortController()", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn("signal: controller.signal", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn("Math.max(0, 2000", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn("sortOnlineUserRows()", hysteria2_panel.PAGE_SCRIPT)
+
     def test_node_enrollment_creation_and_revocation_require_session_and_csrf(self):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
             self.request(
@@ -7328,7 +7546,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.33.8", body)
+        self.assertIn("v0.33.9", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()
