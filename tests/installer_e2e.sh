@@ -55,6 +55,17 @@ export EGRESS_POLICY=full
 export ADMIN_USER=ci-admin
 export ADMIN_PASSWORD='ci-only-password-42'
 
+process_substitution_log=/tmp/hysteria2-panel-process-substitution.log
+if bash <(cat /workspace/install.sh) >"${process_substitution_log}" 2>&1; then
+  echo "process-substitution installer unexpectedly succeeded" >&2
+  exit 1
+fi
+grep -F "不能通过管道或进程替换直接运行" "${process_substitution_log}" >/dev/null
+test ! -e /run/hysteria2-panel-maintenance
+test ! -e /etc/.hysteria2-panel-installing-by-installer
+test ! -e /etc/hysteria2-panel
+test ! -e /opt/hysteria2-panel
+
 awk '
   { print }
   $0 == "  install_fresh_recovery_infrastructure" {

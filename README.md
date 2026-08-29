@@ -16,10 +16,12 @@
 新服务器先把面板域名的 DNS A/AAAA 记录指向服务器，并在云安全组放行 TCP `80`、面板端口以及 Hysteria 所需的 TCP/UDP 端口，然后用 `root` 执行这一行：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)
+(umask 077; installer="$(mktemp)" && trap 'rm -f -- "$installer"' EXIT && curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$installer" && bash "$installer")
 ```
 
 这条命令会部署管理面板和本机 Hysteria 节点，自动配置 systemd 保活、证书、主端口与账号专属 UDP `443`、`FULL` 出站策略、`fq`/内核 BBR，以及至少 16 MiB UDP 缓冲。安装完成后即可登录网页；恢复旧服务器时先上传备份，再从“对接节点”生成命令，把后续服务器接入即可。
+
+安装器会在维护锁下从同一个普通文件重新执行，所以短命令会先以 `0600` 权限下载到临时文件，退出时自动删除。请勿改回 `bash <(curl …)` 或 `curl … | bash`；这两种写法的输入不是可重新打开的普通文件，安装器会在修改系统前明确拒绝。
 
 > 这条短命令把 GitHub HTTPS 与受保护的 `main/install.sh` 作为首次信任入口，适合追踪项目最新稳定主线。要求更严格的生产环境，可以改用下方的固定 Release + Sigstore 验签流程，在授予 root 权限前先验证发布身份和文件完整性。
 
@@ -77,7 +79,7 @@ flowchart LR
 
 ```bash
 set -euo pipefail
-version=0.33.1
+version=0.33.2
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -112,7 +114,7 @@ sudo bash "${workdir}/install.sh"
 
 </details>
 
-安装程序会询问分享节点名称、公网 IP/域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `https`，并要求填写独立的面板公网域名，例如 `panel.example.com`；只有显式选择 `http` 时才启用明文管理面。出站策略默认是 `full`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`PANEL_PUBLIC_HOST`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
+安装程序会询问分享节点名称、节点域名、Hysteria UDP 端口、面板端口与协议、管理员账号和密码。全新安装时面板协议默认是 `https`，并要求填写独立的面板公网域名，例如 `panel.example.com`；只有显式选择 `http` 时才启用明文管理面。出站策略默认是 `full`。密码输入不回显，也不会写入仓库或配置文件。也可以使用 `NODE_NAME`、`PUBLIC_HOST`、`HYSTERIA_PORT`、`PANEL_PORT`、`PANEL_SCHEME`、`PANEL_PUBLIC_HOST`、`EGRESS_POLICY`、`ADMIN_USER` 和 `ADMIN_PASSWORD` 环境变量执行无人值守部署。
 
 重复运行安装器会先检查备份分区余量，再暂停面板写入而保持旧 Hysteria 统计端点运行，结算流量并截断 SQLite WAL 后建立带 SHA-256 清单的一致性备份；备份与开机恢复事务持久化后才允许覆盖程序。升级进程被强制终止或主机中途重启时，systemd 会在面板启动前核验清单并恢复旧版本，校验不通过则保持事务标记并拒绝覆盖。最终切换前会在认证入口已停止时，于有界窗口内持续为在线身份设置 Hysteria 断开标记，再执行最后一次流量结算并停止旧 Hysteria。`/kick` 只在客户端下一次产生流量时生效，因此完全空闲的会话可能仍显示在 `/online`，并由服务停止统一关闭；统计查询或踢线失败仍会安全回滚。恢复、手工安装、在线更新和 ACME 续期共用维护锁，不允许两项维护交叉写入。随后自动沿用现有节点名、域名、全部端口、面板协议、出站策略、HMAC 签名密钥、统计密钥、管理员和 Hysteria TLS 身份。Hysteria 的 `server.crt`、`server.key`、用户 URI 和固定指纹不会被 ACME 读取或替换；面板 HTTPS 使用另一套 Let’s Encrypt 证书。只有显式传入新值时才修改对应参数；需要重置管理员时设置 `RESET_ADMIN=1`。升级任一步或最终健康检查失败时，安装器会自动恢复旧程序、配置、证书/私钥、systemd 单元、sudoers 和网络参数；数据库优先保留升级窗口内通过完整性校验的最新状态，仅在损坏时清除 WAL/SHM 后恢复升级前快照。只有全部服务和端口通过检查后才解除回滚保护。自动备份仅清理符合安装器时间戳命名的目录，最多保留 10 份且最长 90 天，手工或恢复备份不会被匹配。这样普通升级不会令已经分享的节点失效，也不会留下半完成部署。
 

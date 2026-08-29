@@ -1,6 +1,7 @@
 import hashlib
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -397,15 +398,68 @@ esac
         self.assertEqual(0, help_result.returncode, help_result.stderr)
         self.assertIn("19999", help_result.stdout)
 
+    def test_installer_rejects_a_non_reopenable_process_substitution_entrypoint(self):
+        source = INSTALLER.read_text()
+        helper_start = source.index("assert_reopenable_installer_entrypoint()")
+        helper_end = source.index("\n}\n", helper_start) + 2
+        helper = source[helper_start:helper_end]
+        script = f"""
+set -euo pipefail
+fail() {{ printf '%s\n' "$*" >&2; exit 1; }}
+{helper}
+assert_reopenable_installer_entrypoint
+"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            wrapper = Path(directory) / "entrypoint-check.sh"
+            wrapper.write_text(script)
+            regular = subprocess.run(
+                ["bash", str(wrapper)], capture_output=True, text=True
+            )
+            piped = subprocess.run(
+                ["bash", "-c", f"bash <(cat {shlex.quote(str(wrapper))})"],
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertEqual(0, regular.returncode, regular.stderr)
+        self.assertNotEqual(0, piped.returncode)
+        self.assertIn("不能通过管道或进程替换直接运行", piped.stderr)
+
+        main = source.split('if [[ "${1:-}" == "--help"', 1)[1]
+        guard = main.index("assert_reopenable_installer_entrypoint")
+        first_mode = main.index("if (( JOIN_NODE == 1 ))")
+        lock = main.index("acquire_maintenance_lock")
+        self.assertLess(guard, first_mode)
+        self.assertLess(guard, lock)
+
+        e2e = (ROOT / "tests" / "installer_e2e.sh").read_text()
+        self.assertIn("bash <(cat /workspace/install.sh)", e2e)
+        self.assertIn("test ! -e /run/hysteria2-panel-maintenance", e2e)
+        self.assertIn("test ! -e /etc/.hysteria2-panel-installing-by-installer", e2e)
+
+    def test_full_install_prompt_asks_for_the_node_domain(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn('read -r -p "请输入节点域名 [${EXISTING_PUBLIC_HOST}]: "', source)
+        self.assertNotIn("服务器公网 IP 或域名", source)
+
     def test_readme_offers_one_line_bootstrap_and_strict_signed_install(self):
         source = README.read_text()
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
         quick_command = (
-            "bash <(curl -fsSL "
-            "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh)"
+            '(umask 077; installer="$(mktemp)" && '
+            "trap 'rm -f -- \"$installer\"' EXIT && "
+            "curl -fsSL https://raw.githubusercontent.com/Elegying/"
+            'Hysteria2-panel/main/install.sh -o "$installer" && bash "$installer")'
         )
         self.assertIn(quick_command, source)
+        self.assertNotRegex(source, r"(?m)^bash <\(curl")
+        syntax = subprocess.run(
+            ["bash", "-n", "-c", quick_command], capture_output=True, text=True
+        )
+        self.assertEqual(0, syntax.returncode, syntax.stderr)
         self.assertIn("首次信任入口", source)
         self.assertIn("GitHub HTTPS", source)
         self.assertIn("releases/download/v", source)
@@ -502,7 +556,7 @@ esac
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.33.1"', source)
+        self.assertIn('PANEL_VERSION="0.33.2"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',

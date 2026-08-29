@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.33.1"
+PANEL_VERSION="0.33.2"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -27,7 +27,7 @@ OFFSITE_BACKUP_SHA256="cebe6588728ccae872838f996c71eb1fc5c651b90f8247240f4982f23
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="809bc55dcb67ee39c5a681d236056e06ed7e00c9d20c2d4cb39e2b52a905e61f"
+HY2PANEL_VERSION_SHA256="5ce6e80ba2990ae0b91e54e6797aecae448121f12d246afff7755fcf392a5148"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="a8f38b5dec1d7677e90d7ea8f7fbc0af8469e646384da0d7451de390428eff3b"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -37,7 +37,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="238d40e634edc9e700546a65be2ea9bfa185c86d6ffaca2388caaa51cba72959"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="28738a0b1b9cb9a2a408a884b5eef0992e9f80c14aa670b514b2be970e85ea5c"
+NODE_AGENT_SHA256="c268d71ebb380e0018ae92ba2bc2d8cd1d272c704b97d57b5d051cb176c43305"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -194,6 +194,12 @@ HTTPS 使用 Let’s Encrypt HTTP-01；面板域名须指向本机，公网 TCP 
 升级默认保留现有管理员；需要重置时设置 RESET_ADMIN=1。
 出站策略默认 full（放行公网目标的全部端口）；需要网页/视频端口白名单时设置 EGRESS_POLICY=web。
 EOF
+}
+
+assert_reopenable_installer_entrypoint() {
+  local entrypoint="${BASH_SOURCE[0]:-$0}"
+  [[ -f "${entrypoint}" && ! -p "${entrypoint}" ]] \
+    || fail "安装器不能通过管道或进程替换直接运行；请使用 README 中会先下载到临时文件的一行命令"
 }
 
 durable_replace_file() {
@@ -5500,6 +5506,7 @@ fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
+assert_reopenable_installer_entrypoint
 if (( JOIN_NODE == 1 )); then
   install_join_node
   INSTALL_COMMITTED=1
@@ -5788,7 +5795,7 @@ fi
 
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 if [[ -z "${PUBLIC_HOST}" ]]; then
-  read -r -p "服务器公网 IP 或域名 [${EXISTING_PUBLIC_HOST}]: " PUBLIC_HOST </dev/tty
+  read -r -p "请输入节点域名 [${EXISTING_PUBLIC_HOST}]: " PUBLIC_HOST </dev/tty
   PUBLIC_HOST="${PUBLIC_HOST:-${EXISTING_PUBLIC_HOST}}"
 fi
 [[ -n "${PUBLIC_HOST}" ]] || fail "无法确定公网 IP 或域名"

@@ -127,7 +127,11 @@ jobs:
               "https://raw.githubusercontent.com/"
               "Elegying/Hysteria2-panel/main/install.sh"
           )
-          quick_command = "bash <(curl -fsSL {})".format(versionless_url)
+          quick_command = (
+              '(umask 077; installer="$(mktemp)" && '
+              "trap 'rm -f -- \"$installer\"' EXIT && "
+              'curl -fsSL {} -o "$installer" && bash "$installer")'
+          ).format(versionless_url)
           if quick_command not in readme:
               raise SystemExit("README one-line main installer is missing")
           if "首次信任入口" not in readme or "GitHub HTTPS" not in readme:
