@@ -1308,6 +1308,51 @@ class NodeAgentProtocolTests(unittest.TestCase):
         self.assertEqual(1, len(snapshots))
         self.assertEqual({"alice": 1}, snapshots[0][2])
 
+    def test_control_cycle_collects_new_traffic_while_an_older_batch_cannot_upload(self):
+        calls = []
+
+        class Stats:
+            def collect_and_clear(self):
+                calls.append("collect")
+                return {"alice": {"tx": 30, "rx": 40}}
+
+            def online(self):
+                return {"alice": 1}
+
+        class Protocol:
+            def send_traffic(self, _batch):
+                calls.append("send")
+                raise OSError("central unavailable")
+
+            def send_online(self, _sequence, _online, _traffic_acked_at):
+                calls.append("snapshot")
+                return {"sequence": 1}
+
+            def poll_commands(self):
+                calls.append("poll")
+                return []
+
+        root = Path(self.temp_dir.name)
+        spool = node_agent.DurableTrafficSpool(root / "outage-spool")
+        spool.enqueue({"alice": {"tx": 10, "rx": 20}}, 2_000_000_000)
+        cycle = node_agent.NodeControlCycle(
+            Protocol(),
+            Stats(),
+            spool,
+            node_agent.ProtocolState(root / "outage-state.json"),
+            clock=lambda: 2_000_000_001,
+        )
+
+        with self.assertRaises(OSError):
+            cycle.run_once()
+
+        self.assertIn("collect", calls)
+        self.assertEqual(2, len(spool.pending()))
+        self.assertIn(
+            {"alice": {"tx": 30, "rx": 40}},
+            [batch["traffic"] for batch in spool.pending()],
+        )
+
     def test_control_cycle_persists_success_before_command_ack(self):
         calls = []
         command = {

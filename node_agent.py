@@ -2058,22 +2058,13 @@ class NodeControlCycle:
         return last_ack
 
     def flush_traffic(self):
-        self._upload_pending()
         if not self.spool.can_collect():
-            raise ProtocolError("traffic spool has insufficient capacity")
+            self._upload_pending()
+            if not self.spool.can_collect():
+                raise ProtocolError("traffic spool has insufficient capacity")
         traffic = self.stats_client.collect_and_clear()
-        batch = self.spool.enqueue(traffic, observed_at=int(self.clock()))
-        result = self.protocol_client.send_traffic(batch)
-        if (
-            not isinstance(result, dict)
-            or result.get("batchId") != batch["batchId"]
-            or result.get("committed") is not True
-        ):
-            raise ProtocolError("central traffic ACK is invalid")
-        self.spool.ack(batch["batchId"])
-        accepted_at = int(self.clock())
-        self.state.set_traffic_ack(accepted_at)
-        return accepted_at
+        self.spool.enqueue(traffic, observed_at=int(self.clock()))
+        return self._upload_pending()
 
     def refresh_snapshot(self):
         traffic_acked_at = self.state.traffic_acked_at()
