@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.33.4"
+PANEL_VERSION="0.33.5"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -27,7 +27,7 @@ OFFSITE_BACKUP_SHA256="cebe6588728ccae872838f996c71eb1fc5c651b90f8247240f4982f23
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="14c8491488a5f1dbe4f48b6139f986835b671a3a962d8ecb10854da03bd6e636"
+HY2PANEL_VERSION_SHA256="93ca06411902728966c69b7b1d3fd399249296d8fa1fc3c0ee25f2038b9d9db8"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="a8f38b5dec1d7677e90d7ea8f7fbc0af8469e646384da0d7451de390428eff3b"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -37,7 +37,7 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="b6d4986c4c8169b7d3bbacc2ae2aefb95e2285b9843afaece58b553c1092e1d0"
 HY2PANEL_DISTRIBUTED_SHA256="2c1208b55ad4270022a2a2a069cd35e963db4a6004c9f3ff601af8de440de16c"
-NODE_AGENT_SHA256="8c9c6647bc60acb016bec3c36378aadc161ba921dd0a318b1cd27209b17af19c"
+NODE_AGENT_SHA256="1032dbb841a2899ed469666f26cec66c2fdfe2692b485902b845e99b10abab70"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -2275,10 +2275,10 @@ restore_existing_data_plane() {
   done
   DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
     "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" || return 1
-  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
-  ss -H -lun "sport = :443" | grep -q . || return 1
-  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . || return 1
-  ss -H -ltn "sport = :443" | grep -q . || return 1
+  wait_for_listener udp "${DATA_PLANE_MAIN_PORT}" || return 1
+  wait_for_listener udp 443 || return 1
+  wait_for_listener tcp "${DATA_PLANE_MAIN_PORT}" || return 1
+  wait_for_listener tcp 443 || return 1
   rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
   sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
     /var/lib/hysteria2-panel-node /etc/systemd/system || return 1
@@ -2681,12 +2681,12 @@ EOF
   done
   systemctl is-active --quiet hysteria2-panel-node-control.service \
     || fail "数据面控制循环未运行"
-  ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+  wait_for_listener udp "${DATA_PLANE_MAIN_PORT}" \
     || fail "Hysteria UDP ${DATA_PLANE_MAIN_PORT} 未监听"
-  ss -H -lun "sport = :443" | grep -q . || fail "Hysteria UDP 443 未监听"
-  ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}" | grep -q . \
+  wait_for_listener udp 443 || fail "Hysteria UDP 443 未监听"
+  wait_for_listener tcp "${DATA_PLANE_MAIN_PORT}" \
     || fail "TCP ${DATA_PLANE_MAIN_PORT} probe 未监听"
-  ss -H -ltn "sport = :443" | grep -q . || fail "TCP 443 probe 未监听"
+  wait_for_listener tcp 443 || fail "TCP 443 probe 未监听"
   configure_data_plane_firewall
   (
     set -a

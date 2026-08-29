@@ -557,7 +557,7 @@ assert_reopenable_installer_entrypoint
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.33.4"', source)
+        self.assertIn('PANEL_VERSION="0.33.5"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -4251,6 +4251,60 @@ class DataPlaneInstallerContractTests(unittest.TestCase):
         self.assertIn('HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN=', self.activation)
         self.assertNotIn('server.crt', self.source.split("usage()", 1)[0])
 
+    def test_activation_and_restore_wait_for_delayed_listener_bind(self):
+        restore_start = self.source.index("restore_existing_data_plane()")
+        restore = self.source[
+            restore_start:self.source.index("\n}\n", restore_start) + 2
+        ]
+        listener_contracts = (
+            'wait_for_listener udp "${DATA_PLANE_MAIN_PORT}"',
+            "wait_for_listener udp 443",
+            'wait_for_listener tcp "${DATA_PLANE_MAIN_PORT}"',
+            "wait_for_listener tcp 443",
+        )
+        for function in (self.activation, restore):
+            with self.subTest(function=function.split("()", 1)[0]):
+                for contract in listener_contracts:
+                    self.assertIn(contract, function)
+                self.assertNotIn(
+                    'ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}"', function
+                )
+                self.assertNotIn('ss -H -lun "sport = :443"', function)
+                self.assertNotIn(
+                    'ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}"', function
+                )
+                self.assertNotIn('ss -H -ltn "sport = :443"', function)
+
+    def test_listener_wait_retries_until_a_delayed_bind_is_visible(self):
+        start = self.source.index("wait_for_listener()")
+        helper = self.source[start:self.source.index("\n}\n", start) + 2]
+        script = f"""
+set -euo pipefail
+{helper}
+ss() {{
+  count="$(cat "$WORK/attempts" 2>/dev/null || printf 0)"
+  count=$((count + 1))
+  printf '%s' "$count" > "$WORK/attempts"
+  if (( count >= 4 )); then
+    printf 'listener\n'
+  fi
+}}
+sleep() {{ :; }}
+wait_for_listener tcp 443
+printf 'attempts=%s\n' "$(cat "$WORK/attempts")"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env={**os.environ, "WORK": directory},
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("attempts=4", result.stdout)
+
     def test_transaction_snapshot_and_rollback_touch_only_phase4_owned_paths(self):
         self.assertIn("DATA_PLANE_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_DATA_PLANE_V1", self.source)
         self.assertIn("/var/backups/hysteria2-panel-node", self.source)
@@ -4533,10 +4587,10 @@ printf 'missing:%s\n' "$?"
         )
         for check in (
             "systemctl is-active --quiet hysteria2-panel-node-control.service",
-            'ss -H -lun "sport = :${DATA_PLANE_MAIN_PORT}"',
-            'ss -H -lun "sport = :443"',
-            'ss -H -ltn "sport = :${DATA_PLANE_MAIN_PORT}"',
-            'ss -H -ltn "sport = :443"',
+            'wait_for_listener udp "${DATA_PLANE_MAIN_PORT}"',
+            "wait_for_listener udp 443",
+            'wait_for_listener tcp "${DATA_PLANE_MAIN_PORT}"',
+            "wait_for_listener tcp 443",
         ):
             self.assertIn(check, self.activation)
             self.assertLess(self.activation.index(check), ack)
