@@ -1411,7 +1411,7 @@ complete_node_onboarding() {
     return 0
   fi
   require_node_agent_file "${NODE_ONBOARDING_TOKEN_FILE}" 600
-  IFS= read -r bootstrap_token < "${NODE_ONBOARDING_TOKEN_FILE}"
+  bootstrap_token="$(< "${NODE_ONBOARDING_TOKEN_FILE}")"
   rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
   [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
     || fail "面板返回的一次性数据面凭据无效"
