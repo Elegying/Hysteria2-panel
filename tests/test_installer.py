@@ -557,7 +557,7 @@ assert_reopenable_installer_entrypoint
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.33.7"', source)
+        self.assertIn('PANEL_VERSION="0.33.8"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -970,6 +970,8 @@ printf '%s:%s:%s:%s\n' \
         )[1].split("\nEOF", 1)[0]
         self.assertIn("/opt/hysteria2-panel/acme-renew.sh", renew_unit)
         self.assertIn("SupplementaryGroups=hy2panel", renew_unit)
+        self.assertIn("--conflict-exit-code 75", renew_unit)
+        self.assertIn("SuccessExitStatus=75", renew_unit)
         self.assertNotIn("hysteria2-panel-server.service", renew_unit)
         self.assertNotIn("server.crt", renew_unit)
         self.assertNotIn("server.key", renew_unit)
