@@ -79,7 +79,7 @@ flowchart LR
 
 ```bash
 set -euo pipefail
-version=0.33.9
+version=0.34.0
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -110,7 +110,7 @@ bash -n "${workdir}/install.sh"
 sudo bash "${workdir}/install.sh"
 ```
 
-这段引导只执行固定正式版本的 Release 资产：先用固定 SHA-256 校验 Cosign，再验证安装器的 GitHub Actions OIDC/Sigstore 身份和 shell 语法，任一校验失败都不会以 root 执行。升级到新版本时请先把 `version` 改成对应的正式标签。
+这段引导只执行固定正式版本的 Release 资产：先用固定 SHA-256 校验 Cosign，再验证安装器的 GitHub Actions OIDC/Sigstore 身份和 shell 语法，任一校验失败都不会以 root 执行。每个正式 Release 还附带独立签名的 `sbom.spdx.json`，用于核对该标签全部源码文件的 SHA-256 清单。升级到新版本时请先把 `version` 改成对应的正式标签。
 
 </details>
 

@@ -17,7 +17,14 @@ NODE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 OBJECT_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 ERROR_CODE_PATTERN = re.compile(r"^[A-Z0-9_]{0,64}$")
-PURPOSES = {"auth", "online", "traffic", "command-poll", "command-ack"}
+PURPOSES = {
+    "auth",
+    "online",
+    "traffic",
+    "command-poll",
+    "command-ack",
+    "control-cycle",
+}
 COMMON_FIELDS = {"nodeId", "sentAt", "nonce", "signature"}
 AUTH_FIELDS = COMMON_FIELDS | {"requestId", "entrypoint", "auth", "tx"}
 ONLINE_FIELDS = COMMON_FIELDS | {
@@ -30,10 +37,26 @@ ONLINE_FIELDS = COMMON_FIELDS | {
 TRAFFIC_FIELDS = COMMON_FIELDS | {"batchId", "observedAt", "traffic"}
 COMMAND_POLL_FIELDS = COMMON_FIELDS | {"requestId"}
 COMMAND_ACK_FIELDS = COMMON_FIELDS | {"commandId", "ok", "errorCode"}
+CONTROL_CYCLE_FIELDS = COMMON_FIELDS | {
+    "cycleId",
+    "trafficBatches",
+    "onlineSnapshot",
+    "commandPoll",
+}
+CONTROL_TRAFFIC_FIELDS = {"batchId", "observedAt", "traffic"}
+CONTROL_ONLINE_FIELDS = {
+    "snapshotId",
+    "sequence",
+    "observedAt",
+    "trafficAckedAt",
+    "online",
+}
+CONTROL_COMMAND_POLL_FIELDS = {"requestId"}
+MAX_TRAFFIC_BATCHES_PER_CYCLE = 8
 MAX_CLOCK_SKEW_SECONDS = 120
-# One 10-second protocol request, the bounded 30-second retry backoff and the
+# One 8-second protocol request, the bounded 30-second retry backoff and the
 # maximum 5-second control-loop interval must fit before new auth fails closed.
-MAX_STATE_AGE_SECONDS = 45
+MAX_STATE_AGE_SECONDS = 43
 MAX_TRAFFIC_BATCH_AGE_SECONDS = 7 * 86400
 MAX_USERS_PER_PAYLOAD = 1000
 MAX_COUNTER = 2**63 - 1
@@ -311,6 +334,116 @@ class DistributedControlService:
         if result is None:
             self._reject()
         return result
+
+    @staticmethod
+    def _derived_nonce_digest(nonce_digest, purpose, object_id):
+        return hashlib.sha256(
+            "{}\n{}\n{}".format(nonce_digest, purpose, object_id).encode("ascii")
+        ).hexdigest()
+
+    def control_cycle(self, payload, remote_ip):
+        """Apply a bounded accounting/snapshot cycle with one signature check."""
+        if not isinstance(payload, dict) or set(payload) != CONTROL_CYCLE_FIELDS:
+            self._reject()
+        traffic_batches = payload.get("trafficBatches")
+        snapshot = payload.get("onlineSnapshot")
+        command_poll = payload.get("commandPoll")
+        if (
+            not _object_id(payload.get("cycleId"))
+            or not isinstance(traffic_batches, list)
+            or len(traffic_batches) > MAX_TRAFFIC_BATCHES_PER_CYCLE
+            or not isinstance(command_poll, dict)
+            or set(command_poll) != CONTROL_COMMAND_POLL_FIELDS
+            or not _object_id(command_poll.get("requestId"))
+            or (snapshot is not None and not isinstance(snapshot, dict))
+        ):
+            self._reject()
+        now = int(self.clock())
+        for batch in traffic_batches:
+            if (
+                not isinstance(batch, dict)
+                or set(batch) != CONTROL_TRAFFIC_FIELDS
+                or not _object_id(batch.get("batchId"))
+                or not _timestamp(batch.get("observedAt"))
+                or batch["observedAt"] > now + MAX_CLOCK_SKEW_SECONDS
+                or batch["observedAt"] < now - MAX_TRAFFIC_BATCH_AGE_SECONDS
+                or not _traffic_mapping(batch.get("traffic"))
+            ):
+                self._reject()
+        if snapshot is not None and (
+            set(snapshot) != CONTROL_ONLINE_FIELDS
+            or not _object_id(snapshot.get("snapshotId"))
+            or not _timestamp(snapshot.get("sequence"))
+            or snapshot["sequence"] < 1
+            or not _timestamp(snapshot.get("observedAt"))
+            or not _timestamp(snapshot.get("trafficAckedAt"))
+            or not _online_mapping(snapshot.get("online"))
+            or abs(now - snapshot["observedAt"]) > MAX_STATE_AGE_SECONDS
+            or (
+                not traffic_batches
+                and abs(now - snapshot["trafficAckedAt"]) > MAX_STATE_AGE_SECONDS
+            )
+        ):
+            self._reject()
+
+        node, nonce_digest, now, _remote_ip = self._verify(
+            "control-cycle", payload, CONTROL_CYCLE_FIELDS, remote_ip
+        )
+        traffic_results = []
+        for batch in traffic_batches:
+            result = self.database.apply_node_traffic_batch(
+                node["node_id"],
+                batch["batchId"],
+                batch["traffic"],
+                self._derived_nonce_digest(
+                    nonce_digest, "traffic", batch["batchId"]
+                ),
+                accepted_at=now,
+            )
+            if result is None:
+                self._reject()
+            traffic_results.append(result)
+
+        online_result = None
+        if snapshot is not None:
+            effective_traffic_ack = now if traffic_batches else snapshot["trafficAckedAt"]
+            accepted = self.database.accept_node_online_snapshot(
+                node["node_id"],
+                snapshot["snapshotId"],
+                snapshot["sequence"],
+                snapshot["observedAt"],
+                effective_traffic_ack,
+                snapshot["online"],
+                self._derived_nonce_digest(
+                    nonce_digest, "online", snapshot["snapshotId"]
+                ),
+                accepted_at=now,
+            )
+            if not accepted:
+                self._reject()
+            online_result = {
+                "snapshotId": snapshot["snapshotId"],
+                "sequence": snapshot["sequence"],
+                "acceptedAt": now,
+            }
+
+        commands = self.database.poll_node_commands(
+            node["node_id"],
+            self._derived_nonce_digest(
+                nonce_digest, "command-poll", command_poll["requestId"]
+            ),
+            now,
+        )
+        if commands is None:
+            self._reject()
+        return {
+            "cycleId": payload["cycleId"],
+            "acceptedAt": now,
+            "traffic": traffic_results,
+            "online": online_result,
+            "commands": commands,
+            "polledAt": now,
+        }
 
     def poll_commands(self, payload, remote_ip):
         if (

@@ -6896,6 +6896,7 @@ class PanelHandler(JsonHandler):
             "/api/v1/node-auth-decisions": ("authorize", 16 * 1024),
             "/api/v1/node-online-snapshots": ("accept_online_snapshot", 128 * 1024),
             "/api/v1/node-traffic-batches": ("apply_traffic_batch", 256 * 1024),
+            "/api/v1/node-control-cycles": ("control_cycle", 512 * 1024),
             "/api/v1/node-commands/poll": ("poll_commands", 8 * 1024),
             "/api/v1/node-commands/ack": ("ack_command", 16 * 1024),
         }

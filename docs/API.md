@@ -51,13 +51,14 @@
 | `POST` | `/api/v1/node-auth-decisions` | 16 KiB | 在中央事务中统一检查本机与所有就绪节点的在线实例、短租约和流量额度 |
 | `POST` | `/api/v1/node-online-snapshots` | 128 KiB | 以单调 `sequence` 完整替换该节点的稀疏在线计数和流量确认检查点 |
 | `POST` | `/api/v1/node-traffic-batches` | 256 KiB | 以 `(nodeId,batchId)` 幂等累计已持久化的增量流量，提交后返回 ACK |
+| `POST` | `/api/v1/node-control-cycles` | 512 KiB | 新节点用一次签名和一次 HTTPS 往返提交至多 8 个流量批次、可选在线快照并轮询命令；旧接口继续兼容 |
 | `POST` | `/api/v1/node-commands/poll` | 8 KiB | 立即返回至多 32 条且总响应不超过 64 KiB 的固定枚举命令 |
 | `POST` | `/api/v1/node-commands/ack` | 16 KiB | 幂等确认发给同一节点的既有命令，不能修改命令内容 |
 | `POST` | `/api/v1/node-data-plane/claim` | 16 KiB | 已核验且心跳新鲜的节点自动启用协议并原子领取节点绑定 grant；重领会废止旧 grant |
 | `POST` | `/api/v1/node-data-plane/bootstrap` | 16 KiB | 使用短时 token 与节点签名获取固定数据面身份和配置，最多成功取件 3 次 |
 | `POST` | `/api/v1/node-data-plane/ack` | 16 KiB | 提交本机服务、端口、统计和身份三摘要证明；成功后烧毁 bootstrap 授权 |
 
-节点侧 Hysteria 只访问 `127.0.0.1` 认证代理；代理删除客户端地址后签名转发。中央超时、非 200、无效 JSON、节点快照或计量检查点超过 5 秒时，新认证统一映射为 Hysteria 所需的 HTTP 200 拒绝，既有会话不会被控制面故障主动中断。流量批次先写入 0600 有界 spool 并 `fsync`，收到中央提交 ACK 后才删除；签名与验签消息通过标准输入交给 OpenSSL，不把用户 token 写入临时文件。
+节点侧 Hysteria 只访问 `127.0.0.1` 认证代理；代理删除客户端地址后签名转发。中央超时、非 200、无效 JSON，或节点快照/计量检查点超过 43 秒安全窗口时，新认证统一映射为 Hysteria 所需的 HTTP 200 拒绝，既有会话不会被控制面故障主动中断。流量采集先独立写入 0600 有界 spool 并 `fsync`，即使旧批次暂时上传失败也会在容量允许时继续采集；收到中央提交 ACK 后才删除。命令轮询与流量/快照失败相互隔离，并加入有界随机抖动，避免多节点同时重试。签名与验签消息通过标准输入交给 OpenSSL，不把用户 token 写入临时文件。
 
 正常全新节点流程由 root-only 的固定版本完成器调用 `claim`。服务端只允许已经人工核验完整 Ed25519 指纹、签名有效、来源 IP 精确匹配且心跳新鲜的节点领取；同一事务启用协议、废止未消费旧 grant 并返回新 grant。授权有效 10 分钟、最多成功取件 3 次，并同时绑定节点 ID、注册来源 IP 与 Ed25519 签名；服务端只保存 token SHA-256 摘要。原有管理员手工 bootstrap 路由继续作为旧节点故障恢复入口。
 

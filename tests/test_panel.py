@@ -5946,6 +5946,10 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("signal: controller.signal", hysteria2_panel.PAGE_SCRIPT)
         self.assertIn("Math.max(0, 2000", hysteria2_panel.PAGE_SCRIPT)
         self.assertIn("sortOnlineUserRows()", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn(
+            ".limit-alert[hidden]{display:none}",
+            hysteria2_panel.PAGE_STYLE,
+        )
 
     def test_node_enrollment_creation_and_revocation_require_session_and_csrf(self):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
@@ -7546,7 +7550,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.33.9", body)
+        self.assertIn("v0.34.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

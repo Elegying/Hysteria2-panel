@@ -39,7 +39,7 @@ jobs:
           if release.get("draft") or release.get("prerelease"):
               raise SystemExit("latest endpoint returned a non-formal release")
           names = [asset.get("name") for asset in release.get("assets", [])]
-          expected = {"install.sh", "install.sh.sigstore.json"}
+          expected = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}
           if len(names) != len(expected) or set(names) != expected:
               raise SystemExit("latest release has unexpected asset set")
           print("tag={}".format(tag))
@@ -64,14 +64,26 @@ jobs:
             --output "${asset_dir}/install.sh.sigstore.json"
           curl --fail --location --silent --show-error \
             --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
+            "${base}/sbom.spdx.json" --output "${asset_dir}/sbom.spdx.json"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
+            "${base}/sbom.spdx.json.sigstore.json" \
+            --output "${asset_dir}/sbom.spdx.json.sigstore.json"
+          curl --fail --location --silent --show-error \
+            --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
             "${raw}" --output "${asset_dir}/tagged-install.sh"
           test "$(wc -c <"${asset_dir}/install.sh")" -gt 0
           test "$(wc -c <"${asset_dir}/install.sh")" -le 1048576
           test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -gt 0
           test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -le 5242880
+          test "$(wc -c <"${asset_dir}/sbom.spdx.json")" -gt 0
+          test "$(wc -c <"${asset_dir}/sbom.spdx.json")" -le 5242880
+          test "$(wc -c <"${asset_dir}/sbom.spdx.json.sigstore.json")" -gt 0
+          test "$(wc -c <"${asset_dir}/sbom.spdx.json.sigstore.json")" -le 5242880
           cmp --silent "${asset_dir}/install.sh" "${asset_dir}/tagged-install.sh"
           bash -n "${asset_dir}/install.sh"
           python -m json.tool "${asset_dir}/install.sh.sigstore.json" >/dev/null
+          python -m json.tool "${asset_dir}/sbom.spdx.json" >/dev/null
 
       - name: Install pinned Cosign
         uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
@@ -88,6 +100,10 @@ jobs:
           identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-signature.yml@refs/tags/${RELEASE_TAG}"
           cosign verify-blob "${asset_dir}/install.sh" \
             --bundle "${asset_dir}/install.sh.sigstore.json" \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          cosign verify-blob "${asset_dir}/sbom.spdx.json" \
+            --bundle "${asset_dir}/sbom.spdx.json.sigstore.json" \
             --certificate-identity "${identity}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
