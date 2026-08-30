@@ -1,5 +1,7 @@
 # 界面设计验收记录
 
+> 本文保存 v0.35.0–v0.36.2 的界面验收证据。当前用户操作和视觉行为以最新代码、[使用指南](docs/USER_GUIDE.md)及浏览器回归为准。
+
 ## 当前证据
 
 - 实现后的桌面仪表盘：`docs/screenshots/dashboard-1380x702.png`，CSS 视口为 1380 × 702。
@@ -32,8 +34,8 @@
 
 ### 对比目标与证据
 
-- source visual truth path：`/var/folders/5q/sv1yzx5x5lv4s4pwbhlyrz540000gn/T/codex-clipboard-0f7c0611-a968-4df8-a375-c4eb799ed21e.png`。
-- implementation screenshot path：`docs/screenshots/dashboard-mobile-service-controls-390x844.jpg`。
+- 对照来源：用户提供的移动端问题截图（不把本机临时路径写入公开仓库）。
+- 实现截图：`docs/screenshots/dashboard-mobile-service-controls-390x844.jpg`。
 - 原图像素：1080 × 2347，包含手机浏览器和系统状态栏；实现截图像素与 CSS 视口均为 390 × 844，deviceScaleFactor 1，比较时只判断应用拥有的服务控制区域，不把浏览器外壳作为设计差异。
 - 状态：管理员已登录、Hysteria 运行中、当前版本 v0.36.1、尚未检查远程版本。
 - 浏览器检查：真实内置浏览器渲染；登录、服务控制区和版本检查控件均可访问；页面控制台未出现脚本错误。
@@ -64,4 +66,4 @@
 
 没有剩余的 P0、P1 或 P2 视觉问题；本轮没有需要阻断交付的 P3 项。
 
-final result: passed
+最终结果：通过。

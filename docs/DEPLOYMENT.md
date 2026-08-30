@@ -1,6 +1,17 @@
 # 多节点发布与回滚
 
+本文面向有仓库发布权限的维护者和多节点生产管理员。普通安装或在线升级请阅读[安装与升级](INSTALLATION.md)。
+
 正式发布只从 GitHub Release 获取 `install.sh`、对应 Sigstore bundle、SPDX SBOM 与 SBOM 的 Sigstore bundle，并按 README 的固定 Cosign SHA-256、OIDC issuer 和精确 workflow/tag identity 完成验签。不要从 `main` 直接以 root 执行脚本。
+
+## 发布前总检查
+
+- 候选提交已经合并到受保护 `main`，工作区干净；
+- `hy2panel/version.py`、`install.sh` 和 `CHANGELOG.md` 的首个正式版本一致；
+- GitHub API 回读 `Protect main` 和 release tag ruleset，确认门禁仍生效；
+- PR 与 `main` 的全部常规 CI 已通过；
+- canary 有可用备份、明确回滚窗口和真实客户端；
+- 没有正在运行的恢复、更新、证书续期或其他维护事务。
 
 ## 正式 Release 创建与发布门禁
 
@@ -30,7 +41,7 @@ gh workflow run release-signature.yml --ref "${tag}" -f tag="${tag}"
 
 本地契约测试会确认 `full-installer-e2e` 和六平台矩阵都是发布工作流的硬门禁，但本地文件不能伪造 GitHub 远端分支规则。`Protect main` ruleset 已于 2026-08-30 通过 GitHub API 回读确认九项 required status checks，其中包含 Python 3.13、Chrome 双视口渲染和 `full-installer-e2e`；每次发布仍应重新回读远端规则。发布门禁通过 Actions workflow-run 与 jobs API 绑定精确标签、提交、触发事件和任务集合，因此不会复用同一提交上更早的 PR 或 main 检查结果。
 
-`Anonymous release distribution synthetic` 每日以无凭据请求 latest API、四个 Release 资产和标签 raw 文件，比较安装器并复核安装器与 SBOM 的 Sigstore 身份；它只拥有 `contents: read`，失败会留下 Actions error 并令 job 变红。仓库由私有恢复为公开后，仍需手工运行一次该 workflow 并取得绿灯，再把匿名分发恢复判定为闭环；同时应为该 workflow 开启 GitHub Actions 失败通知。
+`Anonymous release distribution synthetic` 每日以无凭据请求 latest API、四个 Release 资产和标签 raw 文件，比较安装器并复核安装器与 SBOM 的 Sigstore 身份；它只拥有 `contents: read`，失败会留下 Actions error 并令 job 变红。仓库可见性发生变化后，必须手工运行一次该 workflow 并取得绿灯，再把匿名分发恢复判定为闭环；同时应为该 workflow 开启 GitHub Actions 失败通知。
 
 ## 节点证书生命周期
 

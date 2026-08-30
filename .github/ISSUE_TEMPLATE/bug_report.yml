@@ -1,0 +1,90 @@
+name: Bug 报告
+description: 报告可以稳定复现的安装、面板、节点或运维问题
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请先升级到最新正式版本，并删除日志中的域名、IP、账号、token、Cookie、私钥和备份内容。安全漏洞请使用 Private Vulnerability Reporting。
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我使用的是最新正式版本
+          required: true
+        - label: 我已阅读 README、文档中心和支持范围
+          required: true
+        - label: 这不是需要私密报告的安全漏洞
+          required: true
+        - label: 我确认内容中不含真实凭据或未脱敏的基础设施信息
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: 面板版本
+      description: 例如 v0.36.2，请不要填写“最新版”。
+      placeholder: vX.Y.Z
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 系统环境
+      description: Linux 发行版、版本、架构，以及单节点或多节点。
+      placeholder: Ubuntu 24.04 amd64，面板本机 + 1 个数据节点
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题范围
+      options:
+        - 安装或升级
+        - 登录或管理面板
+        - 用户、设备或流量
+        - UDP 443 或出站策略
+        - 数据节点对接或控制
+        - 备份、恢复或迁移
+        - 证书、DNS 或防火墙
+        - 页面布局或移动端
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+      placeholder: 清楚说明你认为应该发生什么。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      placeholder: 说明实际发生了什么，以及页面或命令显示的错误。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 最小复现步骤
+      placeholder: |
+        1. …
+        2. …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 已脱敏的诊断信息
+      description: 可粘贴相关 systemd 状态、journal 片段，以及 /healthz、/readyz 的 HTTP 状态。不要上传完整备份或私钥。
+      render: shell
+  - type: textarea
+    id: additional
+    attributes:
+      label: 补充说明
+      description: 可附不含凭据的截图、发生频率、首次出现版本和已尝试方案。
