@@ -17,7 +17,12 @@ from pathlib import Path
 from unittest import mock
 
 import node_agent
-from hysteria2_panel import Database, PanelApplication, make_panel_server
+from hysteria2_panel import (
+    Database,
+    PanelApplication,
+    make_panel_server,
+    sqlite_connection,
+)
 from node_agent import (
     collect_data_plane_attestation,
     DataPlaneBootstrapClient,
@@ -154,7 +159,7 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
 
 class NodeDnsAdmissionReconcilerTests(unittest.TestCase):
     def _insert_node(self, node_id, *, policy_state):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """INSERT INTO nodes(
                     node_id, name, expected_ip, observed_ip, status, public_key,
@@ -192,7 +197,7 @@ class NodeDnsAdmissionReconcilerTests(unittest.TestCase):
         self.node_id = "a" * 32
         self.remote_ip = "8.8.8.8"
         self._insert_node(self.node_id, policy_state="protocol_ready")
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
                     data_plane_installed_at = ?, direct_canary_passed_at = ?,
@@ -264,7 +269,7 @@ class NodeDnsAdmissionReconcilerTests(unittest.TestCase):
                     clock=lambda: self.now[0],
                 ).reconcile()
                 self.assertEqual(0, result["admitted"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE nodes SET last_snapshot_at = ? WHERE node_id = ?",
                 (self.now[0] - 46, self.node_id),
@@ -333,7 +338,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         address=None,
     ):
         address = address or self.remote_ip
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """INSERT INTO nodes(
                     node_id, name, expected_ip, observed_ip, status, public_key,
@@ -373,7 +378,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
     def test_initialize_adds_bootstrap_schema_idempotently(self):
         self.db.initialize()
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             node_columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(nodes)")
             }
@@ -416,7 +421,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
     def test_issue_stores_only_digest_and_generates_fixed_signed_command(self):
         issued = self.service.issue(self.node_id, actor="admin")
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.row_factory = sqlite3.Row
             grant = connection.execute(
                 "SELECT * FROM node_data_plane_bootstrap_grants WHERE grant_id = ?",
@@ -476,7 +481,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
 
         second = self.service.issue(self.node_id, actor="admin")
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             rows = connection.execute(
                 """SELECT grant_id, revoked_at
                 FROM node_data_plane_bootstrap_grants
@@ -488,7 +493,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         self.assertIsNone(grants[second["grantId"]])
 
     def test_installed_node_can_reissue_without_losing_canary_or_dns_state(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
                     data_plane_installed_at = ?, direct_canary_passed_at = ?,
@@ -517,7 +522,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
             )
         )
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             node = connection.execute(
                 """SELECT data_plane_state, data_plane_installed_at,
                     direct_canary_passed_at, dns_admitted_at
@@ -581,7 +586,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
                 self.now[0],
             )
         )
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             attempts = connection.execute(
                 """SELECT fetch_attempts
                 FROM node_data_plane_bootstrap_grants WHERE grant_id = ?""",
@@ -614,7 +619,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
                 self.now[0],
             )
         )
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             grant = connection.execute(
                 """SELECT acknowledged_at FROM node_data_plane_bootstrap_grants
                 WHERE grant_id = ?""",
@@ -638,7 +643,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
             self.db.mark_node_direct_canary_passed(
                 self.node_id, "admin", self.now[0]
             )
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET data_plane_state = 'data_plane_installed',
                     data_plane_installed_at = ? WHERE node_id = ?""",
@@ -663,7 +668,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         )
 
     def test_dns_admission_requires_fresh_control_state_and_is_reversible(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET data_plane_state = 'data_plane_installed',
                     data_plane_installed_at = ? WHERE node_id = ?""",
@@ -677,7 +682,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             self.db.mark_node_dns_admitted(self.node_id, "admin", self.now[0])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET last_heartbeat_at = ?, last_snapshot_at = ?,
                     last_traffic_ack_at = ? WHERE node_id = ?""",
@@ -722,7 +727,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
         )
 
     def test_dns_admission_rejects_stale_state_without_partial_writes(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
                     data_plane_installed_at = ?, direct_canary_passed_at = ?,
@@ -802,7 +807,7 @@ class AutoBootstrapClaimTests(unittest.TestCase):
                 b"hy2panel-data-plane-claim-v1\n"
             )
         )
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.row_factory = sqlite3.Row
             node = connection.execute(
                 "SELECT policy_state, policy_enabled_by, data_plane_state "
@@ -830,7 +835,7 @@ class AutoBootstrapClaimTests(unittest.TestCase):
         first = self.service.claim(self._payload(1), remote_ip=self.remote_ip)
         second = self.service.claim(self._payload(2), remote_ip=self.remote_ip)
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             grants = {
                 row[0]: row[1]
                 for row in connection.execute(
@@ -856,7 +861,7 @@ class AutoBootstrapClaimTests(unittest.TestCase):
                     policy_state="standby",
                     address="203.0.113.80",
                 )
-                with sqlite3.connect(str(self.db_path)) as connection:
+                with sqlite_connection(str(self.db_path)) as connection:
                     connection.execute(
                         "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
                         (heartbeat_at, node_id),
@@ -865,7 +870,7 @@ class AutoBootstrapClaimTests(unittest.TestCase):
                 with self.assertRaises(DataPlaneBootstrapRejected):
                     self.service.claim(payload, remote_ip=remote_ip)
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE nodes SET data_plane_state = 'direct_canary_passed' "
                 "WHERE node_id = ?",
@@ -901,7 +906,7 @@ class AutoBootstrapClaimTests(unittest.TestCase):
         )
         self.assertTrue(decision["ok"])
         self.assertEqual("__hy2panel_bootstrap_canary__", decision["id"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             self.assertEqual(
                 0, connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
             )
@@ -1204,7 +1209,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
             )
 
     def test_automatic_ack_requires_real_canary_before_consuming_the_grant(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE node_data_plane_bootstrap_grants SET automatic_canary = 1 "
                 "WHERE node_id = ?",
@@ -1222,7 +1227,7 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
             self.service.ack(
                 self._ack_payload(value=30), remote_ip=self.remote_ip
             )
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             self.assertIsNone(
                 connection.execute(
                     "SELECT acknowledged_at FROM node_data_plane_bootstrap_grants "
@@ -1433,7 +1438,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
 
         self.assertEqual("BOOTSTRAP_ISSUED", result["status"])
         self.assertIn("--activate-data-plane", result["deploymentCommand"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             audit = connection.execute(
                 "SELECT action, target FROM audit_log ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -1519,7 +1524,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertEqual(1, len(extended_requests))
 
     def test_public_auto_claim_uses_the_same_https_and_signature_boundary(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE nodes SET policy_state = 'standby' WHERE node_id = ?",
                 (self.node_id,),
@@ -1566,7 +1571,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertNotIn("data-plane/canary/pass", body)
         self.assertNotIn("dns/admit", body)
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET data_plane_state = 'data_plane_installed',
                     data_plane_installed_at = ? WHERE node_id = ?""",
@@ -1600,7 +1605,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertIsNotNone(node["direct_canary_passed_at"])
         self.assertIsNone(node["dns_admitted_at"])
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE nodes SET last_heartbeat_at = ?, last_snapshot_at = ?,
                     last_traffic_ack_at = ? WHERE node_id = ?""",

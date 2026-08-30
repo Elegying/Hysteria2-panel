@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-08-30
+
+### 稳定化
+
+- 所有生产 SQLite 连接和测试夹具连接均显式关闭；CI 新增 Python 3.13 与独立 `ResourceWarning` 泄漏门禁。
+- 将 700+ 行 Dashboard 渲染边界从 HTTP Handler 拆到独立、随安装器固定哈希分发的 `hy2panel/dashboard.py`，保持路由与页面行为不变。
+- 新增两节点控制 E2E，覆盖中央不可达时 durable spool 落盘、另一节点继续结算、恢复后精确重放和无重复累计。
+- 数据节点认证代理与控制循环改为 systemd `Type=notify`，分别启用 30 秒和 90 秒 watchdog；新增仅回环可读的低基数控制循环和 spool Prometheus 指标。
+- 新增真实 Chrome 桌面/手机渲染门禁，修复弹窗 Esc 关闭与焦点回归，更新当前截图、界面审查和稳定化发布策略。
+
 ## [0.34.0] - 2026-08-30
 
 ### 修复与可靠性

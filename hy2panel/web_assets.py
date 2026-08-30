@@ -176,12 +176,16 @@ async function pollUpdateStatus(button, deadline) {
   }
   window.setTimeout(function() { pollUpdateStatus(button, deadline); }, 1500);
 }
+const dialogOpeners = new WeakMap();
 document.addEventListener('click', function(event) {
   const opener = event.target.closest('[data-dialog-open]');
   if (opener) {
     if (opener.dataset.dialogOpen === 'edit-user-dialog') syncEditUserForm();
     const dialog = document.getElementById(opener.dataset.dialogOpen);
-    if (dialog && typeof dialog.showModal === 'function') dialog.showModal();
+    if (dialog && typeof dialog.showModal === 'function') {
+      dialogOpeners.set(dialog, opener);
+      dialog.showModal();
+    }
     return;
   }
   const closer = event.target.closest('[data-dialog-close]');
@@ -190,6 +194,21 @@ document.addEventListener('click', function(event) {
     if (dialog) dialog.close();
   }
 });
+document.addEventListener('keydown', function(event) {
+  if (event.key !== 'Escape') return;
+  const dialogs = Array.from(document.querySelectorAll('dialog[open]'));
+  const dialog = dialogs[dialogs.length - 1];
+  if (!dialog) return;
+  event.preventDefault();
+  dialog.close();
+});
+document.addEventListener('close', function(event) {
+  const dialog = event.target;
+  if (!(dialog instanceof HTMLDialogElement)) return;
+  const opener = dialogOpeners.get(dialog);
+  dialogOpeners.delete(dialog);
+  if (opener && opener.isConnected) opener.focus();
+}, true);
 document.addEventListener('click', async function(event) {
   const button = event.target.closest('[data-copy-target]');
   if (!button) return;

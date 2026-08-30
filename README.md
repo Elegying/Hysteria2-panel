@@ -79,7 +79,7 @@ flowchart LR
 
 ```bash
 set -euo pipefail
-version=0.34.0
+version=0.35.0
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -151,7 +151,7 @@ TCP `19999` 和 TCP `443` 使用同一个兼容探测程序：只接受连接后
 |---|---|---|
 | 中央面板 | systemd 在异常退出后自动重启；`WatchdogSec=30s` 持续检查面板 `/healthz`、本机认证入口、流量采集进度和后台工作线程 | 重启期间新的中央鉴权会短暂不可用，恢复后需等待各协议就绪节点重新提交新鲜状态 |
 | 面板本机 Hysteria | 主端口、UDP `443` 和 TCP 探测都是独立 systemd 服务，异常退出自动重启 | 服务状态和 TCP 探测不能代替真实 Hysteria/QUIC 握手验收 |
-| 对接数据节点 | 节点 Agent、控制通道、Hysteria 双入口和 TCP 探测都由 systemd 保活；面板监测签名心跳、在线快照、流量 ACK 和 DNS/灰度状态 | 数据节点当前没有独立的 systemd watchdog 来强制终止“进程仍在但内部完全卡死”的极端情况；其状态过期后，面板会停止放行新的认证并显示异常 |
+| 对接数据节点 | 节点 Agent、控制通道、Hysteria 双入口和 TCP 探测都由 systemd 保活；认证代理使用 30 秒 watchdog，控制循环使用 90 秒 watchdog；面板同时监测签名心跳、在线快照、流量 ACK 和 DNS/灰度状态 | 控制面故障不会主动中断既有 Hysteria 会话；新认证在状态过期后安全拒绝 |
 
 旧版曾有一个重启相关问题：5 秒设备预留使用了不能跨进程重启比较的时钟值，导致重启后可能把旧预留错误地当成仍然有效。现在每次面板进程启动都会建立新的运行纪元并清除旧的认证决定、短期设备预留和节点快照；协议时间戳也改用可跨重启比较的墙上时钟，并有专门回归测试。因此，旧的“服务器重启后长期卡在 5 秒认证、用户一直连不上”问题不应再次出现。
 
@@ -272,7 +272,13 @@ journalctl -u hysteria2-panel -u hysteria2-panel-server -u hysteria2-panel-serve
 curl http://127.0.0.1:19998/healthz
 curl http://127.0.0.1:19998/readyz
 curl http://127.0.0.1:19998/metrics
+# 在数据节点本机查看控制循环与 durable spool 指标
+curl http://127.0.0.1:19996/metrics
 ```
+
+数据节点指标不带节点名、用户名或来源 IP 标签，包含控制循环总数、失败总数、连续失败、最近成功时间，以及 spool 文件数和字节数。建议在节点本机采集，并至少告警：`hy2panel_node_control_ready == 0` 持续 2 分钟、`hy2panel_node_control_consecutive_failures >= 3`、最近成功时间超过 90 秒，以及 spool 文件数持续增长 10 分钟。认证代理和控制循环未按时发送 watchdog 时，systemd 会终止并自动重启对应进程。
+
+当前版本处于稳定化窗口；合并与发布门禁见 [稳定化策略](docs/STABILIZATION.md)，最新桌面、移动端和键盘验收见 [界面审查](docs/reviews/2026-08-30-v0.35.0-stabilization-audit.md)。
 
 关键路径：
 

@@ -1,5 +1,6 @@
 import base64
 import gzip
+import gc
 import contextlib
 import html
 import json
@@ -17,6 +18,7 @@ import threading
 import time
 import textwrap
 import unittest
+import warnings
 import zipfile
 import urllib.error
 import urllib.parse
@@ -26,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 import hysteria2_panel
+import node_agent
 from hy2panel import operations as panel_operations
 from hy2panel.distributed import DistributedControlService
 from hy2panel.nodes import NodeEnrollmentService, NodeHeartbeatService
@@ -57,6 +60,7 @@ from hysteria2_panel import (
     make_panel_server,
     make_stats_client,
     run_supervised_services,
+    sqlite_connection,
     summarize_dashboard,
     verify_password,
 )
@@ -122,6 +126,24 @@ class DatabaseTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_database_connections_are_closed_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "closed.db", b"c" * 32)
+            gc.collect()
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", ResourceWarning)
+                database.initialize()
+                for _ in range(10):
+                    self.assertTrue(database.readiness_probe())
+                gc.collect()
+            sqlite_warnings = [
+                warning
+                for warning in caught
+                if issubclass(warning.category, ResourceWarning)
+                and "database" in str(warning.message)
+            ]
+            self.assertEqual([], sqlite_warnings)
+
     def test_admin_login_and_session_lifecycle(self):
         admin_id = self.db.upsert_admin("Elegy", "admin-password")
 
@@ -157,7 +179,7 @@ class DatabaseTests(unittest.TestCase):
         ), mock.patch("hysteria2_panel.time.time", return_value=201):
             self.db.audit("anonymous", "new_failure", "admin", "2001:db8::2")
 
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite_connection(self.db_path) as connection:
             actions = [row[0] for row in connection.execute("SELECT action FROM audit_log")]
         self.assertEqual(["new_failure"], actions)
 
@@ -170,7 +192,7 @@ class DatabaseTests(unittest.TestCase):
             for suffix in range(4):
                 self.db.audit("anonymous", "failure-{}".format(suffix), "admin", "192.0.2.1")
 
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite_connection(self.db_path) as connection:
             actions = [
                 row[0]
                 for row in connection.execute("SELECT action FROM audit_log ORDER BY id")
@@ -178,7 +200,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(["failure-1", "failure-2", "failure-3"], actions)
 
     def test_traffic_batch_ledger_has_an_applied_at_index(self):
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite_connection(self.db_path) as connection:
             indexes = {
                 row[1]
                 for row in connection.execute("PRAGMA index_list(applied_traffic_batches)")
@@ -202,7 +224,7 @@ class DatabaseTests(unittest.TestCase):
         ), mock.patch("hysteria2_panel.time.time", return_value=201):
             self.db.apply_traffic_batch("2" * 32, {"alice": {"tx": 1, "rx": 0}})
 
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite_connection(self.db_path) as connection:
             batch_ids = [
                 row[0]
                 for row in connection.execute(
@@ -231,7 +253,7 @@ class DatabaseTests(unittest.TestCase):
                 )
             )
 
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite_connection(self.db_path) as connection:
             retained = {
                 row[0] for row in connection.execute("SELECT batch_id FROM applied_traffic_batches")
             }
@@ -270,7 +292,7 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual("alice", self.db.authenticate_token(created["token"]))
         self.assertEqual(created["token"], self.db.recover_proxy_token(created["id"]))
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite_connection(self.db_path) as connection:
             dump = "\n".join(connection.iterdump())
         self.assertNotIn(created["token"], dump)
 
@@ -416,7 +438,7 @@ class DatabaseTests(unittest.TestCase):
     def test_initialize_migrates_legacy_users_without_changing_their_token(self):
         legacy_path = Path(self.temp_dir.name) / "legacy.db"
         token = "legacy-token"
-        with sqlite3.connect(legacy_path) as connection:
+        with sqlite_connection(legacy_path) as connection:
             connection.execute(
                 """CREATE TABLE proxy_users (
                 id INTEGER PRIMARY KEY,
@@ -445,7 +467,7 @@ class DatabaseTests(unittest.TestCase):
 
     def test_initialize_backfills_existing_traffic_once_as_unattributed_history(self):
         created = self.db.create_proxy_user("historical")
-        with sqlite3.connect(self.db_path) as connection:
+        with sqlite_connection(self.db_path) as connection:
             connection.execute(
                 "UPDATE proxy_users SET tx_bytes = 123, rx_bytes = 456 WHERE id = ?",
                 (created["id"],),
@@ -1553,7 +1575,7 @@ class UsageManagerTests(unittest.TestCase):
 
     def test_restart_discards_prior_boot_monotonic_local_auth_leases(self):
         self.db.create_proxy_user("alice", device_limit=1)
-        with sqlite3.connect(str(self.db.path)) as connection:
+        with sqlite_connection(str(self.db.path)) as connection:
             connection.execute(
                 """INSERT INTO local_auth_leases(
                     decision_id, user_name, created_at, expires_at
@@ -1570,7 +1592,7 @@ class UsageManagerTests(unittest.TestCase):
         )
 
         self.assertTrue(manager.authorize("alice"))
-        with sqlite3.connect(str(self.db.path)) as connection:
+        with sqlite_connection(str(self.db.path)) as connection:
             leases = connection.execute(
                 """SELECT decision_id, created_at, expires_at
                 FROM local_auth_leases ORDER BY created_at"""
@@ -2986,7 +3008,7 @@ class OperationsTests(unittest.TestCase):
             user = database.create_proxy_user("alice")
             # This marker represents the post-stop, disk-consistent phase. Keep
             # the schema out of WAL so the fixture matches that production state.
-            with sqlite3.connect(database_path) as connection:
+            with sqlite_connection(database_path) as connection:
                 self.assertEqual(
                     (0, 0, 0),
                     tuple(connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()),
@@ -4974,7 +4996,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(19999, manifest["source"]["hysteriaPort"])
         self.assertEqual("私家车-2026", manifest["source"]["nodeName"])
         self.assertEqual(1, manifest["proxyUserCount"])
-        with sqlite3.connect(packaged_database) as connection:
+        with sqlite_connection(packaged_database) as connection:
             for table in ("admins", "sessions", "audit_log"):
                 self.assertEqual(
                     0,
@@ -4992,7 +5014,7 @@ class BackupManagerTests(unittest.TestCase):
 
     def test_restore_rejects_non_blob_proxy_token_seeds_as_validation_errors(self):
         invalid_database = self.root / "invalid-seed.db"
-        with sqlite3.connect(self.database.path) as source, sqlite3.connect(
+        with sqlite_connection(self.database.path) as source, sqlite_connection(
             invalid_database
         ) as destination:
             source.backup(destination)
@@ -5057,7 +5079,7 @@ class BackupManagerTests(unittest.TestCase):
         legacy_database = self.root / "legacy-backup.db"
         legacy_database.write_bytes(payloads["data/panel.db"])
         legacy_columns = ",".join(BackupManager.REQUIRED_PROXY_COLUMNS)
-        with sqlite3.connect(legacy_database) as connection:
+        with sqlite_connection(legacy_database) as connection:
             connection.execute(
                 "CREATE TABLE proxy_users_legacy AS SELECT {} FROM proxy_users".format(
                     legacy_columns
@@ -5246,7 +5268,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertIsNone(restored.verify_admin("source-admin", "source-password"))
         self.assertEqual("alice", restored.authenticate_token(self.user["token"]))
         self.assertEqual(["alice"], [row["name"] for row in restored.list_proxy_users()["users"]])
-        with sqlite3.connect(destination_db.path) as connection:
+        with sqlite_connection(destination_db.path) as connection:
             self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
         self.assertEqual(self.certificate.read_bytes(), destination_cert.read_bytes())
         self.assertEqual(self.private_key.read_bytes(), destination_key.read_bytes())
@@ -5428,7 +5450,7 @@ class BackupManagerTests(unittest.TestCase):
         validate_applied_restore = destination._validate_applied_restore
 
         def corrupt_then_validate(*args, **kwargs):
-            with sqlite3.connect(str(destination_db.path)) as connection:
+            with sqlite_connection(str(destination_db.path)) as connection:
                 connection.execute(
                     "UPDATE proxy_users SET traffic_limit_bytes = traffic_limit_bytes + 1"
                 )
@@ -6311,6 +6333,151 @@ class PanelHttpTests(unittest.TestCase):
         dashboard = self.request("/", headers=headers).read().decode()
         self.assertIn("待确认命令：0", dashboard)
 
+    def test_two_node_control_e2e_replays_durable_traffic_after_outage(self):
+        """Exercise two node control planes over HTTP with outage/replay semantics."""
+        proxy_user = self.db.create_proxy_user("distributed-e2e")
+        now = int(time.time())
+
+        def provision_node(name, key_byte):
+            issued = self.application.node_enrollment_service.create(
+                name, "", 10, "Elegy"
+            )
+            token = self.enrollment_token(issued["deploymentCommand"])
+            public_der = bytes.fromhex("302a300506032b6570032100") + bytes(
+                [key_byte]
+            ) * 32
+            self.application.node_enrollment_service.register(
+                {
+                    "enrollmentToken": token,
+                    "publicKey": base64.b64encode(public_der).decode("ascii"),
+                    "hostname": "{}.example.test".format(name),
+                    "platform": "linux",
+                    "architecture": "amd64",
+                    "agentVersion": "0.35.0",
+                },
+                remote_ip="127.0.0.1",
+            )
+            self.assertTrue(
+                self.db.verify_node(
+                    issued["nodeId"],
+                    hashlib.sha256(public_der).hexdigest(),
+                    actor="Elegy",
+                    verified_at=now,
+                )
+            )
+            self.application.node_heartbeat_service.accept(
+                {
+                    "nodeId": issued["nodeId"],
+                    "sentAt": now,
+                    "nonce": base64.urlsafe_b64encode(bytes([key_byte]) * 32)
+                    .rstrip(b"=")
+                    .decode("ascii"),
+                    "hostname": "{}.example.test".format(name),
+                    "agentVersion": "0.35.0",
+                    "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+                },
+                "127.0.0.1",
+            )
+            self.assertTrue(
+                self.db.set_node_policy_state(
+                    issued["nodeId"], "protocol_ready", "Elegy", now
+                )
+            )
+            node_root = Path(self.temp_dir.name) / issued["nodeId"]
+            node_root.mkdir(mode=0o700)
+            state_path = node_root / "registration.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "nodeId": issued["nodeId"],
+                        "panelUrl": "https://central.invalid",
+                        "registeredAt": now,
+                        "status": "PENDING_VERIFICATION",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state_path.chmod(0o600)
+            private_key = node_root / "node.key"
+            private_key.write_bytes(b"test-only-private-key")
+            private_key.chmod(0o600)
+            protocol_state = node_agent.ProtocolState(node_root / "protocol.json")
+            protocol_state.set_traffic_ack(now)
+            spool = node_agent.DurableTrafficSpool(node_root / "spool")
+            return state_path, private_key, protocol_state, spool
+
+        class Stats:
+            def __init__(self, traffic):
+                self.traffic = traffic
+
+            def collect_and_clear(self):
+                traffic, self.traffic = self.traffic, {}
+                return traffic
+
+            def online(self):
+                return {"distributed-e2e": 1}
+
+            def kick(self, _users):
+                return None
+
+        def make_cycle(name, key_byte, traffic, availability):
+            state_path, private_key, protocol_state, spool = provision_node(
+                name, key_byte
+            )
+
+            def opener(request, timeout):
+                if not availability[0]:
+                    raise urllib.error.URLError("simulated central outage")
+                parsed = urllib.parse.urlsplit(request.full_url)
+                forwarded = urllib.request.Request(
+                    self.base_url + parsed.path,
+                    data=request.data,
+                    headers=dict(request.header_items()),
+                    method=request.get_method(),
+                )
+                return urllib.request.urlopen(forwarded, timeout=timeout)
+
+            client = node_agent.NodeProtocolClient(
+                state_path,
+                private_key,
+                opener=opener,
+                signer=lambda _path, _message: b"s" * 64,
+            )
+            return (
+                node_agent.NodeControlCycle(
+                    client, Stats(traffic), spool, protocol_state
+                ),
+                spool,
+            )
+
+        node_a_available = [False]
+        node_b_available = [True]
+        node_a, spool_a = make_cycle(
+            "edge-e2e-a",
+            65,
+            {"distributed-e2e": {"tx": 10, "rx": 20}},
+            node_a_available,
+        )
+        node_b, spool_b = make_cycle(
+            "edge-e2e-b",
+            66,
+            {"distributed-e2e": {"tx": 3, "rx": 4}},
+            node_b_available,
+        )
+
+        with self.assertRaises(node_agent.ProtocolError):
+            node_a.run_once()
+        self.assertEqual(1, len(spool_a.pending()))
+        node_b.run_once()
+        self.assertEqual([], spool_b.pending())
+
+        node_a_available[0] = True
+        node_a.run_once()
+        self.assertEqual([], spool_a.pending())
+        stored = self.db.get_proxy_user(proxy_user["id"])
+        self.assertEqual(13, stored["tx_bytes"])
+        self.assertEqual(24, stored["rx_bytes"])
+
     def test_public_node_registration_is_https_only_bounded_and_has_stable_errors(self):
         service = self.application.node_enrollment_service
         issued = service.create("edge-02", "", 10, "Elegy")
@@ -6789,7 +6956,7 @@ class PanelHttpTests(unittest.TestCase):
             "legacy-unattributed",
             {origin["origin_id"] for origin in self.db.list_usage_origins()},
         )
-        with sqlite3.connect(str(self.db.path)) as connection:
+        with sqlite_connection(str(self.db.path)) as connection:
             actions = {
                 row[0] for row in connection.execute("SELECT action FROM audit_log")
             }
@@ -6858,6 +7025,9 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('.node-row small{margin-top:2px;overflow-wrap:anywhere}', body)
         self.assertIn('.node-actions{grid-column:1/-1;display:grid}', body)
         self.assertIn('@media(prefers-reduced-motion:reduce)', body)
+        self.assertIn("event.key !== 'Escape'", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn("dialogOpeners.set(dialog, opener)", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn("opener.focus()", hysteria2_panel.PAGE_SCRIPT)
         self.assertIn(
             "const forbidden = ['server.crt', 'server.key', "
             "'HY2PANEL_HMAC_KEY', 'HY2PANEL_PUBLIC_HOST'];",
@@ -7550,7 +7720,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(["stop"], self.service_controller.actions)
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
-        self.assertIn("v0.34.0", body)
+        self.assertIn("v0.35.0", body)
 
     def test_disruptive_actions_fail_closed_when_traffic_settlement_fails(self):
         headers, csrf_token = self.authenticated_headers()

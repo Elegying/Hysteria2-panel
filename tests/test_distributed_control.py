@@ -21,7 +21,7 @@ from hy2panel.distributed import (
     canonical_node_request,
 )
 from hy2panel.nodes import OpenSSLSignatureVerifier
-from hysteria2_panel import Database, UsageManager
+from hysteria2_panel import Database, UsageManager, sqlite_connection
 
 
 def public_key(value):
@@ -65,7 +65,7 @@ class DistributedControlCase(unittest.TestCase):
     def create_ready_node(self, value):
         node_id = "{:032x}".format(value)
         current = self.now[0]
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """INSERT INTO nodes(
                     node_id, name, expected_ip, observed_ip, status, public_key,
@@ -141,7 +141,7 @@ class SignedNodeRequestTests(DistributedControlCase):
             self.service.accept_online_snapshot(
                 self.snapshot(self.nodes[1], 9), remote_ip="203.0.113.99"
             )
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE nodes SET policy_state = 'standby' WHERE node_id = ?",
                 (self.nodes[1],),
@@ -185,7 +185,7 @@ class SignedNodeRequestTests(DistributedControlCase):
         self.assertTrue(result["traffic"][0]["committed"])
         self.assertEqual(1, result["online"]["sequence"])
         self.assertEqual(command["commandId"], result["commands"][0]["commandId"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             counters = connection.execute(
                 "SELECT tx_bytes, rx_bytes FROM proxy_users WHERE name = 'alice'"
             ).fetchone()
@@ -374,7 +374,7 @@ class DistributedAuthorizationTests(DistributedControlCase):
             remote_ip="203.0.113.1",
         )
         self.assertTrue(allowed["ok"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE proxy_users SET tx_bytes = 123, rx_bytes = 456 WHERE name = 'alice'"
             )
@@ -387,7 +387,7 @@ class DistributedAuthorizationTests(DistributedControlCase):
 
         self.db.begin_runtime_epoch()
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             self.assertEqual(
                 (0, 0, 0, 0),
                 tuple(
@@ -616,7 +616,7 @@ class DistributedTrafficTests(DistributedControlCase):
         self.assertEqual((1, 2), (user["tx_bytes"], user["rx_bytes"]))
 
     def test_quota_crossing_queues_one_fixed_kick_for_every_ready_node(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE proxy_users SET traffic_limit_bytes = 25 WHERE name = 'alice'"
             )
@@ -631,7 +631,7 @@ class DistributedTrafficTests(DistributedControlCase):
             remote_ip="203.0.113.1",
         )
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             commands = connection.execute(
                 """SELECT node_id, kind, payload FROM node_commands
                 ORDER BY node_id"""
@@ -645,7 +645,7 @@ class DistributedTrafficTests(DistributedControlCase):
         )
 
     def test_local_traffic_quota_crossing_also_kicks_every_ready_node(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE proxy_users SET traffic_limit_bytes = 25 WHERE name = 'alice'"
             )
@@ -656,7 +656,7 @@ class DistributedTrafficTests(DistributedControlCase):
             )
         )
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             commands = connection.execute(
                 "SELECT node_id, kind, payload FROM node_commands ORDER BY node_id"
             ).fetchall()
@@ -672,7 +672,7 @@ class DistributedTrafficTests(DistributedControlCase):
         names = ["user-{:03d}".format(index) for index in range(101)]
         for name in names:
             self.db.create_proxy_user(name)
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.executemany(
                 "UPDATE proxy_users SET traffic_limit_bytes = 1 WHERE name = ?",
                 ((name,) for name in names),
@@ -696,7 +696,7 @@ class DistributedTrafficTests(DistributedControlCase):
             accepted_at=self.now[0] + 1,
         )
         self.assertTrue(duplicate["duplicate"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.row_factory = sqlite3.Row
             self.assertIsNotNone(
                 connection.execute(
@@ -726,7 +726,7 @@ class DistributedTrafficTests(DistributedControlCase):
         names = ["rollback-{:03d}".format(index) for index in range(101)]
         for name in names:
             self.db.create_proxy_user(name)
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.executemany(
                 "UPDATE proxy_users SET traffic_limit_bytes = 1 WHERE name = ?",
                 ((name,) for name in names),
@@ -750,7 +750,7 @@ class DistributedTrafficTests(DistributedControlCase):
         )
 
         self.assertIsNone(result)
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             self.assertEqual(
                 0,
                 connection.execute(
@@ -770,7 +770,7 @@ class DistributedTrafficTests(DistributedControlCase):
         self.assertEqual([], self.db.list_usage_origins())
 
     def test_one_nodes_full_ledger_does_not_block_another_node(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.executemany(
                 """INSERT INTO node_traffic_batches(
                     node_id, batch_id, unknown_users, applied_at
@@ -799,7 +799,7 @@ class DistributedTrafficTests(DistributedControlCase):
         with mock.patch.object(
             Database, "NODE_TRAFFIC_LEDGER_MAX_ROWS", 3, create=True
         ):
-            with sqlite3.connect(str(self.db_path)) as connection:
+            with sqlite_connection(str(self.db_path)) as connection:
                 connection.executemany(
                     """INSERT INTO node_traffic_batches(
                         node_id, batch_id, unknown_users, applied_at
@@ -819,7 +819,7 @@ class DistributedTrafficTests(DistributedControlCase):
             )
 
         self.assertTrue(result["committed"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             batches = connection.execute(
                 """SELECT batch_id FROM node_traffic_batches
                 WHERE node_id = ? ORDER BY applied_at, batch_id""",
@@ -847,7 +847,7 @@ class NodeCommandTests(DistributedControlCase):
             with self.subTest(names=names):
                 with self.assertRaises(ValueError):
                     self.db.queue_kick_users_on_ready_nodes(names, self.now[0])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             self.assertEqual(
                 0, connection.execute("SELECT COUNT(*) FROM node_commands").fetchone()[0]
             )
@@ -859,7 +859,7 @@ class NodeCommandTests(DistributedControlCase):
             4, self.db.queue_kick_users_on_ready_nodes(names, self.now[0])
         )
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.row_factory = sqlite3.Row
             commands = connection.execute(
                 """SELECT node_id, payload FROM node_commands
@@ -926,7 +926,7 @@ class NodeCommandTests(DistributedControlCase):
         command = self.db.queue_node_command(
             self.nodes[0], "REFRESH_SNAPSHOT", {}, self.now[0]
         )
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """UPDATE node_commands SET attempts = 10, next_attempt_at = ?
                 WHERE command_id = ?""",
@@ -937,7 +937,7 @@ class NodeCommandTests(DistributedControlCase):
         capped["requestId"] = "f" * 32
         delivered = self.service.poll_commands(capped, remote_ip="203.0.113.1")
         self.assertEqual(command["commandId"], delivered["commands"][0]["commandId"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             attempts, next_attempt_at = connection.execute(
                 """SELECT attempts, next_attempt_at FROM node_commands
                 WHERE command_id = ?""",
@@ -1855,6 +1855,111 @@ class NodeAgentProtocolTests(unittest.TestCase):
         self.assertEqual(2, len(delays))
         self.assertAlmostEqual(2.4, delays[0])
         self.assertAlmostEqual(2.4, delays[1])
+
+    def test_control_loop_notifies_systemd_and_publishes_metrics(self):
+        stopped = threading.Event()
+
+        class Cycle:
+            spool = None
+
+            def run_once(self):
+                stopped.set()
+
+        class Notifier:
+            watchdog_interval = None
+
+            def __init__(self):
+                self.calls = []
+
+            def ready(self, status):
+                self.calls.append(("ready", status))
+
+            def watchdog(self):
+                self.calls.append(("watchdog",))
+
+            def stopping(self, status):
+                self.calls.append(("stopping", status))
+
+        notifier = Notifier()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "node.prom"
+            metrics = node_agent.NodeRuntimeMetrics(path, clock=lambda: 1234)
+            node_agent.run_control_loop(
+                Cycle(),
+                stopped,
+                notifier=notifier,
+                metrics=metrics,
+                jitter_source=lambda: 0.5,
+            )
+            payload = path.read_text(encoding="ascii")
+
+        self.assertEqual("ready", notifier.calls[0][0])
+        self.assertIn(("watchdog",), notifier.calls)
+        self.assertEqual("stopping", notifier.calls[-1][0])
+        self.assertIn("hy2panel_node_control_cycles_total 1", payload)
+        self.assertIn("hy2panel_node_control_failures_total 0", payload)
+        self.assertIn(
+            "hy2panel_node_control_last_success_timestamp_seconds 1234", payload
+        )
+
+    def test_node_notifier_supports_abstract_systemd_socket(self):
+        calls = []
+
+        class FakeSocket:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def sendto(self, payload, address):
+                calls.append((payload, address))
+
+        notifier = node_agent.SystemdNotifier(
+            environment={
+                "NOTIFY_SOCKET": "@hy2panel-node",
+                "WATCHDOG_USEC": "10000000",
+                "WATCHDOG_PID": str(os.getpid()),
+            },
+            socket_factory=lambda *_args: FakeSocket(),
+        )
+        self.assertEqual(5.0, notifier.watchdog_interval)
+        self.assertTrue(notifier.ready("ready\nnow"))
+        self.assertTrue(notifier.watchdog())
+        self.assertTrue(notifier.stopping())
+        self.assertEqual("\0hy2panel-node", calls[0][1])
+        self.assertEqual(b"READY=1\nSTATUS=ready now", calls[0][0])
+
+    def test_auth_proxy_metrics_endpoint_is_loopback_and_fail_closed(self):
+        class Client:
+            def authorize(self, _payload):
+                return {"ok": False, "id": ""}
+
+        with tempfile.TemporaryDirectory() as directory:
+            metrics_path = Path(directory) / "node.prom"
+            server = node_agent.make_node_auth_proxy_server(
+                ("127.0.0.1", 0), Client(), metrics_file=metrics_path
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                url = "http://127.0.0.1:{}/metrics".format(server.server_port)
+                with self.assertRaises(urllib.error.HTTPError) as missing:
+                    urllib.request.urlopen(url, timeout=1)
+                self.assertEqual(503, missing.exception.code)
+                metrics_path.write_text(
+                    "hy2panel_node_control_ready 1\n", encoding="ascii"
+                )
+                metrics_path.chmod(0o600)
+                with urllib.request.urlopen(url, timeout=1) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(
+                        b"hy2panel_node_control_ready 1\n", response.read()
+                    )
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(2)
 
     def test_snapshot_refresh_allows_the_bounded_control_retry_budget(self):
         now = 2_000_000_000

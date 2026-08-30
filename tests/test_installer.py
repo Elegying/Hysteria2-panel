@@ -557,7 +557,7 @@ assert_reopenable_installer_entrypoint
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.34.0"', source)
+        self.assertIn('PANEL_VERSION="0.35.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -616,6 +616,7 @@ assert_reopenable_installer_entrypoint
             "hy2panel/systemd.py": "HY2PANEL_SYSTEMD_SHA256",
             "hy2panel/nodes.py": "HY2PANEL_NODES_SHA256",
             "hy2panel/distributed.py": "HY2PANEL_DISTRIBUTED_SHA256",
+            "hy2panel/dashboard.py": "HY2PANEL_DASHBOARD_SHA256",
         }
 
         for relative_path, variable in modules.items():
@@ -3178,6 +3179,7 @@ assert_units_unclaimed
             '/opt/hysteria2-panel/bin/hysteria',
             '/opt/hysteria2-panel/hysteria2_panel.py',
             '/opt/hysteria2-panel/hy2panel/systemd.py',
+            '/opt/hysteria2-panel/hy2panel/dashboard.py',
             '/etc/hysteria2-panel/panel.env',
             '/etc/hysteria2-panel/hysteria.yaml',
             '/etc/hysteria2-panel/server.crt',
@@ -4552,6 +4554,11 @@ printf 'missing:%s\n' "$?"
         self.assertIn("AmbientCapabilities=CAP_NET_BIND_SERVICE", self.activation)
         self.assertIn("--stats-url http://127.0.0.1:19997", self.activation)
         self.assertIn("--stats-url http://127.0.0.1:19995", self.activation)
+        self.assertIn("--metrics-file /var/lib/hysteria2-panel-node/state/node.prom", self.activation)
+        self.assertGreaterEqual(self.activation.count("Type=notify"), 2)
+        self.assertGreaterEqual(self.activation.count("NotifyAccess=main"), 2)
+        self.assertIn("WatchdogSec=30s", self.activation)
+        self.assertIn("WatchdogSec=90s", self.activation)
         self.assertIn("__HY2PANEL_STATS_SECRET__", (ROOT / "node_agent.py").read_text())
 
     def test_auth_proxy_outage_does_not_stop_established_data_plane_sessions(self):

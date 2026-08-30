@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-import sqlite3
 import tempfile
 import time
 import unittest
@@ -16,6 +15,7 @@ from hysteria2_panel import (
     BackupManager,
     BackupValidationError,
     Database,
+    sqlite_connection,
 )
 from test_panel import create_test_certificate
 
@@ -83,7 +83,7 @@ class BackupStreamingTests(unittest.TestCase):
             "data/panel.db"
         ) as source, packaged_database.open("wb") as destination:
             shutil.copyfileobj(source, destination, length=1024 * 1024)
-        with sqlite3.connect(packaged_database) as connection:
+        with sqlite_connection(packaged_database) as connection:
             self.assertEqual(
                 0,
                 connection.execute(
@@ -104,7 +104,7 @@ class BackupStreamingTests(unittest.TestCase):
 
     def test_archive_capacity_uses_logical_database_size_including_wal(self):
         required = []
-        with sqlite3.connect(str(self.database.path)) as connection:
+        with sqlite_connection(str(self.database.path)) as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
             connection.execute("CREATE TABLE wal_growth (payload BLOB NOT NULL)")
@@ -122,11 +122,10 @@ class BackupStreamingTests(unittest.TestCase):
                 side_effect=lambda _path, size: required.append(size),
             ):
                 self.manager.create_archive()
-
-        self.assertGreater(logical_size, self.database.path.stat().st_size)
-        self.assertGreaterEqual(
-            required[0], 3 * logical_size + RESTORE_DISK_SAFETY_BYTES
-        )
+            self.assertGreater(logical_size, self.database.path.stat().st_size)
+            self.assertGreaterEqual(
+                required[0], 3 * logical_size + RESTORE_DISK_SAFETY_BYTES
+            )
 
     def test_restore_streams_database_replacement_and_checks_free_space(self):
         archive = self.manager.create_archive()
@@ -243,7 +242,7 @@ class BackupStreamingTests(unittest.TestCase):
             encoding="utf-8",
         )
         def logical_database_digest():
-            with sqlite3.connect(str(self.database.path)) as connection:
+            with sqlite_connection(str(self.database.path)) as connection:
                 dump = "\n".join(connection.iterdump()).encode("utf-8")
             return self.manager._sha256(dump)
 

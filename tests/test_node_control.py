@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import shutil
-import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -14,7 +13,7 @@ from hy2panel.nodes import (
     OpenSSLSignatureVerifier,
     canonical_heartbeat,
 )
-from hysteria2_panel import Database
+from hysteria2_panel import Database, sqlite_connection
 
 
 def ed25519_public_key(value=7):
@@ -70,7 +69,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
 
     def test_initialize_adds_node_control_schema_idempotently(self):
         self.db.initialize()
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             node_columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(nodes)")
             }
