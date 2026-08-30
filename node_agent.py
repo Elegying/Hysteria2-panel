@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.34.0"
+AGENT_VERSION = "0.35.0"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -63,6 +63,61 @@ class ProtocolError(RuntimeError):
 
 class ProtocolNotSupported(ProtocolError):
     """The panel does not yet support an additive node protocol endpoint."""
+
+
+class SystemdNotifier:
+    """Small dependency-free sd_notify client for the standalone node agent."""
+
+    def __init__(self, environment=None, socket_factory=socket.socket):
+        self._environment = os.environ if environment is None else environment
+        self._socket_factory = socket_factory
+
+    @property
+    def watchdog_interval(self):
+        configured_pid = self._environment.get("WATCHDOG_PID")
+        if configured_pid:
+            try:
+                if int(configured_pid) != os.getpid():
+                    return None
+            except ValueError:
+                return None
+        try:
+            microseconds = int(self._environment.get("WATCHDOG_USEC", "0"))
+        except ValueError:
+            return None
+        if microseconds <= 0 or not self._environment.get("NOTIFY_SOCKET"):
+            return None
+        return microseconds / 2_000_000
+
+    def _notify(self, fields):
+        address = self._environment.get("NOTIFY_SOCKET")
+        if not address:
+            return False
+        if address.startswith("@"):
+            address = "\0" + address[1:]
+        try:
+            with self._socket_factory(socket.AF_UNIX, socket.SOCK_DGRAM) as notifier:
+                notifier.sendto("\n".join(fields).encode("utf-8"), address)
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _status(value):
+        return str(value).replace("\r", " ").replace("\n", " ")
+
+    def ready(self, status="ready"):
+        return self._notify(("READY=1", "STATUS={}".format(self._status(status))))
+
+    def watchdog(self):
+        if self.watchdog_interval is None:
+            return False
+        return self._notify(("WATCHDOG=1",))
+
+    def stopping(self, status="stopping"):
+        return self._notify(
+            ("STOPPING=1", "STATUS={}".format(self._status(status)))
+        )
 
 
 def _panel_url(value):
@@ -208,9 +263,38 @@ class NodeAuthProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_metrics(self):
+        metrics_file = getattr(self.server, "metrics_file", None)
+        try:
+            path = pathlib.Path(metrics_file)
+            metadata = path.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_size > 64 * 1024
+            ):
+                raise OSError("unsafe metrics file")
+            body = path.read_bytes()
+        except (OSError, TypeError, ValueError):
+            body = b"hy2panel_node_control_ready 0\n"
+            status_code = 503
+        else:
+            status_code = 200
+        self.send_response(status_code)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         if self.path == "/healthz":
             self._send_json(200, {"status": "ok"})
+            return
+        if self.path == "/metrics":
+            self._send_metrics()
             return
         self._send_json(404, {"error": "not found"})
 
@@ -302,7 +386,11 @@ class NodeAuthProxyServer(ThreadingHTTPServer):
 
 
 def make_node_auth_proxy_server(
-    address, protocol_client, max_workers=32, request_timeout=5.0
+    address,
+    protocol_client,
+    max_workers=32,
+    request_timeout=5.0,
+    metrics_file=None,
 ):
     host, port = address
     if str(host) not in {"127.0.0.1", "::1"} or not 0 <= int(port) <= 65535:
@@ -314,7 +402,21 @@ def make_node_auth_proxy_server(
         request_timeout=request_timeout,
     )
     server.protocol_client = protocol_client
+    server.metrics_file = metrics_file
     return server
+
+
+def serve_node_auth_proxy(server, stop_event, notifier=None):
+    """Serve loopback auth while proving the accepting loop remains responsive."""
+    notifier = notifier or SystemdNotifier()
+    server.timeout = 0.2
+    notifier.ready("node authentication proxy ready")
+    try:
+        while not stop_event.is_set():
+            server.handle_request()
+            notifier.watchdog()
+    finally:
+        notifier.stopping("node authentication proxy stopping")
 
 
 class DurableTrafficSpool:
@@ -2303,6 +2405,76 @@ class NodeControlCycle:
             raise control_error
 
 
+class NodeRuntimeMetrics:
+    """Atomically publish low-cardinality Prometheus textfile metrics."""
+
+    def __init__(self, path, spool=None, clock=time.time):
+        self.path = pathlib.Path(path)
+        self.spool = spool
+        self.clock = clock
+        self.cycles_total = 0
+        self.failures_total = 0
+        self.consecutive_failures = 0
+        self.last_success = 0
+
+    def record_cycle(self, failed):
+        self.cycles_total += 1
+        if failed:
+            self.failures_total += 1
+            self.consecutive_failures += 1
+        else:
+            self.consecutive_failures = 0
+            self.last_success = int(self.clock())
+        spool_entries = 0
+        spool_bytes = 0
+        if self.spool is not None:
+            try:
+                spool_entries, spool_bytes = self.spool._current_usage()
+            except (OSError, ProtocolError):
+                pass
+        body = (
+            "# HELP hy2panel_node_control_ready Whether the node control loop has started.\n"
+            "# TYPE hy2panel_node_control_ready gauge\n"
+            "hy2panel_node_control_ready 1\n"
+            "# TYPE hy2panel_node_control_cycles_total counter\n"
+            "hy2panel_node_control_cycles_total {}\n"
+            "# TYPE hy2panel_node_control_failures_total counter\n"
+            "hy2panel_node_control_failures_total {}\n"
+            "# TYPE hy2panel_node_control_consecutive_failures gauge\n"
+            "hy2panel_node_control_consecutive_failures {}\n"
+            "# TYPE hy2panel_node_control_last_success_timestamp_seconds gauge\n"
+            "hy2panel_node_control_last_success_timestamp_seconds {}\n"
+            "# TYPE hy2panel_node_traffic_spool_entries gauge\n"
+            "hy2panel_node_traffic_spool_entries {}\n"
+            "# TYPE hy2panel_node_traffic_spool_bytes gauge\n"
+            "hy2panel_node_traffic_spool_bytes {}\n"
+        ).format(
+            self.cycles_total,
+            self.failures_total,
+            self.consecutive_failures,
+            self.last_success,
+            spool_entries,
+            spool_bytes,
+        ).encode("ascii")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, staged_name = tempfile.mkstemp(
+            prefix=".node-metrics-", dir=str(self.path.parent)
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(staged_name, str(self.path))
+            _fsync_directory(self.path.parent)
+        finally:
+            try:
+                os.unlink(staged_name)
+            except FileNotFoundError:
+                pass
+
+
 def run_control_loop(
     cycle,
     stop_event,
@@ -2310,6 +2482,8 @@ def run_control_loop(
     maximum_backoff_seconds=CONTROL_LOOP_MAX_BACKOFF_SECONDS,
     sleeper=None,
     jitter_source=None,
+    notifier=None,
+    metrics=None,
 ):
     """Run short jittered polling while backing off boundedly on failures."""
     interval = max(1, min(CONTROL_LOOP_MAX_INTERVAL_SECONDS, int(interval_seconds)))
@@ -2318,21 +2492,40 @@ def run_control_loop(
         random_source = secrets.SystemRandom()
         jitter_source = random_source.random
     delay = interval
-    while not stop_event.is_set():
-        try:
-            cycle.run_once()
-        except (OSError, ProtocolError):
-            next_delay = min(maximum_backoff, delay * 2)
-        else:
-            next_delay = interval
-            delay = interval
-        jitter = 0.8 + 0.4 * max(0.0, min(1.0, float(jitter_source())))
-        wait_delay = min(float(maximum_backoff), max(1.0, delay * jitter))
-        if sleeper is None:
-            stop_event.wait(wait_delay)
-        else:
-            sleeper(wait_delay)
-        delay = next_delay
+    notifier = notifier or SystemdNotifier()
+    notifier.ready("node control loop ready")
+    try:
+        while not stop_event.is_set():
+            failed = False
+            try:
+                cycle.run_once()
+            except (OSError, ProtocolError):
+                failed = True
+                next_delay = min(maximum_backoff, delay * 2)
+            else:
+                next_delay = interval
+                delay = interval
+            if metrics is not None:
+                try:
+                    metrics.record_cycle(failed=failed)
+                except (OSError, ProtocolError):
+                    pass
+            notifier.watchdog()
+            jitter = 0.8 + 0.4 * max(0.0, min(1.0, float(jitter_source())))
+            wait_delay = min(float(maximum_backoff), max(1.0, delay * jitter))
+            if sleeper is None:
+                remaining = wait_delay
+                notify_interval = notifier.watchdog_interval or remaining
+                while remaining > 0 and not stop_event.is_set():
+                    started = time.monotonic()
+                    stop_event.wait(min(remaining, notify_interval))
+                    remaining -= max(0.0, time.monotonic() - started)
+                    notifier.watchdog()
+            else:
+                sleeper(wait_delay)
+            delay = next_delay
+    finally:
+        notifier.stopping("node control loop stopping")
 
 
 def _parser():
@@ -2349,6 +2542,7 @@ def _parser():
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
     command.add_argument("--port", type=int, default=19996)
+    command.add_argument("--metrics-file")
     command = subcommands.add_parser("prepare-data-plane")
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
@@ -2373,6 +2567,7 @@ def _parser():
         command.add_argument("--protocol-state", required=True)
         command.add_argument("--spool-dir", required=True)
         command.add_argument("--stats-url", required=True, action="append")
+        command.add_argument("--metrics-file")
     return parser
 
 
@@ -2493,15 +2688,20 @@ def main(arguments=None):
                 pathlib.Path(options.state_file), pathlib.Path(options.private_key)
             )
             server = make_node_auth_proxy_server(
-                ("127.0.0.1", options.port), client
+                ("127.0.0.1", options.port), client, metrics_file=options.metrics_file
             )
         except (OSError, ValueError, ProtocolError) as exc:
             print("错误：{}".format(exc), file=sys.stderr)
             return 1
+        stopped = threading.Event()
+
+        def request_stop(_signum, _frame):
+            stopped.set()
+
+        signal.signal(signal.SIGTERM, request_stop)
+        signal.signal(signal.SIGINT, request_stop)
         try:
-            server.serve_forever(poll_interval=0.2)
-        except KeyboardInterrupt:
-            pass
+            serve_node_auth_proxy(server, stopped)
         finally:
             server.server_close()
         return 0
@@ -2518,7 +2718,10 @@ def main(arguments=None):
 
             signal.signal(signal.SIGTERM, request_stop)
             signal.signal(signal.SIGINT, request_stop)
-            run_control_loop(cycle, stopped)
+            metrics = None
+            if options.metrics_file:
+                metrics = NodeRuntimeMetrics(options.metrics_file, spool=cycle.spool)
+            run_control_loop(cycle, stopped, metrics=metrics)
             return 0
         except (HeartbeatError, OSError, ProtocolError, ValueError) as exc:
             print("错误：{}".format(exc), file=sys.stderr)

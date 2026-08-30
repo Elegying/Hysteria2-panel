@@ -183,6 +183,8 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
             "release-ref-is-tag",
             "test (3.8)",
             "test (3.12)",
+            "test (3.13)",
+            "browser-smoke",
             "static-analysis",
             "managed-firewall-integration",
             "systemd-service-semantics",
@@ -355,7 +357,7 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn("--ref", deployment)
         self.assertIn("full-installer-e2e", deployment)
         self.assertIn("Protect main", deployment)
-        self.assertIn("七项 required status checks", deployment)
+        self.assertIn("九项 required status checks", deployment)
         self.assertIn("ruleset", deployment.lower())
 
 

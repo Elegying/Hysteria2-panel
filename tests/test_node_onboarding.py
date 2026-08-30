@@ -14,7 +14,7 @@ from unittest import mock
 
 from hy2panel.nodes import EnrollmentRejected, NodeEnrollmentService
 from hy2panel.version import PANEL_VERSION
-from hysteria2_panel import Database
+from hysteria2_panel import Database, sqlite_connection
 import node_agent
 
 
@@ -72,7 +72,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         issued = self.create()
         token = token_from_command(issued["deploymentCommand"])
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.row_factory = sqlite3.Row
             enrollment = connection.execute(
                 "SELECT * FROM node_enrollments WHERE enrollment_id = ?",
@@ -215,7 +215,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
     def test_node_state_conflict_rolls_back_token_consumption(self):
         issued = self.create(expected_ip="")
         token = token_from_command(issued["deploymentCommand"])
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE nodes SET status = 'revoked' WHERE node_id = ?",
                 (issued["nodeId"],),
@@ -226,7 +226,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
                 registration_payload(token), remote_ip="198.51.100.20"
             )
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             consumed_at = connection.execute(
                 "SELECT consumed_at FROM node_enrollments WHERE enrollment_id = ?",
                 (issued["enrollmentId"],),

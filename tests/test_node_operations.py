@@ -11,7 +11,7 @@ from unittest import mock
 
 import node_agent
 from hy2panel.budgets import budget_period
-from hysteria2_panel import Database
+from hysteria2_panel import Database, sqlite_connection
 
 
 def public_key(value):
@@ -27,7 +27,7 @@ class NodeOperationsCase(unittest.TestCase):
         self.db.initialize()
         self.now = 2_000_000_000
         self.node_id = "1" * 32
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """INSERT INTO nodes(
                     node_id, name, expected_ip, observed_ip, status, public_key,
@@ -66,7 +66,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
     def test_initialize_migrates_existing_budgets_with_compatible_cycle_defaults(self):
         legacy_path = Path(self.temp_dir.name) / "legacy-budget.db"
-        with sqlite3.connect(str(legacy_path)) as connection:
+        with sqlite_connection(str(legacy_path)) as connection:
             connection.execute(
                 """CREATE TABLE origin_traffic_budgets (
                     origin_id TEXT PRIMARY KEY,
@@ -84,7 +84,7 @@ class NodeBudgetTests(NodeOperationsCase):
         legacy_db = Database(legacy_path, b"p" * 32)
         legacy_db.initialize()
 
-        with sqlite3.connect(str(legacy_path)) as connection:
+        with sqlite_connection(str(legacy_path)) as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute(
                 "SELECT * FROM origin_traffic_budgets"
@@ -127,7 +127,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
     def test_remote_budget_is_idempotent_and_next_month_starts_at_zero(self):
         self.db.create_proxy_user("alice", token="u" * 32)
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """INSERT INTO usage_origins(
                     origin_id, kind, node_id, display_name, created_at, last_traffic_at
@@ -392,7 +392,7 @@ class NodeBudgetTests(NodeOperationsCase):
         )
         self.assertNotIn("legacy-unattributed", origins)
         self.assertEqual((30, 20), (origins[local_origin]["tx_bytes"], origins[local_origin]["rx_bytes"]))
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             assigned_daily = connection.execute(
                 "SELECT tx_bytes, rx_bytes FROM origin_traffic_daily WHERE origin_id = ?",
                 (local_origin,),
@@ -400,7 +400,7 @@ class NodeBudgetTests(NodeOperationsCase):
         self.assertEqual((30, 20), assigned_daily)
 
     def test_user_counter_reset_does_not_erase_machine_bandwidth_budget_usage(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """INSERT INTO origin_traffic_daily(
                     origin_id, usage_date, tx_bytes, rx_bytes, updated_at
@@ -410,7 +410,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
         self.db.reset_all_traffic()
 
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             count = connection.execute(
                 "SELECT COUNT(*) FROM origin_traffic_daily"
             ).fetchone()[0]
@@ -418,7 +418,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
     def test_budget_status_counts_are_bounded_and_include_local_and_remote(self):
         local_origin_id = "local:" + "a" * 32
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.executemany(
                 """INSERT INTO origin_traffic_daily(
                     origin_id, usage_date, tx_bytes, rx_bytes, updated_at
@@ -443,7 +443,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
 class NodeLifecycleTests(NodeOperationsCase):
     def make_zero_fresh_snapshot(self):
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 """INSERT INTO node_online_snapshots(
                     node_id, snapshot_id, sequence, observed_at,
@@ -544,7 +544,7 @@ class NodeLifecycleTests(NodeOperationsCase):
 
     def test_stopping_node_cannot_start_a_new_authentication(self):
         user = self.db.create_proxy_user("alice", token="v" * 32)
-        with sqlite3.connect(str(self.db_path)) as connection:
+        with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
                 "UPDATE nodes SET lifecycle_state = 'stopping' WHERE node_id = ?",
                 (self.node_id,),
