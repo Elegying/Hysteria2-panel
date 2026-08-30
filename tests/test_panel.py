@@ -5839,7 +5839,10 @@ class PanelHttpTests(unittest.TestCase):
         response = self.request("/", headers=headers)
         body = response.read().decode()
 
-        self.assertLess(body.index("刷新状态"), body.index("对接节点"))
+        self.assertLess(
+            body.index('href="/">刷新</a>'),
+            body.index('data-dialog-open="node-onboarding-dialog"'),
+        )
         self.assertIn('data-dialog-open="node-onboarding-dialog"', body)
         self.assertIn('id="node-onboarding-dialog"', body)
         self.assertIn('data-node-enrollment-form', body)
@@ -6774,7 +6777,7 @@ class PanelHttpTests(unittest.TestCase):
             "重置全部流量",
             "总流量",
             "分享",
-            "重置流量",
+            "重置",
             "一键备份",
             "一键恢复",
         ):
@@ -7003,6 +7006,12 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('<dialog id="credentials-dialog"', body)
         self.assertIn('data-share-form', body)
         self.assertIn('data-qr-form', body)
+        for label in ("分享", "二维码", "禁用", "改密", "重置", "删除"):
+            self.assertIn(">{}<".format(label), body)
+        self.assertNotIn("更多操作", body)
+        self.assertNotIn('class="action-menu"', body)
+        for label in ("启动", "重启", "停止", "刷新", "对接"):
+            self.assertIn(">{}<".format(label), body)
         self.assertIn('name="qr" value="1"', body)
         self.assertIn('id="credentials-qr"', body)
         self.assertIn('data-save-qr', body)
@@ -7021,6 +7030,21 @@ class PanelHttpTests(unittest.TestCase):
             body,
         )
         self.assertIn('grid-template-columns:repeat(3,minmax(0,1fr))', body)
+        self.assertIn(
+            '.pill{display:flex;align-items:center;gap:6px;min-height:44px;',
+            body,
+        )
+        self.assertIn(
+            '.user-table .actions button{min-height:32px;padding:5px 4px;'
+            'font-size:11px}',
+            body,
+        )
+        self.assertIn(
+            '.user-table td:nth-child(6){grid-column:1/-1;margin-top:0;'
+            'padding-top:8px;',
+            body,
+        )
+        self.assertIn('.user-table td{padding:0}', body)
         self.assertIn('.user-table th{position:sticky;', body)
         self.assertIn('.node-row small{margin-top:2px;overflow-wrap:anywhere}', body)
         self.assertIn('.node-actions{grid-column:1/-1;display:grid}', body)
