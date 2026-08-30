@@ -456,8 +456,11 @@ class DurableTrafficSpool:
             ):
                 raise ProtocolError("traffic spool entry is invalid")
             self._validate_traffic(batch["traffic"])
-            batches.append(batch)
-        return batches
+            batches.append(
+                (batch["observedAt"], metadata.st_mtime_ns, path.name, batch)
+            )
+        batches.sort(key=lambda item: item[:3])
+        return [item[3] for item in batches]
 
     def ack(self, batch_id):
         if not NODE_ID_PATTERN.fullmatch(str(batch_id or "")):

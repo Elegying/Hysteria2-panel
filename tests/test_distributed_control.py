@@ -1408,14 +1408,18 @@ class NodeAgentProtocolTests(unittest.TestCase):
             Protocol(), Stats(), spool, state, clock=lambda: now[0]
         )
 
-        with self.assertRaises(OSError):
-            cycle.flush_traffic()
-        pending = spool.pending()
-        self.assertEqual(1, len(pending))
-        self.assertEqual({"alice": {"tx": 10, "rx": 20}}, pending[0]["traffic"])
+        batch_ids = [mock.Mock(hex="f" * 32), mock.Mock(hex="0" * 32)]
+        with mock.patch.object(node_agent.uuid, "uuid4", side_effect=batch_ids):
+            with self.assertRaises(OSError):
+                cycle.flush_traffic()
+            pending = spool.pending()
+            self.assertEqual(1, len(pending))
+            self.assertEqual(
+                {"alice": {"tx": 10, "rx": 20}}, pending[0]["traffic"]
+            )
 
-        now[0] += 1
-        cycle.run_once()
+            now[0] += 1
+            cycle.run_once()
         self.assertEqual([], spool.pending())
         self.assertEqual(now[0], state.traffic_acked_at())
         sent = [call for call in calls if call[0] == "send"]
