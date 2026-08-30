@@ -1,0 +1,56 @@
+name: 使用与排障
+description: 请求安装、配置或运行问题的社区帮助
+title: "[Support] "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先阅读 SUPPORT.md。此入口不提供代登录或代管服务器服务，也不能替代云厂商、DNS 服务商或第三方客户端支持。
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已检查 README、文档中心和支持范围
+          required: true
+        - label: 我已检查 /healthz、/readyz、systemd 状态和相关日志
+          required: true
+        - label: 我已删除域名、IP、账号、token、Cookie、私钥和备份内容
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: 面板版本
+      placeholder: vX.Y.Z
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 系统与部署方式
+      placeholder: Debian stable arm64，HTTPS，单节点
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 你想完成什么
+      description: 描述目标和当前做到哪一步。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 当前现象
+      description: 包括明确错误、发生步骤和频率。
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: 已完成的检查
+      description: 说明 DNS、云安全组、TCP/UDP、真实客户端握手、健康检查和日志结果。
+    validations:
+      required: true

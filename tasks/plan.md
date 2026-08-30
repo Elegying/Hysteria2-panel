@@ -1,4 +1,6 @@
-# Implementation Plan: v0.33.0 分机器自定义计费周期
+# Implementation Plan: v0.33.0 分机器自定义计费周期（历史记录）
+
+> 本文件保存早期实施过程，不代表当前路线图。当前行为和维护入口见 [`docs/README.md`](../docs/README.md)。
 
 ## Architecture Decisions
 

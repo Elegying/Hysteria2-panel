@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密报告安全漏洞
+    url: https://github.com/Elegying/Hysteria2-panel/security/advisories/new
+    about: 涉及未授权访问、凭据、权限提升或供应链的问题请不要公开提交。
+  - name: 阅读文档中心
+    url: https://github.com/Elegying/Hysteria2-panel/blob/main/docs/README.md
+    about: 安装、使用、迁移和运维问题通常可以先从这里定位。
