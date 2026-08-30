@@ -79,7 +79,7 @@ flowchart LR
 
 ```bash
 set -euo pipefail
-version=0.35.0
+version=0.36.0
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -278,7 +278,7 @@ curl http://127.0.0.1:19996/metrics
 
 数据节点指标不带节点名、用户名或来源 IP 标签，包含控制循环总数、失败总数、连续失败、最近成功时间，以及 spool 文件数和字节数。建议在节点本机采集，并至少告警：`hy2panel_node_control_ready == 0` 持续 2 分钟、`hy2panel_node_control_consecutive_failures >= 3`、最近成功时间超过 90 秒，以及 spool 文件数持续增长 10 分钟。认证代理和控制循环未按时发送 watchdog 时，systemd 会终止并自动重启对应进程。
 
-当前版本处于稳定化窗口；合并与发布门禁见 [稳定化策略](docs/STABILIZATION.md)，最新桌面、移动端和键盘验收见 [界面审查](docs/reviews/2026-08-30-v0.35.0-stabilization-audit.md)。
+当前版本处于稳定化窗口；合并与发布门禁见 [稳定化策略](docs/STABILIZATION.md)，最新全站桌面、移动端与弹窗验收见 [全站界面专业化审查](docs/UI_AUDIT_2026-08-30.md)。
 
 关键路径：
 

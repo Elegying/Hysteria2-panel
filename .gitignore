@@ -9,3 +9,5 @@ __pycache__/
 .DS_Store
 .codebase-memory/
 .venv-audit/
+# Local-only audit evidence contains an ephemeral fixture credential.
+docs/screenshots/ui-audit-2026-08-30-after/credentials-dialog-desktop.png

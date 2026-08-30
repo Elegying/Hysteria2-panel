@@ -5604,25 +5604,26 @@ class PanelHandler(JsonHandler):
         submitted = form.get("csrf", "")
         return bool(submitted) and hmac.compare_digest(session["csrf_token"], submitted)
 
-    def _page(self, title, content):
+    def _page(self, title, content, page_class=""):
         return """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} · Hysteria 2 Panel</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><style>{style}</style></head><body><main>{content}</main>
+<title>{title} · Hysteria 2 Panel</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><style>{style}</style></head><body class="{page_class}"><a class="skip-link" href="#main-content">跳至主要内容</a><main id="main-content">{content}</main>
 <script nonce="{nonce}">{script}</script></body></html>""".format(
             title=html.escape(title),
             style=PAGE_STYLE,
             content=content,
+            page_class=html.escape(page_class, quote=True),
             nonce=self._csp_nonce(),
             script=PAGE_SCRIPT,
         )
 
     def _login_page(self, error=""):
         error_html = '<p class="error" role="alert">{}</p>'.format(html.escape(error)) if error else ""
-        content = """<section class="card login"><h1>Hysteria 2 Panel</h1><p class="muted">管理员登录</p>{error}
+        content = """<section class="card login"><div class="login-brand"><img src="/favicon.svg" width="54" height="54" alt=""><div><span class="state-kicker">受保护的管理入口</span><h1>Hysteria 2 Panel</h1></div></div><p class="muted">登录后可管理节点、用户、流量预算与系统状态。</p>{error}
 <form class="login-form" method="post" action="/login"><div><label for="username">账号</label><input id="username" name="username" autocomplete="username" required maxlength="64"></div>
 <div><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"></div>
-<p class="login-actions"><button type="submit">登录</button></p></form></section>""".format(error=error_html)
-        return self._page("登录", content)
+<p class="login-actions"><button type="submit">进入控制台</button></p></form><p class="login-support">会话仅保存在当前浏览器中，闲置或退出后会自动失效。</p></section>""".format(error=error_html)
+        return self._page("登录", content, "auth-page")
 
     def _dashboard(
         self,
@@ -5683,10 +5684,10 @@ class PanelHandler(JsonHandler):
         return self._page("连接信息", content)
 
     def _error_page(self, status, message):
-        content = '<section class="card"><h1>操作失败</h1><p class="error">{}</p><p><a class="button secondary" href="/">返回</a></p></section>'.format(
-            html.escape(message)
+        content = '<section class="card state-page"><span class="state-kicker">HTTP {status}</span><h1>暂时无法完成此操作</h1><p class="error" role="alert">{message}</p><p class="muted">请检查当前页面状态后重试；若问题持续出现，请查看面板服务日志。</p><p class="state-actions"><a class="button" href="/">返回控制台</a><a class="button secondary" href="/login">重新登录</a></p></section>'.format(
+            status=int(status), message=html.escape(message)
         )
-        self._send_html(status, self._page("操作失败", content))
+        self._send_html(status, self._page("操作失败", content, "state-view"))
 
     def _send_api_error(self, status, code, message):
         self.send_json(
@@ -6381,11 +6382,11 @@ class PanelHandler(JsonHandler):
             return
         finally:
             self.app.finish_maintenance()
-        content = """<section class="card login"><h1>恢复任务已启动</h1>
+        content = """<section class="card state-page"><span class="state-kicker">任务已受理</span><h1>恢复任务已启动</h1>
 <p>面板与 Hysteria 服务将短暂重启。恢复完成后，当前登录会话会失效，请等待约 10 秒后重新登录。</p>
 <p class="notice">原节点域名、UDP 端口、签名密钥与证书已通过预检；恢复服务仍会再次独立校验后才替换数据。</p>
-<p><a class="button secondary" href="/login">稍后重新登录</a></p></section>"""
-        self._send_html(202, self._page("正在恢复", content))
+<p class="state-actions"><a class="button" href="/login">稍后重新登录</a></p></section>"""
+        self._send_html(202, self._page("正在恢复", content, "state-view"))
 
     def _handle_login(self, form):
         address = self.client_address[0]
@@ -6666,11 +6667,11 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("server reboot queue failed")
             self._error_page(500, "服务器重启任务启动失败，请检查服务日志")
             return
-        content = """<section class="card login"><h1>服务器正在重启</h1>
+        content = """<section class="card state-page"><span class="state-kicker">任务已受理</span><h1>服务器正在重启</h1>
 <p>面板和所有节点连接会暂时中断，systemd 会在服务器启动后自动恢复服务。</p>
 <p class="notice">通常等待 30 到 90 秒后即可重新打开面板；服务器提供商的启动时间可能更长。</p>
-<p><a class="button secondary" href="/">稍后重试</a></p></section>"""
-        self._send_html(202, self._page("正在重启服务器", content))
+<p class="state-actions"><a class="button" href="/">稍后重试</a></p></section>"""
+        self._send_html(202, self._page("正在重启服务器", content, "state-view"))
 
     def _handle_update_check(self, session):
         try:
@@ -6709,11 +6710,11 @@ class PanelHandler(JsonHandler):
         if "application/json" in self.headers.get("Accept", ""):
             self.send_json(202, self.app.update_controller.status())
             return
-        content = """<section class="card login"><h1>在线更新任务已启动</h1>
+        content = """<section class="card state-page"><span class="state-kicker">任务已受理</span><h1>在线更新任务已启动</h1>
 <p>系统会重新核验并安装本次确认的固定正式版本，建立升级前备份并保留用户、节点参数、签名密钥、证书和管理员账号。</p>
 <p class="notice">面板与 Hysteria 服务会短暂重启。请等待约 30 秒后刷新；失败原因与升级前备份位置会保留在更新服务日志中。</p>
-<p><a class="button secondary" href="/">稍后刷新</a></p></section>"""
-        self._send_html(202, self._page("正在更新", content))
+<p class="state-actions"><a class="button" href="/">稍后刷新</a></p></section>"""
+        self._send_html(202, self._page("正在更新", content, "state-view"))
 
 
 def make_panel_server(address, application):
