@@ -7012,6 +7012,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertNotIn('class="action-menu"', body)
         for label in ("启动", "重启", "停止", "刷新", "对接"):
             self.assertIn(">{}<".format(label), body)
+        self.assertIn('class="button-row service-actions"', body)
+        self.assertIn('class="button-row version-actions"', body)
         self.assertIn('name="qr" value="1"', body)
         self.assertIn('id="credentials-qr"', body)
         self.assertIn('data-save-qr', body)
@@ -7037,6 +7039,16 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn(
             '.user-table .actions button{min-height:32px;padding:5px 4px;'
             'font-size:11px}',
+            body,
+        )
+        self.assertIn(
+            '.service-actions>.button{display:inline-flex;align-items:center;'
+            'justify-content:center;text-align:center}',
+            body,
+        )
+        self.assertIn(
+            '.version-row{display:grid;grid-template-columns:1fr;align-items:start;'
+            'gap:8px}.version-actions{grid-template-columns:1fr;width:100%}',
             body,
         )
         self.assertIn(
