@@ -82,6 +82,9 @@ jobs:
           git -C "${flutter_dir}" checkout --detach "refs/tags/${FLUTTER_VERSION}"
           test "$(git -C "${flutter_dir}" rev-parse HEAD)" = "${FLUTTER_REVISION}"
           printf '%s/bin\n' "${flutter_dir}" >>"${GITHUB_PATH}"
+          # A pristine SDK emits bootstrap progress to stdout on its first command.
+          # Complete that one-time initialization before capturing machine JSON.
+          "${flutter_dir}/bin/flutter" --version >/dev/null
           version_json="${RUNNER_TEMP}/flutter-version.json"
           "${flutter_dir}/bin/flutter" --version --machine >"${version_json}"
           python - "${version_json}" <<'PY'
