@@ -9,10 +9,7 @@ import urllib.parse
 from dataclasses import dataclass
 
 
-USER_PAGE_SIZE = 50
-
-
-def select_dashboard_user_page(
+def select_dashboard_users(
     all_users,
     snapshot,
     sort_by="",
@@ -21,7 +18,6 @@ def select_dashboard_user_page(
     status_filter="",
     online_filter="",
     udp443_filter="",
-    page=1,
 ):
     sort_by = sort_by if sort_by in {"traffic", "online"} else ""
     sort_order = sort_order if sort_order in {"asc", "desc"} else ""
@@ -29,10 +25,6 @@ def select_dashboard_user_page(
     status_filter = status_filter if status_filter in {"enabled", "disabled"} else ""
     online_filter = online_filter if online_filter in {"active", "inactive"} else ""
     udp443_filter = udp443_filter if udp443_filter in {"allowed", "blocked"} else ""
-    try:
-        page = max(1, int(page))
-    except (TypeError, ValueError):
-        page = 1
     online = snapshot.get("online", {})
     query = search_query.casefold().strip()
     filtered = []
@@ -66,16 +58,10 @@ def select_dashboard_user_page(
             key=lambda item: int(online.get(item["name"], 0) or 0),
             reverse=sort_order == "desc",
         )
-    filtered_total = len(listed_users)
-    total_pages = max(1, (filtered_total + USER_PAGE_SIZE - 1) // USER_PAGE_SIZE)
-    page = min(page, total_pages)
-    offset = (page - 1) * USER_PAGE_SIZE
     return {
-        "users": listed_users[offset : offset + USER_PAGE_SIZE],
-        "filtered_total": filtered_total,
+        "users": listed_users,
+        "filtered_total": len(listed_users),
         "total_users": len(all_users),
-        "page": page,
-        "total_pages": total_pages,
         "sort_by": sort_by,
         "sort_order": sort_order,
         "search_query": search_query,
@@ -107,7 +93,6 @@ def render_dashboard(
     status_filter="",
     online_filter="",
     udp443_filter="",
-    page=1,
     context=None,
 ):
     if context is None:
@@ -127,7 +112,7 @@ def render_dashboard(
         LOGGER.exception("stats snapshot failed")
         snapshot = {"traffic": {}, "online": {}, "available": False}
     all_users = self.app.database.list_proxy_users_for_usage()
-    user_page = select_dashboard_user_page(
+    user_selection = select_dashboard_users(
         all_users,
         snapshot,
         sort_by,
@@ -136,15 +121,14 @@ def render_dashboard(
         status_filter,
         online_filter,
         udp443_filter,
-        page,
     )
-    listed_users = user_page["users"]
-    sort_by = user_page["sort_by"]
-    sort_order = user_page["sort_order"]
-    search_query = user_page["search_query"]
-    status_filter = user_page["status_filter"]
-    online_filter = user_page["online_filter"]
-    udp443_filter = user_page["udp443_filter"]
+    listed_users = user_selection["users"]
+    sort_by = user_selection["sort_by"]
+    sort_order = user_selection["sort_order"]
+    search_query = user_selection["search_query"]
+    status_filter = user_selection["status_filter"]
+    online_filter = user_selection["online_filter"]
+    udp443_filter = user_selection["udp443_filter"]
     summary = summarize_dashboard([user["name"] for user in all_users], snapshot)
     try:
         service_status = self.app.service_controller.status()
@@ -285,67 +269,14 @@ def render_dashboard(
         query_string = urllib.parse.urlencode(values)
         return "/?" + query_string if query_string else "/"
 
-    online_sort_href = dashboard_url(
-        sort="online", order=online_sort_next, page=None
-    )
-    traffic_sort_href = dashboard_url(
-        sort="traffic", order=traffic_sort_next, page=None
-    )
-    page_number = user_page["page"]
-    total_pages = user_page["total_pages"]
-    pagination_items = []
-    if page_number > 1:
-        pagination_items.append(
-            '<a class="button secondary" href="{}" rel="prev">上一页</a>'.format(
-                html.escape(dashboard_url(page=page_number - 1), quote=True)
-            )
+    online_sort_href = dashboard_url(sort="online", order=online_sort_next)
+    traffic_sort_href = dashboard_url(sort="traffic", order=traffic_sort_next)
+    if user_selection["filtered_total"] == user_selection["total_users"]:
+        user_count_text = "共 {} 位用户".format(user_selection["total_users"])
+    else:
+        user_count_text = "显示 {} / 全部 {} 位用户".format(
+            user_selection["filtered_total"], user_selection["total_users"]
         )
-    shown_pages = sorted(
-        {1, total_pages}
-        | set(range(max(1, page_number - 2), min(total_pages, page_number + 2) + 1))
-    )
-    previous_page = 0
-    for candidate in shown_pages:
-        if previous_page and candidate - previous_page > 1:
-            pagination_items.append('<span class="pagination-gap">…</span>')
-        if candidate == page_number:
-            pagination_items.append(
-                '<span class="pagination-current" aria-current="page">{}</span>'.format(
-                    candidate
-                )
-            )
-        else:
-            pagination_items.append(
-                '<a href="{}" aria-label="第 {} 页">{}</a>'.format(
-                    html.escape(dashboard_url(page=candidate), quote=True),
-                    candidate,
-                    candidate,
-                )
-            )
-        previous_page = candidate
-    if page_number < total_pages:
-        pagination_items.append(
-            '<a class="button secondary" href="{}" rel="next">下一页</a>'.format(
-                html.escape(dashboard_url(page=page_number + 1), quote=True)
-            )
-        )
-    first_visible = (
-        (page_number - 1) * USER_PAGE_SIZE + 1 if user_page["filtered_total"] else 0
-    )
-    last_visible = min(
-        page_number * USER_PAGE_SIZE, user_page["filtered_total"]
-    )
-    pagination = (
-        '<nav class="pagination" aria-label="用户分页"><span class="muted">'
-        '显示 {first}–{last} / 符合 {filtered}（全部 {total}）</span>'
-        '<span class="pagination-links">{links}</span></nav>'
-    ).format(
-        first=first_visible,
-        last=last_visible,
-        filtered=user_page["filtered_total"],
-        total=user_page["total_users"],
-        links="".join(pagination_items),
-    )
     filter_values = {
         "search_query": html.escape(search_query, quote=True),
         "status_enabled": " selected" if status_filter == "enabled" else "",
@@ -891,9 +822,9 @@ def render_dashboard(
 <div><label for="user-status-filter">状态</label><select id="user-status-filter" name="status" data-status-filter><option value="">全部</option><option value="enabled"{status_enabled}>启用</option><option value="disabled"{status_disabled}>禁用</option></select></div>
 <div><label for="user-online-filter">在线</label><select id="user-online-filter" name="online" data-online-filter><option value="">全部</option><option value="active"{online_active}>在线</option><option value="inactive"{online_inactive}>离线</option></select></div>
 <div><label for="user-udp443-filter">UDP 443</label><select id="user-udp443-filter" name="udp443" data-udp443-filter><option value="">全部</option><option value="allowed"{udp443_allowed}>已开放</option><option value="blocked"{udp443_blocked}>未开放</option></select></div>
-<button class="ghost" type="button" data-clear-user-filters>清除</button></form><p class="muted search-status" data-search-status role="status" aria-live="polite">第 {user_page} / {user_pages} 页</p></div>
+<button class="ghost" type="button" data-clear-user-filters>清除</button></form><p class="muted search-status" data-search-status role="status" aria-live="polite">{user_count_text}</p></div>
 <p class="muted filter-empty" data-filter-empty hidden>没有符合当前条件的用户。</p>
-<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th aria-sort="{online_sort_aria}"><a class="sort-link" href="{online_sort_href}">在线设备 {online_sort_mark}</a></th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="{traffic_sort_href}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div>{pagination}</section>""".format(
+<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th aria-sort="{online_sort_aria}"><a class="sort-link" href="{online_sort_href}">在线设备 {online_sort_mark}</a></th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="{traffic_sort_href}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
         port=self.app.hysteria_port,
         public_host=html.escape(self.app.public_host),
         stats=stats_state,
@@ -983,8 +914,7 @@ def render_dashboard(
         ),
         udp_443_disabled="" if self.app.hysteria_port != 443 else " disabled",
         edit_disabled="" if first_edit_user else " disabled",
-        user_page=user_page["page"],
-        user_pages=user_page["total_pages"],
+        user_count_text=html.escape(user_count_text),
         online_sort_href=html.escape(online_sort_href, quote=True),
         online_sort_aria=online_sort_aria,
         online_sort_next=online_sort_next,
@@ -993,7 +923,6 @@ def render_dashboard(
         traffic_sort_aria=traffic_sort_aria,
         traffic_sort_next=traffic_sort_next,
         traffic_sort_mark=traffic_sort_mark,
-        pagination=pagination,
         **filter_values,
     )
     return self._page("控制台", content)

@@ -7102,7 +7102,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("磁盘占用</span><strong>—</strong>", body)
         self.assertNotIn("CPU 使用率</span><strong>0.0%", body)
 
-    def test_dashboard_paginates_large_user_sets_and_live_polling_current_page(self):
+    def test_dashboard_renders_all_users_and_live_polling_ignores_legacy_page(self):
         for index in range(351):
             self.db.create_proxy_user("paged-user-{:03d}".format(index))
         headers, _ = self.authenticated_headers()
@@ -7110,21 +7110,22 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        self.assertEqual(50, body.count("data-user-name="))
-        self.assertLess(len(body.encode("utf-8")), 300_000)
-        self.assertIn("显示 1–50 / 符合 351（全部 351）", body)
-        self.assertIn('rel="next"', body)
+        self.assertEqual(351, body.count("data-user-name="))
+        self.assertLess(len(body.encode("utf-8")), 2_000_000)
+        self.assertIn("共 351 位用户", body)
+        self.assertNotIn('aria-label="用户分页"', body)
+        self.assertNotIn('rel="next"', body)
 
         with self.request("/?page=8", headers=headers) as response:
-            last_page = response.read().decode()
-        self.assertEqual(1, last_page.count("data-user-name="))
-        self.assertIn("显示 351–351 / 符合 351（全部 351）", last_page)
+            legacy_page = response.read().decode()
+        self.assertEqual(351, legacy_page.count("data-user-name="))
+        self.assertIn("共 351 位用户", legacy_page)
 
         with self.request(
             "/api/v1/dashboard-online?page=8", headers=headers
         ) as response:
             live = json.load(response)
-        self.assertEqual(1, len(live["users"]))
+        self.assertEqual(351, len(live["users"]))
 
     def test_dashboard_renders_per_machine_devices_traffic_and_stale_warning(self):
         headers, _ = self.authenticated_headers()
@@ -7523,7 +7524,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(body.index(newest), body.index(middle))
         self.assertLess(body.index(middle), body.index(oldest))
 
-    def test_dashboard_paginates_users_with_search_and_create_dialog(self):
+    def test_dashboard_lists_all_users_with_search_and_create_dialog(self):
         for index in range(55):
             self.db.create_proxy_user("user{:03d}".format(index))
         headers, _ = self.authenticated_headers()
@@ -7531,11 +7532,13 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        self.assertEqual(50, body.count('data-user-name="'))
+        self.assertEqual(55, body.count('data-user-name="'))
         self.assertIn("<strong>user054</strong>", body)
-        self.assertNotIn("<strong>user000</strong>", body)
-        self.assertIn("第 1 / 2 页", body)
-        self.assertIn('aria-label="第 2 页"', body)
+        self.assertIn("<strong>user000</strong>", body)
+        self.assertIn("共 55 位用户", body)
+        self.assertNotIn('aria-label="用户分页"', body)
+        self.assertNotIn("上一页", body)
+        self.assertNotIn("下一页", body)
         self.assertIn('type="search"', body)
         self.assertIn('data-user-search', body)
         self.assertIn('class="section-head user-section-head"', body)
