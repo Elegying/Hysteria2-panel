@@ -6352,6 +6352,16 @@ class PanelHandler(JsonHandler):
             if path == "/api/v1/mobile/users":
                 self._handle_mobile_user_create(session, payload)
                 return
+            if path == "/api/v1/mobile/system/reboot":
+                def queue_reboot():
+                    self._audit_safely(
+                        self._mobile_actor(session), "server_reboot_queued", "system"
+                    )
+                    return self.app.reboot_controller.queue()
+
+                self.app.usage_manager.run_after_collect(queue_reboot)
+                self._mobile_response(202, {"accepted": True})
+                return
             service_match = re.fullmatch(
                 r"/api/v1/mobile/service/(start|restart|stop)", path
             )
@@ -6369,6 +6379,58 @@ class PanelHandler(JsonHandler):
                     state,
                 )
                 self._mobile_response(200, {"status": state, "action": action})
+                return
+            local_node_match = re.fullmatch(
+                r"/api/v1/mobile/nodes/local/(enable|disable)", path
+            )
+            if local_node_match:
+                action = local_node_match.group(1)
+                service_action = "start" if action == "enable" else "stop"
+                if action == "disable":
+                    state = self.app.usage_manager.run_after_collect(
+                        lambda: self.app.service_controller.action(service_action)
+                    )
+                else:
+                    state = self.app.service_controller.action(service_action)
+                self._audit_safely(
+                    self._mobile_actor(session),
+                    "local_node_{}_requested".format(action),
+                    "local",
+                )
+                self._mobile_response(
+                    200,
+                    {"enabled": action == "enable", "status": state},
+                )
+                return
+            remote_node_match = re.fullmatch(
+                r"/api/v1/mobile/nodes/([0-9a-f]{32})/(enable|disable)", path
+            )
+            if remote_node_match:
+                node_id, action = remote_node_match.groups()
+                if action == "disable":
+                    command = self.app.database.request_node_stop(
+                        node_id,
+                        session["username"],
+                        int(time.time()),
+                        emergency=True,
+                    )
+                    audit_action = "node_emergency_stop_requested"
+                else:
+                    command = self.app.database.request_node_resume(
+                        node_id, session["username"], int(time.time())
+                    )
+                    audit_action = "node_resume_requested"
+                self._audit_safely(
+                    self._mobile_actor(session), audit_action, node_id
+                )
+                self._mobile_response(
+                    200,
+                    {
+                        "enabled": action == "enable",
+                        "commandId": command["commandId"],
+                        "command": command["kind"],
+                    },
+                )
                 return
             user_action_match = re.fullmatch(
                 r"/api/v1/mobile/users/(\d+)/(enable|disable|share|rotate-secret|reset-traffic)",

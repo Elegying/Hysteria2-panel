@@ -14,8 +14,8 @@ class LoginScreen extends ConsumerStatefulWidget {
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _address = TextEditingController(text: defaultPanelAddress);
-  final _port = TextEditingController(text: '$defaultPanelPort');
+  final _address = TextEditingController();
+  final _port = TextEditingController();
   final _username = TextEditingController();
   final _password = TextEditingController();
   bool _obscure = true;
@@ -100,7 +100,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               labelText: '面板地址',
                               prefixIcon: Icon(Icons.language_rounded),
                               helperText:
-                                  '仅支持 HTTPS，例如 https://panel.ssrvpn.vip',
+                                  '仅支持 HTTPS，例如 https://panel.example.com',
                             ),
                             validator: (value) =>
                                 value == null || value.trim().isEmpty
@@ -114,16 +114,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             inputFormatters: [
                               FilteringTextInputFormatter.digitsOnly,
                             ],
+                            validator: (value) {
+                              final port = int.tryParse(value ?? '');
+                              if (port == null || port < 1 || port > 65535) {
+                                return '请输入 1 至 65535 之间的端口';
+                              }
+                              return null;
+                            },
                             decoration: const InputDecoration(
                               labelText: '面板端口',
                               prefixIcon: Icon(Icons.settings_ethernet_rounded),
                             ),
-                            validator: (value) {
-                              final port = int.tryParse(value ?? '');
-                              return port == null || port < 1 || port > 65535
-                                  ? '请输入有效端口'
-                                  : null;
-                            },
                           ),
                           const SizedBox(height: 14),
                           TextFormField(

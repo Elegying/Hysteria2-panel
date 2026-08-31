@@ -1,0 +1,187 @@
+name: Build signed Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag whose draft release receives the APK
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      FLUTTER_REVISION: d3b14c876900e553bc736ca19295fc09e3853e8e
+      EXPECTED_CERT_SHA256: 75d8182879f710c932a60e002223d398c5d56f69147cfe40ba21f69c11ae3eb9
+    steps:
+      - name: Validate release request
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "${GITHUB_REF}" = "refs/tags/${RELEASE_TAG}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag, protected main and source versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          main_commit="$(git rev-parse "origin/main^{commit}")"
+          test "${tag_commit}" = "${main_commit}"
+          test "$(git rev-parse HEAD)" = "${tag_commit}"
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          panel = pathlib.Path("hy2panel/version.py").read_text()
+          app = pathlib.Path("mobile/pubspec.yaml").read_text()
+          panel_match = re.search(r'^PANEL_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$', panel, re.MULTILINE)
+          app_match = re.search(r'^version: ([0-9]+\.[0-9]+\.[0-9]+)\+([0-9]+)$', app, re.MULTILINE)
+          if not panel_match or not app_match:
+              raise SystemExit("release version metadata is missing")
+          if os.environ["RELEASE_TAG"] != "v" + panel_match.group(1):
+              raise SystemExit("release tag does not match panel source version")
+          pathlib.Path("mobile/dist-version.txt").write_text(
+              "{}\n{}\n".format(app_match.group(1), app_match.group(2))
+          )
+          PY
+
+      - uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install exact Flutter SDK revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter_dir="${RUNNER_TEMP}/flutter"
+          git init "${flutter_dir}"
+          git -C "${flutter_dir}" remote add origin https://github.com/flutter/flutter.git
+          git -C "${flutter_dir}" fetch --depth=1 origin "${FLUTTER_REVISION}"
+          git -C "${flutter_dir}" checkout --detach FETCH_HEAD
+          test "$(git -C "${flutter_dir}" rev-parse HEAD)" = "${FLUTTER_REVISION}"
+          printf '%s/bin\n' "${flutter_dir}" >>"${GITHUB_PATH}"
+          "${flutter_dir}/bin/flutter" --version
+          "${flutter_dir}/bin/flutter" precache --android
+
+      - name: Analyze and test Android client
+        working-directory: mobile
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Build with the fixed release identity
+        working-directory: mobile
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          keystore="${RUNNER_TEMP}/hysteria2-manager-release.jks"
+          properties="android/signing.properties"
+          cleanup() {
+            rm -f -- "${keystore}" "${properties}"
+          }
+          trap cleanup EXIT
+          test -n "${SIGNING_KEYSTORE_BASE64}"
+          test -n "${SIGNING_STORE_PASSWORD}"
+          test -n "${SIGNING_KEY_ALIAS}"
+          test -n "${SIGNING_KEY_PASSWORD}"
+          printf '%s' "${SIGNING_KEYSTORE_BASE64}" | base64 --decode >"${keystore}"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "${keystore}" "${SIGNING_STORE_PASSWORD}" \
+            "${SIGNING_KEY_ALIAS}" "${SIGNING_KEY_PASSWORD}" >"${properties}"
+          flutter build apk --release
+
+      - name: Verify signature, version and publication privacy
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          readarray -t app_metadata <mobile/dist-version.txt
+          app_version="${app_metadata[0]}"
+          build_number="${app_metadata[1]}"
+          source_apk="mobile/build/app/outputs/flutter-apk/app-release.apk"
+          target_apk="mobile/dist/Hysteria2-Manager-v${app_version}.apk"
+          mkdir -p mobile/dist
+          cp -- "${source_apk}" "${target_apk}"
+          unzip -tqq "${target_apk}"
+          apksigner="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner -print | sort -V | tail -n 1)"
+          aapt="$(find "${ANDROID_HOME}/build-tools" -type f -name aapt -print | sort -V | tail -n 1)"
+          test -x "${apksigner}"
+          test -x "${aapt}"
+          "${apksigner}" verify --verbose "${target_apk}"
+          actual_cert="$("${apksigner}" verify --print-certs "${target_apk}" |
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
+            tr '[:upper:]' '[:lower:]' | tr -d ':')"
+          test "${actual_cert}" = "${EXPECTED_CERT_SHA256}"
+          badging="$("${aapt}" dump badging "${target_apk}" | head -n 1)"
+          grep -Fq "versionCode='${build_number}'" <<<"${badging}"
+          grep -Fq "versionName='${app_version}'" <<<"${badging}"
+          python - "${target_apk}" <<'PY'
+          import importlib.util
+          import pathlib
+          import sys
+          import zipfile
+
+          scanner_path = pathlib.Path(".github/scripts/check_history_privacy.py")
+          spec = importlib.util.spec_from_file_location("privacy", scanner_path)
+          scanner = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(scanner)
+          findings = []
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              for item in archive.infolist():
+                  if item.file_size > 64 * 1024 * 1024:
+                      raise SystemExit("APK member exceeds privacy scan bound")
+                  source = archive.read(item).decode("utf-8", errors="ignore")
+                  if any(label == "retired-identifier" for _line, label in scanner.scan_text(source)):
+                      findings.append(item.filename)
+          if findings:
+              raise SystemExit("APK contains a denied production identifier")
+          PY
+          sha256sum "${target_apk}" >"${target_apk}.sha256"
+          printf 'apk=%s\n' "${target_apk}" >>"${GITHUB_OUTPUT}"
+          printf 'name=%s\n' "$(basename "${target_apk}")" >>"${GITHUB_OUTPUT}"
+
+      - name: Upload APK to the existing draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK: ${{ steps.artifact.outputs.apk }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)" = true
+          gh release upload "${RELEASE_TAG}" "${APK}" --clobber
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: |
+            ${{ steps.artifact.outputs.apk }}
+            ${{ steps.artifact.outputs.apk }}.sha256
+          if-no-files-found: error
+          retention-days: 30

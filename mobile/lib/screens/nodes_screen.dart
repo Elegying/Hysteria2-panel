@@ -18,6 +18,9 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   List<Map<String, dynamic>> _nodes = [];
   Map<String, dynamic> _summary = {};
+  final Map<String, int> _trafficTotals = {};
+  final Map<String, double> _trafficRates = {};
+  int? _trafficObservedAt;
   bool _loading = true;
   String? _error;
   Timer? _timer;
@@ -31,7 +34,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     WidgetsBinding.instance.addObserver(this);
     Future.microtask(_load);
     _timer = Timer.periodic(
-      const Duration(seconds: 15),
+      const Duration(seconds: 5),
       (_) => _load(silent: true),
     );
   }
@@ -57,10 +60,28 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       final items = (data['items'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList();
+      final observedAt = (data['observedAt'] as num? ?? 0).toInt();
+      final elapsed = _trafficObservedAt == null
+          ? 0
+          : observedAt - _trafficObservedAt!;
+      final nextRates = <String, double>{};
+      for (final node in items) {
+        final id = node['nodeId'].toString();
+        final total = (node['totalBytes'] as num? ?? 0).toInt();
+        final previous = _trafficTotals[id];
+        nextRates[id] = previous == null || elapsed <= 0 || total < previous
+            ? 0
+            : (total - previous) / elapsed;
+        _trafficTotals[id] = total;
+      }
       if (mounted) {
         setState(() {
           _summary = data;
           _nodes = items;
+          _trafficRates
+            ..clear()
+            ..addAll(nextRates);
+          _trafficObservedAt = observedAt;
           _loading = false;
           _error = null;
         });
@@ -71,6 +92,58 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           _loading = false;
           _error = error.message;
         });
+      }
+    }
+  }
+
+  Future<void> _setNodeEnabled(
+    Map<String, dynamic> node,
+    bool enabled,
+    BuildContext detailContext,
+  ) async {
+    final local = node['kind'] == 'local';
+    final label = enabled ? '启用' : '紧急停用';
+    final confirmed = await showDialog<bool>(
+      context: detailContext,
+      builder: (context) => AlertDialog(
+        title: Text('确认$label${local ? '面板本机节点' : '远程节点'}'),
+        content: Text(
+          enabled ? '启用后节点将重新承载连接。确认继续吗？' : '紧急停用会立即中断该节点上的现有连接，仅应在故障或安全事件中使用。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(label),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    final nodeId = local ? 'local' : node['nodeId'].toString();
+    try {
+      await ref
+          .read(appControllerProvider.notifier)
+          .postJson(
+            '/api/v1/mobile/nodes/$nodeId/${enabled ? 'enable' : 'disable'}',
+          );
+      if (detailContext.mounted) Navigator.pop(detailContext);
+      await _load(silent: true);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$label任务已提交')));
+      }
+    } on ApiException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
       }
     }
   }
@@ -135,27 +208,43 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   }
 
   Future<void> _showNode(Map<String, dynamic> node) {
-    final rows = [
-      ('节点 ID', node['nodeId']),
-      (
-        '公网 IP',
-        node['observedIp'].toString().isNotEmpty
-            ? node['observedIp']
-            : node['expectedIp'],
-      ),
-      ('主机名', node['hostname']),
-      ('Agent 版本', node['agentVersion']),
-      ('平台', '${node['platform']} ${node['architecture']}'),
-      ('控制协议', node['policyState']),
-      ('数据面', node['dataPlaneState']),
-      ('DNS 准入', node['dnsAdmitted'] == true ? '已准入' : '未准入'),
-      ('在线设备', node['onlineDevices'] ?? '—'),
-      ('最后心跳', formatTimestamp(node['lastHeartbeatAt'])),
-      ('在线快照', formatTimestamp(node['lastSnapshotAt'])),
-      ('流量 ACK', formatTimestamp(node['lastTrafficAckAt'])),
-      ('待执行命令', node['pendingCommands']),
-      ('失败命令', node['failedCommands']),
-    ];
+    final isLocal = node['kind'] == 'local';
+    final rows = isLocal
+        ? [
+            ('节点类型', '面板本机节点'),
+            ('面板入口', node['observedIp']),
+            ('在线设备', node['onlineDevices'] ?? '—'),
+            ('累计上传', formatBytes(node['txBytes'])),
+            ('累计下载', formatBytes(node['rxBytes'])),
+            ('累计流量', formatBytes(node['totalBytes'])),
+            ('实时流量', '${formatBytes(_trafficRates['local'] ?? 0)}/s'),
+            ('最后采样', formatTimestamp(node['trafficObservedAt'])),
+          ]
+        : [
+            ('节点 ID', node['nodeId']),
+            (
+              '公网 IP',
+              node['observedIp'].toString().isNotEmpty
+                  ? node['observedIp']
+                  : node['expectedIp'],
+            ),
+            ('主机名', node['hostname']),
+            ('Agent 版本', node['agentVersion']),
+            ('平台', '${node['platform']} ${node['architecture']}'),
+            ('控制协议', node['policyState']),
+            ('数据面', node['dataPlaneState']),
+            ('DNS 准入', node['dnsAdmitted'] == true ? '已准入' : '未准入'),
+            ('在线设备', node['onlineDevices'] ?? '—'),
+            ('最后心跳', formatTimestamp(node['lastHeartbeatAt'])),
+            ('在线快照', formatTimestamp(node['lastSnapshotAt'])),
+            ('流量 ACK', formatTimestamp(node['lastTrafficAckAt'])),
+            ('待执行命令', node['pendingCommands']),
+            ('失败命令', node['failedCommands']),
+            ('累计上传', formatBytes(node['txBytes'])),
+            ('累计下载', formatBytes(node['rxBytes'])),
+            ('累计流量', formatBytes(node['totalBytes'])),
+            ('实时流量', '${formatBytes(_trafficRates[node['nodeId']] ?? 0)}/s'),
+          ];
     return showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -206,6 +295,27 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                 ),
                 const SizedBox(height: 12),
               ],
+              if (node['canEmergencyControl'] == true) ...[
+                FilledButton.icon(
+                  style: node['enabled'] == true
+                      ? FilledButton.styleFrom(
+                          backgroundColor: Theme.of(context).colorScheme.error,
+                        )
+                      : null,
+                  onPressed: () => _setNodeEnabled(
+                    node,
+                    node['enabled'] != true,
+                    sheetContext,
+                  ),
+                  icon: Icon(
+                    node['enabled'] == true
+                        ? Icons.emergency_rounded
+                        : Icons.play_arrow_rounded,
+                  ),
+                  label: Text(node['enabled'] == true ? '紧急停用' : '启用节点'),
+                ),
+                const SizedBox(height: 12),
+              ],
               ...rows.map(
                 (item) => ListTile(
                   contentPadding: EdgeInsets.zero,
@@ -247,6 +357,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
 
   static String _dataPlaneHelp(String? state) {
     switch (state) {
+      case 'local':
+        return '这是面板所在服务器的本机节点，可在上方执行紧急停用或重新启用。';
       case 'not_issued':
         return '节点尚未领取数据面部署凭据。';
       case 'bootstrap_issued':
@@ -340,7 +452,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                 )
               else
                 SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
                   sliver: SliverList.separated(
                     itemCount: _nodes.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 9),
@@ -411,12 +523,74 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                     },
                   ),
                 ),
+              if (_nodes.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
+                    child: _RealtimeTrafficCard(
+                      nodes: _nodes,
+                      rates: _trafficRates,
+                    ),
+                  ),
+                ),
             ],
           ],
         ),
       ),
     );
   }
+}
+
+class _RealtimeTrafficCard extends StatelessWidget {
+  const _RealtimeTrafficCard({required this.nodes, required this.rates});
+  final List<Map<String, dynamic>> nodes;
+  final Map<String, double> rates;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '服务器节点实时流量',
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 3),
+          Text('每 5 秒采样一次节点累计流量', style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 12),
+          ...nodes.map(
+            (node) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      node['name'].toString(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    '${formatBytes(rates[node['nodeId']] ?? 0)}/s',
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '累计 ${formatBytes(node['totalBytes'])}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _Count extends StatelessWidget {

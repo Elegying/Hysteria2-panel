@@ -318,6 +318,7 @@ def render_dashboard(
         else '<small class="muted" data-live-online-note>按 Hysteria 客户端实例统计</small>'
     )
     machine_rows = []
+    machine_budget_dialogs = []
     for origin in machine_origins:
         online_state = origin.get("online_state", "history")
         status_label, status_class = machine_status_labels.get(
@@ -343,13 +344,7 @@ def render_dashboard(
             "legacy": "历史归属",
         }.get(origin.get("kind"), "历史归属")
         budget = machine_budgets.get(origin["origin_id"])
-        if budget is None and origin.get("kind") == "legacy":
-            budget_html = """<div class="budget-summary"><span class="muted">升级前未归属历史</span><small>不计入任何机器预算</small></div><form class="legacy-cleanup-form" method="post" action="/usage-origins/legacy-unattributed/delete" data-confirm="只会删除这条未归属历史，不会删除用户流量或已归属节点统计。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="confirm" value="DELETE_UNATTRIBUTED"><button class="compact-button danger" type="submit">删除未归属历史</button></form>""".format(
-                csrf=csrf
-            )
-        elif budget is None:
-            budget_html = '<span class="muted">历史数据不可设置预算</span>'
-        else:
+        if budget is not None:
             budget_status = {
                 "disabled": ("未设置", "muted"),
                 "normal": ("正常", "ok"),
@@ -367,38 +362,61 @@ def render_dashboard(
                 if budget["limit_bytes"]
                 else "不限"
             )
-            budget_html = """<div class="budget-summary"><div class="budget-main"><span class="{status_class}">{status}</span><strong>{used} / {limit} · {percent:.1f}%</strong></div><small>本周期 {period_start} 至 {period_end}（UTC） · 下次重置 {next_reset}</small></div><details class="budget-editor"><summary>编辑预算</summary><form class="budget-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button class="compact-button secondary" type="submit">保存预算与基线</button></form></details>""".format(
-                status_class=budget_status[1],
-                status=budget_status[0],
+            dialog_id = "budget-dialog-{}".format(
+                origin["origin_id"].split(":", 1)[-1]
+            )
+            budget_action = """<button class="compact-button secondary machine-budget-edit" type="button" data-dialog-open="{dialog_id}">编辑预算</button>""".format(
+                dialog_id=html.escape(dialog_id, quote=True)
+            )
+            machine_budget_dialogs.append(
+                """<dialog id="{dialog_id}" class="migration-dialog budget-dialog" aria-labelledby="{dialog_id}-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="{dialog_id}-title">编辑 {name} 的流量预算</h2><p class="muted">调整本周期基线、月预算和告警阈值。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭预算编辑弹窗">关闭</button></div><form class="budget-form budget-dialog-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button type="submit">保存预算与基线</button></form></div></dialog>""".format(
+                    dialog_id=html.escape(dialog_id, quote=True),
+                    name=html.escape(
+                        str(origin.get("display_name") or "未命名节点")
+                    ),
+                    origin_id=html.escape(origin["origin_id"], quote=True),
+                    csrf=csrf,
+                    limit_gib=limit_gib,
+                    used_gib=bytes_to_gib_input(budget["used_bytes"]),
+                    warning=budget["warning_percent"],
+                    reset_day=budget["reset_day"],
+                )
+            )
+            budget_line = "{used} / {limit} · {percent:.1f}%".format(
                 used=used_text,
                 limit=limit_text,
                 percent=budget["percent"],
-                origin_id=html.escape(origin["origin_id"], quote=True),
-                csrf=csrf,
-                limit_gib=limit_gib,
-                used_gib=bytes_to_gib_input(budget["used_bytes"]),
-                warning=budget["warning_percent"],
-                reset_day=budget["reset_day"],
-                period_start=budget["period_start"],
-                period_end=budget["period_end"],
-                next_reset=budget["next_reset_date"],
+            )
+            budget_detail = "本周期 {} 至 {}（UTC） · 下次重置 {}".format(
+                budget["period_start"],
+                budget["period_end"],
+                budget["next_reset_date"],
+            )
+            progress_value = max(0.0, min(100.0, float(budget["percent"])))
+        else:
+            budget_status = ("历史记录", "muted")
+            budget_line = "升级前未归属历史 · 不计入节点预算"
+            budget_detail = "可以单独清理这条历史，不影响用户流量与已归属节点。"
+            progress_value = 0.0
+            budget_action = """<form class="legacy-cleanup-form" method="post" action="/usage-origins/legacy-unattributed/delete" data-confirm="只会删除这条未归属历史，不会删除用户流量或已归属节点统计。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="confirm" value="DELETE_UNATTRIBUTED"><button class="compact-button danger" type="submit">删除历史</button></form>""".format(
+                csrf=csrf
             )
         machine_rows.append(
-            """<article class="machine-card" data-origin-id="{origin_id}"><div class="machine-card-head"><div><strong>{name}</strong><small class="muted machine-kind">{kind}</small></div><span class="{status_class}" data-live-machine-state>{status}</span></div><div class="machine-facts"><div class="machine-fact"><span>在线设备</span><strong data-live-machine-online>{online}</strong></div><div class="machine-fact"><span>上传</span><strong>{tx}</strong></div><div class="machine-fact"><span>下载</span><strong>{rx}</strong></div><div class="machine-fact"><span>合计</span><strong>{total}</strong></div></div><div class="machine-budget">{budget}</div><small class="muted machine-observed">最后上报 <span data-live-machine-observed>{observed}</span></small></article>""".format(
+            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong><small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">上传 {tx} · 下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail} · 最后上报 <span data-live-machine-observed>{observed}</span></small>{budget_action}</div></article>""".format(
                 origin_id=html.escape(origin["origin_id"], quote=True),
                 name=html.escape(str(origin.get("display_name") or "未命名节点")),
                 kind=kind_label,
                 status_class=status_class,
                 status=status_label,
                 online=online_text,
+                progress=progress_value,
+                budget_class=budget_status[1],
+                budget_line=budget_line,
                 tx=_human_bytes(int(origin.get("tx_bytes") or 0)),
                 rx=_human_bytes(int(origin.get("rx_bytes") or 0)),
-                total=_human_bytes(
-                    int(origin.get("tx_bytes") or 0)
-                    + int(origin.get("rx_bytes") or 0)
-                ),
-                budget=budget_html,
+                budget_detail=budget_detail,
                 observed=observed_text,
+                budget_action=budget_action,
             )
         )
     machine_warning = (
@@ -407,10 +425,11 @@ def render_dashboard(
         else ""
     )
     machine_stats_section = "" if not machine_origins else (
-        """<section class="card machine-stats"><div class="section-head machine-section-head"><div><h2>节点统计与流量预算</h2><p class="muted">按实际入口机器拆分；预算编辑默认收起，月预算 0 表示不限制。</p></div><span class="machine-count">{count} 台机器</span></div>{warning}<div class="machine-grid">{rows}</div></section>""".format(
+        """<section class="card machine-stats"><div class="section-head machine-section-head"><div><h2>节点统计与流量预算</h2><p class="muted">按面板节点与远程节点统计当前周期用量。</p></div><span class="machine-count">{count} 台机器</span></div>{warning}<div class="machine-budget-list">{rows}</div>{dialogs}</section>""".format(
             warning=machine_warning,
             count=len(machine_origins),
             rows="".join(machine_rows),
+            dialogs="".join(machine_budget_dialogs),
         )
     )
     stats_state = "正常" if summary["service_available"] else "异常"
