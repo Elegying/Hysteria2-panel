@@ -60,6 +60,12 @@ from hy2panel.budgets import (
     gib_input_to_bytes,
 )
 from hy2panel.health import RuntimeHealth, is_loopback_address
+from hy2panel.mobile_api import (
+    capabilities_payload,
+    nodes_payload,
+    overview_payload,
+    users_payload,
+)
 from hy2panel.distributed import (
     DistributedControlService,
     MAX_STATE_AGE_SECONDS,
@@ -1937,6 +1943,21 @@ class Database:
                     expires_at INTEGER NOT NULL,
                     created_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS mobile_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    access_token_hash TEXT NOT NULL UNIQUE,
+                    refresh_token_hash TEXT NOT NULL UNIQUE,
+                    admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+                    device_id TEXT NOT NULL,
+                    device_name TEXT NOT NULL,
+                    access_expires_at INTEGER NOT NULL,
+                    refresh_expires_at INTEGER NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    last_used_at INTEGER NOT NULL,
+                    UNIQUE(admin_id, device_id)
+                );
+                CREATE INDEX IF NOT EXISTS mobile_sessions_refresh_expiry_idx
+                    ON mobile_sessions(refresh_expires_at);
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY,
                     created_at INTEGER NOT NULL,
@@ -2307,6 +2328,7 @@ class Database:
                 # The panel has one administrator. Renaming it must not leave an old
                 # credential valid, and any credential change revokes every session.
                 connection.execute("DELETE FROM sessions")
+                connection.execute("DELETE FROM mobile_sessions")
                 connection.execute("DELETE FROM admins WHERE id <> ?", (row["id"],))
                 connection.execute(
                     "UPDATE admins SET username = ?, password_hash = ?, updated_at = ? WHERE id = ?",
@@ -2371,12 +2393,162 @@ class Database:
                     (hashlib.sha256(raw_token.encode()).hexdigest(),),
                 )
 
+    @staticmethod
+    def _mobile_token_hash(raw_token):
+        return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _validate_mobile_device(device_id, device_name):
+        if (
+            not isinstance(device_id, str)
+            or not 8 <= len(device_id) <= 128
+            or any(ord(character) < 32 or ord(character) == 127 for character in device_id)
+        ):
+            raise ValueError("设备标识无效")
+        if (
+            not isinstance(device_name, str)
+            or not 1 <= len(device_name.strip()) <= 128
+            or any(ord(character) < 32 or ord(character) == 127 for character in device_name)
+        ):
+            raise ValueError("设备名称无效")
+        return device_id, device_name.strip()
+
+    def create_mobile_session(
+        self,
+        admin_id,
+        device_id,
+        device_name,
+        access_ttl_seconds=900,
+        refresh_ttl_seconds=30 * 86400,
+    ):
+        device_id, device_name = self._validate_mobile_device(device_id, device_name)
+        access_ttl_seconds = max(60, min(int(access_ttl_seconds), 3600))
+        refresh_ttl_seconds = max(3600, min(int(refresh_ttl_seconds), 90 * 86400))
+        now = int(time.time())
+        access_token = "hy2a_" + secrets.token_urlsafe(32)
+        refresh_token = "hy2r_" + secrets.token_urlsafe(48)
+        session_id = uuid.uuid4().hex
+        with self._connect() as connection:
+            connection.execute("DELETE FROM mobile_sessions WHERE refresh_expires_at <= ?", (now,))
+            connection.execute(
+                "DELETE FROM mobile_sessions WHERE admin_id = ? AND device_id = ?",
+                (int(admin_id), device_id),
+            )
+            connection.execute(
+                """INSERT INTO mobile_sessions(
+                    session_id, access_token_hash, refresh_token_hash, admin_id,
+                    device_id, device_name, access_expires_at, refresh_expires_at,
+                    created_at, last_used_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    self._mobile_token_hash(access_token),
+                    self._mobile_token_hash(refresh_token),
+                    int(admin_id),
+                    device_id,
+                    device_name,
+                    now + access_ttl_seconds,
+                    now + refresh_ttl_seconds,
+                    now,
+                    now,
+                ),
+            )
+        return {
+            "sessionId": session_id,
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "accessExpiresAt": now + access_ttl_seconds,
+            "refreshExpiresAt": now + refresh_ttl_seconds,
+        }
+
+    def get_mobile_session(self, access_token):
+        if not isinstance(access_token, str) or not access_token.startswith("hy2a_"):
+            return None
+        now = int(time.time())
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT m.session_id, m.admin_id, m.device_id, m.device_name,
+                    m.access_expires_at, m.refresh_expires_at, a.username
+                FROM mobile_sessions AS m
+                JOIN admins AS a ON a.id = m.admin_id
+                WHERE m.access_token_hash = ? AND m.access_expires_at > ?
+                    AND m.refresh_expires_at > ?""",
+                (self._mobile_token_hash(access_token), now, now),
+            ).fetchone()
+            if row and now - int(row["access_expires_at"]) < 0:
+                connection.execute(
+                    "UPDATE mobile_sessions SET last_used_at = ? WHERE session_id = ?",
+                    (now, row["session_id"]),
+                )
+        return dict(row) if row else None
+
+    def rotate_mobile_session(
+        self,
+        refresh_token,
+        access_ttl_seconds=900,
+        refresh_ttl_seconds=30 * 86400,
+    ):
+        if not isinstance(refresh_token, str) or not refresh_token.startswith("hy2r_"):
+            return None
+        access_ttl_seconds = max(60, min(int(access_ttl_seconds), 3600))
+        refresh_ttl_seconds = max(3600, min(int(refresh_ttl_seconds), 90 * 86400))
+        now = int(time.time())
+        new_access_token = "hy2a_" + secrets.token_urlsafe(32)
+        new_refresh_token = "hy2r_" + secrets.token_urlsafe(48)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT session_id, admin_id, device_id, device_name
+                FROM mobile_sessions
+                WHERE refresh_token_hash = ? AND refresh_expires_at > ?""",
+                (self._mobile_token_hash(refresh_token), now),
+            ).fetchone()
+            if not row:
+                return None
+            cursor = connection.execute(
+                """UPDATE mobile_sessions SET access_token_hash = ?,
+                    refresh_token_hash = ?, access_expires_at = ?,
+                    refresh_expires_at = ?, last_used_at = ?
+                WHERE session_id = ? AND refresh_token_hash = ?""",
+                (
+                    self._mobile_token_hash(new_access_token),
+                    self._mobile_token_hash(new_refresh_token),
+                    now + access_ttl_seconds,
+                    now + refresh_ttl_seconds,
+                    now,
+                    row["session_id"],
+                    self._mobile_token_hash(refresh_token),
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+        return {
+            "sessionId": row["session_id"],
+            "accessToken": new_access_token,
+            "refreshToken": new_refresh_token,
+            "accessExpiresAt": now + access_ttl_seconds,
+            "refreshExpiresAt": now + refresh_ttl_seconds,
+            "deviceId": row["device_id"],
+            "deviceName": row["device_name"],
+        }
+
+    def revoke_mobile_session(self, access_token):
+        if not isinstance(access_token, str) or not access_token:
+            return False
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM mobile_sessions WHERE access_token_hash = ?",
+                (self._mobile_token_hash(access_token),),
+            )
+        return cursor.rowcount == 1
+
     def create_proxy_user(
         self,
         name,
         token=None,
         device_limit=DEFAULT_DEVICE_LIMIT,
         traffic_limit_bytes=DEFAULT_TRAFFIC_LIMIT_BYTES,
+        allow_udp_443=False,
     ):
         name = _validate_name(name)
         device_limit = int(device_limit)
@@ -2385,6 +2557,7 @@ class Database:
             raise ValueError("device limit must be between 1 and 100")
         if not 1 <= traffic_limit_bytes <= MAX_TRAFFIC_LIMIT_BYTES:
             raise ValueError("traffic limit is out of range")
+        allow_udp_443 = int(bool(allow_udp_443))
         token_seed = None
         if token is None:
             token_seed = secrets.token_bytes(32)
@@ -2396,14 +2569,16 @@ class Database:
                 cursor = connection.execute(
                     """INSERT INTO proxy_users(
                     name, token_fingerprint, token_seed, enabled, device_limit,
-                    traffic_limit_bytes, tx_bytes, rx_bytes, created_at, updated_at
-                    ) VALUES (?, ?, ?, 1, ?, ?, 0, 0, ?, ?)""",
+                    traffic_limit_bytes, allow_udp_443, tx_bytes, rx_bytes,
+                    created_at, updated_at
+                    ) VALUES (?, ?, ?, 1, ?, ?, ?, 0, 0, ?, ?)""",
                     (
                         name,
                         self._fingerprint(token),
                         token_seed,
                         device_limit,
                         traffic_limit_bytes,
+                        allow_udp_443,
                         now,
                         now,
                     ),
@@ -5891,6 +6066,491 @@ class PanelHandler(JsonHandler):
     def _session(self):
         return self.app.database.get_session(self._session_token())
 
+    def _bearer_token(self):
+        authorization = self.headers.get("Authorization", "")
+        scheme, separator, token = authorization.partition(" ")
+        if not separator or scheme.lower() != "bearer":
+            return ""
+        return token.strip()
+
+    def _mobile_response(self, status, data=None, error_code=None, message=None):
+        self.send_json(
+            status,
+            {
+                "data": data,
+                "meta": {
+                    "requestId": self._request_id(),
+                    "serverTime": int(time.time()),
+                    "apiVersion": "1",
+                },
+                "error": (
+                    {"code": error_code, "message": str(message)[:512]}
+                    if error_code
+                    else None
+                ),
+            },
+        )
+
+    def _mobile_read_json(self, maximum=16384):
+        try:
+            return self._read_json(maximum=maximum)
+        except TypeError:
+            self._mobile_response(415, error_code="CONTENT_TYPE_INVALID", message="请求必须使用 JSON")
+        except OverflowError:
+            self._mobile_response(413, error_code="REQUEST_TOO_LARGE", message="请求内容过大")
+        except (UnicodeDecodeError, ValueError):
+            self._mobile_response(400, error_code="REQUEST_INVALID", message="请求内容无效")
+        return None
+
+    def _mobile_session(self):
+        return self.app.database.get_mobile_session(self._bearer_token())
+
+    def _require_mobile_session(self):
+        session = self._mobile_session()
+        if not session:
+            self._mobile_response(
+                401,
+                error_code="SESSION_EXPIRED",
+                message="登录已失效，请重新登录",
+            )
+        return session
+
+    @staticmethod
+    def _mobile_actor(session):
+        return "mobile:{}:{}".format(
+            session["username"], str(session["device_id"])[:24]
+        )
+
+    def _mobile_mutation_started(self):
+        if self.app.begin_mutation():
+            return True
+        self._mobile_response(
+            503,
+            error_code="MAINTENANCE_ACTIVE",
+            message="维护操作正在进行，请稍后重试",
+        )
+        return False
+
+    def _handle_mobile_get(self, path):
+        if path == "/api/v1/mobile/capabilities":
+            self._mobile_response(200, capabilities_payload(PANEL_VERSION))
+            return
+        session = self._require_mobile_session()
+        if not session:
+            return
+        try:
+            if path == "/api/v1/mobile/auth/session":
+                self._mobile_response(
+                    200,
+                    {
+                        "username": session["username"],
+                        "deviceId": session["device_id"],
+                        "deviceName": session["device_name"],
+                        "accessExpiresAt": session["access_expires_at"],
+                        "refreshExpiresAt": session["refresh_expires_at"],
+                    },
+                )
+                return
+            if path == "/api/v1/mobile/overview":
+                self._mobile_response(200, overview_payload(self.app, PANEL_VERSION))
+                return
+            if path == "/api/v1/mobile/users":
+                self._mobile_response(200, users_payload(self.app))
+                return
+            if path == "/api/v1/mobile/nodes":
+                self._mobile_response(200, nodes_payload(self.app))
+                return
+            if path == "/api/v1/mobile/updates/status":
+                self._mobile_response(200, self.app.update_controller.status())
+                return
+        except Exception:
+            LOGGER.exception("mobile API read failed")
+            self._mobile_response(
+                503,
+                error_code="DATA_UNAVAILABLE",
+                message="暂时无法获取面板数据，请稍后重试",
+            )
+            return
+        self._mobile_response(404, error_code="NOT_FOUND", message="接口不存在")
+
+    def _handle_mobile_login(self, payload):
+        username = payload.get("username", "")
+        password = payload.get("password", "")
+        device_id = payload.get("deviceId", "")
+        device_name = payload.get("deviceName", "Android")
+        address = self.client_address[0]
+        admin_id, retry_after, attempted = self.app.rate_limiter.authenticate(
+            address,
+            lambda: self.app.database.verify_admin(username, password),
+        )
+        if not attempted:
+            self._mobile_response(
+                429,
+                data={"retryAfter": retry_after},
+                error_code="AUTH_LOCKED",
+                message="尝试次数过多，请稍后再试",
+            )
+            return
+        if not admin_id:
+            self._audit_safely("anonymous", "mobile_login_failed", "admin")
+            if retry_after:
+                self._mobile_response(
+                    429,
+                    data={"retryAfter": retry_after},
+                    error_code="AUTH_LOCKED",
+                    message="尝试次数过多，请稍后再试",
+                )
+                return
+            self._mobile_response(
+                401,
+                error_code="AUTH_INVALID",
+                message="面板账号或密码错误",
+            )
+            return
+        try:
+            tokens = self.app.database.create_mobile_session(
+                admin_id, device_id, device_name
+            )
+        except (TypeError, ValueError) as exc:
+            self._mobile_response(400, error_code="DEVICE_INVALID", message=str(exc))
+            return
+        self._audit_safely(str(username)[:64], "mobile_login_succeeded", str(device_id)[:128])
+        tokens.update(
+            {
+                "username": str(username)[:64],
+                "tokenType": "Bearer",
+                "panelVersion": PANEL_VERSION,
+                "apiVersion": "1",
+            }
+        )
+        self._mobile_response(200, tokens)
+
+    def _handle_mobile_refresh(self, payload):
+        tokens = self.app.database.rotate_mobile_session(payload.get("refreshToken", ""))
+        if not tokens:
+            self._mobile_response(
+                401,
+                error_code="REFRESH_EXPIRED",
+                message="登录已失效，请重新登录",
+            )
+            return
+        tokens.update({"tokenType": "Bearer", "panelVersion": PANEL_VERSION, "apiVersion": "1"})
+        self._mobile_response(200, tokens)
+
+    def _handle_mobile_user_create(self, session, payload):
+        try:
+            device_limit = int(payload.get("deviceLimit", DEFAULT_DEVICE_LIMIT))
+            traffic_limit_gb = int(payload.get("trafficLimitGb", 250))
+            with self.app.user_action_lock:
+                credentials = self.app.database.create_proxy_user(
+                    payload.get("name", ""),
+                    device_limit=device_limit,
+                    traffic_limit_bytes=traffic_limit_gb * 1024**3,
+                    allow_udp_443=bool(payload.get("allowUdp443", False)),
+                )
+            self._audit_safely(
+                self._mobile_actor(session), "proxy_user_created", credentials["name"]
+            )
+            self._mobile_response(201, self._connection_payload(credentials))
+        except (TypeError, ValueError) as exc:
+            self._mobile_response(400, error_code="USER_INVALID", message=str(exc))
+
+    def _handle_mobile_user_action(self, session, user_id, action, payload):
+        try:
+            generation = int(payload.get("generation", ""))
+            with self.app.user_action_lock:
+                user = self.app.database.get_proxy_user(user_id)
+                if action in {"enable", "disable"}:
+                    enabled = action == "enable"
+                    self.app.database.set_proxy_user_enabled(
+                        user_id, enabled, expected_generation=generation
+                    )
+                    if not enabled:
+                        self._kick_safely(user["name"])
+                    audit_action = "proxy_user_enabled" if enabled else "proxy_user_disabled"
+                    self._audit_safely(self._mobile_actor(session), audit_action, user["name"])
+                    self._mobile_response(200, {"enabled": enabled})
+                    return
+                if action == "share":
+                    if int(user["generation"]) != generation:
+                        raise ConflictError
+                    token = self.app.database.recover_proxy_token(user_id)
+                    if token is None:
+                        self._mobile_response(
+                            409,
+                            error_code="USER_SECRET_UNAVAILABLE",
+                            message="该用户来自旧版本，请先改密后再分享",
+                        )
+                        return
+                    self._audit_safely(
+                        self._mobile_actor(session), "proxy_link_shared", user["name"]
+                    )
+                    self._mobile_response(
+                        200,
+                        self._connection_payload(
+                            {"id": user["id"], "name": user["name"], "token": token}
+                        ),
+                    )
+                    return
+                if action == "rotate-secret":
+                    credentials = self.app.database.rotate_proxy_token(
+                        user_id, expected_generation=generation
+                    )
+                    self._kick_safely(credentials["name"])
+                    self._audit_safely(
+                        self._mobile_actor(session), "proxy_token_rotated", credentials["name"]
+                    )
+                    self._mobile_response(200, self._connection_payload(credentials))
+                    return
+                if action == "reset-traffic":
+                    self.app.usage_manager.reset_user(
+                        user_id, expected_generation=generation
+                    )
+                    self._queue_remote_kick_safely(user["name"])
+                    self._audit_safely(
+                        self._mobile_actor(session), "proxy_traffic_reset", user["name"]
+                    )
+                    self._mobile_response(200, {"reset": True})
+                    return
+        except (TypeError, ValueError):
+            self._mobile_response(400, error_code="REQUEST_INVALID", message="请求版本无效")
+        except ConflictError:
+            self._mobile_response(
+                409,
+                error_code="USER_CHANGED",
+                message="用户状态已经发生变化，请刷新后重试",
+            )
+        except KeyError:
+            self._mobile_response(404, error_code="USER_NOT_FOUND", message="用户不存在")
+        except Exception:
+            LOGGER.exception("mobile user action failed")
+            self._mobile_response(500, error_code="USER_ACTION_FAILED", message="用户操作未完成")
+
+    def _handle_mobile_post(self, path):
+        payload = self._mobile_read_json(maximum=32768)
+        if payload is None:
+            return
+        if path == "/api/v1/mobile/auth/login":
+            self._handle_mobile_login(payload)
+            return
+        if path == "/api/v1/mobile/auth/refresh":
+            self._handle_mobile_refresh(payload)
+            return
+        session = self._require_mobile_session()
+        if not session:
+            return
+        if path == "/api/v1/mobile/auth/logout":
+            revoked = self.app.database.revoke_mobile_session(self._bearer_token())
+            self._audit_safely(
+                self._mobile_actor(session), "mobile_logout", session["device_id"]
+            )
+            self._mobile_response(200, {"revoked": revoked})
+            return
+        if not self._mobile_mutation_started():
+            return
+        try:
+            if path == "/api/v1/mobile/users":
+                self._handle_mobile_user_create(session, payload)
+                return
+            service_match = re.fullmatch(
+                r"/api/v1/mobile/service/(start|restart|stop)", path
+            )
+            if service_match:
+                action = service_match.group(1)
+                if action in {"stop", "restart"}:
+                    state = self.app.usage_manager.run_after_collect(
+                        lambda: self.app.service_controller.action(action)
+                    )
+                else:
+                    state = self.app.service_controller.action(action)
+                self._audit_safely(
+                    self._mobile_actor(session),
+                    "hysteria_service_{}".format(action),
+                    state,
+                )
+                self._mobile_response(200, {"status": state, "action": action})
+                return
+            user_action_match = re.fullmatch(
+                r"/api/v1/mobile/users/(\d+)/(enable|disable|share|rotate-secret|reset-traffic)",
+                path,
+            )
+            if user_action_match:
+                self._handle_mobile_user_action(
+                    session,
+                    int(user_action_match.group(1)),
+                    user_action_match.group(2),
+                    payload,
+                )
+                return
+            if path == "/api/v1/mobile/node-enrollments":
+                if not self.app.secure_cookies or self.app.node_enrollment_service is None:
+                    self._mobile_response(
+                        409,
+                        error_code="HTTPS_REQUIRED",
+                        message="请先为面板启用 HTTPS",
+                    )
+                    return
+                result = self.app.node_enrollment_service.create(
+                    name=payload.get("name", ""),
+                    expected_ip=payload.get("expectedIp", ""),
+                    ttl_minutes=payload.get("ttlMinutes", 10),
+                    actor=session["username"],
+                    mode=payload.get("mode", "join"),
+                )
+                self._audit_safely(
+                    self._mobile_actor(session), "node_enrollment_created", result["nodeId"]
+                )
+                self._mobile_response(201, result)
+                return
+            verify_match = re.fullmatch(
+                r"/api/v1/mobile/nodes/([0-9a-f]{32})/verify", path
+            )
+            if verify_match:
+                fingerprint = str(payload.get("fingerprint", ""))
+                if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+                    self._mobile_response(
+                        400,
+                        error_code="FINGERPRINT_INVALID",
+                        message="节点公钥指纹格式无效",
+                    )
+                    return
+                verified = self.app.database.verify_node(
+                    verify_match.group(1),
+                    fingerprint,
+                    actor=session["username"],
+                    verified_at=int(time.time()),
+                )
+                if not verified:
+                    self._mobile_response(
+                        409,
+                        error_code="NODE_STATE_CONFLICT",
+                        message="节点状态或公钥指纹不匹配",
+                    )
+                    return
+                self._audit_safely(
+                    self._mobile_actor(session), "node_verified", verify_match.group(1)
+                )
+                self._mobile_response(200, {"verified": True})
+                return
+        except (TypeError, ValueError) as exc:
+            self._mobile_response(400, error_code="REQUEST_INVALID", message=str(exc))
+            return
+        except Exception:
+            LOGGER.exception("mobile API mutation failed")
+            self._mobile_response(
+                500,
+                error_code="ACTION_FAILED",
+                message="操作未完成，请检查服务日志",
+            )
+            return
+        finally:
+            self.app.finish_mutation()
+        self._mobile_response(404, error_code="NOT_FOUND", message="接口不存在")
+
+    def _handle_mobile_patch(self, path):
+        session = self._require_mobile_session()
+        if not session:
+            return
+        payload = self._mobile_read_json()
+        if payload is None:
+            return
+        match = re.fullmatch(r"/api/v1/mobile/users/(\d+)", path)
+        if not match:
+            self._mobile_response(404, error_code="NOT_FOUND", message="接口不存在")
+            return
+        if not self._mobile_mutation_started():
+            return
+        try:
+            user_id = int(match.group(1))
+            with self.app.user_action_lock:
+                user = self.app.database.update_proxy_user_limits(
+                    user_id,
+                    device_limit=int(payload.get("deviceLimit", "")),
+                    traffic_limit_bytes=int(payload.get("trafficLimitGb", "")) * 1024**3,
+                    allow_udp_443=bool(payload.get("allowUdp443", False)),
+                    expected_generation=int(payload.get("generation", "")),
+                )
+                if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
+                    self._kick_safely(user["name"])
+            self._audit_safely(
+                self._mobile_actor(session), "proxy_user_limits_updated", user["name"]
+            )
+            self._mobile_response(
+                200,
+                {
+                    "id": user["id"],
+                    "generation": user["generation"],
+                    "deviceLimit": user["device_limit"],
+                    "trafficLimitBytes": user["traffic_limit_bytes"],
+                    "allowUdp443": bool(user["allow_udp_443"]),
+                },
+            )
+        except (TypeError, ValueError):
+            self._mobile_response(400, error_code="USER_INVALID", message="用户配置无效")
+        except ConflictError:
+            self._mobile_response(409, error_code="USER_CHANGED", message="用户状态已经发生变化")
+        except KeyError:
+            self._mobile_response(404, error_code="USER_NOT_FOUND", message="用户不存在")
+        finally:
+            self.app.finish_mutation()
+
+    def _handle_mobile_delete(self, path):
+        session = self._require_mobile_session()
+        if not session:
+            return
+        payload = self._mobile_read_json()
+        if payload is None:
+            return
+        if not self._mobile_mutation_started():
+            return
+        try:
+            user_match = re.fullmatch(r"/api/v1/mobile/users/(\d+)", path)
+            if user_match:
+                user_id = int(user_match.group(1))
+                generation = int(payload.get("generation", ""))
+                with self.app.user_action_lock:
+                    user = self.app.database.delete_proxy_user(
+                        user_id, expected_generation=generation
+                    )
+                    self.app.usage_manager.forget_user(user["name"])
+                    self._kick_safely(user["name"])
+                self._audit_safely(
+                    self._mobile_actor(session), "proxy_user_deleted", user["name"]
+                )
+                self._mobile_response(200, {"deleted": True})
+                return
+            enrollment_match = re.fullmatch(
+                r"/api/v1/mobile/node-enrollments/([0-9a-f]{32})", path
+            )
+            if enrollment_match:
+                revoked = bool(
+                    self.app.node_enrollment_service
+                    and self.app.node_enrollment_service.revoke(enrollment_match.group(1))
+                )
+                if not revoked:
+                    self._mobile_response(
+                        404,
+                        error_code="ENROLLMENT_NOT_FOUND",
+                        message="对接码不存在或已被使用",
+                    )
+                    return
+                self._audit_safely(
+                    self._mobile_actor(session),
+                    "node_enrollment_revoked",
+                    enrollment_match.group(1),
+                )
+                self._mobile_response(200, {"revoked": True})
+                return
+            self._mobile_response(404, error_code="NOT_FOUND", message="接口不存在")
+        except (TypeError, ValueError):
+            self._mobile_response(400, error_code="REQUEST_INVALID", message="请求无效")
+        except ConflictError:
+            self._mobile_response(409, error_code="USER_CHANGED", message="用户状态已经发生变化")
+        except KeyError:
+            self._mobile_response(404, error_code="USER_NOT_FOUND", message="用户不存在")
+        finally:
+            self.app.finish_mutation()
+
     def _wants_json(self):
         return "application/json" in self.headers.get("Accept", "").lower()
 
@@ -6394,6 +7054,9 @@ class PanelHandler(JsonHandler):
 
     def do_GET(self):
         path = self._path()
+        if path.startswith("/api/v1/mobile/"):
+            self._handle_mobile_get(path)
+            return
         if path == "/favicon.svg":
             self._send_favicon()
             return
@@ -6474,6 +7137,9 @@ class PanelHandler(JsonHandler):
 
     def do_POST(self):
         path = self._path()
+        if path.startswith("/api/v1/mobile/"):
+            self._handle_mobile_post(path)
+            return
         if path == "/api/v1/node-registrations":
             self._handle_node_registration()
             return
@@ -6535,6 +7201,20 @@ class PanelHandler(JsonHandler):
             self._dispatch_authenticated_post(path, session, form)
         finally:
             self.app.finish_mutation()
+
+    def do_PATCH(self):
+        path = self._path()
+        if path.startswith("/api/v1/mobile/"):
+            self._handle_mobile_patch(path)
+            return
+        self._error_page(404, "页面不存在")
+
+    def do_DELETE(self):
+        path = self._path()
+        if path.startswith("/api/v1/mobile/"):
+            self._handle_mobile_delete(path)
+            return
+        self._error_page(404, "页面不存在")
 
     def _dispatch_authenticated_post(self, path, session, form):
         if path == "/users":

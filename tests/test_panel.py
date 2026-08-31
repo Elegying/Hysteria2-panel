@@ -164,6 +164,25 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertIsNone(self.db.get_session(raw_token))
 
+    def test_mobile_session_rotates_and_is_revoked_with_admin_credentials(self):
+        admin_id = self.db.upsert_admin("Elegy", "admin-password")
+        issued = self.db.create_mobile_session(
+            admin_id, "device-12345678", "Pixel Test"
+        )
+
+        session = self.db.get_mobile_session(issued["accessToken"])
+        self.assertEqual("Elegy", session["username"])
+        self.assertEqual("device-12345678", session["device_id"])
+
+        rotated = self.db.rotate_mobile_session(issued["refreshToken"])
+        self.assertIsNotNone(rotated)
+        self.assertIsNone(self.db.get_mobile_session(issued["accessToken"]))
+        self.assertIsNone(self.db.rotate_mobile_session(issued["refreshToken"]))
+        self.assertIsNotNone(self.db.get_mobile_session(rotated["accessToken"]))
+
+        self.db.upsert_admin("Elegy", "new-password")
+        self.assertIsNone(self.db.get_mobile_session(rotated["accessToken"]))
+
     def test_audit_log_drops_records_older_than_the_retention_window(self):
         with mock.patch.object(
             hysteria2_panel, "AUDIT_RETENTION_SECONDS", 100, create=True
@@ -6092,6 +6111,23 @@ class PanelHttpTests(unittest.TestCase):
         raw_token, csrf_token = self.db.create_session(self.admin_id)
         return {"Cookie": "hy2panel_session={}".format(raw_token)}, csrf_token
 
+    def mobile_json_request(self, method, path, payload=None, access_token=""):
+        headers = {"Accept": "application/json"}
+        body = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(payload).encode("utf-8")
+        if access_token:
+            headers["Authorization"] = "Bearer {}".format(access_token)
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=body,
+            headers=headers,
+            method=method,
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+
     @staticmethod
     def enrollment_token(command):
         match = re.search(r"HY2PANEL_ENROLLMENT_TOKEN='([^']+)'", command)
@@ -6193,6 +6229,125 @@ class PanelHttpTests(unittest.TestCase):
             },
             payload,
         )
+
+    def test_mobile_api_login_overview_users_and_service_control(self):
+        status, capabilities = self.mobile_json_request(
+            "GET", "/api/v1/mobile/capabilities"
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("1", capabilities["data"]["apiVersion"])
+        self.assertIsNone(capabilities["error"])
+
+        status, login = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/auth/login",
+            {
+                "username": "Elegy",
+                "password": "admin-password",
+                "deviceId": "android-test-device",
+                "deviceName": "Android Test",
+            },
+        )
+        self.assertEqual(200, status)
+        access_token = login["data"]["accessToken"]
+        refresh_token = login["data"]["refreshToken"]
+        self.assertTrue(access_token.startswith("hy2a_"))
+        self.assertTrue(refresh_token.startswith("hy2r_"))
+
+        self.db.create_proxy_user("alice", device_limit=5, allow_udp_443=True)
+        status, users = self.mobile_json_request(
+            "GET", "/api/v1/mobile/users", access_token=access_token
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(1, users["data"]["total"])
+        self.assertEqual("alice", users["data"]["items"][0]["name"])
+        self.assertTrue(users["data"]["items"][0]["allowUdp443"])
+
+        status, created = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/users",
+            {
+                "name": "bob",
+                "deviceLimit": 4,
+                "trafficLimitGb": 300,
+                "allowUdp443": False,
+            },
+            access_token=access_token,
+        )
+        self.assertEqual(201, status)
+        self.assertEqual("bob", created["data"]["name"])
+        status, users = self.mobile_json_request(
+            "GET", "/api/v1/mobile/users", access_token=access_token
+        )
+        bob = next(item for item in users["data"]["items"] if item["name"] == "bob")
+        status, edited = self.mobile_json_request(
+            "PATCH",
+            "/api/v1/mobile/users/{}".format(bob["id"]),
+            {
+                "generation": bob["generation"],
+                "deviceLimit": 6,
+                "trafficLimitGb": 350,
+                "allowUdp443": True,
+            },
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(6, edited["data"]["deviceLimit"])
+        status, users = self.mobile_json_request(
+            "GET", "/api/v1/mobile/users", access_token=access_token
+        )
+        bob = next(item for item in users["data"]["items"] if item["name"] == "bob")
+        status, disabled = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/users/{}/disable".format(bob["id"]),
+            {"generation": bob["generation"]},
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(disabled["data"]["enabled"])
+        status, users = self.mobile_json_request(
+            "GET", "/api/v1/mobile/users", access_token=access_token
+        )
+        bob = next(item for item in users["data"]["items"] if item["name"] == "bob")
+        status, deleted = self.mobile_json_request(
+            "DELETE",
+            "/api/v1/mobile/users/{}".format(bob["id"]),
+            {"generation": bob["generation"]},
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(deleted["data"]["deleted"])
+
+        status, overview = self.mobile_json_request(
+            "GET", "/api/v1/mobile/overview", access_token=access_token
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(1, overview["data"]["users"]["total"])
+        self.assertEqual(12.5, overview["data"]["resources"]["cpuPercent"])
+
+        status, nodes = self.mobile_json_request(
+            "GET", "/api/v1/mobile/nodes", access_token=access_token
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(0, nodes["data"]["total"])
+
+        status, service = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/service/restart",
+            {},
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("restart", service["data"]["action"])
+        self.assertEqual(["restart"], self.service_controller.actions)
+
+        status, refreshed = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/auth/refresh",
+            {"refreshToken": refresh_token},
+        )
+        self.assertEqual(200, status)
+        self.assertNotEqual(access_token, refreshed["data"]["accessToken"])
 
     def test_dashboard_online_endpoint_preserves_the_dom_on_transient_failure(self):
         headers, _csrf = self.authenticated_headers()

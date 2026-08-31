@@ -25,7 +25,7 @@ body:
     id: version
     attributes:
       label: 面板版本
-      description: 例如 v0.36.4，请不要填写“最新版”。
+      description: 例如 v0.37.0，请不要填写“最新版”。
       placeholder: vX.Y.Z
     validations:
       required: true
