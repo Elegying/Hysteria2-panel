@@ -42,7 +42,12 @@ class AndroidReleaseWorkflowTests(unittest.TestCase):
         ):
             self.assertIn("secrets.{}".format(secret), WORKFLOW)
         self.assertIn("EXPECTED_CERT_SHA256:", WORKFLOW)
+        self.assertIn("keytool -exportcert", WORKFLOW)
+        self.assertIn('test "${keystore_cert}" = "${EXPECTED_CERT_SHA256}"', WORKFLOW)
         self.assertIn('"${apksigner}" verify --verbose', WORKFLOW)
+        self.assertIn('/certificate SHA-256 digest:/', WORKFLOW)
+        self.assertIn('^[0-9a-f]{64}$', WORKFLOW)
+        self.assertIn('test "${actual_cert}" = "${EXPECTED_CERT_SHA256}"', WORKFLOW)
         self.assertIn("versionCode='${build_number}'", WORKFLOW)
         self.assertIn("versionName='${app_version}'", WORKFLOW)
         self.assertIn("APK contains a denied production identifier", WORKFLOW)

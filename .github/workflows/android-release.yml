@@ -133,6 +133,11 @@ jobs:
           printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
             "${keystore}" "${SIGNING_STORE_PASSWORD}" \
             "${SIGNING_KEY_ALIAS}" "${SIGNING_KEY_PASSWORD}" >"${properties}"
+          keystore_cert="$(keytool -exportcert \
+            -keystore "${keystore}" \
+            -storepass "${SIGNING_STORE_PASSWORD}" \
+            -alias "${SIGNING_KEY_ALIAS}" 2>/dev/null | sha256sum | awk '{print $1}')"
+          test "${keystore_cert}" = "${EXPECTED_CERT_SHA256}"
           flutter build apk --release
 
       - name: Verify signature, version and publication privacy
@@ -153,9 +158,11 @@ jobs:
           test -x "${apksigner}"
           test -x "${aapt}"
           "${apksigner}" verify --verbose "${target_apk}"
-          actual_cert="$("${apksigner}" verify --print-certs "${target_apk}" |
-            sed -n 's/^Signer #1 certificate SHA-256 digest: //p' |
-            tr '[:upper:]' '[:lower:]' | tr -d ':')"
+          cert_output="$("${apksigner}" verify --print-certs "${target_apk}")"
+          actual_cert="$(awk -F': ' \
+            '/certificate SHA-256 digest:/ {print $NF; exit}' <<<"${cert_output}" |
+            tr '[:upper:]' '[:lower:]' | tr -d ':[:space:]')"
+          [[ "${actual_cert}" =~ ^[0-9a-f]{64}$ ]]
           test "${actual_cert}" = "${EXPECTED_CERT_SHA256}"
           badging="$("${aapt}" dump badging "${target_apk}" | head -n 1)"
           grep -Fq "versionCode='${build_number}'" <<<"${badging}"
