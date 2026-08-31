@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 35
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      FLUTTER_VERSION: 3.47.2
       FLUTTER_REVISION: d3b14c876900e553bc736ca19295fc09e3853e8e
       EXPECTED_CERT_SHA256: 75d8182879f710c932a60e002223d398c5d56f69147cfe40ba21f69c11ae3eb9
     steps:
@@ -76,11 +77,25 @@ jobs:
           flutter_dir="${RUNNER_TEMP}/flutter"
           git init "${flutter_dir}"
           git -C "${flutter_dir}" remote add origin https://github.com/flutter/flutter.git
-          git -C "${flutter_dir}" fetch --depth=1 origin "${FLUTTER_REVISION}"
-          git -C "${flutter_dir}" checkout --detach FETCH_HEAD
+          git -C "${flutter_dir}" fetch --depth=1 origin \
+            "refs/tags/${FLUTTER_VERSION}:refs/tags/${FLUTTER_VERSION}"
+          git -C "${flutter_dir}" checkout --detach "refs/tags/${FLUTTER_VERSION}"
           test "$(git -C "${flutter_dir}" rev-parse HEAD)" = "${FLUTTER_REVISION}"
           printf '%s/bin\n' "${flutter_dir}" >>"${GITHUB_PATH}"
-          "${flutter_dir}/bin/flutter" --version
+          version_json="${RUNNER_TEMP}/flutter-version.json"
+          "${flutter_dir}/bin/flutter" --version --machine >"${version_json}"
+          python - "${version_json}" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          metadata = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          if metadata.get("frameworkVersion") != os.environ["FLUTTER_VERSION"]:
+              raise SystemExit("Flutter framework version does not match the pinned release")
+          if metadata.get("frameworkRevision") != os.environ["FLUTTER_REVISION"]:
+              raise SystemExit("Flutter framework revision does not match the pinned commit")
+          PY
           "${flutter_dir}/bin/flutter" precache --android
 
       - name: Analyze and test Android client

@@ -13,10 +13,20 @@ class AndroidReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('test "${GITHUB_REF}" = "refs/tags/${RELEASE_TAG}"', WORKFLOW)
         self.assertIn('test "${tag_commit}" = "${main_commit}"', WORKFLOW)
         self.assertIn(
+            "FLUTTER_VERSION: 3.47.2",
+            WORKFLOW,
+        )
+        self.assertIn(
             "FLUTTER_REVISION: d3b14c876900e553bc736ca19295fc09e3853e8e",
             WORKFLOW,
         )
+        self.assertIn(
+            '"refs/tags/${FLUTTER_VERSION}:refs/tags/${FLUTTER_VERSION}"',
+            WORKFLOW,
+        )
         self.assertIn('test "$(git -C "${flutter_dir}" rev-parse HEAD)"', WORKFLOW)
+        self.assertIn('metadata.get("frameworkVersion")', WORKFLOW)
+        self.assertIn('metadata.get("frameworkRevision")', WORKFLOW)
 
     def test_online_build_requires_fixed_signing_identity_and_checks_the_apk(self):
         for secret in (
