@@ -608,6 +608,31 @@ class BackupManager:
         "origin_traffic_daily": "origin_id, usage_date",
         "origin_traffic_budgets": "origin_id",
     }
+    # Portable backups deliberately retain only RESTORED_TABLE_COLUMNS. Every
+    # other application table must be listed here so a newly introduced table
+    # cannot silently leak runtime state or be silently discarded.
+    RUNTIME_TABLE_CLEANUP = (
+        ("mobile_sessions", "DELETE FROM mobile_sessions"),
+        ("sessions", "DELETE FROM sessions"),
+        ("audit_log", "DELETE FROM audit_log"),
+        ("applied_traffic_batches", "DELETE FROM applied_traffic_batches"),
+        ("node_online_counts", "DELETE FROM node_online_counts"),
+        ("node_online_snapshots", "DELETE FROM node_online_snapshots"),
+        ("node_heartbeat_nonces", "DELETE FROM node_heartbeat_nonces"),
+        ("node_request_nonces", "DELETE FROM node_request_nonces"),
+        ("node_auth_decisions", "DELETE FROM node_auth_decisions"),
+        ("local_auth_leases", "DELETE FROM local_auth_leases"),
+        ("node_traffic_batches", "DELETE FROM node_traffic_batches"),
+        ("node_commands", "DELETE FROM node_commands"),
+        (
+            "node_data_plane_bootstrap_grants",
+            "DELETE FROM node_data_plane_bootstrap_grants",
+        ),
+        ("node_enrollments", "DELETE FROM node_enrollments"),
+        ("nodes", "DELETE FROM nodes"),
+        ("admins", "DELETE FROM admins"),
+    )
+    RUNTIME_TABLES = frozenset(name for name, _statement in RUNTIME_TABLE_CLEANUP)
 
     def __init__(
         self,
@@ -728,6 +753,12 @@ class BackupManager:
 
     @staticmethod
     def _copy_database(source_path, destination_path, preflight=None):
+        try:
+            source_metadata = os.lstat(source_path)
+        except OSError as exc:
+            raise BackupValidationError("无法读取在线数据库") from exc
+        if not stat.S_ISREG(source_metadata.st_mode):
+            raise BackupValidationError("在线数据库路径类型不安全")
         with sqlite_connection(str(source_path), timeout=10) as source:
             source.execute("BEGIN")
             logical_size = (
@@ -740,6 +771,7 @@ class BackupManager:
                 preflight(logical_size)
             with sqlite_connection(str(destination_path), timeout=10) as destination:
                 source.backup(destination)
+        os.chmod(destination_path, 0o600)
         descriptor = os.open(str(destination_path), os.O_RDONLY)
         try:
             os.fsync(descriptor)
@@ -747,10 +779,182 @@ class BackupManager:
             os.close(descriptor)
         return logical_size
 
+    @classmethod
+    def _application_tables(cls, connection):
+        return {
+            row[0]
+            for row in connection.execute(
+                """SELECT name FROM sqlite_master
+                WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+                ORDER BY name"""
+            )
+        }
+
+    @classmethod
+    def _assert_portable_table_contract(cls, connection):
+        restored = frozenset(cls.RESTORED_TABLE_COLUMNS)
+        if restored & cls.RUNTIME_TABLES:
+            raise BackupValidationError("便携备份数据表分类存在冲突")
+        expected = restored | cls.RUNTIME_TABLES
+        actual = cls._application_tables(connection)
+        if actual != expected:
+            raise BackupValidationError("数据库包含未分类或缺失的数据表")
+        return actual
+
+    @classmethod
+    def _validate_usage_ledger(cls, connection):
+        orphan_origin = connection.execute(
+            """SELECT 1 FROM (
+                SELECT origin_id FROM usage_origin_users
+                UNION ALL
+                SELECT origin_id FROM origin_traffic_daily
+                UNION ALL
+                SELECT origin_id FROM origin_traffic_budgets
+            ) AS ledger
+            LEFT JOIN usage_origins AS origin
+                ON origin.origin_id = ledger.origin_id
+            WHERE origin.origin_id IS NULL LIMIT 1"""
+        ).fetchone()
+        if orphan_origin is not None:
+            raise BackupValidationError("备份中的流量账本存在孤立来源")
+        orphan_user = connection.execute(
+            """SELECT 1 FROM usage_origin_users AS usage
+            LEFT JOIN proxy_users AS proxy
+                ON proxy.name = usage.user_name COLLATE NOCASE
+            WHERE proxy.id IS NULL LIMIT 1"""
+        ).fetchone()
+        if orphan_user is not None:
+            raise BackupValidationError("备份中的用户流量账本存在孤立记录")
+        excessive_total = connection.execute(
+            """SELECT 1 FROM proxy_users AS proxy
+            LEFT JOIN usage_origin_users AS usage
+                ON usage.user_name = proxy.name COLLATE NOCASE
+            GROUP BY proxy.id
+            HAVING COALESCE(SUM(usage.tx_bytes), 0) > proxy.tx_bytes
+                OR COALESCE(SUM(usage.rx_bytes), 0) > proxy.rx_bytes
+            LIMIT 1"""
+        ).fetchone()
+        if excessive_total is not None:
+            raise BackupValidationError("备份中的用户流量账本与总量不一致")
+
+    def _validate_portable_database_path(self, database_path, hmac_key):
+        database_path = Path(database_path)
+        try:
+            with sqlite_connection(str(database_path), timeout=10) as connection:
+                quick_check = connection.execute("PRAGMA quick_check").fetchall()
+                if quick_check != [("ok",)]:
+                    raise BackupValidationError("精简数据库快速完整性检查失败")
+                connection.execute("PRAGMA foreign_keys = ON")
+                if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise BackupValidationError("精简数据库外键一致性检查失败")
+                self._assert_portable_table_contract(connection)
+                for table, columns in self.RESTORED_TABLE_COLUMNS.items():
+                    actual_columns = {
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info({})".format(table)  # nosec B608
+                        )
+                    }
+                    if not set(columns).issubset(actual_columns):
+                        raise BackupValidationError("精简数据库业务表结构不完整")
+                for table, _statement in self.RUNTIME_TABLE_CLEANUP:
+                    count = connection.execute(
+                        "SELECT COUNT(*) FROM {}".format(table)  # nosec B608
+                    ).fetchone()[0]
+                    if count != 0:
+                        raise BackupValidationError("精简数据库仍包含运行时数据")
+                self._validate_usage_ledger(connection)
+        except sqlite3.DatabaseError as exc:
+            raise BackupValidationError("精简数据库无效") from exc
+        return self._validate_database_path(database_path, hmac_key)
+
+    def _clear_runtime_tables(self, database_path):
+        try:
+            with sqlite_connection(str(database_path), timeout=30) as connection:
+                connection.execute("PRAGMA journal_mode = DELETE")
+                connection.execute("PRAGMA foreign_keys = ON")
+                self._assert_portable_table_contract(connection)
+                connection.execute("BEGIN IMMEDIATE")
+                for _table, statement in self.RUNTIME_TABLE_CLEANUP:
+                    connection.execute(statement)
+                if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise BackupValidationError("精简数据库外键一致性检查失败")
+        except sqlite3.DatabaseError as exc:
+            raise BackupValidationError("无法清理备份数据库副本") from exc
+
+    @staticmethod
+    def _vacuum_into(source_path, destination_path):
+        source_path = Path(source_path)
+        destination_path = Path(destination_path)
+        if destination_path.exists() or destination_path.is_symlink():
+            raise BackupValidationError("压实数据库临时路径不安全")
+        try:
+            with sqlite_connection(str(source_path), timeout=60) as connection:
+                connection.execute("VACUUM INTO ?", (str(destination_path),))
+            os.chmod(destination_path, 0o600)
+            _fsync_file(destination_path)
+            _fsync_directory(destination_path.parent)
+        except (OSError, sqlite3.DatabaseError) as exc:
+            try:
+                destination_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise BackupValidationError("无法安全压实备份数据库副本") from exc
+
+    def _compact_portable_database(self, database_path):
+        database_path = Path(database_path)
+        self._clear_runtime_tables(database_path)
+        self._validate_portable_database_path(database_path, self.hmac_key)
+        with tempfile.TemporaryDirectory(
+            prefix="compact-", dir=str(database_path.parent)
+        ) as compact_directory:
+            compact_directory_path = Path(compact_directory)
+            os.chmod(compact_directory_path, 0o700)
+            compact_path = compact_directory_path / (
+                "portable-{}.db".format(secrets.token_hex(16))
+            )
+            self._vacuum_into(database_path, compact_path)
+            self._validate_portable_database_path(compact_path, self.hmac_key)
+            if not self._database_schema_equal(database_path, compact_path):
+                raise BackupValidationError("数据库压实前后结构不一致")
+            if not self._restored_rows_equal(database_path, compact_path):
+                raise BackupValidationError("数据库压实前后业务数据不一致")
+            os.replace(compact_path, database_path)
+            _fsync_directory(database_path.parent)
+        self._validate_portable_database_path(database_path, self.hmac_key)
+
+    @staticmethod
+    def _database_schema_equal(first_database, second_database):
+        query = """SELECT type, name, tbl_name, sql FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
+            ORDER BY type, name, tbl_name, sql"""
+        try:
+            with sqlite_connection(str(first_database)) as first, sqlite_connection(
+                str(second_database)
+            ) as second:
+                return first.execute(query).fetchall() == second.execute(query).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise BackupValidationError("无法比较压实数据库结构") from exc
+
     @staticmethod
     def _read_bounded(path, maximum):
-        with Path(path).open("rb") as source:
-            value = source.read(maximum + 1)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(str(Path(path)), flags)
+        except OSError as exc:
+            raise BackupValidationError("备份内容路径不安全或无法读取") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise BackupValidationError("备份内容路径类型无效")
+            with os.fdopen(descriptor, "rb") as source:
+                descriptor = None
+                value = source.read(maximum + 1)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
         if len(value) > maximum:
             raise BackupValidationError("备份内容超过允许大小")
         return value
@@ -759,16 +963,45 @@ class BackupManager:
     def _file_details(path, maximum=None):
         digest = hashlib.sha256()
         size = 0
-        with Path(path).open("rb") as source:
-            while True:
-                chunk = source.read(BACKUP_IO_CHUNK_BYTES)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if maximum is not None and size > maximum:
-                    raise BackupValidationError("备份内容超过允许大小")
-                digest.update(chunk)
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(str(Path(path)), flags)
+        except OSError as exc:
+            raise BackupValidationError("备份内容路径不安全或无法读取") from exc
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise BackupValidationError("备份内容路径类型无效")
+            with os.fdopen(descriptor, "rb") as source:
+                descriptor = None
+                while True:
+                    chunk = source.read(BACKUP_IO_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if maximum is not None and size > maximum:
+                        raise BackupValidationError("备份内容超过允许大小")
+                    digest.update(chunk)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
         return {"sha256": digest.hexdigest(), "size": size}
+
+    def _ensure_secure_work_dir(self):
+        self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            metadata = os.lstat(self.work_dir)
+        except OSError as exc:
+            raise BackupValidationError("无法读取备份工作目录") from exc
+        expected_uid = os.geteuid() if hasattr(os, "geteuid") else metadata.st_uid
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != expected_uid
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise BackupValidationError("备份工作目录权限或类型不安全")
 
     @staticmethod
     def _replace_file(path, source_path):
@@ -872,7 +1105,7 @@ class BackupManager:
             return self._create_archive_locked()
 
     def _create_archive_locked(self):
-        self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._ensure_secure_work_dir()
         timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         archive_path = self.work_dir / "hysteria2-panel-backup-{}-{}.zip".format(
             timestamp, secrets.token_hex(4)
@@ -901,13 +1134,8 @@ class BackupManager:
                         + RESTORE_DISK_SAFETY_BYTES,
                     ),
                 )
+                self._compact_portable_database(database_path)
                 with sqlite_connection(str(database_path)) as connection:
-                    connection.execute("PRAGMA journal_mode = DELETE")
-                    connection.execute("PRAGMA foreign_keys = ON")
-                    connection.execute("DELETE FROM sessions")
-                    connection.execute("DELETE FROM admins")
-                    connection.execute("DELETE FROM audit_log")
-                    connection.execute("DELETE FROM applied_traffic_batches")
                     user_count = connection.execute(
                         "SELECT COUNT(*) FROM proxy_users"
                     ).fetchone()[0]
@@ -928,6 +1156,8 @@ class BackupManager:
                 )
                 payload_paths["tls/server.crt"].write_bytes(certificate)
                 payload_paths["tls/server.key"].write_bytes(private_key)
+                for payload_path in payload_paths.values():
+                    os.chmod(payload_path, 0o600)
                 expires_at = self._certificate_details(
                     payload_paths["tls/server.crt"], payload_paths["tls/server.key"]
                 )

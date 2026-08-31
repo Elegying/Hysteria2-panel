@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.38.3"
+PANEL_VERSION="0.38.4"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -24,12 +24,12 @@ HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyst
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="c2a3c6bcfa390d2bae71e5abcdc87e0374b8a69c07a98b12c85c77245ee6d4a3"
+PANEL_SHA256="2146d414ed2b096f81ff61d7ffb5e6f0fcd4fd9588ba6b45c053eccf39b405eb"
 OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed94b2f07f"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="f3cfc3730cddfd0440723d8d119f026eb8acf2fcf56c4bfb5dfa9e57ae6c201e"
+HY2PANEL_VERSION_SHA256="d73f3f8ebfd8abdb170c9a11e35db8606739ee6f2854e66180bae26b42464655"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="0ab69e2879eb4b747b0a01fe2cdd2714b3ccb23732c205ae109c211801ca09a3"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -41,7 +41,7 @@ HY2PANEL_NODES_SHA256="b6d4986c4c8169b7d3bbacc2ae2aefb95e2285b9843afaece58b553c1
 HY2PANEL_DISTRIBUTED_SHA256="6cdd694fc13c76a26dd850a42e3a9f3cdd3f1921a836fb378d0148dde408359c"
 HY2PANEL_DASHBOARD_SHA256="7e76c5d0b8868c6dcca45498b85cbdcde7406cf32cc72113d7f7506e496c16cf"
 HY2PANEL_MOBILE_API_SHA256="eadf1e371c52d71eb43516aaa93c04b753d2d6cd2d4737f41edfa6ea733f6a7f"
-NODE_AGENT_SHA256="57f52362d52e8c0bdab152adb4893fb5652d31ed0956ed20ace323f3ae345ad0"
+NODE_AGENT_SHA256="5e05025cca8f0c1d31c1b6f74d24cd9d6942dbb2aa65fe0bc44a733901110df8"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"

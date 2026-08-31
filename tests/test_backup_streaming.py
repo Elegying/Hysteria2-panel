@@ -107,9 +107,11 @@ class BackupStreamingTests(unittest.TestCase):
         with sqlite_connection(str(self.database.path)) as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA wal_autocheckpoint = 0")
-            connection.execute("CREATE TABLE wal_growth (payload BLOB NOT NULL)")
             connection.execute(
-                "INSERT INTO wal_growth(payload) VALUES (zeroblob(?))", (8 * 1024**2,)
+                """INSERT INTO audit_log(
+                    created_at, actor, action, target, remote_ip
+                ) VALUES (1, 'fixture', 'wal-capacity', 'runtime', zeroblob(?))""",
+                (8 * 1024**2,),
             )
             connection.commit()
             logical_size = (
