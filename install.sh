@@ -550,7 +550,8 @@ capture_upgrade_runtime_state() {
   local rmem wmem qdisc congestion_control
   rmem="$(sysctl -n net.core.rmem_max 2>/dev/null)" || return 1
   wmem="$(sysctl -n net.core.wmem_max 2>/dev/null)" || return 1
-  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null)" || return 1
+  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+  [[ -n "${qdisc}" ]] || qdisc="-"
   congestion_control="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" \
     || return 1
   [[ "${rmem}" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -614,7 +615,9 @@ restore_upgrade_runtime_state() {
   (( seen == 4 )) || return 1
   sysctl -w "net.core.rmem_max=${rmem}" >/dev/null || return 1
   sysctl -w "net.core.wmem_max=${wmem}" >/dev/null || return 1
-  sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null || return 1
+  if [[ "${qdisc}" != "-" ]]; then
+    sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null || return 1
+  fi
   sysctl -w "net.ipv4.tcp_congestion_control=${congestion_control}" >/dev/null
 }
 

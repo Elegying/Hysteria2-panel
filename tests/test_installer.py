@@ -579,6 +579,66 @@ assert_reopenable_installer_entrypoint
             verifier.index("clear_upgrade_transaction"),
         )
 
+    def test_upgrade_runtime_snapshot_allows_an_unexposed_default_qdisc(self):
+        source = INSTALLER.read_text()
+        start = source.index("capture_upgrade_runtime_state()")
+        end = source.index("\n\nrequire_backup_space()", start)
+        helpers = source[start:end]
+        script = f"""
+set -euo pipefail
+{helpers}
+UPGRADE_RUNTIME_SYSCTL_STATE=runtime-sysctl.state
+BACKUP_DIR="$WORK"
+sysctl() {{
+  if [[ "$1" == "-n" ]]; then
+    case "$2" in
+      net.core.rmem_max) echo 4194304 ;;
+      net.core.wmem_max) echo 8388608 ;;
+      net.core.default_qdisc) return 1 ;;
+      net.ipv4.tcp_congestion_control) echo cubic ;;
+      *) return 1 ;;
+    esac
+    return
+  fi
+  [[ "$1" == "-w" ]]
+  printf '%s\n' "$2" >> "$WORK/sysctl-writes"
+}}
+chown() {{ :; }}
+stat() {{ echo 0:0:600:1; }}
+sync() {{ :; }}
+capture_upgrade_runtime_state "$WORK"
+restore_upgrade_runtime_state
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                ["bash"],
+                input=script,
+                text=True,
+                capture_output=True,
+                env={**os.environ, "WORK": directory},
+            )
+            state = (Path(directory) / "runtime-sysctl.state").read_text().splitlines()
+            writes = (Path(directory) / "sysctl-writes").read_text().splitlines()
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [
+                "net.core.rmem_max=4194304",
+                "net.core.wmem_max=8388608",
+                "net.core.default_qdisc=-",
+                "net.ipv4.tcp_congestion_control=cubic",
+            ],
+            state,
+        )
+        self.assertEqual(
+            [
+                "net.core.rmem_max=4194304",
+                "net.core.wmem_max=8388608",
+                "net.ipv4.tcp_congestion_control=cubic",
+            ],
+            writes,
+        )
+
     def test_upgrade_checks_backup_space_and_prunes_only_automatic_backups(self):
         source = INSTALLER.read_text()
 
