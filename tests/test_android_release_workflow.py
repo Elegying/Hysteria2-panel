@@ -27,6 +27,11 @@ class AndroidReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('test "$(git -C "${flutter_dir}" rev-parse HEAD)"', WORKFLOW)
         self.assertIn('metadata.get("frameworkVersion")', WORKFLOW)
         self.assertIn('metadata.get("frameworkRevision")', WORKFLOW)
+        bootstrap = '"${flutter_dir}/bin/flutter" --version >/dev/null'
+        machine = '"${flutter_dir}/bin/flutter" --version --machine >"${version_json}"'
+        self.assertIn(bootstrap, WORKFLOW)
+        self.assertIn(machine, WORKFLOW)
+        self.assertLess(WORKFLOW.index(bootstrap), WORKFLOW.index(machine))
 
     def test_online_build_requires_fixed_signing_identity_and_checks_the_apk(self):
         for secret in (
