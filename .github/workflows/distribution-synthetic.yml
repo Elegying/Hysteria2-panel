@@ -37,17 +37,23 @@ jobs:
           if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
               raise SystemExit("latest release has an invalid version tag")
           if release.get("draft") or release.get("prerelease"):
-              raise SystemExit("latest endpoint returned a non-formal release")
+            raise SystemExit("latest endpoint returned a non-formal release")
           names = [asset.get("name") for asset in release.get("assets", [])]
-          expected = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}
-          if len(names) != len(expected) or set(names) != expected:
-              raise SystemExit("latest release has unexpected asset set")
+          required = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}
+          extras = set(names) - required
+          allowed_apk = re.compile(r"Hysteria2-Manager-v[0-9]+\.[0-9]+\.[0-9]+\.apk")
+          if not required.issubset(names) or len(names) != len(set(names)) or any(
+              not allowed_apk.fullmatch(name) for name in extras
+          ) or len(extras) > 1:
+            raise SystemExit("latest release has unexpected asset set")
           print("tag={}".format(tag))
+          print("apk={}".format(next(iter(extras), "")))
           PY
 
       - name: Download release and tagged source anonymously
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_APK: ${{ steps.release.outputs.apk }}
         shell: bash
         run: |
           set -euo pipefail
@@ -72,6 +78,14 @@ jobs:
           curl --fail --location --silent --show-error \
             --retry 2 --retry-all-errors --connect-timeout 10 --max-time 45 \
             "${raw}" --output "${asset_dir}/tagged-install.sh"
+          if [[ -n "${RELEASE_APK}" ]]; then
+            curl --fail --location --silent --show-error \
+              --retry 2 --retry-all-errors --connect-timeout 10 --max-time 120 \
+              "${base}/${RELEASE_APK}" --output "${asset_dir}/${RELEASE_APK}"
+            test "$(wc -c <"${asset_dir}/${RELEASE_APK}")" -gt 1048576
+            test "$(wc -c <"${asset_dir}/${RELEASE_APK}")" -le 209715200
+            unzip -tqq "${asset_dir}/${RELEASE_APK}"
+          fi
           test "$(wc -c <"${asset_dir}/install.sh")" -gt 0
           test "$(wc -c <"${asset_dir}/install.sh")" -le 1048576
           test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -gt 0

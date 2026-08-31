@@ -9,8 +9,52 @@
 | Hysteria 认证回调 | 面板本机 Hysteria 或数据节点回环代理 | 只监听回环地址 |
 | 签名节点控制协议 | 已核验的固定版本数据节点 | 仅在独立面板 HTTPS 下开放 |
 | 管理面板 | 管理员浏览器 | 同源会话、CSRF 和固定路由 |
+| Android Mobile API v1 | Hysteria2管理 Android App | HTTPS、设备会话和 Bearer 令牌 |
 
 所有大小、时间窗、状态码与失败关闭行为都是安全契约。修改时必须同步实现、测试、安装器固定哈希和相关 ADR。
+
+## Android Mobile API v1
+
+Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用网页登录 Cookie/CSRF，也不能使用 `/api/v1/node-*` 节点 Agent 机器接口。
+
+### 认证
+
+- `GET /api/v1/mobile/capabilities`：无需登录，返回面板版本、API 版本和功能能力。
+- `POST /api/v1/mobile/auth/login`：提交管理员账号、密码、设备 ID 和设备名称；沿用网页登录限流。
+- `POST /api/v1/mobile/auth/refresh`：一次性轮换访问令牌与刷新令牌。
+- `POST /api/v1/mobile/auth/logout`：撤销当前设备会话。
+- `GET /api/v1/mobile/auth/session`：返回当前管理员和设备会话摘要。
+
+除 capabilities、login 和 refresh 外，请求必须使用 `Authorization: Bearer <access-token>`。访问令牌默认 15 分钟有效，刷新令牌默认 30 天有效；服务端数据库只保存令牌 SHA-256 摘要。修改管理员账号或密码会撤销全部浏览器与移动设备会话。
+
+### 管理接口
+
+- `GET /api/v1/mobile/overview`：首页聚合状态、统计、预算和资源。
+- `GET /api/v1/mobile/users`：返回全部用户，不分页。
+- `POST /api/v1/mobile/users`、`PATCH /api/v1/mobile/users/{id}`、`DELETE /api/v1/mobile/users/{id}`：创建、编辑和删除用户。
+- `POST /api/v1/mobile/users/{id}/{enable|disable|share|rotate-secret|reset-traffic}`：用户操作。
+- `GET /api/v1/mobile/nodes`：返回安全裁剪后的节点详情，不包含节点私钥、HMAC 或机器令牌。
+- `POST /api/v1/mobile/node-enrollments`：生成短时节点对接授权和部署代码。
+- `POST /api/v1/mobile/nodes/{node-id}/verify`：核对完整公钥指纹后确认节点。
+- `POST /api/v1/mobile/service/{start|restart|stop}`：控制 Hysteria 服务；重启和停止前先结算流量。
+
+写操作继续执行维护互斥、并发 generation、流量结算、断开连接和审计。客户端不得自动重试没有幂等保护的危险写操作。
+
+### 返回格式
+
+```json
+{
+  "data": {},
+  "meta": {
+    "requestId": "32位请求标识",
+    "serverTime": 1788170000,
+    "apiVersion": "1"
+  },
+  "error": null
+}
+```
+
+失败时 `data` 通常为空，`error` 包含稳定 `code` 和中文 `message`。HTTP 状态码仍然表达认证失败、冲突、限流、维护或服务端故障，客户端不能只检查 JSON 文案。
 
 ## Hysteria 认证回调
 

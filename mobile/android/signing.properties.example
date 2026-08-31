@@ -1,0 +1,6 @@
+# 复制为 signing.properties 后填写构建机上的固定发布密钥。
+# signing.properties 与密钥文件都不能提交到 Git。
+storeFile=/absolute/private/path/hysteria2-manager-release.jks
+storePassword=REPLACE_WITH_PRIVATE_VALUE
+keyAlias=hysteria2-manager
+keyPassword=REPLACE_WITH_PRIVATE_VALUE
