@@ -11,11 +11,11 @@ void main() {
 
   test('normalizes the configured HTTPS panel endpoint', () {
     expect(
-      AppController.normalizeBaseUrl('https://panel.ssrvpn.vip', 19998),
-      'https://panel.ssrvpn.vip:19998',
+      AppController.normalizeBaseUrl('https://panel.example.com', 8443),
+      'https://panel.example.com:8443',
     );
     expect(
-      () => AppController.normalizeBaseUrl('http://panel.example.com', 19998),
+      () => AppController.normalizeBaseUrl('http://panel.example.com', 8443),
       throwsA(isA<ApiException>()),
     );
   });

@@ -70,7 +70,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         }
       }
       if (!mounted) return;
-      final current = _packageInfo?.version ?? '0.1.0';
+      final current = _packageInfo?.version ?? '0.2.0';
       if (latest == null) {
         await _showMessage(
           '当前为内部测试版',
@@ -202,7 +202,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                     ?.copyWith(fontWeight: FontWeight.w800),
                               ),
                               Text(
-                                'Android v${_packageInfo?.version ?? '0.1.0'} (${_packageInfo?.buildNumber ?? '1'})',
+                                'Android v${_packageInfo?.version ?? '0.2.0'} (${_packageInfo?.buildNumber ?? '2'})',
                               ),
                             ],
                           ),

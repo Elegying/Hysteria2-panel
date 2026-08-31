@@ -5088,7 +5088,7 @@ class BackupManagerTests(unittest.TestCase):
             tls_key=self.private_key,
             public_host="vpn.example.test",
             hysteria_port=19999,
-            node_name="私家车-2026",
+            node_name="edge-fixture-02",
             work_dir=self.root / "work",
             maintenance_lock_path=self.root / "maintenance.lock",
             maintenance_lock_owner=os.geteuid(),
@@ -5121,7 +5121,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(1, manifest["formatVersion"])
         self.assertEqual("vpn.example.test", manifest["source"]["publicHost"])
         self.assertEqual(19999, manifest["source"]["hysteriaPort"])
-        self.assertEqual("私家车-2026", manifest["source"]["nodeName"])
+        self.assertEqual("edge-fixture-02", manifest["source"]["nodeName"])
         self.assertEqual(1, manifest["proxyUserCount"])
         with sqlite_connection(packaged_database) as connection:
             for table in ("admins", "sessions", "audit_log"):
@@ -5600,7 +5600,7 @@ class BackupManagerTests(unittest.TestCase):
         source_pin = self.manager._certificate_pin(self.certificate.read_bytes())
         issued_uris = {
             name: build_connection_uri(
-                "vpn.example.test", 19999, token, source_pin, "私家车-2026"
+                "vpn.example.test", 19999, token, source_pin, "edge-fixture-02"
             )
             for name, token in issued_tokens.items()
         }
@@ -5628,7 +5628,7 @@ class BackupManagerTests(unittest.TestCase):
             tls_key=destination_key,
             public_host="vpn.example.test",
             hysteria_port=19999,
-            node_name="私家车-2026",
+            node_name="edge-fixture-02",
             work_dir=destination_root / "work",
         )
 
@@ -5656,7 +5656,7 @@ class BackupManagerTests(unittest.TestCase):
                             19999,
                             recovered,
                             destination._certificate_pin(destination_cert.read_bytes()),
-                            "私家车-2026",
+                            "edge-fixture-02",
                         ),
                     )
         self.assertEqual(7, restored_users["bob"]["device_limit"])
@@ -6041,7 +6041,7 @@ class PanelHttpTests(unittest.TestCase):
             tls_key=private_key,
             public_host="8.8.8.8",
             hysteria_port=19999,
-            node_name="私家车-2026",
+            node_name="edge-fixture-02",
             work_dir=Path(self.temp_dir.name) / "backup-restore",
             maintenance_lock_path=maintenance_lock,
             maintenance_lock_owner=os.geteuid(),
@@ -6054,7 +6054,7 @@ class PanelHttpTests(unittest.TestCase):
             hysteria_port=19999,
             pin_sha256="AA:BB:CC",
             stats_client=self.stats,
-            node_name="私家车-2026",
+            node_name="edge-fixture-02",
             service_controller=self.service_controller,
             egress_policy_controller=self.egress_policy_controller,
             system_metrics=FakeSystemMetrics(),
@@ -6329,7 +6329,11 @@ class PanelHttpTests(unittest.TestCase):
             "GET", "/api/v1/mobile/nodes", access_token=access_token
         )
         self.assertEqual(200, status)
-        self.assertEqual(0, nodes["data"]["total"])
+        self.assertEqual(1, nodes["data"]["total"])
+        self.assertEqual(1, nodes["data"]["online"])
+        self.assertEqual("local", nodes["data"]["items"][0]["nodeId"])
+        self.assertEqual("local", nodes["data"]["items"][0]["kind"])
+        self.assertTrue(nodes["data"]["items"][0]["canEmergencyControl"])
 
         status, service = self.mobile_json_request(
             "POST",
@@ -6340,6 +6344,115 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("restart", service["data"]["action"])
         self.assertEqual(["restart"], self.service_controller.actions)
+
+        status, disabled = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/nodes/local/disable",
+            {},
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertFalse(disabled["data"]["enabled"])
+        status, enabled = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/nodes/local/enable",
+            {},
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue(enabled["data"]["enabled"])
+        self.assertEqual(["restart", "stop", "start"], self.service_controller.actions)
+
+        status, reboot = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/system/reboot",
+            {},
+            access_token=access_token,
+        )
+        self.assertEqual(202, status)
+        self.assertTrue(reboot["data"]["accepted"])
+        self.assertEqual(1, self.reboot_controller.queued)
+
+        issued = self.application.node_enrollment_service.create(
+            "mobile-edge", "", 10, "Elegy"
+        )
+        public_der = bytes.fromhex("302a300506032b6570032100") + b"m" * 32
+        self.application.node_enrollment_service.register(
+            {
+                "enrollmentToken": self.enrollment_token(
+                    issued["deploymentCommand"]
+                ),
+                "publicKey": base64.b64encode(public_der).decode("ascii"),
+                "hostname": "mobile-edge.example.test",
+                "platform": "linux",
+                "architecture": "amd64",
+                "agentVersion": "0.38.0",
+            },
+            remote_ip="127.0.0.1",
+        )
+        now = int(time.time())
+        self.assertTrue(
+            self.db.verify_node(
+                issued["nodeId"],
+                hashlib.sha256(public_der).hexdigest(),
+                actor="Elegy",
+                verified_at=now,
+            )
+        )
+        self.application.node_heartbeat_service.accept(
+            {
+                "nodeId": issued["nodeId"],
+                "sentAt": now,
+                "nonce": base64.urlsafe_b64encode(b"m" * 32)
+                .rstrip(b"=")
+                .decode("ascii"),
+                "hostname": "mobile-edge.example.test",
+                "agentVersion": "0.38.0",
+                "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+            },
+            "127.0.0.1",
+        )
+        self.assertTrue(
+            self.db.set_node_policy_state(
+                issued["nodeId"], "protocol_ready", "Elegy", now
+            )
+        )
+        status, nodes = self.mobile_json_request(
+            "GET", "/api/v1/mobile/nodes", access_token=access_token
+        )
+        self.assertEqual(200, status)
+        remote = next(
+            item for item in nodes["data"]["items"] if item["kind"] == "remote"
+        )
+        self.assertTrue(remote["canEmergencyControl"])
+        self.assertIn("totalBytes", remote)
+
+        status, stopped = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/nodes/{}/disable".format(issued["nodeId"]),
+            {},
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("STOP_DATA_PLANE", stopped["data"]["command"])
+        self.assertTrue(
+            self.db.ack_node_command(
+                issued["nodeId"],
+                stopped["data"]["commandId"],
+                True,
+                "",
+                "7" * 64,
+                now + 1,
+            )
+        )
+        status, resumed = self.mobile_json_request(
+            "POST",
+            "/api/v1/mobile/nodes/{}/enable".format(issued["nodeId"]),
+            {},
+            access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual("START_DATA_PLANE", resumed["data"]["command"])
 
         status, refreshed = self.mobile_json_request(
             "POST",
@@ -7348,13 +7461,16 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("升级前历史（未归属）", body)
         self.assertIn("设备统计暂不完整", body)
         self.assertIn("上次 5", body)
-        self.assertIn("按实际入口机器拆分", body)
-        self.assertIn("预算编辑默认收起", body)
+        self.assertIn("按面板节点与远程节点统计当前周期用量", body)
         self.assertIn("节点统计与流量预算", body)
-        self.assertIn('class="machine-grid"', body)
-        self.assertEqual(3, body.count('class="machine-card"'))
-        self.assertEqual(2, body.count('class="budget-editor"'))
-        self.assertIn("<summary>编辑预算</summary>", body)
+        self.assertIn('class="machine-budget-list"', body)
+        self.assertEqual(3, body.count('class="machine-budget-row"'))
+        self.assertEqual(
+            2, body.count('class="compact-button secondary machine-budget-edit"')
+        )
+        self.assertEqual(2, body.count('<dialog id="budget-dialog-'))
+        self.assertIn("编辑预算</button>", body)
+        self.assertIn('aria-label="面板本机 流量预算使用比例"', body)
         self.assertNotIn('<span class="metric-breakdown">', body)
         self.assertNotIn('class="table-wrap machine-table"', body)
         self.assertIn('name="limit_gib"', body)
@@ -7364,7 +7480,6 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("每月重置日", body)
         self.assertIn("只会删除这条未归属历史", body)
         self.assertIn('/usage-origins/legacy-unattributed/delete', body)
-        self.assertIn("0 表示不限制", body)
 
     def test_budget_update_requires_csrf_and_persists_for_panel_local_node(self):
         headers, csrf = self.authenticated_headers()
@@ -8955,13 +9070,13 @@ class SettingsTests(unittest.TestCase):
             "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
             "HY2PANEL_STATS_SECRET": "stats-secret",
             "HY2PANEL_CERT_PIN": "AA:BB:CC",
-            "HY2PANEL_NODE_NAME": "私家车-2026",
+            "HY2PANEL_NODE_NAME": "edge-fixture-02",
             "HY2PANEL_PANEL_SCHEME": "http",
         }
 
         settings = Settings.from_mapping(values)
 
-        self.assertEqual("私家车-2026", settings.node_name)
+        self.assertEqual("edge-fixture-02", settings.node_name)
         self.assertEqual("http", settings.panel_scheme)
 
     def test_usage_origin_identity_is_validated_and_namespaced(self):

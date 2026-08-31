@@ -42,7 +42,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
             token_factory=lambda: "a" * 43,
         )
         issued = service.create(
-            name="US9929",
+            name="edge-fixture-01",
             expected_ip="8.8.8.8",
             ttl_minutes=10,
             actor="admin",
@@ -52,7 +52,7 @@ class NodeControlDatabaseTests(unittest.TestCase):
             {
                 "enrollmentToken": token,
                 "publicKey": ed25519_public_key(),
-                "hostname": "US9929",
+                "hostname": "edge-fixture-01",
                 "platform": "linux",
                 "architecture": "amd64",
                 "agentVersion": "0.24.0",
@@ -196,7 +196,7 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
             "nodeId": self.node_id,
             "sentAt": self.now,
             "nonce": base64.urlsafe_b64encode(b"n" * 32).rstrip(b"=").decode("ascii"),
-            "hostname": "US9929",
+            "hostname": "edge-fixture-01",
             "agentVersion": "0.25.0",
             "signature": base64.b64encode(b"s" * 64).decode("ascii"),
         }
@@ -207,7 +207,7 @@ class NodeHeartbeatServiceTests(NodeControlDatabaseTests):
         payload = self.payload()
         expected = (
             "hy2panel-node-heartbeat-v1\n"
-            '{"agentVersion":"0.25.0","hostname":"US9929",'
+            '{"agentVersion":"0.25.0","hostname":"edge-fixture-01",'
             '"nodeId":"' + self.node_id + '","nonce":"' + payload["nonce"]
             + '","sentAt":2000000000}'
         ).encode("utf-8")

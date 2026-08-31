@@ -33,12 +33,15 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 - `GET /api/v1/mobile/users`：返回全部用户，不分页。
 - `POST /api/v1/mobile/users`、`PATCH /api/v1/mobile/users/{id}`、`DELETE /api/v1/mobile/users/{id}`：创建、编辑和删除用户。
 - `POST /api/v1/mobile/users/{id}/{enable|disable|share|rotate-secret|reset-traffic}`：用户操作。
-- `GET /api/v1/mobile/nodes`：返回安全裁剪后的节点详情，不包含节点私钥、HMAC 或机器令牌。
+- `GET /api/v1/mobile/nodes`：返回面板本机与远程节点的安全裁剪详情、累计流量和采样时间，不包含节点私钥、HMAC 或机器令牌。
 - `POST /api/v1/mobile/node-enrollments`：生成短时节点对接授权和部署代码。
 - `POST /api/v1/mobile/nodes/{node-id}/verify`：核对完整公钥指纹后确认节点。
+- `POST /api/v1/mobile/nodes/local/{enable|disable}`：启用面板本机服务，或在先结算流量后紧急停用。
+- `POST /api/v1/mobile/nodes/{node-id}/{enable|disable}`：向已验证远程节点下发固定的恢复或紧急停用命令。
 - `POST /api/v1/mobile/service/{start|restart|stop}`：控制 Hysteria 服务；重启和停止前先结算流量。
+- `POST /api/v1/mobile/system/reboot`：先结算流量并写入审计，再通过固定白名单排队重启服务器；成功返回 HTTP 202。
 
-写操作继续执行维护互斥、并发 generation、流量结算、断开连接和审计。客户端不得自动重试没有幂等保护的危险写操作。
+写操作继续执行维护互斥、并发 generation、流量结算、断开连接和审计。客户端不得自动重试没有幂等保护的危险写操作。节点页每 5 秒重新读取累计值并在本机计算速率，不新增匿名流量接口，也不把节点地址写进 APK。
 
 ### 返回格式
 

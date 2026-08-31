@@ -115,23 +115,101 @@ def _node_status(node, now):
     return "pending_registration"
 
 
-def nodes_payload(application):
+def _machine_origin_map(snapshot):
+    return {
+        origin.get("origin_id"): origin
+        for origin in snapshot.get("machine_stats", {}).get("origins", [])
+        if isinstance(origin, dict) and origin.get("origin_id")
+    }
+
+
+def _traffic_fields(origin):
+    origin = origin if isinstance(origin, dict) else {}
+    tx_bytes = _non_negative_int(origin.get("tx_bytes"))
+    rx_bytes = _non_negative_int(origin.get("rx_bytes"))
+    return {
+        "txBytes": tx_bytes,
+        "rxBytes": rx_bytes,
+        "totalBytes": tx_bytes + rx_bytes,
+        "trafficObservedAt": _non_negative_int(
+            origin.get("observed_at") or origin.get("last_traffic_at")
+        ),
+    }
+
+
+def nodes_payload(application, snapshot=None):
     now = int(time.time())
+    snapshot = _safe_snapshot(application) if snapshot is None else snapshot
+    origins = _machine_origin_map(snapshot)
     online_states = {
         state["node_id"]: state
         for state in application.database.list_node_online_states(
             now, NODE_FRESHNESS_SECONDS
         )
     }
-    items = []
+    try:
+        service_status = application.service_controller.status()
+    except Exception:
+        service_status = "unknown"
+    local_origin_id = getattr(application.usage_manager, "local_origin_id", "")
+    local_origin = origins.get(local_origin_id, {})
+    local_status = {
+        "active": "online",
+        "activating": "starting",
+        "deactivating": "stopping",
+        "inactive": "stopped",
+        "failed": "failed",
+    }.get(service_status, "offline")
+    items = [
+        {
+            "nodeId": "local",
+            "originId": local_origin_id,
+            "kind": "local",
+            "name": application.node_name,
+            "status": local_status,
+            "registrationStatus": "local",
+            "lifecycleState": local_status,
+            "policyState": "local",
+            "dataPlaneState": "local",
+            "expectedIp": "",
+            "observedIp": application.public_host,
+            "hostname": application.public_host,
+            "platform": "",
+            "architecture": "",
+            "agentVersion": "",
+            "fingerprint": "",
+            "fingerprintShort": "",
+            "verified": True,
+            "createdAt": _non_negative_int(local_origin.get("created_at")),
+            "registeredAt": 0,
+            "lastHeartbeatAt": _non_negative_int(local_origin.get("observed_at")),
+            "lastSnapshotAt": _non_negative_int(local_origin.get("observed_at")),
+            "lastTrafficAckAt": _non_negative_int(local_origin.get("observed_at")),
+            "onlineState": local_origin.get("online_state", "unavailable"),
+            "onlineDevices": local_origin.get("online_devices"),
+            "lastKnownOnlineDevices": _non_negative_int(
+                local_origin.get("last_known_online_devices")
+            ),
+            "pendingCommands": 0,
+            "failedCommands": 0,
+            "dnsAdmitted": True,
+            "expiresAt": 0,
+            "enrollmentId": "",
+            "enabled": service_status == "active",
+            "canEmergencyControl": True,
+            **_traffic_fields(local_origin),
+        }
+    ]
     for node in application.database.list_nodes():
         if node.get("status") == "revoked" and node.get("registered_at") is None:
             continue
         online_state = online_states.get(node["node_id"], {})
         fingerprint = _node_fingerprint(node.get("public_key"))
-        items.append(
-            {
+        origin = origins.get("node:" + node["node_id"], {})
+        item = {
                 "nodeId": node["node_id"],
+                "originId": "node:" + node["node_id"],
+                "kind": "remote",
                 "name": node["name"],
                 "status": _node_status(node, now),
                 "registrationStatus": node.get("status") or "unknown",
@@ -162,8 +240,17 @@ def nodes_payload(application):
                 "dnsAdmitted": node.get("dns_admitted_at") is not None,
                 "expiresAt": _non_negative_int(node.get("expires_at")),
                 "enrollmentId": node.get("enrollment_id") or "",
+                "enabled": (node.get("lifecycle_state") or "active")
+                not in {"stopped", "stopping", "archived"},
+                "canEmergencyControl": bool(
+                    node.get("verified_at")
+                    and node.get("policy_state") == "protocol_ready"
+                    and (node.get("lifecycle_state") or "active")
+                    in {"active", "draining", "stopped"}
+                ),
             }
-        )
+        item.update(_traffic_fields(origin))
+        items.append(item)
     status_counts = {}
     for item in items:
         status_counts[item["status"]] = status_counts.get(item["status"], 0) + 1
@@ -226,7 +313,7 @@ def _traffic_budgets(application, snapshot):
 def overview_payload(application, panel_version):
     snapshot = _safe_snapshot(application)
     users = _user_items(application, snapshot)
-    nodes = nodes_payload(application)
+    nodes = nodes_payload(application, snapshot=snapshot)
     try:
         service_status = application.service_controller.status()
     except Exception:
@@ -291,7 +378,10 @@ def capabilities_payload(panel_version):
             "users",
             "nodes",
             "node-enrollment",
+            "local-node-control",
+            "node-realtime-traffic",
             "service-control",
+            "server-reboot",
             "app-update-check",
         ],
     }

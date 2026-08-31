@@ -20,7 +20,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   final _search = TextEditingController();
   List<Map<String, dynamic>> _users = [];
   String _status = 'all';
-  String _sort = 'traffic';
+  String? _sort;
   String? _error;
   bool _loading = true;
   Timer? _timer;
@@ -52,10 +52,17 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           return (b['onlineDevices'] as num? ?? 0).compareTo(
             a['onlineDevices'] as num? ?? 0,
           );
-        default:
+        case 'traffic':
           return (b['usedBytes'] as num? ?? 0).compareTo(
             a['usedBytes'] as num? ?? 0,
           );
+        default:
+          final created = (b['createdAt'] as num? ?? 0).compareTo(
+            a['createdAt'] as num? ?? 0,
+          );
+          return created != 0
+              ? created
+              : (b['id'] as num? ?? 0).compareTo(a['id'] as num? ?? 0);
       }
     });
     return values;
@@ -704,6 +711,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                 decoration: const InputDecoration(
                                   labelText: '排序',
                                 ),
+                                hint: const Text('默认倒序'),
                                 items: const [
                                   DropdownMenuItem(
                                     value: 'traffic',
@@ -719,7 +727,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                   ),
                                 ],
                                 onChanged: (value) =>
-                                    setState(() => _sort = value ?? 'traffic'),
+                                    setState(() => _sort = value),
                               ),
                             ),
                           ],

@@ -120,6 +120,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
+  Future<void> _rebootServer() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认重启服务器'),
+        content: const Text('重启后面板和所有连接会暂时中断，通常需要 30 至 90 秒恢复。确认继续吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('重启服务器'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _acting = true);
+    try {
+      await ref
+          .read(appControllerProvider.notifier)
+          .postJson('/api/v1/mobile/system/reboot');
+      if (mounted) _message('服务器重启任务已受理');
+    } on ApiException catch (error) {
+      if (mounted) _message(error.message, error: true);
+    } finally {
+      if (mounted) setState(() => _acting = false);
+    }
+  }
+
   void _message(String value, {bool error = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -295,14 +327,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         onStart: () => _serviceAction('start', '启动'),
                         onRestart: () => _serviceAction('restart', '重启'),
                         onStop: () => _serviceAction('stop', '停止'),
-                        onRefresh: _load,
                         onEnroll: _showEnrollment,
                       ),
                     ),
                     const SizedBox(height: 14),
                     _BudgetsCard(data: data),
                     const SizedBox(height: 14),
-                    _ResourcesCard(data: data),
+                    _ResourcesCard(
+                      data: data,
+                      disabled: _acting,
+                      onReboot: _rebootServer,
+                    ),
                   ],
                 ),
               ),
@@ -434,10 +469,12 @@ class _SectionCard extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.child,
+    this.action,
   });
   final String title;
   final String subtitle;
   final Widget child;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) => Card(
@@ -446,10 +483,18 @@ class _SectionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleLarge
-                ?.copyWith(fontWeight: FontWeight.w800),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w800),
+                ),
+              ),
+              if (action != null) ...[const SizedBox(width: 10), action!],
+            ],
           ),
           const SizedBox(height: 3),
           Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
@@ -467,14 +512,12 @@ class _ServiceButtons extends StatelessWidget {
     required this.onStart,
     required this.onRestart,
     required this.onStop,
-    required this.onRefresh,
     required this.onEnroll,
   });
   final bool disabled;
   final VoidCallback onStart;
   final VoidCallback onRestart;
   final VoidCallback onStop;
-  final VoidCallback onRefresh;
   final VoidCallback onEnroll;
 
   @override
@@ -483,12 +526,6 @@ class _ServiceButtons extends StatelessWidget {
       ('启动', Icons.play_arrow_rounded, onStart, Colors.green),
       ('重启', Icons.restart_alt_rounded, onRestart, Colors.orange),
       ('停止', Icons.stop_rounded, onStop, Colors.red),
-      (
-        '刷新',
-        Icons.refresh_rounded,
-        onRefresh,
-        Theme.of(context).colorScheme.primary,
-      ),
       (
         '对接',
         Icons.add_link_rounded,
@@ -577,8 +614,14 @@ class _BudgetsCard extends StatelessWidget {
 }
 
 class _ResourcesCard extends StatelessWidget {
-  const _ResourcesCard({required this.data});
+  const _ResourcesCard({
+    required this.data,
+    required this.disabled,
+    required this.onReboot,
+  });
   final Map<String, dynamic> data;
+  final bool disabled;
+  final VoidCallback onReboot;
 
   @override
   Widget build(BuildContext context) {
@@ -609,6 +652,11 @@ class _ResourcesCard extends StatelessWidget {
     return _SectionCard(
       title: '系统资源',
       subtitle: '服务器实时负载与网络优化状态',
+      action: IconButton.filledTonal(
+        onPressed: disabled ? null : onReboot,
+        tooltip: '重启服务器',
+        icon: const Icon(Icons.restart_alt_rounded),
+      ),
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),

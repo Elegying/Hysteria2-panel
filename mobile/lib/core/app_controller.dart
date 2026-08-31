@@ -7,9 +7,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
-const defaultPanelAddress = 'https://panel.ssrvpn.vip';
-const defaultPanelPort = 19998;
-
 class AppSession {
   const AppSession({
     required this.baseUrl,
@@ -175,9 +172,20 @@ class AppController extends StateNotifier<AppState> {
       final dio = _createDio(baseUrl);
       final capabilities = await dio.get('/api/v1/mobile/capabilities');
       if (capabilities.statusCode == 404) {
-        throw const ApiException('面板版本暂不支持 App，请先将面板升级到 v0.37.0 或更高版本');
+        throw const ApiException('面板版本暂不支持 App，请先将面板升级到 v0.38.0 或更高版本');
       }
-      _unwrap(capabilities);
+      final capabilityData = _unwrap(capabilities);
+      final features = (capabilityData['features'] as List? ?? const [])
+          .map((value) => value.toString())
+          .toSet();
+      const requiredFeatures = {
+        'local-node-control',
+        'node-realtime-traffic',
+        'server-reboot',
+      };
+      if (!features.containsAll(requiredFeatures)) {
+        throw const ApiException('面板版本暂不支持当前 App，请先将面板升级到 v0.38.0 或更高版本');
+      }
       var deviceId = await _storage.read(key: _deviceKey);
       if (deviceId == null || deviceId.length < 8) {
         deviceId = const Uuid().v4();
@@ -235,6 +243,9 @@ class AppController extends StateNotifier<AppState> {
       }
     }
     await _storage.delete(key: _refreshKey);
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_baseUrlKey);
+    await preferences.remove(_usernameKey);
     _dio = null;
     state = const AppState(initializing: false);
   }

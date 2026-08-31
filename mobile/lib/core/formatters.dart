@@ -44,6 +44,7 @@ String nodeStatusLabel(Object? status) {
     'starting': '正在恢复',
     'archived': '已归档',
     'revoked': '已撤销',
+    'failed': '运行异常',
   };
   return labels[status?.toString()] ?? '状态未知';
 }
