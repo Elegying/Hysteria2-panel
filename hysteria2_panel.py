@@ -48,7 +48,7 @@ from qrcodegen import DataTooLongError, QrCode
 from hy2panel.dashboard import (
     DashboardContext,
     render_dashboard,
-    select_dashboard_user_page,
+    select_dashboard_users,
 )
 from hy2panel.certificate import (
     certificate_validity_timestamps,
@@ -5940,7 +5940,6 @@ class PanelHandler(JsonHandler):
         status_filter="",
         online_filter="",
         udp443_filter="",
-        page=1,
     ):
         context = DashboardContext(
             logger=LOGGER,
@@ -5962,7 +5961,6 @@ class PanelHandler(JsonHandler):
             status_filter=status_filter,
             online_filter=online_filter,
             udp443_filter=udp443_filter,
-            page=page,
             context=context,
         )
 
@@ -6435,7 +6433,7 @@ class PanelHandler(JsonHandler):
                 snapshot = self.app.usage_manager.online_snapshot()
                 users = self.app.database.list_proxy_users_for_usage()
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                selected = select_dashboard_user_page(
+                selected = select_dashboard_users(
                     users,
                     snapshot,
                     query.get("sort", [""])[0],
@@ -6444,7 +6442,6 @@ class PanelHandler(JsonHandler):
                     query.get("status", [""])[0],
                     query.get("online", [""])[0],
                     query.get("udp443", [""])[0],
-                    query.get("page", ["1"])[0],
                 )
                 payload = dashboard_online_payload(
                     [user["name"] for user in selected["users"]], snapshot
@@ -6470,7 +6467,6 @@ class PanelHandler(JsonHandler):
                     query.get("status", [""])[0],
                     query.get("online", [""])[0],
                     query.get("udp443", [""])[0],
-                    query.get("page", ["1"])[0],
                 ),
             )
             return

@@ -95,7 +95,9 @@ def main():
     fixture = PanelHttpTests("runTest")
     fixture.setUp()
     try:
-        for name in ("browser-alice", "browser-bob", "long-mobile-account-name"):
+        names = ["browser-user-{:02d}".format(index) for index in range(59)]
+        names.append("long-mobile-account-name-without-pagination")
+        for name in names:
             fixture.db.create_proxy_user(name)
         raw_token, _csrf = fixture.db.create_session(fixture.admin_id)
         request = urllib.request.Request(
@@ -108,6 +110,12 @@ def main():
             dashboard = response.read(2 * 1024 * 1024)
         if b"Hysteria 2" not in dashboard or b"user-table" not in dashboard:
             raise RuntimeError("authenticated dashboard fixture is incomplete")
+        if dashboard.count(b'data-user-name="') != len(names):
+            raise RuntimeError("authenticated dashboard did not render every user")
+        if "共 {} 位用户".format(len(names)).encode("utf-8") not in dashboard:
+            raise RuntimeError("authenticated dashboard user count is incorrect")
+        if 'aria-label="用户分页"'.encode("utf-8") in dashboard:
+            raise RuntimeError("authenticated dashboard still renders pagination")
     finally:
         fixture.tearDown()
 
