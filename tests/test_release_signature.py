@@ -238,9 +238,11 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
         )
         self.assertIn("gh release download", source)
         self.assertIn(
-            'expected = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}',
+            'required = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}',
             source,
         )
+        self.assertIn("Hysteria2-Manager-v", source)
+        self.assertIn("len(extras) > 1", source)
         self.assertIn("draft release has unexpected asset set", source)
         self.assertIn("cmp --silent install.sh", source)
         self.assertIn("cosign sign-blob --yes --bundle install.sh.sigstore.json install.sh", source)
@@ -304,9 +306,11 @@ class DistributionSyntheticWorkflowTests(unittest.TestCase):
         )
         self.assertIn("install.sh.sigstore.json", source)
         self.assertIn(
-            'expected = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}',
+            'required = {"install.sh", "install.sh.sigstore.json", "sbom.spdx.json", "sbom.spdx.json.sigstore.json"}',
             source,
         )
+        self.assertIn("Hysteria2-Manager-v", source)
+        self.assertIn('unzip -tqq "${asset_dir}/${RELEASE_APK}"', source)
         self.assertIn("latest release has unexpected asset set", source)
         self.assertIn("cmp --silent", source)
         self.assertIn("cosign verify-blob", source)
