@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.36.2"
+PANEL_VERSION="0.36.3"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -23,14 +23,14 @@ HY2PANEL_NODES_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-
 HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/distributed.py"
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="d875c5dc16f546f9e3eb17e50fed67e7f4f9b50c2afbf70ae5921f4564076a41"
-OFFSITE_BACKUP_SHA256="cebe6588728ccae872838f996c71eb1fc5c651b90f8247240f4982f23b205b64"
+PANEL_SHA256="51ecaf0bb45debe72916a02e710634eab0da38bfcd3d4aeb02b3380fb85da801"
+OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed94b2f07f"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="3216c2c70c3517731f2b3cb602a1b89bb3a867f64e16428443a1d77d14f69283"
+HY2PANEL_VERSION_SHA256="ff52f206cc0e961e2383b1cae428f4048bc505bcc739aefce0f567a1e101ec13"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
-HY2PANEL_WEB_ASSETS_SHA256="c9ac0b87ae847f082dedfe10198ddb4699efba760cf6a02fa9a2db9c467fe283"
+HY2PANEL_WEB_ASSETS_SHA256="79f4f55ceaaf10e46750a031cc39e48e43477fade668df5e55a9ce7faa53c88a"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
@@ -38,8 +38,8 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_NODES_SHA256="b6d4986c4c8169b7d3bbacc2ae2aefb95e2285b9843afaece58b553c1092e1d0"
 HY2PANEL_DISTRIBUTED_SHA256="6cdd694fc13c76a26dd850a42e3a9f3cdd3f1921a836fb378d0148dde408359c"
-HY2PANEL_DASHBOARD_SHA256="de99ab16f6b16c0888293cb4fb1c568e0c8019dfd597117b2c8acc322efba12a"
-NODE_AGENT_SHA256="ac8b4e24b95d76a8d7be64efbd4ec3f0cf0e769e0ec0d8190cebeee983efc19a"
+HY2PANEL_DASHBOARD_SHA256="5e8d301f785e65906e6b0fe2ae459a37c75be55cad77d4dfc0710bea05614cac"
+NODE_AGENT_SHA256="f562c315e2d8c11c8e34d8eaf5c641c3ec47244943cb244416dae4fbdbd2c497"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -98,6 +98,8 @@ EGRESS_TRANSACTION_MARKER=/etc/hysteria2-panel/.egress-transaction.json
 UPGRADE_ACTIVE_MARKER=/var/backups/hysteria2-panel/.upgrade-active
 UPGRADE_RECOVERY_SCRIPT=/var/backups/hysteria2-panel/.upgrade-recover.sh
 UPGRADE_RECOVERY_UNIT=/etc/systemd/system/hysteria2-panel-upgrade-recover.service
+UPGRADE_WATCH_UNIT=hysteria2-panel-upgrade-watch.service
+UPGRADE_RUNTIME_SYSCTL_STATE=runtime-sysctl.state
 UPGRADE_RECOVERY_DROPIN_DIR=/etc/systemd/system/hysteria2-panel.service.d
 UPGRADE_RECOVERY_DROPIN=${UPGRADE_RECOVERY_DROPIN_DIR}/10-hysteria2-panel-upgrade-recovery.conf
 BACKUP_RETENTION_DAYS=90
@@ -111,11 +113,6 @@ FIREWALL_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FIREWALL_TRANSACTION_V1
 ROLLBACK_REQUIRED=0
 FRESH_INSTALL_MUTATED=0
 BACKUP_DIR=""
-NETWORK_STACK_MUTATED=0
-ROLLBACK_RMEM=""
-ROLLBACK_WMEM=""
-ROLLBACK_QDISC=""
-ROLLBACK_CC=""
 FIREWALL_MANAGER="unprepared"
 FIREWALL_RESULT=""
 FIREWALLD_HELP=""
@@ -137,6 +134,9 @@ LEGACY_RESTORE_GUARD_OWNED=0
 TMP_DIR=""
 RECOVER_UPGRADE=0
 VERIFY_RECOVERED_UPGRADE=0
+WATCH_UPGRADE=0
+WATCH_UPGRADE_PID=""
+WATCH_UPGRADE_START=""
 RECOVER_FRESH=0
 MAINTENANCE_LOCK_HELD=0
 ORIGINAL_ARGS=()
@@ -338,6 +338,62 @@ select_traffic_sync_options() {
   return 1
 }
 
+select_upgrade_traffic_sync_script() {
+  TRAFFIC_SYNC_SCRIPT=""
+  if [[ -n "${TMP_DIR:-}" && ! -L "${TMP_DIR}/hysteria2_panel.py" && \
+    -f "${TMP_DIR}/hysteria2_panel.py" && \
+    "$(stat -c '%u:%h' "${TMP_DIR}/hysteria2_panel.py")" == "0:1" ]]; then
+    TRAFFIC_SYNC_SCRIPT="${TMP_DIR}/hysteria2_panel.py"
+  elif [[ ! -L "${BACKUP_DIR}/opt/hysteria2_panel.py" && \
+    -f "${BACKUP_DIR}/opt/hysteria2_panel.py" && \
+    "$(stat -c '%u:%h' "${BACKUP_DIR}/opt/hysteria2_panel.py")" == "0:1" ]]; then
+    TRAFFIC_SYNC_SCRIPT="${BACKUP_DIR}/opt/hysteria2_panel.py"
+  fi
+  [[ -n "${TRAFFIC_SYNC_SCRIPT}" ]]
+}
+
+sync_traffic_before_upgrade_rollback() {
+  local selection_status=0
+  select_traffic_sync_options || selection_status=$?
+  # Both Hysteria processes may already have been stopped after a successful
+  # final settlement. In that case there is no live counter left to collect.
+  if (( selection_status == 1 )); then
+    return 0
+  fi
+  if (( selection_status != 0 )); then
+    echo "警告：无法确认回滚前的 Hysteria 统计端点状态；已保留事务供下次恢复。" >&2
+    return 1
+  fi
+  if ! select_upgrade_traffic_sync_script; then
+    echo "警告：找不到经过验证的流量结算程序；为避免丢失流量，暂不停止 Hysteria。" >&2
+    return 1
+  fi
+  if (
+    set -a
+    # Query the endpoints still served by the old Hysteria processes.
+    # shellcheck disable=SC1091
+    source "${BACKUP_DIR}/etc/panel.env"
+    set +a
+    "${PYTHON_BIN}" "${TRAFFIC_SYNC_SCRIPT}" \
+      sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}"
+  ); then
+    return 0
+  fi
+  echo "警告：回滚前无法完全清退在线连接，正在执行最后一次非清退流量结算。" >&2
+  if (
+    set -a
+    # shellcheck disable=SC1091
+    source "${BACKUP_DIR}/etc/panel.env"
+    set +a
+    "${PYTHON_BIN}" "${TRAFFIC_SYNC_SCRIPT}" \
+      sync-traffic "${TRAFFIC_SYNC_OPTIONS[@]}"
+  ); then
+    return 0
+  fi
+  echo "警告：回滚前流量同步失败；Hysteria 与事务标记均已保留，拒绝覆盖运行中文件。" >&2
+  return 1
+}
+
 write_backup_manifest() {
   local backup_dir="$1"
   "${PYTHON_BIN}" - "${backup_dir}" <<'PY'
@@ -489,6 +545,82 @@ if actual_entries != expected_entries:
 PY
 }
 
+capture_upgrade_runtime_state() {
+  local backup_dir="$1" state_path state_stage
+  local rmem wmem qdisc congestion_control
+  rmem="$(sysctl -n net.core.rmem_max 2>/dev/null)" || return 1
+  wmem="$(sysctl -n net.core.wmem_max 2>/dev/null)" || return 1
+  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
+  [[ -n "${qdisc}" ]] || qdisc="-"
+  congestion_control="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" \
+    || return 1
+  [[ "${rmem}" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "${wmem}" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "${qdisc}" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+  [[ "${congestion_control}" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+  state_path="${backup_dir}/${UPGRADE_RUNTIME_SYSCTL_STATE}"
+  state_stage="${state_path}.new"
+  printf '%s\n' \
+    "net.core.rmem_max=${rmem}" \
+    "net.core.wmem_max=${wmem}" \
+    "net.core.default_qdisc=${qdisc}" \
+    "net.ipv4.tcp_congestion_control=${congestion_control}" > "${state_stage}" \
+    || return 1
+  chown root:root "${state_stage}" || return 1
+  chmod 0600 "${state_stage}" || return 1
+  sync -f "${state_stage}" || return 1
+  mv -f -- "${state_stage}" "${state_path}" || return 1
+  sync -f "${backup_dir}"
+}
+
+restore_upgrade_runtime_state() {
+  local state_path="${BACKUP_DIR}/${UPGRADE_RUNTIME_SYSCTL_STATE}"
+  local metadata line key value remainder seen=0
+  local rmem="" wmem="" qdisc="" congestion_control=""
+  if [[ ! -e "${state_path}" && ! -L "${state_path}" ]]; then
+    # Backward compatibility for transactions created by older installers.
+    return 0
+  fi
+  [[ ! -L "${state_path}" && -f "${state_path}" ]] || return 1
+  metadata="$(stat -c '%u:%g:%a:%h' "${state_path}")" || return 1
+  [[ "${metadata}" == "0:0:600:1" ]] || return 1
+  while IFS= read -r line; do
+    key=""
+    value=""
+    remainder=""
+    IFS='=' read -r key value remainder <<< "${line}"
+    [[ -z "${remainder}" ]] || return 1
+    case "${key}" in
+      net.core.rmem_max)
+        [[ -z "${rmem}" && "${value}" =~ ^[1-9][0-9]*$ ]] || return 1
+        rmem="${value}"
+        ;;
+      net.core.wmem_max)
+        [[ -z "${wmem}" && "${value}" =~ ^[1-9][0-9]*$ ]] || return 1
+        wmem="${value}"
+        ;;
+      net.core.default_qdisc)
+        [[ -z "${qdisc}" && "${value}" =~ ^[A-Za-z0-9_-]+$ ]] || return 1
+        qdisc="${value}"
+        ;;
+      net.ipv4.tcp_congestion_control)
+        [[ -z "${congestion_control}" && "${value}" =~ ^[A-Za-z0-9_-]+$ ]] \
+          || return 1
+        congestion_control="${value}"
+        ;;
+      *) return 1 ;;
+    esac
+    ((seen += 1))
+  done < "${state_path}"
+  (( seen == 4 )) || return 1
+  sysctl -w "net.core.rmem_max=${rmem}" >/dev/null || return 1
+  sysctl -w "net.core.wmem_max=${wmem}" >/dev/null || return 1
+  if [[ "${qdisc}" != "-" ]]; then
+    sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null || return 1
+  fi
+  sysctl -w "net.ipv4.tcp_congestion_control=${congestion_control}" >/dev/null
+}
+
 require_backup_space() {
   local available_kib estimate_kib=0 path size_kib
   for path in /opt/hysteria2-panel /etc/hysteria2-panel /var/lib/hysteria2-panel/panel.db; do
@@ -573,7 +705,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ProtectKernelTunables=true
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
@@ -609,6 +741,38 @@ EOF
   sync -f /var/backups/hysteria2-panel
 }
 
+watch_upgrade_parent() {
+  local parent_pid="$1" expected_start="$2" current_start=""
+  [[ "${parent_pid}" =~ ^[1-9][0-9]*$ && "${expected_start}" =~ ^[1-9][0-9]*$ ]] \
+    || return 1
+  while [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; do
+    [[ -r "/proc/${parent_pid}/stat" ]] || break
+    current_start="$(awk '{print $22}' "/proc/${parent_pid}/stat" 2>/dev/null)" \
+      || break
+    [[ "${current_start}" == "${expected_start}" ]] || break
+    sleep 2
+  done
+  [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]] || return 0
+  systemctl start --no-block hysteria2-panel-upgrade-recover.service
+}
+
+arm_upgrade_watchdog() {
+  local parent_pid="$$" parent_start=""
+  parent_start="$(awk '{print $22}' "/proc/${parent_pid}/stat" 2>/dev/null)" \
+    || return 1
+  [[ "${parent_start}" =~ ^[1-9][0-9]*$ ]] || return 1
+  systemctl stop "${UPGRADE_WATCH_UNIT}" >/dev/null 2>&1 || true
+  systemctl reset-failed "${UPGRADE_WATCH_UNIT}" >/dev/null 2>&1 || true
+  systemd-run --quiet --collect --unit="${UPGRADE_WATCH_UNIT}" \
+    --property=Type=exec \
+    --property=NoNewPrivileges=yes \
+    --property=PrivateTmp=yes \
+    --property=ProtectHome=yes \
+    --property=ProtectSystem=strict \
+    /bin/bash "${UPGRADE_RECOVERY_SCRIPT}" \
+      --watch-upgrade "${parent_pid}" "${parent_start}"
+}
+
 arm_upgrade_transaction() {
   local marker_stage="${UPGRADE_ACTIVE_MARKER}.new"
   verify_backup_manifest "${BACKUP_DIR}" \
@@ -620,13 +784,17 @@ arm_upgrade_transaction() {
   sync -f "${marker_stage}"
   mv -f -- "${marker_stage}" "${UPGRADE_ACTIVE_MARKER}"
   sync -f /var/backups/hysteria2-panel
+  arm_upgrade_watchdog \
+    || fail "无法启动升级中断 watchdog；正在恢复旧版本"
 }
 
 clear_upgrade_transaction() {
   sync -f /opt/hysteria2-panel /etc/hysteria2-panel \
     /var/lib/hysteria2-panel /etc/systemd/system || return 1
   rm -f -- "${UPGRADE_ACTIVE_MARKER}" || return 1
-  sync -f /var/backups/hysteria2-panel
+  sync -f /var/backups/hysteria2-panel || return 1
+  systemctl stop "${UPGRADE_WATCH_UNIT}" >/dev/null 2>&1 || true
+  systemctl reset-failed "${UPGRADE_WATCH_UNIT}" >/dev/null 2>&1 || true
 }
 
 read_upgrade_backup_path() {
@@ -658,6 +826,30 @@ recover_interrupted_upgrade() {
     || fail "升级自动恢复未通过健康检查；事务标记已保留"
 }
 
+restart_backed_up_optional_runtime_units() {
+  local unit_name
+  for unit_name in \
+    hysteria2-panel-tcp-probe.service \
+    hysteria2-panel-server-443.service \
+    hysteria2-panel-tcp-probe-443.service; do
+    [[ -f "${BACKUP_DIR}/${unit_name}" ]] || continue
+    systemctl reset-failed "${unit_name}" >/dev/null 2>&1 || true
+    systemctl restart "${unit_name}" || return 1
+  done
+}
+
+start_backed_up_timers() {
+  local timer_name wants_name
+  while IFS='|' read -r wants_name timer_name; do
+    [[ -L "${BACKUP_DIR}/${wants_name}" ]] || continue
+    systemctl start "${timer_name}" || return 1
+  done <<'EOF'
+hysteria2-panel-cert-renew.wants|hysteria2-panel-cert-renew.timer
+hysteria2-panel-node-dns-admission.wants|hysteria2-panel-node-dns-admission.timer
+hysteria2-panel-offsite-backup.wants|hysteria2-panel-offsite-backup.timer
+EOF
+}
+
 verify_recovered_upgrade() {
   BACKUP_DIR="$(read_upgrade_backup_path)" \
     || fail "升级恢复复核找不到有效事务；标记已保留"
@@ -667,8 +859,12 @@ verify_recovered_upgrade() {
     >/dev/null 2>&1 || true
   systemctl restart hysteria2-panel.service hysteria2-panel-server.service \
     || fail "升级文件已恢复，但旧服务无法重新启动；标记已保留"
+  restart_backed_up_optional_runtime_units \
+    || fail "升级文件已恢复，但旧版可选入口无法重新启动；标记已保留"
   verify_rollback_recovery \
     || fail "升级文件已恢复，但旧服务或监听端口未通过健康复核；标记已保留"
+  start_backed_up_timers \
+    || fail "升级文件已恢复，但旧版定时任务无法重新启动；标记已保留"
   clear_upgrade_transaction \
     || fail "旧版本已恢复，但升级事务标记未能清除"
   echo "升级中断恢复完成；旧版本服务、端口和节点身份均已复核。"
@@ -795,26 +991,9 @@ rollback_existing_install() {
     echo "警告：无法停止面板写入；为避免破坏数据库，已停止自动文件回滚。备份：${BACKUP_DIR}" >&2
     return 1
   fi
-  if [[ -f "${TMP_DIR:-}/hysteria2_panel.py" ]] && select_traffic_sync_options; then
-    (
-      set -a
-      # Query the endpoints still served by the old Hysteria processes.
-      # shellcheck disable=SC1091
-      source "${BACKUP_DIR}/etc/panel.env"
-      set +a
-      "${PYTHON_BIN}" "${TMP_DIR}/hysteria2_panel.py" \
-        sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}"
-    ) || {
-      echo "警告：回滚前无法完全清退在线连接，正在执行最后一次非清退流量结算。" >&2
-      (
-        set -a
-        # shellcheck disable=SC1091
-        source "${BACKUP_DIR}/etc/panel.env"
-        set +a
-        "${PYTHON_BIN}" "${TMP_DIR}/hysteria2_panel.py" \
-          sync-traffic "${TRAFFIC_SYNC_OPTIONS[@]}"
-      ) || echo "警告：回滚前流量同步未完全成功；pending journal 将保留供下次重试。" >&2
-    }
+  if ! sync_traffic_before_upgrade_rollback; then
+    echo "警告：回滚前流量无法安全结算；为避免计量丢失，已保留 Hysteria 与升级事务。" >&2
+    return 1
   fi
   if ! stop_loaded_units \
     hysteria2-panel-node-dns-admission.timer \
@@ -906,12 +1085,10 @@ rollback_existing_install() {
   fi
   sync
 
-  if [[ "${NETWORK_STACK_MUTATED:-0}" == "1" ]]; then
-    [[ "${ROLLBACK_RMEM}" =~ ^[1-9][0-9]*$ ]] && sysctl -w "net.core.rmem_max=${ROLLBACK_RMEM}" >/dev/null
-    [[ "${ROLLBACK_WMEM}" =~ ^[1-9][0-9]*$ ]] && sysctl -w "net.core.wmem_max=${ROLLBACK_WMEM}" >/dev/null
-    [[ -z "${ROLLBACK_QDISC}" ]] || sysctl -w "net.core.default_qdisc=${ROLLBACK_QDISC}" >/dev/null
-    [[ -z "${ROLLBACK_CC}" ]] || sysctl -w "net.ipv4.tcp_congestion_control=${ROLLBACK_CC}" >/dev/null
-  fi
+  restore_upgrade_runtime_state || {
+    echo "警告：无法恢复升级前运行时内核网络参数；事务标记已保留。" >&2
+    return 1
+  }
 
   systemctl daemon-reload
   if (( RECOVER_UPGRADE == 1 )); then
@@ -926,22 +1103,18 @@ rollback_existing_install() {
     return 0
   fi
   systemctl restart hysteria2-panel.service hysteria2-panel-server.service
+  restart_backed_up_optional_runtime_units || {
+    echo "警告：旧版可选入口未能全部恢复；事务标记已保留。" >&2
+    return 1
+  }
   if ! verify_rollback_recovery; then
     echo "警告：文件已回滚，但旧服务或监听端口未完全恢复；已保留本次防火墙规则，请使用备份目录人工恢复：${BACKUP_DIR}" >&2
     return 1
   fi
-  if [[ -L "${BACKUP_DIR}/hysteria2-panel-cert-renew.wants" ]]; then
-    systemctl start hysteria2-panel-cert-renew.timer \
-      || echo "警告：旧面板已恢复，但证书续期 timer 未能立即启动" >&2
-  fi
-  if [[ -L "${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants" ]]; then
-    systemctl start hysteria2-panel-node-dns-admission.timer \
-      || echo "警告：旧面板已恢复，但节点 DNS 监测 timer 未能立即启动" >&2
-  fi
-  if [[ -L "${BACKUP_DIR}/hysteria2-panel-offsite-backup.wants" ]]; then
-    systemctl start hysteria2-panel-offsite-backup.timer \
-      || echo "警告：旧面板已恢复，但异地备份 timer 未能立即启动" >&2
-  fi
+  start_backed_up_timers || {
+    echo "警告：旧版定时任务未能全部恢复；事务标记已保留。" >&2
+    return 1
+  }
   rollback_firewall_after_service_recovery || true
   if [[ -e "${UPGRADE_ACTIVE_MARKER}" || -L "${UPGRADE_ACTIVE_MARKER}" ]]; then
     clear_upgrade_transaction || {
@@ -5427,11 +5600,6 @@ optimize_network_stack() {
   target_wmem="${MIN_QUIC_UDP_BUFFER}"
   (( current_rmem <= target_rmem )) || target_rmem="${current_rmem}"
   (( current_wmem <= target_wmem )) || target_wmem="${current_wmem}"
-  ROLLBACK_RMEM="${current_rmem}"
-  ROLLBACK_WMEM="${current_wmem}"
-  ROLLBACK_QDISC="$(sysctl -n net.core.default_qdisc 2>/dev/null || true)"
-  ROLLBACK_CC="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
-  NETWORK_STACK_MUTATED=1
   if [[ -f "${SYSCTL_FILE}" ]] && ! grep -q '^# Managed by Hysteria2-panel$' "${SYSCTL_FILE}"; then
     fail "${SYSCTL_FILE} 已存在且不属于本安装器，拒绝覆盖"
   fi
@@ -5491,6 +5659,12 @@ if [[ "${1:-}" == "--recover-upgrade" ]]; then
 elif [[ "${1:-}" == "--verify-recovered-upgrade" ]]; then
   VERIFY_RECOVERED_UPGRADE=1
   shift
+elif [[ "${1:-}" == "--watch-upgrade" ]]; then
+  [[ $# -eq 3 ]] || fail "升级 watchdog 参数无效；事务标记已保留"
+  WATCH_UPGRADE=1
+  WATCH_UPGRADE_PID="${2:-}"
+  WATCH_UPGRADE_START="${3:-}"
+  shift 3
 elif [[ "${1:-}" == "--recover-fresh" ]]; then
   RECOVER_FRESH=1
   shift
@@ -5514,6 +5688,17 @@ fi
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
 assert_reopenable_installer_entrypoint
+[[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"
+if (( WATCH_UPGRADE == 1 )); then
+  for command_name in awk sleep systemctl; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "升级 watchdog 缺少命令 ${command_name}；事务标记已保留"
+  done
+  INSTALL_COMMITTED=1
+  watch_upgrade_parent "${WATCH_UPGRADE_PID}" "${WATCH_UPGRADE_START}" \
+    || fail "升级 watchdog 无法启动恢复服务；事务标记已保留"
+  exit 0
+fi
 if (( JOIN_NODE == 1 )); then
   install_join_node
   INSTALL_COMMITTED=1
@@ -5545,7 +5730,6 @@ if (( ACTIVATE_DATA_PLANE == 1 )); then
   DATA_PLANE_MUTATED=0
   exit 0
 fi
-[[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"
 AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"
 [[ "${AUTO_UPDATE}" == "0" || "${AUTO_UPDATE}" == "1" ]] \
   || fail "HY2PANEL_AUTO_UPDATE 只能是 0 或 1"
@@ -5568,7 +5752,7 @@ if (( RECOVER_FRESH == 1 )); then
   exit 0
 fi
 if (( RECOVER_UPGRADE == 1 || VERIFY_RECOVERED_UPGRADE == 1 )); then
-  for command_name in cat chmod chown cp find grep rm sha256sum ss stat sync systemctl systemd-run; do
+  for command_name in cat chmod chown cp find grep rm sha256sum sleep ss stat sync sysctl systemctl systemd-run; do
     command -v "${command_name}" >/dev/null 2>&1 \
       || fail "升级恢复缺少命令 ${command_name}；事务标记已保留"
   done
@@ -5837,10 +6021,6 @@ else
   PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST,,}"
   validate_panel_public_host "${PANEL_PUBLIC_HOST}" \
     || fail "面板公网域名必须是完整的 ASCII DNS 名称，例如 panel.example.com"
-  install_certbot_dependency
-  if ss -H -ltn "sport = :80" | grep -q .; then
-    fail "ACME HTTP-01 需要独占 TCP 80，但该端口已被其他服务占用；安装器不会停止未知服务"
-  fi
 fi
 EGRESS_POLICY="${EGRESS_POLICY:-${EXISTING_EGRESS_POLICY}}"
 EGRESS_POLICY="${EGRESS_POLICY,,}"
@@ -5855,6 +6035,14 @@ for port in "${HYSTERIA_PORT}" "${PANEL_PORT}" "${AUTH_PORT}" "${STATS_PORT}" "$
     fail "端口无效：${port}"
   fi
 done
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  if [[ "${HYSTERIA_PORT}" == "80" || "${PANEL_PORT}" == "80" || "${AUTH_PORT}" == "80" || "${STATS_PORT}" == "80" || "${STATS_443_PORT}" == "80" ]]; then
+    fail "HTTPS 自动续期固定使用 TCP 80；Hysteria、面板和内部服务端口均不能设为 80"
+  fi
+  if ss -H -ltn "sport = :80" | grep -q .; then
+    fail "ACME HTTP-01 需要独占 TCP 80，但该端口已被其他服务占用；安装器不会停止未知服务"
+  fi
+fi
 [[ "${HYSTERIA_PORT}" != "${PANEL_PORT}" && "${HYSTERIA_PORT}" != "${AUTH_PORT}" && "${HYSTERIA_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
 [[ "${PANEL_PORT}" != "${AUTH_PORT}" && "${PANEL_PORT}" != "${STATS_PORT}" && "${AUTH_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
 [[ "${STATS_443_PORT}" != "${HYSTERIA_PORT}" && "${STATS_443_PORT}" != "${PANEL_PORT}" && "${STATS_443_PORT}" != "${AUTH_PORT}" && "${STATS_443_PORT}" != "${STATS_PORT}" ]] || fail "端口不能重复"
@@ -6052,6 +6240,8 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
       || fail "升级前数据库校验或 WAL 截断失败；安装已停止"
     create_database_snapshot /var/lib/hysteria2-panel/panel.db "${BACKUP_DIR}/panel.db" \
       || fail "无法创建一致的用户数据库快照；安装已停止"
+    capture_upgrade_runtime_state "${BACKUP_DIR}" \
+      || fail "无法保存升级前运行时内核网络参数；安装已停止"
   fi
   write_backup_manifest "${BACKUP_DIR}" \
     || fail "无法生成升级备份完整性清单；安装已停止"
@@ -6082,6 +6272,8 @@ usermod -a -G hy2tls hy2panel
 install -d -o root -g hy2tls -m 0750 /etc/hysteria2-panel
 install -d -o hy2panel -g hy2panel -m 0750 /var/lib/hysteria2-panel
 install -d -o root -g root -m 0700 /var/backups/hysteria2-panel
+install -d -o hy2panel -g hy2panel -m 0700 /var/lib/hysteria2-panel/backup-restore
+install -d -o root -g root -m 0700 /var/backups/hysteria2-panel/offsite-staging
 install -d -o root -g root -m 0755 /opt/hysteria2-panel
 install -d -o root -g root -m 0755 /opt/hysteria2-panel/bin
 cat > "${TMP_DIR}/hysteria2-panel.tmpfiles" <<EOF
@@ -6116,6 +6308,7 @@ CERT_PIN="$(openssl x509 -in "${CERT_FILE}" -outform DER | sha256sum | awk '{pri
 [[ ${#CERT_PIN} -eq 64 ]] || fail "无法计算证书指纹"
 
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
+  install_certbot_dependency
   configure_firewall
   issue_panel_acme_certificate
 fi
@@ -6894,7 +7087,7 @@ CapabilityBoundingSet=CAP_DAC_OVERRIDE
 AmbientCapabilities=CAP_DAC_OVERRIDE
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 ReadOnlyPaths=/opt/hysteria2-panel /etc/hysteria2-panel
-ReadWritePaths=/var/lib/hysteria2-panel /run/hysteria2-panel-maintenance
+ReadWritePaths=/var/lib/hysteria2-panel /var/backups/hysteria2-panel/offsite-staging /run/hysteria2-panel-maintenance
 TasksMax=48
 MemoryMax=512M
 TimeoutStartSec=30min

@@ -57,6 +57,8 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 @media(max-width:640px){.user-table table,.user-table tbody{display:block;width:100%;min-width:0}}
 @media(max-width:640px){.user-table td{padding:0}.user-table td:nth-child(6){padding-top:8px}}
 @media(max-width:640px){.version-row{display:grid;grid-template-columns:1fr;align-items:start;gap:8px}.version-actions{grid-template-columns:1fr;width:100%}.version-actions form,.version-actions button{width:100%}}
+.service-badge.pending{border-color:rgba(243,189,98,.34);background:rgba(243,189,98,.12);color:var(--warning)}.service-badge.failed{border-color:rgba(255,120,134,.34);background:rgba(255,120,134,.13);color:#ffabb4}.user-table td:first-child strong,.node-row strong{overflow-wrap:anywhere;word-break:break-word}.topbar .pill,.topbar .topbar-action,.topbar .logout-form button{border:1px solid #3a506b;border-radius:10px;background:#17273b;box-shadow:none}.pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}.pagination-links{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px}.pagination-links>a,.pagination-current{display:inline-grid;place-items:center;min-width:36px;min-height:36px;padding:6px 9px;border:1px solid #39526e;border-radius:9px;color:var(--text);text-decoration:none}.pagination-links>.button{min-width:auto;min-height:36px}.pagination-current{border-color:#6f9ef6;background:rgba(120,166,255,.16);font-weight:800}.pagination-gap{padding:0 3px;color:var(--muted)}
+@media(max-width:640px){.pagination{align-items:stretch;flex-direction:column}.pagination-links{justify-content:flex-start}.pagination-links>.button{flex:1}.user-table td:first-child strong{display:block;max-width:100%}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop,.dialog-head{backdrop-filter:none}}
 """
 
@@ -94,6 +96,15 @@ async function submitInlineForm(form) {
     body: new URLSearchParams(new FormData(form)),
     credentials: 'same-origin'
   });
+  if (response.status === 401) {
+    window.location.assign('/login');
+    throw new Error('登录已失效，正在返回登录页');
+  }
+  if (response.redirected) throw new Error('登录状态已变化，请重新登录');
+  const contentType = response.headers.get('Content-Type') || '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error('服务器响应格式异常，请刷新页面后重试');
+  }
   let payload;
   try { payload = await response.json(); } catch (_) { payload = {}; }
   if (!response.ok) throw new Error(payload.error || '操作失败，请刷新页面后重试');
@@ -491,12 +502,25 @@ document.addEventListener('submit', async function(event) {
   try {
     const response = await fetch('/restore', {
       method: 'POST',
-      headers: {'Content-Type': 'application/zip', 'X-HY2Panel-CSRF': form.dataset.csrf},
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/zip',
+        'X-HY2Panel-CSRF': form.dataset.csrf
+      },
       body: file.files[0],
       credentials: 'same-origin'
     });
-    const body = await response.text();
-    if (!response.ok) throw new Error(body.replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim());
+    if (response.status === 401) {
+      window.location.assign('/login');
+      throw new Error('登录已失效，正在返回登录页');
+    }
+    const contentType = response.headers.get('Content-Type') || '';
+    let payload = {};
+    if (contentType.toLowerCase().includes('application/json')) {
+      try { payload = await response.json(); } catch (_) { payload = {}; }
+    }
+    if (!response.ok) throw new Error(payload.error || '恢复上传失败，请检查文件后重试');
+    if (payload.status !== 'queued') throw new Error('恢复任务状态响应无效');
     status.textContent = '恢复任务已启动，服务将在数秒后重启；请稍后重新登录。';
   } catch (error) {
     status.textContent = error.message || '恢复上传失败，请重试';
@@ -532,15 +556,9 @@ if (editUserSelect) {
 const filterForm = document.querySelector('[data-user-filters]');
 if (filterForm) {
   const userSearch = filterForm.querySelector('[data-user-search]');
-  const statusFilter = filterForm.querySelector('[data-status-filter]');
-  const onlineFilter = filterForm.querySelector('[data-online-filter]');
-  const udp443Filter = filterForm.querySelector('[data-udp443-filter]');
   const clearFilters = filterForm.querySelector('[data-clear-user-filters]');
-  const userRows = Array.from(document.querySelectorAll('[data-user-name]'));
-  const searchStatus = document.querySelector('[data-search-status]');
-  const filterEmpty = document.querySelector('[data-filter-empty]');
-  let filterFrame = 0;
-  function syncFilterUrl() {
+  let searchTimer = 0;
+  function applyServerFilters() {
     const params = new URLSearchParams(new FormData(filterForm));
     const url = new URL(window.location.href);
     ['q', 'status', 'online', 'udp443'].forEach(function(name) {
@@ -548,50 +566,25 @@ if (filterForm) {
       if (value) url.searchParams.set(name, value);
       else url.searchParams.delete(name);
     });
-    history.replaceState(null, '', url.pathname + url.search);
-    document.querySelectorAll('.sort-link').forEach(function(link) {
-      const sortUrl = new URL(link.href);
-      ['q', 'status', 'online', 'udp443'].forEach(function(name) {
-        const value = params.get(name);
-        if (value) sortUrl.searchParams.set(name, value);
-        else sortUrl.searchParams.delete(name);
-      });
-      link.href = sortUrl.pathname + sortUrl.search;
-    });
+    url.searchParams.delete('page');
+    window.location.assign(url.pathname + url.search);
   }
-  function filterUsers() {
-    const query = userSearch.value.trim().toLocaleLowerCase();
-    let visible = 0;
-    userRows.forEach(function(row) {
-      const online = Number(row.dataset.online || '0');
-      const matchesName = row.dataset.userName.toLocaleLowerCase().includes(query);
-      const matchesStatus = !statusFilter.value || row.dataset.enabled === (statusFilter.value === 'enabled' ? '1' : '0');
-      const matchesOnline = !onlineFilter.value || (onlineFilter.value === 'active' ? online > 0 : online === 0);
-      const matchesUdp443 = !udp443Filter.value || row.dataset.allowUdp443 === (udp443Filter.value === 'allowed' ? '1' : '0');
-      const matches = matchesName && matchesStatus && matchesOnline && matchesUdp443;
-      row.hidden = !matches;
-      if (matches) visible += 1;
-    });
-    if (filterEmpty) filterEmpty.hidden = visible !== 0 || userRows.length === 0;
-    if (searchStatus) searchStatus.textContent = visible === userRows.length ? '共 ' + userRows.length + ' 个用户' : '显示 ' + visible + ' / ' + userRows.length + ' 个用户';
-    syncFilterUrl();
-  }
-  function scheduleFilter() {
-    if (filterFrame) window.cancelAnimationFrame(filterFrame);
-    filterFrame = window.requestAnimationFrame(filterUsers);
-  }
-  filterForm.addEventListener('submit', function(event) { event.preventDefault(); filterUsers(); });
-  filterForm.addEventListener('input', scheduleFilter);
-  filterForm.addEventListener('change', scheduleFilter);
-  if (clearFilters) clearFilters.addEventListener('click', function() {
-    userSearch.value = '';
-    statusFilter.value = '';
-    onlineFilter.value = '';
-    udp443Filter.value = '';
-    filterUsers();
-    userSearch.focus();
+  filterForm.addEventListener('submit', function(event) {
+    event.preventDefault();
+    applyServerFilters();
   });
-  filterUsers();
+  filterForm.addEventListener('change', applyServerFilters);
+  userSearch.addEventListener('input', function() {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(applyServerFilters, 350);
+  });
+  if (clearFilters) clearFilters.addEventListener('click', function() {
+    ['q', 'status', 'online', 'udp443'].forEach(function(name) {
+      const field = filterForm.elements.namedItem(name);
+      if (field) field.value = '';
+    });
+    applyServerFilters();
+  });
 }
 function isOnlineCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
@@ -631,6 +624,20 @@ function sortOnlineUserRows() {
   rows.forEach(function(row) { body.appendChild(row); });
 }
 function applyOnlineStatus(payload) {
+  const pageParams = new URL(window.location.href).searchParams;
+  if (pageParams.get('sort') === 'online' || pageParams.has('online')) {
+    const renderedNames = new Set(
+      Array.from(document.querySelectorAll('[data-user-name]')).map(function(row) {
+        return row.dataset.userName;
+      })
+    );
+    const liveNames = new Set(payload.users.map(function(user) { return user.name; }));
+    if (renderedNames.size !== liveNames.size ||
+        Array.from(renderedNames).some(function(name) { return !liveNames.has(name); })) {
+      window.location.reload();
+      return;
+    }
+  }
   const total = document.querySelector('[data-live-online-total]');
   const refreshed = document.querySelector('[data-live-refreshed]');
   const note = document.querySelector('[data-live-online-note]');
@@ -665,7 +672,6 @@ function applyOnlineStatus(payload) {
   });
   if (userCountsChanged && filterForm) {
     sortOnlineUserRows();
-    filterForm.dispatchEvent(new Event('change'));
   }
 
   const machineStates = {
@@ -703,12 +709,17 @@ async function refreshOnlineStatus() {
   const controller = new AbortController();
   const timeout = window.setTimeout(function() { controller.abort(); }, 1800);
   try {
-    const response = await fetch('/api/v1/dashboard-online', {
+    const onlineUrl = '/api/v1/dashboard-online' + window.location.search;
+    const response = await fetch(onlineUrl, {
       headers: {'Accept': 'application/json'},
       credentials: 'same-origin',
       cache: 'no-store',
       signal: controller.signal
     });
+    if (response.status === 401) {
+      window.location.assign('/login');
+      return;
+    }
     if (!response.ok) throw new Error('在线设备状态读取失败');
     const payload = dashboardOnlinePayload(await response.json());
     if (!payload) throw new Error('在线设备状态响应无效');

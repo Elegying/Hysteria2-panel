@@ -45,7 +45,11 @@ from pathlib import Path
 
 from qrcodegen import DataTooLongError, QrCode
 
-from hy2panel.dashboard import DashboardContext, render_dashboard
+from hy2panel.dashboard import (
+    DashboardContext,
+    render_dashboard,
+    select_dashboard_user_page,
+)
 from hy2panel.certificate import (
     certificate_validity_timestamps,
 )
@@ -145,6 +149,7 @@ RESTORE_TRANSACTION_VERSION = 1
 RESTORE_ENV_FILE = Path("/etc/hysteria2-panel/panel.env")
 RESTORE_BACKUP_ROOT = Path("/var/backups/hysteria2-panel")
 RESTORE_WORK_DIR = Path("/var/lib/hysteria2-panel/backup-restore")
+OFFSITE_BACKUP_WORK_DIR = Path("/var/backups/hysteria2-panel/offsite-staging")
 RESTORE_STOP_UNITS = (
     "hysteria2-panel-tcp-probe-443.service",
     "hysteria2-panel-server-443.service",
@@ -554,6 +559,49 @@ class BackupManager:
     REQUIRED_PROXY_COLUMNS = tuple(
         column for column in PROXY_COLUMNS if column != "allow_udp_443"
     )
+    RESTORED_TABLE_COLUMNS = {
+        "proxy_users": PROXY_COLUMNS,
+        "usage_origins": (
+            "origin_id",
+            "kind",
+            "node_id",
+            "display_name",
+            "created_at",
+            "last_traffic_at",
+        ),
+        "usage_origin_users": (
+            "origin_id",
+            "user_name",
+            "tx_bytes",
+            "rx_bytes",
+            "updated_at",
+        ),
+        "origin_traffic_daily": (
+            "origin_id",
+            "usage_date",
+            "tx_bytes",
+            "rx_bytes",
+            "updated_at",
+        ),
+        "origin_traffic_budgets": (
+            "origin_id",
+            "limit_bytes",
+            "warning_percent",
+            "reset_day",
+            "manual_used_bytes",
+            "baseline_total_bytes",
+            "baseline_at",
+            "updated_by",
+            "updated_at",
+        ),
+    }
+    RESTORED_TABLE_ORDER = {
+        "proxy_users": "id",
+        "usage_origins": "origin_id",
+        "usage_origin_users": "origin_id, user_name COLLATE NOCASE, user_name",
+        "origin_traffic_daily": "origin_id, usage_date",
+        "origin_traffic_budgets": "origin_id",
+    }
 
     def __init__(
         self,
@@ -564,6 +612,7 @@ class BackupManager:
         public_host,
         hysteria_port,
         node_name="Hysteria 2",
+        local_origin_id=None,
         work_dir=Path("/var/lib/hysteria2-panel/backup-restore"),
         maintenance_lock_path=MAINTENANCE_LOCK_PATH,
         maintenance_lock_owner=0,
@@ -579,6 +628,7 @@ class BackupManager:
         self.public_host = str(public_host).strip()
         self.hysteria_port = int(hysteria_port)
         self.node_name = str(node_name)
+        self.local_origin_id = local_origin_id if isinstance(local_origin_id, str) else None
         self.work_dir = Path(work_dir)
         self.maintenance_lock_path = Path(maintenance_lock_path)
         self.maintenance_lock_owner = maintenance_lock_owner
@@ -1324,6 +1374,7 @@ class BackupManager:
             "publicHost": self.public_host,
             "hysteriaPort": self.hysteria_port,
             "nodeName": self.node_name,
+            "localOriginId": self.local_origin_id,
         }
         _atomic_write_json(marker_path, record)
         self._consume_captured_pending(captured_metadata)
@@ -1363,35 +1414,132 @@ class BackupManager:
             raise BackupValidationError("恢复后的环境配置缺少或重复关键项")
         return values[0]
 
-    def _proxy_rows_equal(self, first_database, second_database):
+    def _restored_rows_equal(self, first_database, second_database):
         try:
             with sqlite_connection(str(first_database)) as first, sqlite_connection(
                 str(second_database)
             ) as second:
-                query = (
-                    # Identifiers come only from the fixed PROXY_COLUMNS tuple.
-                    "SELECT {} FROM proxy_users ORDER BY id".format(  # nosec B608
-                        ",".join(self.PROXY_COLUMNS)
+                for table, columns in self.RESTORED_TABLE_COLUMNS.items():
+                    query = "SELECT {} FROM {} ORDER BY {}".format(  # nosec B608
+                        ",".join(columns),
+                        table,
+                        self.RESTORED_TABLE_ORDER[table],
                     )
-                )
-                first_rows = first.execute(query)
-                second_rows = second.execute(query)
-                while True:
-                    first_batch = first_rows.fetchmany(256)
-                    second_batch = second_rows.fetchmany(256)
-                    if first_batch != second_batch:
-                        return False
-                    if not first_batch:
-                        return True
+                    first_rows = first.execute(query)
+                    second_rows = second.execute(query)
+                    while True:
+                        first_batch = first_rows.fetchmany(256)
+                        second_batch = second_rows.fetchmany(256)
+                        if first_batch != second_batch:
+                            return False
+                        if not first_batch:
+                            break
+                return True
         except sqlite3.DatabaseError as exc:
-            raise BackupValidationError("恢复后的用户数据库无法读取") from exc
+            raise BackupValidationError("恢复后的用户与流量数据库无法读取") from exc
+
+    def _normalize_incoming_usage_ledger(self, database_path, restored_hmac):
+        incoming = Database(database_path, restored_hmac)
+        incoming.initialize()
+        if self.local_origin_id is not None:
+            if re.fullmatch(r"local:[0-9a-f]{32}", self.local_origin_id) is None:
+                raise BackupValidationError("本机流量来源标识无效")
+            incoming.register_usage_origin(
+                self.local_origin_id, "local", self.node_name
+            )
+            incoming.fold_placeholder_local_usage_origin(self.local_origin_id)
+        with sqlite_connection(str(database_path)) as connection:
+            connection.row_factory = sqlite3.Row
+            orphan_origin = connection.execute(
+                """SELECT 1 FROM (
+                    SELECT origin_id FROM usage_origin_users
+                    UNION ALL
+                    SELECT origin_id FROM origin_traffic_daily
+                    UNION ALL
+                    SELECT origin_id FROM origin_traffic_budgets
+                ) AS ledger
+                LEFT JOIN usage_origins AS origin
+                    ON origin.origin_id = ledger.origin_id
+                WHERE origin.origin_id IS NULL LIMIT 1"""
+            ).fetchone()
+            if orphan_origin is not None:
+                raise BackupValidationError("备份中的流量账本存在孤立来源")
+            orphan = connection.execute(
+                """SELECT 1 FROM usage_origin_users AS u
+                LEFT JOIN proxy_users AS p
+                    ON p.name = u.user_name COLLATE NOCASE
+                WHERE p.id IS NULL LIMIT 1"""
+            ).fetchone()
+            if orphan is not None:
+                raise BackupValidationError("备份中的用户流量账本存在孤立记录")
+            totals = connection.execute(
+                """SELECT p.name, p.tx_bytes, p.rx_bytes, p.created_at,
+                    p.updated_at, COALESCE(SUM(u.tx_bytes), 0) AS origin_tx,
+                    COALESCE(SUM(u.rx_bytes), 0) AS origin_rx
+                FROM proxy_users AS p
+                LEFT JOIN usage_origin_users AS u
+                    ON u.user_name = p.name COLLATE NOCASE
+                GROUP BY p.id ORDER BY p.id"""
+            ).fetchall()
+            missing = []
+            for row in totals:
+                tx_delta = int(row["tx_bytes"]) - int(row["origin_tx"])
+                rx_delta = int(row["rx_bytes"]) - int(row["origin_rx"])
+                if tx_delta < 0 or rx_delta < 0:
+                    raise BackupValidationError("备份中的用户流量账本与总量不一致")
+                if tx_delta or rx_delta:
+                    missing.append((row, tx_delta, rx_delta))
+            if missing:
+                created_at = min(int(row["created_at"]) for row, _tx, _rx in missing)
+                last_traffic_at = max(
+                    int(row["updated_at"]) for row, _tx, _rx in missing
+                )
+                connection.execute(
+                    """INSERT INTO usage_origins(
+                        origin_id, kind, node_id, display_name, created_at,
+                        last_traffic_at
+                    ) VALUES (?, 'legacy', NULL, ?, ?, ?)
+                    ON CONFLICT(origin_id) DO UPDATE SET
+                        created_at = MIN(usage_origins.created_at, excluded.created_at),
+                        last_traffic_at = MAX(
+                            COALESCE(usage_origins.last_traffic_at, 0),
+                            excluded.last_traffic_at
+                        )""",
+                    (
+                        LEGACY_USAGE_ORIGIN_ID,
+                        LEGACY_USAGE_ORIGIN_NAME,
+                        created_at,
+                        last_traffic_at,
+                    ),
+                )
+                connection.executemany(
+                    """INSERT INTO usage_origin_users(
+                        origin_id, user_name, tx_bytes, rx_bytes, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(origin_id, user_name) DO UPDATE SET
+                        tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
+                        rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
+                        updated_at = MAX(
+                            usage_origin_users.updated_at, excluded.updated_at
+                        )""",
+                    (
+                        (
+                            LEGACY_USAGE_ORIGIN_ID,
+                            row["name"],
+                            tx_delta,
+                            rx_delta,
+                            int(row["updated_at"]),
+                        )
+                        for row, tx_delta, rx_delta in missing
+                    ),
+                )
 
     def _validate_applied_restore(
         self, env_file, restored_hmac, manifest, directory, expected_database
     ):
         user_count = self._validate_database_path(self.database.path, restored_hmac)
-        if not self._proxy_rows_equal(self.database.path, expected_database):
-            raise BackupValidationError("恢复后的用户数据与备份不一致")
+        if not self._restored_rows_equal(self.database.path, expected_database):
+            raise BackupValidationError("恢复后的用户或流量数据与备份不一致")
         certificate = self._read_bounded(
             self.tls_cert, self.FILE_LIMITS["tls/server.crt"]
         )
@@ -1533,6 +1681,9 @@ class BackupManager:
             staged_database = Path(temporary) / "panel.db"
             self._copy_database(self.database.path, staged_database)
             incoming_database = payload_paths["data/panel.db"]
+            self._normalize_incoming_usage_ledger(
+                incoming_database, restored_hmac
+            )
             with sqlite_connection(str(incoming_database)) as source:
                 source.row_factory = sqlite3.Row
                 incoming_columns = {
@@ -1542,28 +1693,34 @@ class BackupManager:
                     source.execute(
                         "ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0"
                     )
-                rows = source.execute(
-                    # Identifiers come only from the fixed PROXY_COLUMNS tuple.
-                    "SELECT {} FROM proxy_users ORDER BY id".format(  # nosec B608
-                        ",".join(self.PROXY_COLUMNS)
-                    )
-                )
                 with sqlite_connection(str(staged_database)) as destination:
                     destination.execute("PRAGMA journal_mode = DELETE")
                     destination.execute("PRAGMA foreign_keys = ON")
                     destination.execute("DELETE FROM sessions")
-                    destination.execute("DELETE FROM proxy_users")
-                    destination.executemany(
-                        # Identifiers come only from the fixed PROXY_COLUMNS tuple.
-                        "INSERT INTO proxy_users ({}) VALUES ({})".format(  # nosec B608
-                            ",".join(self.PROXY_COLUMNS),
-                            ",".join("?" for _ in self.PROXY_COLUMNS),
-                        ),
-                        (
-                            tuple(row[column] for column in self.PROXY_COLUMNS)
-                            for row in rows
-                        ),
-                    )
+                    for table in (
+                        "origin_traffic_budgets",
+                        "origin_traffic_daily",
+                        "usage_origin_users",
+                        "usage_origins",
+                        "proxy_users",
+                    ):
+                        destination.execute("DELETE FROM {}".format(table))  # nosec B608
+                    for table, columns in self.RESTORED_TABLE_COLUMNS.items():
+                        rows = source.execute(
+                            "SELECT {} FROM {} ORDER BY {}".format(  # nosec B608
+                                ",".join(columns),
+                                table,
+                                self.RESTORED_TABLE_ORDER[table],
+                            )
+                        )
+                        destination.executemany(
+                            "INSERT INTO {} ({}) VALUES ({})".format(  # nosec B608
+                                table,
+                                ",".join(columns),
+                                ",".join("?" for _ in columns),
+                            ),
+                            (tuple(row[column] for column in columns) for row in rows),
+                        )
             self._validate_database_path(staged_database, restored_hmac)
             try:
                 self._replace_file(self.database.path, staged_database)
@@ -2781,50 +2938,190 @@ class Database:
                 WHERE origin_id = ?""",
                 (placeholder_origin_id,),
             ).fetchone()
-            if placeholder is None:
+            placeholder_users = connection.execute(
+                """SELECT COUNT(*) AS row_count, MIN(updated_at) AS first_updated_at,
+                    MAX(updated_at) AS last_updated_at
+                FROM usage_origin_users WHERE origin_id = ?""",
+                (placeholder_origin_id,),
+            ).fetchone()
+            placeholder_daily = connection.execute(
+                """SELECT COUNT(*) AS row_count, MIN(updated_at) AS first_updated_at,
+                    MAX(updated_at) AS last_updated_at
+                FROM origin_traffic_daily WHERE origin_id = ?""",
+                (placeholder_origin_id,),
+            ).fetchone()
+            placeholder_budget = connection.execute(
+                """SELECT updated_at FROM origin_traffic_budgets
+                WHERE origin_id = ?""",
+                (placeholder_origin_id,),
+            ).fetchone()
+            if (
+                placeholder is None
+                and int(placeholder_users["row_count"]) == 0
+                and int(placeholder_daily["row_count"]) == 0
+                and placeholder_budget is None
+            ):
                 return False
-            if placeholder["kind"] != "local":
+            if placeholder is not None and placeholder["kind"] != "local":
                 raise ValueError("placeholder traffic origin is invalid")
-            if target is None:
+            user_totals = connection.execute(
+                """SELECT p.name, p.tx_bytes, p.rx_bytes, p.created_at,
+                    p.updated_at, COALESCE(SUM(u.tx_bytes), 0) AS origin_tx,
+                    COALESCE(SUM(u.rx_bytes), 0) AS origin_rx
+                FROM proxy_users AS p
+                LEFT JOIN usage_origin_users AS u
+                    ON u.user_name = p.name COLLATE NOCASE
+                GROUP BY p.id ORDER BY p.id"""
+            ).fetchall()
+            unattributed_users = []
+            for row in user_totals:
+                tx_delta = int(row["tx_bytes"]) - int(row["origin_tx"])
+                rx_delta = int(row["rx_bytes"]) - int(row["origin_rx"])
+                if tx_delta < 0 or rx_delta < 0:
+                    raise ValueError("placeholder traffic ledger exceeds user totals")
+                if tx_delta or rx_delta:
+                    unattributed_users.append((row, tx_delta, rx_delta))
+            needs_legacy_origin = bool(
+                placeholder is not None
+                or int(placeholder_users["row_count"]) > 0
+                or int(placeholder_daily["row_count"]) > 0
+                or unattributed_users
+            )
+            created_at_candidates = [
+                value
+                for value in (
+                    placeholder["created_at"] if placeholder is not None else None,
+                    placeholder_users["first_updated_at"],
+                    placeholder_daily["first_updated_at"],
+                    min(
+                        (
+                            int(row["created_at"])
+                            for row, _tx, _rx in unattributed_users
+                        ),
+                        default=None,
+                    ),
+                )
+                if value is not None
+            ]
+            legacy_created_at = min(created_at_candidates, default=int(time.time()))
+            last_traffic_candidates = [
+                value
+                for value in (
+                    placeholder["last_traffic_at"] if placeholder is not None else None,
+                    placeholder_users["last_updated_at"],
+                    placeholder_daily["last_updated_at"],
+                    max(
+                        (
+                            int(row["updated_at"])
+                            for row, _tx, _rx in unattributed_users
+                        ),
+                        default=None,
+                    ),
+                )
+                if value is not None
+            ]
+            legacy_last_traffic_at = max(last_traffic_candidates, default=None)
+            if needs_legacy_origin and target is None:
                 connection.execute(
                     """INSERT INTO usage_origins(
                         origin_id, kind, node_id, display_name, created_at,
                         last_traffic_at
-                    ) VALUES (?, 'legacy', NULL, ?, ?, NULL)""",
+                    ) VALUES (?, 'legacy', NULL, ?, ?, ?)""",
                     (
                         LEGACY_USAGE_ORIGIN_ID,
                         LEGACY_USAGE_ORIGIN_NAME,
-                        int(placeholder["created_at"]),
+                        int(legacy_created_at),
+                        legacy_last_traffic_at,
                     ),
                 )
-            elif target["kind"] != "legacy":
+            elif needs_legacy_origin and target["kind"] != "legacy":
                 raise ValueError("target traffic origin is invalid")
+            if needs_legacy_origin:
+                connection.execute(
+                    """INSERT INTO usage_origin_users(
+                        origin_id, user_name, tx_bytes, rx_bytes, updated_at
+                    ) SELECT ?, user_name, tx_bytes, rx_bytes, updated_at
+                    FROM usage_origin_users WHERE origin_id = ?
+                    ON CONFLICT(origin_id, user_name) DO UPDATE SET
+                        tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
+                        rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
+                        updated_at = MAX(
+                            usage_origin_users.updated_at, excluded.updated_at
+                        )""",
+                    (LEGACY_USAGE_ORIGIN_ID, placeholder_origin_id),
+                )
+                connection.execute(
+                    """INSERT INTO origin_traffic_daily(
+                        origin_id, usage_date, tx_bytes, rx_bytes, updated_at
+                    ) SELECT ?, usage_date, tx_bytes, rx_bytes, updated_at
+                    FROM origin_traffic_daily WHERE origin_id = ?
+                    ON CONFLICT(origin_id, usage_date) DO UPDATE SET
+                        tx_bytes = origin_traffic_daily.tx_bytes + excluded.tx_bytes,
+                        rx_bytes = origin_traffic_daily.rx_bytes + excluded.rx_bytes,
+                        updated_at = MAX(
+                            origin_traffic_daily.updated_at, excluded.updated_at
+                        )""",
+                    (LEGACY_USAGE_ORIGIN_ID, placeholder_origin_id),
+                )
+                connection.executemany(
+                    """INSERT INTO usage_origin_users(
+                        origin_id, user_name, tx_bytes, rx_bytes, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(origin_id, user_name) DO UPDATE SET
+                        tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
+                        rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
+                        updated_at = MAX(
+                            usage_origin_users.updated_at, excluded.updated_at
+                        )""",
+                    (
+                        (
+                            LEGACY_USAGE_ORIGIN_ID,
+                            row["name"],
+                            tx_delta,
+                            rx_delta,
+                            int(row["updated_at"]),
+                        )
+                        for row, tx_delta, rx_delta in unattributed_users
+                    ),
+                )
             connection.execute(
-                """INSERT INTO usage_origin_users(
-                    origin_id, user_name, tx_bytes, rx_bytes, updated_at
-                ) SELECT ?, user_name, tx_bytes, rx_bytes, updated_at
-                FROM usage_origin_users WHERE origin_id = ?
-                ON CONFLICT(origin_id, user_name) DO UPDATE SET
-                    tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
-                    rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
-                    updated_at = MAX(
-                        usage_origin_users.updated_at, excluded.updated_at
-                    )""",
-                (LEGACY_USAGE_ORIGIN_ID, placeholder_origin_id),
+                """INSERT INTO origin_traffic_budgets(
+                    origin_id, limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes, baseline_total_bytes, baseline_at,
+                    updated_by, updated_at
+                ) SELECT ?, limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes, baseline_total_bytes, baseline_at,
+                    updated_by, updated_at
+                FROM origin_traffic_budgets WHERE origin_id = ?
+                ON CONFLICT(origin_id) DO NOTHING""",
+                (active_origin_id, placeholder_origin_id),
             )
             connection.execute(
-                """UPDATE usage_origins SET
-                    created_at = MIN(created_at, ?),
-                    last_traffic_at = NULLIF(MAX(
-                        COALESCE(last_traffic_at, 0), COALESCE(?, 0)
-                    ), 0)
-                WHERE origin_id = ?""",
-                (
-                    int(placeholder["created_at"]),
-                    placeholder["last_traffic_at"],
-                    LEGACY_USAGE_ORIGIN_ID,
-                ),
+                "DELETE FROM usage_origin_users WHERE origin_id = ?",
+                (placeholder_origin_id,),
             )
+            connection.execute(
+                "DELETE FROM origin_traffic_daily WHERE origin_id = ?",
+                (placeholder_origin_id,),
+            )
+            connection.execute(
+                "DELETE FROM origin_traffic_budgets WHERE origin_id = ?",
+                (placeholder_origin_id,),
+            )
+            if needs_legacy_origin:
+                connection.execute(
+                    """UPDATE usage_origins SET
+                        created_at = MIN(created_at, ?),
+                        last_traffic_at = NULLIF(MAX(
+                            COALESCE(last_traffic_at, 0), COALESCE(?, 0)
+                        ), 0)
+                    WHERE origin_id = ?""",
+                    (
+                        int(legacy_created_at),
+                        legacy_last_traffic_at,
+                        LEGACY_USAGE_ORIGIN_ID,
+                    ),
+                )
             connection.execute(
                 "DELETE FROM usage_origins WHERE origin_id = ?",
                 (placeholder_origin_id,),
@@ -5594,10 +5891,19 @@ class PanelHandler(JsonHandler):
     def _session(self):
         return self.app.database.get_session(self._session_token())
 
+    def _wants_json(self):
+        return "application/json" in self.headers.get("Accept", "").lower()
+
     def _require_session(self):
         session = self._session()
         if not session:
-            self._redirect("/login")
+            if self._wants_json():
+                self.send_json(
+                    401,
+                    {"error": "登录已失效，请重新登录", "loginUrl": "/login"},
+                )
+            else:
+                self._redirect("/login")
         return session
 
     def _require_csrf(self, session, form):
@@ -5634,6 +5940,7 @@ class PanelHandler(JsonHandler):
         status_filter="",
         online_filter="",
         udp443_filter="",
+        page=1,
     ):
         context = DashboardContext(
             logger=LOGGER,
@@ -5655,6 +5962,7 @@ class PanelHandler(JsonHandler):
             status_filter=status_filter,
             online_filter=online_filter,
             udp443_filter=udp443_filter,
+            page=page,
             context=context,
         )
 
@@ -5684,6 +5992,10 @@ class PanelHandler(JsonHandler):
         return self._page("连接信息", content)
 
     def _error_page(self, status, message):
+        message = str(message)[:512]
+        if self._wants_json():
+            self.send_json(int(status), {"error": message})
+            return
         content = '<section class="card state-page"><span class="state-kicker">HTTP {status}</span><h1>暂时无法完成此操作</h1><p class="error" role="alert">{message}</p><p class="muted">请检查当前页面状态后重试；若问题持续出现，请查看面板服务日志。</p><p class="state-actions"><a class="button" href="/">返回控制台</a><a class="button secondary" href="/login">重新登录</a></p></section>'.format(
             status=int(status), message=html.escape(message)
         )
@@ -6122,8 +6434,20 @@ class PanelHandler(JsonHandler):
             try:
                 snapshot = self.app.usage_manager.online_snapshot()
                 users = self.app.database.list_proxy_users_for_usage()
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                selected = select_dashboard_user_page(
+                    users,
+                    snapshot,
+                    query.get("sort", [""])[0],
+                    query.get("order", [""])[0],
+                    query.get("q", [""])[0],
+                    query.get("status", [""])[0],
+                    query.get("online", [""])[0],
+                    query.get("udp443", [""])[0],
+                    query.get("page", ["1"])[0],
+                )
                 payload = dashboard_online_payload(
-                    [user["name"] for user in users], snapshot
+                    [user["name"] for user in selected["users"]], snapshot
                 )
             except Exception:
                 LOGGER.debug("live dashboard online snapshot unavailable", exc_info=True)
@@ -6146,6 +6470,7 @@ class PanelHandler(JsonHandler):
                     query.get("status", [""])[0],
                     query.get("online", [""])[0],
                     query.get("udp443", [""])[0],
+                    query.get("page", ["1"])[0],
                 ),
             )
             return
@@ -6382,6 +6707,15 @@ class PanelHandler(JsonHandler):
             return
         finally:
             self.app.finish_maintenance()
+        if self._wants_json():
+            self.send_json(
+                202,
+                {
+                    "status": "queued",
+                    "message": "恢复任务已启动，请稍后重新登录",
+                },
+            )
+            return
         content = """<section class="card state-page"><span class="state-kicker">任务已受理</span><h1>恢复任务已启动</h1>
 <p>面板与 Hysteria 服务将短暂重启。恢复完成后，当前登录会话会失效，请等待约 10 秒后重新登录。</p>
 <p class="notice">原节点域名、UDP 端口、签名密钥与证书已通过预检；恢复服务仍会再次独立校验后才替换数据。</p>
@@ -7377,7 +7711,10 @@ class UsageManager:
                 self.stats_client.kick(user["name"])
             except Exception:
                 self._record_health(False)
-                raise
+                LOGGER.exception(
+                    "local user disconnect failed after traffic reset; "
+                    "the committed reset remains valid"
+                )
             with self._authorization_lock:
                 self.pending.pop(user["name"], None)
 
@@ -7493,6 +7830,10 @@ class Settings:
         ):
             raise ValueError(
                 "Hysteria, panel, auth, both stats and the secondary 443 ports must be different"
+            )
+        if panel_scheme == "https" and 80 in ports:
+            raise ValueError(
+                "HTTPS mode reserves TCP port 80 for automatic certificate renewal"
             )
         return cls(
             database_path=Path(mapping.get("HY2PANEL_DB", "/var/lib/hysteria2-panel/panel.db")),
@@ -7953,6 +8294,7 @@ def run_service(settings):
         public_host=settings.public_host,
         hysteria_port=settings.hysteria_port,
         node_name=settings.node_name,
+        local_origin_id=settings.local_origin_id,
         work_dir=settings.database_path.parent / "backup-restore",
         maintenance_lock_group=os.getgid() if hasattr(os, "getgid") else None,
     )
@@ -8332,6 +8674,13 @@ def _read_restore_transaction(
         or not isinstance(record["pendingSize"], int)
         or record["pendingSize"] <= 0
         or not isinstance(record["hysteriaPort"], int)
+        or (
+            record.get("localOriginId") is not None
+            and re.fullmatch(
+                r"local:[0-9a-f]{32}", record.get("localOriginId") or ""
+            )
+            is None
+        )
     ):
         raise RuntimeError("restore marker fields are invalid")
     if strict_paths:
@@ -8384,6 +8733,7 @@ def _restore_manager_from_record(record):
         public_host=record["publicHost"],
         hysteria_port=record["hysteriaPort"],
         node_name=record["nodeName"],
+        local_origin_id=record.get("localOriginId"),
         work_dir=Path(record["workDir"]),
     )
 
@@ -8793,6 +9143,7 @@ def restore_pending(
             public_host=settings.public_host,
             hysteria_port=settings.hysteria_port,
             node_name=settings.node_name,
+            local_origin_id=settings.local_origin_id,
             work_dir=settings.database_path.parent / "backup-restore",
         )
         if _read_restore_transaction(
@@ -8938,7 +9289,8 @@ def main(argv=None):
                         public_host=settings.public_host,
                         hysteria_port=settings.hysteria_port,
                         node_name=settings.node_name,
-                        work_dir=settings.database_path.parent / "backup-restore",
+                        local_origin_id=settings.local_origin_id,
+                        work_dir=OFFSITE_BACKUP_WORK_DIR,
                     )
                     sync_traffic(settings)
                     return manager.create_archive()
