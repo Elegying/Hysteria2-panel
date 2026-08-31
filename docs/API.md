@@ -187,7 +187,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 
 全局统计只汇总当前数据库中的用户，避免已删除用户仍残留在 Hysteria 统计快照时污染总数。不活跃用户定义为上传和下载均为 0 的账户。面板分别从主入口和 UDP `443` 入口使用 Hysteria `/traffic?clear=1` 取得增量，按用户名相加后写入 SQLite；`/online` 实例数也按用户名相加，因此两个入口共同执行同一设备与流量额度，正常重启不会清空累计流量。
 
-`POST /restore` 要求 `Content-Length` 在 1 字节到 64 MiB 之间，不解析 multipart。服务端只接受格式版本 1 的固定五文件 ZIP，限制单项与总解压大小，拒绝额外文件、重复路径、目录和符号链接，并校验清单 SHA-256、SQLite 完整性/表结构、每个可恢复用户 token、证书/私钥、证书指纹、源域名及 UDP 端口。上传预检还必须在安装/更新/恢复共用锁文件上取得短暂只读共享准入；root 维护任务持排他锁或已有恢复标记时拒绝上传。预检通过后只写入固定待恢复路径，再用固定 sudoers 命令启动 root oneshot。
+`POST /restore` 要求 `Content-Length` 在 1 字节到 131 MiB 之间（128 MiB 数据库内容上限加 3 MiB 身份与清单余量），不解析 multipart。服务端只接受格式版本 1 的固定五文件 ZIP，限制单项与总解压大小，拒绝额外文件、重复路径、目录和符号链接，并校验清单 SHA-256、SQLite 完整性/表结构、每个可恢复用户 token、证书/私钥、证书指纹、源域名及 UDP 端口。上传预检还必须在安装/更新/恢复共用锁文件上取得短暂只读共享准入；root 维护任务持排他锁或已有恢复标记时拒绝上传。预检通过后只写入固定待恢复路径，再用固定 sudoers 命令启动 root oneshot。
 
 root 进程不信任 Web 预检，会以 `O_NOFOLLOW` 和固定所有权/权限合同再次读取归档，并把恢复推进为持久的 `queued → prepared → disk-consistent → services-pending` 事务。启动前的 `restore-recover` oneshot 只验证、完成或回滚数据库/HMAC 环境/TLS 身份并清理 SQLite sidecar；业务服务强依赖该阶段成功。服务启动后的 `restore-resume` oneshot 连续验证 systemd、HTTP、统计和 TCP 健康后才删除标记。普通退出、信号或重启均从标记幂等继续；孤立或失败归档会隔离并释放固定上传路径。
 
