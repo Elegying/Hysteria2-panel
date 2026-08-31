@@ -7259,7 +7259,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(201, response.status)
         self.assertIn("hysteria2://", body)
         self.assertIn("8.8.8.8:19999", body)
-        self.assertIn("%E7%A7%81%E5%AE%B6%E8%BD%A6-2026", body)
+        self.assertIn("edge-fixture-02", body)
         user = self.db.list_proxy_users()["users"][0]
         self.assertEqual("alice", user["name"])
         self.assertEqual(3, user["device_limit"])
