@@ -5,7 +5,84 @@ import hashlib
 import html
 import json
 import time
+import urllib.parse
 from dataclasses import dataclass
+
+
+USER_PAGE_SIZE = 50
+
+
+def select_dashboard_user_page(
+    all_users,
+    snapshot,
+    sort_by="",
+    sort_order="",
+    search_query="",
+    status_filter="",
+    online_filter="",
+    udp443_filter="",
+    page=1,
+):
+    sort_by = sort_by if sort_by in {"traffic", "online"} else ""
+    sort_order = sort_order if sort_order in {"asc", "desc"} else ""
+    search_query = str(search_query)[:96]
+    status_filter = status_filter if status_filter in {"enabled", "disabled"} else ""
+    online_filter = online_filter if online_filter in {"active", "inactive"} else ""
+    udp443_filter = udp443_filter if udp443_filter in {"allowed", "blocked"} else ""
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    online = snapshot.get("online", {})
+    query = search_query.casefold().strip()
+    filtered = []
+    for user in all_users:
+        online_count = int(online.get(user["name"], 0) or 0)
+        if query and query not in user["name"].casefold():
+            continue
+        if status_filter and bool(user["enabled"]) != (status_filter == "enabled"):
+            continue
+        if online_filter and (online_count > 0) != (online_filter == "active"):
+            continue
+        if udp443_filter and bool(user["allow_udp_443"]) != (
+            udp443_filter == "allowed"
+        ):
+            continue
+        filtered.append(user)
+    listed_users = sorted(
+        filtered,
+        key=lambda item: (item["created_at"], item["id"]),
+        reverse=True,
+    )
+    if sort_by == "traffic" and sort_order:
+        listed_users = sorted(
+            filtered,
+            key=lambda item: item["tx_bytes"] + item["rx_bytes"],
+            reverse=sort_order == "desc",
+        )
+    elif sort_by == "online" and sort_order:
+        listed_users = sorted(
+            filtered,
+            key=lambda item: int(online.get(item["name"], 0) or 0),
+            reverse=sort_order == "desc",
+        )
+    filtered_total = len(listed_users)
+    total_pages = max(1, (filtered_total + USER_PAGE_SIZE - 1) // USER_PAGE_SIZE)
+    page = min(page, total_pages)
+    offset = (page - 1) * USER_PAGE_SIZE
+    return {
+        "users": listed_users[offset : offset + USER_PAGE_SIZE],
+        "filtered_total": filtered_total,
+        "total_users": len(all_users),
+        "page": page,
+        "total_pages": total_pages,
+        "sort_by": sort_by,
+        "sort_order": sort_order,
+        "search_query": search_query,
+        "status_filter": status_filter,
+        "online_filter": online_filter,
+        "udp443_filter": udp443_filter,
+    }
 
 
 @dataclass(frozen=True)
@@ -30,6 +107,7 @@ def render_dashboard(
     status_filter="",
     online_filter="",
     udp443_filter="",
+    page=1,
     context=None,
 ):
     if context is None:
@@ -49,31 +127,24 @@ def render_dashboard(
         LOGGER.exception("stats snapshot failed")
         snapshot = {"traffic": {}, "online": {}, "available": False}
     all_users = self.app.database.list_proxy_users_for_usage()
-    sort_by = sort_by if sort_by in {"traffic", "online"} else ""
-    sort_order = sort_order if sort_order in {"asc", "desc"} else ""
-    search_query = str(search_query)[:96]
-    status_filter = status_filter if status_filter in {"enabled", "disabled"} else ""
-    online_filter = online_filter if online_filter in {"active", "inactive"} else ""
-    udp443_filter = udp443_filter if udp443_filter in {"allowed", "blocked"} else ""
-    listed_users = sorted(
+    user_page = select_dashboard_user_page(
         all_users,
-        key=lambda item: (item["created_at"], item["id"]),
-        reverse=True,
+        snapshot,
+        sort_by,
+        sort_order,
+        search_query,
+        status_filter,
+        online_filter,
+        udp443_filter,
+        page,
     )
-    if sort_by == "traffic" and sort_order:
-        listed_users = sorted(
-            all_users,
-            key=lambda item: item["tx_bytes"] + item["rx_bytes"],
-            reverse=sort_order == "desc",
-        )
-    elif sort_by == "online" and sort_order:
-        listed_users = sorted(
-            all_users,
-            key=lambda item: _stat_int(
-                snapshot.get("online", {}).get(item["name"], 0)
-            ),
-            reverse=sort_order == "desc",
-        )
+    listed_users = user_page["users"]
+    sort_by = user_page["sort_by"]
+    sort_order = user_page["sort_order"]
+    search_query = user_page["search_query"]
+    status_filter = user_page["status_filter"]
+    online_filter = user_page["online_filter"]
+    udp443_filter = user_page["udp443_filter"]
     summary = summarize_dashboard([user["name"] for user in all_users], snapshot)
     try:
         service_status = self.app.service_controller.status()
@@ -94,20 +165,22 @@ def render_dashboard(
         configured_egress_policy = None
     try:
         resources = self.app.system_metrics.snapshot()
+        metrics_available = True
     except Exception:
         LOGGER.exception("system metrics failed")
         resources = {
-            "cpu_percent": 0.0,
-            "memory_percent": 0.0,
+            "cpu_percent": None,
+            "memory_percent": None,
             "memory_used": 0,
             "memory_total": 0,
-            "disk_percent": 0.0,
+            "disk_percent": None,
             "disk_used": 0,
             "disk_total": 0,
             "uptime": "不可用",
             "tcp_congestion_control": "不可用",
             "default_qdisc": "不可用",
         }
+        metrics_available = False
     csrf = html.escape(session["csrf_token"], quote=True)
     rows = []
     for user in listed_users:
@@ -160,7 +233,16 @@ def render_dashboard(
             )
         )
     if not rows:
-        rows.append('<tr><td colspan="6" class="muted empty-state">暂无用户，请先创建。</td></tr>')
+        empty_message = (
+            "没有符合当前筛选条件的用户。"
+            if all_users
+            else "暂无用户，请先创建。"
+        )
+        rows.append(
+            '<tr><td colspan="6" class="muted empty-state">{}</td></tr>'.format(
+                empty_message
+            )
+        )
     edit_options = "".join(
         """<option value="{id}" data-generation="{generation}" data-device-limit="{device_limit}" data-traffic-limit-gb="{traffic_limit_gb}" data-allow-udp443="{allow_udp_443}">{name}</option>""".format(
             id=user["id"],
@@ -183,6 +265,87 @@ def render_dashboard(
     traffic_sort_next = "asc" if traffic_sort_order == "desc" else "desc"
     traffic_sort_mark = sort_marks.get(traffic_sort_order, "⇅")
     traffic_sort_aria = sort_aria.get(traffic_sort_order, "none")
+    base_query = {
+        key: value
+        for key, value in {
+            "q": search_query,
+            "status": status_filter,
+            "online": online_filter,
+            "udp443": udp443_filter,
+        }.items()
+        if value
+    }
+
+    def dashboard_url(**changes):
+        values = dict(base_query)
+        if sort_by and sort_order:
+            values.update({"sort": sort_by, "order": sort_order})
+        values.update(changes)
+        values = {key: value for key, value in values.items() if value not in {"", None}}
+        query_string = urllib.parse.urlencode(values)
+        return "/?" + query_string if query_string else "/"
+
+    online_sort_href = dashboard_url(
+        sort="online", order=online_sort_next, page=None
+    )
+    traffic_sort_href = dashboard_url(
+        sort="traffic", order=traffic_sort_next, page=None
+    )
+    page_number = user_page["page"]
+    total_pages = user_page["total_pages"]
+    pagination_items = []
+    if page_number > 1:
+        pagination_items.append(
+            '<a class="button secondary" href="{}" rel="prev">上一页</a>'.format(
+                html.escape(dashboard_url(page=page_number - 1), quote=True)
+            )
+        )
+    shown_pages = sorted(
+        {1, total_pages}
+        | set(range(max(1, page_number - 2), min(total_pages, page_number + 2) + 1))
+    )
+    previous_page = 0
+    for candidate in shown_pages:
+        if previous_page and candidate - previous_page > 1:
+            pagination_items.append('<span class="pagination-gap">…</span>')
+        if candidate == page_number:
+            pagination_items.append(
+                '<span class="pagination-current" aria-current="page">{}</span>'.format(
+                    candidate
+                )
+            )
+        else:
+            pagination_items.append(
+                '<a href="{}" aria-label="第 {} 页">{}</a>'.format(
+                    html.escape(dashboard_url(page=candidate), quote=True),
+                    candidate,
+                    candidate,
+                )
+            )
+        previous_page = candidate
+    if page_number < total_pages:
+        pagination_items.append(
+            '<a class="button secondary" href="{}" rel="next">下一页</a>'.format(
+                html.escape(dashboard_url(page=page_number + 1), quote=True)
+            )
+        )
+    first_visible = (
+        (page_number - 1) * USER_PAGE_SIZE + 1 if user_page["filtered_total"] else 0
+    )
+    last_visible = min(
+        page_number * USER_PAGE_SIZE, user_page["filtered_total"]
+    )
+    pagination = (
+        '<nav class="pagination" aria-label="用户分页"><span class="muted">'
+        '显示 {first}–{last} / 符合 {filtered}（全部 {total}）</span>'
+        '<span class="pagination-links">{links}</span></nav>'
+    ).format(
+        first=first_visible,
+        last=last_visible,
+        filtered=user_page["filtered_total"],
+        total=user_page["total_users"],
+        links="".join(pagination_items),
+    )
     filter_values = {
         "search_query": html.escape(search_query, quote=True),
         "status_enabled": " selected" if status_filter == "enabled" else "",
@@ -320,9 +483,14 @@ def render_dashboard(
         )
     )
     stats_state = "正常" if summary["service_available"] else "异常"
-    service_running = service_status == "active"
-    service_label = "Hysteria 运行中" if service_running else "Hysteria 已停止"
-    service_class = "" if service_running else " off"
+    service_label, service_class = {
+        "active": ("Hysteria 运行中", ""),
+        "inactive": ("Hysteria 已停止", " off"),
+        "failed": ("Hysteria 启动失败", " failed"),
+        "activating": ("Hysteria 启动中", " pending"),
+        "deactivating": ("Hysteria 停止中", " pending"),
+        "reloading": ("Hysteria 重载中", " pending"),
+    }.get(service_status, ("Hysteria 状态未知", " pending"))
     full_enabled = egress_policy == "full"
     if full_enabled:
         egress_state = "FULL 已开启"
@@ -687,8 +855,8 @@ def render_dashboard(
 <div class="service-details primary-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail port-detail"><div><span class="muted">服务端口</span><strong>UDP {port}</strong></div><form class="egress-control" method="post" action="/egress/{egress_target}" data-egress-form data-confirm="{egress_confirm}"><input type="hidden" name="csrf" value="{csrf}"><span class="egress-state{egress_state_class}" data-egress-state>{egress_state}</span><button class="egress-switch{egress_state_class}" type="submit" aria-pressed="{egress_checked}" aria-label="{egress_action} FULL 出口策略"><span class="egress-switch-track" aria-hidden="true"><span></span></span><span class="egress-switch-action">{egress_action}</span></button></form></div></div>
 <div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row version-actions"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
-<div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu:.1f}%</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory:.1f}%</strong><small class="muted">{memory_used} / {memory_total}</small></div>
-<div class="resource"><span class="muted">磁盘占用</span><strong>{disk:.1f}%</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div>
+<div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu}</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory}</strong><small class="muted">{memory_used} / {memory_total}</small></div>
+<div class="resource"><span class="muted">磁盘占用</span><strong>{disk}</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div>
 <div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
@@ -709,23 +877,23 @@ def render_dashboard(
 <dialog id="create-user-dialog" class="migration-dialog create-dialog" aria-labelledby="create-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="create-user-title">添加用户</h2><p class="muted">设置用户名称、设备数和总流量限制。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭添加用户弹窗">关闭</button></div>
 <form class="create-grid" method="post" action="/users" data-create-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机" autofocus></div>
 <div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
-<div><label for="traffic_limit_gb">总流量（GB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
+<div><label for="traffic_limit_gb">总流量（GiB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
 <dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户</h2><p class="muted">修改限制或开放 UDP 443，不会改变已发放节点链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">关闭</button></div>
 <form class="create-grid" method="post" action="/users/{first_edit_id}/edit" data-edit-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><input type="hidden" name="generation" value="{first_edit_generation}"><div class="wide"><label for="edit-user-select">选择用户</label><select id="edit-user-select" data-edit-user-select required>{edit_options}</select></div>
 <div><label for="edit-device-limit">限制设备数</label><input id="edit-device-limit" name="device_limit" type="number" min="1" max="100" value="{first_edit_device_limit}" required></div>
-<div><label for="edit-traffic-limit-gb">总流量（GB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div>
+<div><label for="edit-traffic-limit-gb">总流量（GiB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div>
 <label class="checkbox-field wide" for="edit-allow-udp-443"><input id="edit-allow-udp-443" name="allow_udp_443" type="checkbox" value="1"{first_edit_udp_443_checked}{udp_443_disabled}><span>允许该账号使用 UDP 443<small class="muted">开启后，客户端把服务器端口从 {port} 改为 443 即可；原 {port} 仍可继续使用。</small></span></label><button type="submit"{edit_disabled}>保存修改</button></form>
 <p class="notice">设备数按在线 Hysteria 客户端实例估算；标准通用节点链接不包含硬件设备指纹。</p></div></dialog>
 <p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
 <section class="card"><div class="section-head user-section-head"><div class="user-heading"><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
 <div class="section-actions"><button type="button" data-dialog-open="create-user-dialog">添加用户</button><button class="secondary" type="button" data-dialog-open="edit-user-dialog"{edit_disabled}>编辑用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div></div>
-<div class="user-tools"><form class="user-filters" data-user-filters><div class="user-search"><label for="user-search">用户名</label><input id="user-search" name="q" type="search" value="{search_query}" placeholder="输入用户名搜索" autocomplete="off" maxlength="96" data-user-search></div>
+<div class="user-tools"><form class="user-filters" method="get" action="/" data-user-filters><div class="user-search"><label for="user-search">用户名</label><input id="user-search" name="q" type="search" value="{search_query}" placeholder="输入用户名搜索" autocomplete="off" maxlength="96" data-user-search></div>
 <div><label for="user-status-filter">状态</label><select id="user-status-filter" name="status" data-status-filter><option value="">全部</option><option value="enabled"{status_enabled}>启用</option><option value="disabled"{status_disabled}>禁用</option></select></div>
 <div><label for="user-online-filter">在线</label><select id="user-online-filter" name="online" data-online-filter><option value="">全部</option><option value="active"{online_active}>在线</option><option value="inactive"{online_inactive}>离线</option></select></div>
 <div><label for="user-udp443-filter">UDP 443</label><select id="user-udp443-filter" name="udp443" data-udp443-filter><option value="">全部</option><option value="allowed"{udp443_allowed}>已开放</option><option value="blocked"{udp443_blocked}>未开放</option></select></div>
-<button class="ghost" type="button" data-clear-user-filters>清除</button></form><p class="muted search-status" data-search-status role="status" aria-live="polite">共 {user_total} 个用户</p></div>
+<button class="ghost" type="button" data-clear-user-filters>清除</button></form><p class="muted search-status" data-search-status role="status" aria-live="polite">第 {user_page} / {user_pages} 页</p></div>
 <p class="muted filter-empty" data-filter-empty hidden>没有符合当前条件的用户。</p>
-<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th aria-sort="{online_sort_aria}"><a class="sort-link" href="/?sort=online&amp;order={online_sort_next}">在线设备 {online_sort_mark}</a></th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="/?sort=traffic&amp;order={traffic_sort_next}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
+<div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th aria-sort="{online_sort_aria}"><a class="sort-link" href="{online_sort_href}">在线设备 {online_sort_mark}</a></th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="{traffic_sort_href}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div>{pagination}</section>""".format(
         port=self.app.hysteria_port,
         public_host=html.escape(self.app.public_host),
         stats=stats_state,
@@ -757,13 +925,33 @@ def render_dashboard(
         egress_state_class=egress_state_class,
         egress_checked="true" if full_enabled else "false",
         egress_action=egress_action,
-        cpu=resources["cpu_percent"],
-        memory=resources["memory_percent"],
-        memory_used=_human_bytes(resources["memory_used"]),
-        memory_total=_human_bytes(resources["memory_total"]),
-        disk=resources["disk_percent"],
-        disk_used=_human_bytes(resources["disk_used"]),
-        disk_total=_human_bytes(resources["disk_total"]),
+        cpu=(
+            "{:.1f}%".format(resources["cpu_percent"])
+            if metrics_available
+            else "—"
+        ),
+        memory=(
+            "{:.1f}%".format(resources["memory_percent"])
+            if metrics_available
+            else "—"
+        ),
+        memory_used=(
+            _human_bytes(resources["memory_used"]) if metrics_available else "—"
+        ),
+        memory_total=(
+            _human_bytes(resources["memory_total"]) if metrics_available else "—"
+        ),
+        disk=(
+            "{:.1f}%".format(resources["disk_percent"])
+            if metrics_available
+            else "—"
+        ),
+        disk_used=(
+            _human_bytes(resources["disk_used"]) if metrics_available else "—"
+        ),
+        disk_total=(
+            _human_bytes(resources["disk_total"]) if metrics_available else "—"
+        ),
         uptime=html.escape(resources["uptime"]),
         certificate_class=certificate_class,
         certificate_text=certificate_text,
@@ -795,13 +983,17 @@ def render_dashboard(
         ),
         udp_443_disabled="" if self.app.hysteria_port != 443 else " disabled",
         edit_disabled="" if first_edit_user else " disabled",
-        user_total=len(listed_users),
+        user_page=user_page["page"],
+        user_pages=user_page["total_pages"],
+        online_sort_href=html.escape(online_sort_href, quote=True),
         online_sort_aria=online_sort_aria,
         online_sort_next=online_sort_next,
         online_sort_mark=online_sort_mark,
+        traffic_sort_href=html.escape(traffic_sort_href, quote=True),
         traffic_sort_aria=traffic_sort_aria,
         traffic_sort_next=traffic_sort_next,
         traffic_sort_mark=traffic_sort_mark,
+        pagination=pagination,
         **filter_values,
     )
     return self._page("控制台", content)

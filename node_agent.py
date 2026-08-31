@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.36.2"
+AGENT_VERSION = "0.36.3"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -35,6 +35,8 @@ CONTROL_LOOP_INTERVAL_SECONDS = 2
 CONTROL_LOOP_MAX_INTERVAL_SECONDS = 5
 CONTROL_LOOP_MAX_BACKOFF_SECONDS = 30
 CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES = 480 * 1024
+LOCAL_TRAFFIC_RESPONSE_MAX_BYTES = 512 * 1024
+TRAFFIC_SPOOL_ENTRY_MAX_BYTES = 240 * 1024
 MAX_STATE_AGE_SECONDS = (
     NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS
     + CONTROL_LOOP_MAX_BACKOFF_SECONDS
@@ -63,6 +65,14 @@ class ProtocolError(RuntimeError):
 
 class ProtocolNotSupported(ProtocolError):
     """The panel does not yet support an additive node protocol endpoint."""
+
+
+class PartialLocalTrafficCollectionError(ProtocolError):
+    """One stats endpoint failed after another endpoint had already cleared data."""
+
+    def __init__(self, batches):
+        super().__init__("one or more local traffic endpoints are unavailable")
+        self.batches = list(batches)
 
 
 class SystemdNotifier:
@@ -446,6 +456,7 @@ class DurableTrafficSpool:
             self.path.mkdir(parents=True, mode=0o700)
             self.path.chmod(0o700)
             _fsync_directory(self.path.parent)
+        self._recover_staged_entries()
 
     @staticmethod
     def _validate_traffic(traffic):
@@ -487,50 +498,174 @@ class DurableTrafficSpool:
                 raise ProtocolError("traffic spool contains too many entries")
         return count, total
 
-    def can_collect(self, maximum_response_bytes=256 * 1024):
+    @staticmethod
+    def _validate_batch(batch):
+        if (
+            not isinstance(batch, dict)
+            or set(batch) != {"batchId", "observedAt", "traffic"}
+            or not NODE_ID_PATTERN.fullmatch(str(batch.get("batchId", "")))
+            or isinstance(batch.get("observedAt"), bool)
+            or not isinstance(batch.get("observedAt"), int)
+        ):
+            raise ProtocolError("traffic spool entry is invalid")
+        DurableTrafficSpool._validate_traffic(batch["traffic"])
+
+    def _recover_staged_entries(self):
+        changed = False
+        for path in list(self.path.iterdir()):
+            if not path.name.startswith(".traffic-"):
+                continue
+            metadata = path.lstat()
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+            ):
+                raise ProtocolError("traffic spool contains an unsafe staged entry")
+            batch = None
+            if 0 < metadata.st_size <= TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
+                try:
+                    batch = json.loads(path.read_text(encoding="utf-8"))
+                    self._validate_batch(batch)
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError, ProtocolError):
+                    batch = None
+            if batch is None:
+                path.unlink()
+                changed = True
+                continue
+            destination = self.path / (batch["batchId"] + ".json")
+            if destination.exists():
+                if destination.read_bytes() != path.read_bytes():
+                    raise ProtocolError("traffic spool staged entry conflicts with a batch")
+                path.unlink()
+            else:
+                os.replace(path, destination)
+            changed = True
+        if changed:
+            _fsync_directory(self.path)
+
+    def can_collect(self, maximum_response_bytes=LOCAL_TRAFFIC_RESPONSE_MAX_BYTES):
+        self._recover_staged_entries()
         maximum_response_bytes = max(1, int(maximum_response_bytes))
-        required_bytes = maximum_response_bytes + 4096
+        required_entries = 1 + (
+            maximum_response_bytes + TRAFFIC_SPOOL_ENTRY_MAX_BYTES - 1
+        ) // TRAFFIC_SPOOL_ENTRY_MAX_BYTES
+        required_bytes = maximum_response_bytes + required_entries * 4096
         free = shutil.disk_usage(str(self.path)).free
         count, current_size = self._current_usage()
         return (
-            count < self.max_entries
+            count + required_entries <= self.max_entries
             and current_size + required_bytes <= self.max_bytes
             and free >= required_bytes + self.reserve_bytes
         )
 
-    def enqueue(self, traffic, observed_at):
+    @staticmethod
+    def _encode_batch(batch):
+        return json.dumps(
+            batch, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8") + b"\n"
+
+    def _partition(self, traffic, observed_at):
         self._validate_traffic(traffic)
         if isinstance(observed_at, bool) or not isinstance(observed_at, int):
             raise ProtocolError("traffic observation time is invalid")
+        encoded_batches = []
+        current = {}
+        batch_id = uuid.uuid4().hex
+        for name, counters in traffic.items():
+            candidate = dict(current)
+            candidate[name] = counters
+            batch = {
+                "batchId": batch_id,
+                "observedAt": observed_at,
+                "traffic": candidate,
+            }
+            encoded = self._encode_batch(batch)
+            if len(encoded) <= TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
+                current = candidate
+                continue
+            if not current:
+                raise ProtocolError("traffic entry exceeds the spool entry limit")
+            completed = {
+                "batchId": batch_id,
+                "observedAt": observed_at,
+                "traffic": current,
+            }
+            encoded_batches.append((completed, self._encode_batch(completed)))
+            batch_id = uuid.uuid4().hex
+            current = {name: counters}
         batch = {
-            "batchId": uuid.uuid4().hex,
+            "batchId": batch_id,
             "observedAt": observed_at,
-            "traffic": traffic,
+            "traffic": current,
         }
-        encoded = json.dumps(
-            batch, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8") + b"\n"
+        encoded = self._encode_batch(batch)
+        if len(encoded) > TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
+            raise ProtocolError("traffic entry exceeds the spool entry limit")
+        encoded_batches.append((batch, encoded))
+        return encoded_batches
+
+    def enqueue_collections(self, traffic_collections, observed_at):
+        traffic_collections = list(traffic_collections)
+        if not traffic_collections:
+            return []
+        self._recover_staged_entries()
+        encoded_batches = []
+        for traffic in traffic_collections:
+            encoded_batches.extend(self._partition(traffic, observed_at))
         count, current_size = self._current_usage()
-        if count >= self.max_entries or current_size + len(encoded) > self.max_bytes:
+        total_size = sum(len(encoded) for _batch, encoded in encoded_batches)
+        if (
+            count + len(encoded_batches) > self.max_entries
+            or current_size + total_size > self.max_bytes
+            or shutil.disk_usage(str(self.path)).free
+            < total_size + self.reserve_bytes
+        ):
             raise ProtocolError("traffic spool is full")
-        descriptor, staged_name = tempfile.mkstemp(prefix=".traffic-", dir=str(self.path))
-        destination = self.path / (batch["batchId"] + ".json")
+        staged = []
         try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(staged_name, str(destination))
+            for batch, encoded in encoded_batches:
+                staged_path = self.path / (".traffic-" + batch["batchId"] + ".json")
+                destination = self.path / (batch["batchId"] + ".json")
+                if destination.exists():
+                    raise ProtocolError("traffic batch id already exists")
+                descriptor = os.open(
+                    staged_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                    0o600,
+                )
+                staged.append((staged_path, destination))
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
             _fsync_directory(self.path)
-        finally:
+            for staged_path, destination in staged:
+                os.replace(staged_path, destination)
+            _fsync_directory(self.path)
+        except Exception as persist_error:
+            # Keep every fsynced stage: startup/next-cycle recovery promotes a
+            # complete entry and removes only a provably incomplete one.
             try:
-                os.unlink(staged_name)
-            except FileNotFoundError:
-                pass
-        return batch
+                _fsync_directory(self.path)
+            except Exception as directory_error:
+                raise persist_error from directory_error
+            raise
+        return [batch for batch, _encoded in encoded_batches]
+
+    def enqueue_many(self, traffic, observed_at):
+        return self.enqueue_collections([traffic], observed_at)
+
+    def enqueue(self, traffic, observed_at):
+        encoded_batches = self._partition(traffic, observed_at)
+        if len(encoded_batches) != 1:
+            raise ProtocolError("traffic batch requires multiple spool entries")
+        return self.enqueue_many(traffic, observed_at)[0]
 
     def pending(self):
+        self._recover_staged_entries()
         batches = []
         paths = sorted(self.path.glob("*.json"))
         if len(paths) > self.max_entries:
@@ -542,22 +677,14 @@ class DurableTrafficSpool:
                 or not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_uid != os.geteuid()
                 or stat.S_IMODE(metadata.st_mode) != 0o600
-                or metadata.st_size > 256 * 1024 + 4096
+                or metadata.st_size > TRAFFIC_SPOOL_ENTRY_MAX_BYTES
             ):
                 raise ProtocolError("traffic spool entry is invalid")
             try:
                 batch = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise ProtocolError("traffic spool entry is invalid") from exc
-            if (
-                not isinstance(batch, dict)
-                or set(batch) != {"batchId", "observedAt", "traffic"}
-                or not NODE_ID_PATTERN.fullmatch(str(batch["batchId"]))
-                or isinstance(batch["observedAt"], bool)
-                or not isinstance(batch["observedAt"], int)
-            ):
-                raise ProtocolError("traffic spool entry is invalid")
-            self._validate_traffic(batch["traffic"])
+            self._validate_batch(batch)
             batches.append(
                 (batch["observedAt"], metadata.st_mtime_ns, path.name, batch)
             )
@@ -1932,10 +2059,10 @@ class LocalStatsClient:
                     "status",
                     response.getcode() if hasattr(response, "getcode") else 0,
                 )
-                body = response.read(256 * 1024 + 1)
+                body = response.read(LOCAL_TRAFFIC_RESPONSE_MAX_BYTES + 1)
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             raise ProtocolError("local traffic stats request failed") from exc
-        if status != 200 or len(body) > 256 * 1024:
+        if status != 200 or len(body) > LOCAL_TRAFFIC_RESPONSE_MAX_BYTES:
             raise ProtocolError("local traffic stats response is invalid")
         if path == "/kick":
             return None
@@ -1990,11 +2117,25 @@ class CombinedLocalStatsClient:
                 combined[name] = value
         return combined
 
+    def collect_and_clear_batches(self):
+        collected = []
+        failure = None
+        for client in self.clients:
+            try:
+                current = client.collect_and_clear()
+                DurableTrafficSpool._validate_traffic(current)
+                if current:
+                    collected.append(current)
+            except Exception as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise PartialLocalTrafficCollectionError(collected) from failure
+        return collected or [{}]
+
     def collect_and_clear(self):
         combined = {}
-        for client in self.clients:
-            current = client.collect_and_clear()
-            DurableTrafficSpool._validate_traffic(current)
+        for current in self.collect_and_clear_batches():
             for name, counters in current.items():
                 target = combined.setdefault(name, {"tx": 0, "rx": 0})
                 for field in ("tx", "rx"):
@@ -2260,13 +2401,32 @@ class NodeControlCycle:
             self.state.set_traffic_ack(last_ack)
         return last_ack
 
+    def _collection_capacity(self):
+        clients = getattr(self.stats_client, "clients", ())
+        endpoint_count = max(1, len(clients))
+        return endpoint_count * LOCAL_TRAFFIC_RESPONSE_MAX_BYTES
+
+    def _can_collect(self):
+        return self.spool.can_collect(self._collection_capacity())
+
+    def _collect_to_spool(self):
+        observed_at = int(self.clock())
+        try:
+            if hasattr(self.stats_client, "collect_and_clear_batches"):
+                batches = self.stats_client.collect_and_clear_batches()
+            else:
+                batches = [self.stats_client.collect_and_clear()]
+        except PartialLocalTrafficCollectionError as exc:
+            self.spool.enqueue_collections(exc.batches, observed_at=observed_at)
+            raise
+        self.spool.enqueue_collections(batches, observed_at=observed_at)
+
     def flush_traffic(self):
-        if not self.spool.can_collect():
+        if not self._can_collect():
             self._upload_pending()
-            if not self.spool.can_collect():
+            if not self._can_collect():
                 raise ProtocolError("traffic spool has insufficient capacity")
-        traffic = self.stats_client.collect_and_clear()
-        self.spool.enqueue(traffic, observed_at=int(self.clock()))
+        self._collect_to_spool()
         return self._upload_pending()
 
     def refresh_snapshot(self):
@@ -2286,9 +2446,8 @@ class NodeControlCycle:
         snapshot = None
         selected = []
         if not stopped:
-            if self.spool.can_collect():
-                traffic = self.stats_client.collect_and_clear()
-                self.spool.enqueue(traffic, observed_at=int(self.clock()))
+            if self._can_collect():
+                self._collect_to_spool()
             pending = self.spool.pending()
             for batch in pending[:8]:
                 candidate = selected + [batch]

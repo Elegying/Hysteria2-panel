@@ -1046,6 +1046,97 @@ class NodeAgentProtocolTests(unittest.TestCase):
         with self.assertRaises(node_agent.ProtocolError):
             count_limited.enqueue({}, 2_000_000_001)
 
+    def test_spool_recovers_complete_staging_and_removes_interrupted_staging(self):
+        spool = node_agent.DurableTrafficSpool(self.root / "recovery-spool")
+        batch = spool.enqueue(
+            {"alice": {"tx": 10, "rx": 20}}, 2_000_000_000
+        )
+        committed = spool.path / (batch["batchId"] + ".json")
+        staged = spool.path / (".traffic-" + batch["batchId"] + ".json")
+        os.replace(committed, staged)
+        interrupted = spool.path / ".traffic-interrupted"
+        interrupted.write_bytes(b'{"batchId":')
+        interrupted.chmod(0o600)
+
+        recovered = node_agent.DurableTrafficSpool(spool.path)
+
+        self.assertEqual([batch], recovered.pending())
+        self.assertFalse(staged.exists())
+        self.assertFalse(interrupted.exists())
+        self.assertTrue(recovered.can_collect())
+
+    def test_spool_preserves_every_collection_when_a_commit_rename_fails(self):
+        spool = node_agent.DurableTrafficSpool(self.root / "atomic-spool")
+        real_replace = node_agent.os.replace
+        replacements = 0
+
+        def fail_second_replace(source, destination):
+            nonlocal replacements
+            replacements += 1
+            if replacements == 2:
+                raise OSError("simulated rename failure")
+            return real_replace(source, destination)
+
+        with mock.patch.object(
+            node_agent.os, "replace", side_effect=fail_second_replace
+        ):
+            with self.assertRaises(OSError):
+                spool.enqueue_collections(
+                    [
+                        {"alice": {"tx": 10, "rx": 20}},
+                        {"bob": {"tx": 30, "rx": 40}},
+                    ],
+                    2_000_000_000,
+                )
+
+        self.assertEqual(
+            {
+                "alice": {"tx": 10, "rx": 20},
+                "bob": {"tx": 30, "rx": 40},
+            },
+            {
+                name: counters
+                for batch in spool.pending()
+                for name, counters in batch["traffic"].items()
+            },
+        )
+
+        limited = node_agent.DurableTrafficSpool(
+            self.root / "atomic-limited-spool", max_entries=1
+        )
+        with self.assertRaises(node_agent.ProtocolError):
+            limited.enqueue_collections(
+                [
+                    {"alice": {"tx": 1, "rx": 2}},
+                    {"bob": {"tx": 3, "rx": 4}},
+                ],
+                2_000_000_000,
+            )
+        self.assertEqual([], list(limited.path.iterdir()))
+
+    def test_spool_splits_largest_multibyte_user_batch_before_persisting(self):
+        spool = node_agent.DurableTrafficSpool(
+            self.root / "multibyte-spool", max_bytes=4 * 1024 * 1024
+        )
+        traffic = {
+            "{:04d}{}".format(index, "😀" * 60): {"tx": index, "rx": index + 1}
+            for index in range(1000)
+        }
+
+        batches = spool.enqueue_many(traffic, 2_000_000_000)
+
+        self.assertGreater(len(batches), 1)
+        pending = spool.pending()
+        self.assertEqual(len(batches), len(pending))
+        reconstructed = {}
+        for batch in pending:
+            reconstructed.update(batch["traffic"])
+            entry = spool.path / (batch["batchId"] + ".json")
+            self.assertLessEqual(
+                entry.stat().st_size, node_agent.TRAFFIC_SPOOL_ENTRY_MAX_BYTES
+            )
+        self.assertEqual(traffic, reconstructed)
+
     def test_protocol_client_signs_domain_separated_https_requests(self):
         state = self.root / "registration.json"
         state.write_text(
@@ -1738,6 +1829,36 @@ class NodeAgentProtocolTests(unittest.TestCase):
         combined = node_agent.CombinedLocalStatsClient(Good(), Bad())
         with self.assertRaises(node_agent.ProtocolError):
             combined.online()
+
+    def test_partial_combined_traffic_is_durable_before_cycle_reports_failure(self):
+        class Good:
+            def collect_and_clear(self):
+                return {"alice": {"tx": 10, "rx": 20}}
+
+        class Bad:
+            def collect_and_clear(self):
+                raise OSError("UDP 443 stats unavailable")
+
+        class Protocol:
+            pass
+
+        combined = node_agent.CombinedLocalStatsClient(Good(), Bad())
+        spool = node_agent.DurableTrafficSpool(self.root / "partial-spool")
+        cycle = node_agent.NodeControlCycle(
+            Protocol(),
+            combined,
+            spool,
+            node_agent.ProtocolState(self.root / "partial-state.json"),
+            clock=lambda: 2_000_000_000,
+        )
+
+        with self.assertRaises(node_agent.PartialLocalTrafficCollectionError):
+            cycle._collect_to_spool()
+
+        self.assertEqual(
+            [{"alice": {"tx": 10, "rx": 20}}],
+            [batch["traffic"] for batch in spool.pending()],
+        )
 
     def test_loopback_auth_server_maps_main_and_udp443_without_logging_secrets(self):
         captured = []

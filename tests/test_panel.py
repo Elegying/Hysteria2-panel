@@ -876,6 +876,15 @@ class UsageManagerTests(unittest.TestCase):
             origin_kind="local",
             origin_name="面板本机",
         )
+        self.db.set_origin_budget(
+            "local:" + "0" * 32,
+            1000,
+            75,
+            "admin",
+            updated_at=1700000000,
+            manual_used_bytes=18,
+            reset_day=5,
+        )
 
         UsageManager(
             self.db,
@@ -901,6 +910,104 @@ class UsageManagerTests(unittest.TestCase):
         self.assertEqual((0, 0), (local[0]["tx_bytes"], local[0]["rx_bytes"]))
         self.assertEqual((7, 11), (legacy[0]["tx_bytes"], legacy[0]["rx_bytes"]))
         self.assertEqual((7, 11), (user["tx_bytes"], user["rx_bytes"]))
+        with sqlite_connection(self.db.path) as connection:
+            self.assertEqual(
+                (7, 11),
+                connection.execute(
+                    """SELECT tx_bytes, rx_bytes FROM origin_traffic_daily
+                    WHERE origin_id = ?""",
+                    (hysteria2_panel.LEGACY_USAGE_ORIGIN_ID,),
+                ).fetchone(),
+            )
+            self.assertIsNone(
+                connection.execute(
+                    """SELECT 1 FROM origin_traffic_daily
+                    WHERE origin_id = ?""",
+                    ("local:" + "0" * 32,),
+                ).fetchone()
+            )
+            budget = connection.execute(
+                """SELECT limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes FROM origin_traffic_budgets
+                WHERE origin_id = ?""",
+                ("local:" + "a" * 32,),
+            ).fetchone()
+            self.assertEqual((1000, 75, 5, 18), budget)
+            self.assertIsNone(
+                connection.execute(
+                    """SELECT 1 FROM origin_traffic_budgets
+                    WHERE origin_id = ?""",
+                    ("local:" + "0" * 32,),
+                ).fetchone()
+            )
+
+    def test_stable_local_identity_repairs_orphaned_placeholder_history(self):
+        placeholder_origin = "local:" + "0" * 32
+        active_origin = "local:" + "a" * 32
+        self.db.create_proxy_user("alice")
+        self.db.apply_traffic_batch(
+            "4" * 32,
+            {"alice": {"tx": 7, "rx": 11}},
+            origin_id=placeholder_origin,
+            origin_kind="local",
+            origin_name="面板本机",
+        )
+        self.db.set_origin_budget(
+            placeholder_origin,
+            1000,
+            75,
+            "admin",
+            updated_at=1700000000,
+            manual_used_bytes=18,
+            reset_day=5,
+        )
+        with sqlite_connection(self.db.path) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(
+                "DELETE FROM usage_origins WHERE origin_id = ?",
+                (placeholder_origin,),
+            )
+
+        for _attempt in range(2):
+            UsageManager(
+                self.db,
+                PolicyStatsClient(),
+                local_origin_id=active_origin,
+                local_origin_name="主面板",
+            )
+
+        with sqlite_connection(self.db.path) as connection:
+            legacy_user = connection.execute(
+                """SELECT tx_bytes, rx_bytes FROM usage_origin_users
+                WHERE origin_id = ? AND user_name = 'alice'""",
+                (hysteria2_panel.LEGACY_USAGE_ORIGIN_ID,),
+            ).fetchone()
+            legacy_daily = connection.execute(
+                """SELECT tx_bytes, rx_bytes FROM origin_traffic_daily
+                WHERE origin_id = ?""",
+                (hysteria2_panel.LEGACY_USAGE_ORIGIN_ID,),
+            ).fetchone()
+            active_budget = connection.execute(
+                """SELECT limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes FROM origin_traffic_budgets
+                WHERE origin_id = ?""",
+                (active_origin,),
+            ).fetchone()
+            self.assertEqual((7, 11), legacy_user)
+            self.assertEqual((7, 11), legacy_daily)
+            self.assertEqual((1000, 75, 5, 18), active_budget)
+            self.assertIsNone(
+                connection.execute(
+                    """SELECT 1 FROM (
+                        SELECT origin_id FROM usage_origin_users
+                        UNION ALL
+                        SELECT origin_id FROM origin_traffic_daily
+                        UNION ALL
+                        SELECT origin_id FROM origin_traffic_budgets
+                    ) AS ledger WHERE origin_id = ? LIMIT 1""",
+                    (placeholder_origin,),
+                ).fetchone()
+            )
 
     def test_dashboard_keeps_fresh_local_online_counts_when_only_traffic_sync_fails(self):
         self.db.create_proxy_user("alice")
@@ -1750,10 +1857,11 @@ class UsageManagerTests(unittest.TestCase):
         health = FakeHealth()
         manager = UsageManager(self.db, stats, health_monitor=health)
 
-        with self.assertRaisesRegex(OSError, "kick unavailable"):
-            manager.reset_user(user["id"], expected_generation=0)
+        manager.reset_user(user["id"], expected_generation=0)
 
         self.assertEqual([True, False], health.events)
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual((0, 0), (record["tx_bytes"], record["rx_bytes"]))
 
 
 class OperationsTests(unittest.TestCase):
@@ -5276,6 +5384,180 @@ class BackupManagerTests(unittest.TestCase):
         self.assertIn("HY2PANEL_CERT_PIN={}".format(result["certificate"]["pinSHA256"]), env_file.read_text())
         self.assertTrue((Path(result["automaticBackup"]) / "panel.db").is_file())
 
+    def test_restore_replaces_complete_usage_ledger_and_keeps_new_local_identity(self):
+        source_origin = "local:" + "1" * 32
+        destination_origin = "local:" + "2" * 32
+        self.database.apply_traffic_batch(
+            "2" * 32,
+            {"alice": {"tx": 77, "rx": 88}},
+            origin_id=source_origin,
+            origin_kind="local",
+            origin_name="旧服务器",
+        )
+        self.database.set_origin_budget(
+            source_origin,
+            10_000,
+            85,
+            "source-admin",
+            updated_at=1700000000,
+            manual_used_bytes=321,
+            reset_day=9,
+        )
+        archive = self.manager.create_archive()
+
+        destination_root = self.root / "ledger-destination"
+        destination_root.mkdir()
+        destination_hmac = b"l" * 32
+        destination_db = Database(destination_root / "panel.db", destination_hmac)
+        destination_db.initialize()
+        destination_db.create_proxy_user("discard-me")
+        destination_db.apply_traffic_batch(
+            "3" * 32,
+            {"discard-me": {"tx": 999, "rx": 888}},
+            origin_id=destination_origin,
+            origin_kind="local",
+            origin_name="新服务器",
+        )
+        destination_cert, destination_key = create_test_certificate(
+            destination_root, "vpn.example.test"
+        )
+        env_file = destination_root / "panel.env"
+        env_file.write_text(
+            "HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN=old\n".format(
+                destination_hmac.hex()
+            ),
+            encoding="utf-8",
+        )
+        destination = BackupManager(
+            database=destination_db,
+            hmac_key=destination_hmac,
+            tls_cert=destination_cert,
+            tls_key=destination_key,
+            public_host="vpn.example.test",
+            hysteria_port=19999,
+            node_name="新服务器",
+            local_origin_id=destination_origin,
+            work_dir=destination_root / "work",
+        )
+
+        destination.apply_archive(
+            archive,
+            env_file=env_file,
+            backup_root=destination_root / "automatic-backups",
+        )
+
+        with sqlite_connection(destination_db.path) as connection:
+            connection.row_factory = sqlite3.Row
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT 1 FROM proxy_users WHERE name = 'discard-me' COLLATE NOCASE"
+                ).fetchone()
+            )
+            origins = {
+                row["origin_id"]: dict(row)
+                for row in connection.execute("SELECT * FROM usage_origins")
+            }
+            self.assertIn(hysteria2_panel.LEGACY_USAGE_ORIGIN_ID, origins)
+            self.assertIn(source_origin, origins)
+            self.assertIn(destination_origin, origins)
+            self.assertEqual("新服务器", origins[destination_origin]["display_name"])
+            self.assertEqual(
+                [],
+                connection.execute(
+                    """SELECT * FROM usage_origin_users
+                    WHERE user_name = 'discard-me' COLLATE NOCASE"""
+                ).fetchall(),
+            )
+            restored_source = connection.execute(
+                """SELECT tx_bytes, rx_bytes FROM usage_origin_users
+                WHERE origin_id = ? AND user_name = 'alice'""",
+                (source_origin,),
+            ).fetchone()
+            self.assertEqual((77, 88), tuple(restored_source))
+            daily = connection.execute(
+                """SELECT tx_bytes, rx_bytes FROM origin_traffic_daily
+                WHERE origin_id = ?""",
+                (source_origin,),
+            ).fetchone()
+            self.assertEqual((77, 88), tuple(daily))
+            budget = connection.execute(
+                """SELECT limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes FROM origin_traffic_budgets
+                WHERE origin_id = ?""",
+                (source_origin,),
+            ).fetchone()
+            self.assertEqual((10_000, 85, 9, 321), tuple(budget))
+
+    def test_restore_normalization_repairs_orphaned_placeholder_ledger(self):
+        placeholder_origin = "local:" + "0" * 32
+        active_origin = "local:" + "a" * 32
+        self.database.register_usage_origin(
+            "node:" + "b" * 32, "remote", "远程节点"
+        )
+        self.database.apply_traffic_batch(
+            "4" * 32,
+            {"alice": {"tx": 7, "rx": 11}},
+            origin_id=placeholder_origin,
+            origin_kind="local",
+            origin_name="面板本机",
+        )
+        self.database.set_origin_budget(
+            placeholder_origin,
+            1000,
+            75,
+            "admin",
+            updated_at=1700000000,
+            manual_used_bytes=18,
+            reset_day=5,
+        )
+        with sqlite_connection(self.database.path) as connection:
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(
+                "DELETE FROM usage_origins WHERE origin_id = ?",
+                (placeholder_origin,),
+            )
+
+        self.manager.local_origin_id = active_origin
+        self.manager._normalize_incoming_usage_ledger(
+            self.database.path, self.hmac_key
+        )
+
+        with sqlite_connection(self.database.path) as connection:
+            legacy_user = connection.execute(
+                """SELECT tx_bytes, rx_bytes FROM usage_origin_users
+                WHERE origin_id = ? AND user_name = 'alice'""",
+                (hysteria2_panel.LEGACY_USAGE_ORIGIN_ID,),
+            ).fetchone()
+            legacy_daily = connection.execute(
+                """SELECT tx_bytes, rx_bytes FROM origin_traffic_daily
+                WHERE origin_id = ?""",
+                (hysteria2_panel.LEGACY_USAGE_ORIGIN_ID,),
+            ).fetchone()
+            active_budget = connection.execute(
+                """SELECT limit_bytes, warning_percent, reset_day,
+                    manual_used_bytes FROM origin_traffic_budgets
+                WHERE origin_id = ?""",
+                (active_origin,),
+            ).fetchone()
+            self.assertEqual((130, 467), legacy_user)
+            self.assertEqual((130, 467), legacy_daily)
+            self.assertEqual((1000, 75, 5, 18), active_budget)
+
+    def test_restore_normalization_rejects_unknown_orphaned_ledger_origin(self):
+        with sqlite_connection(self.database.path) as connection:
+            connection.execute(
+                """INSERT INTO origin_traffic_daily(
+                    origin_id, usage_date, tx_bytes, rx_bytes, updated_at
+                ) VALUES (?, '2026-08-31', 1, 2, 1700000000)""",
+                ("node:" + "c" * 32,),
+            )
+        self.manager.local_origin_id = "local:" + "a" * 32
+
+        with self.assertRaisesRegex(BackupValidationError, "孤立来源"):
+            self.manager._normalize_incoming_usage_ledger(
+                self.database.path, self.hmac_key
+            )
+
     def test_restore_preserves_every_issued_link_identity_across_server_replacement(self):
         created_second = self.database.create_proxy_user(
             "bob", device_limit=7, traffic_limit_bytes=900 * 1024**3
@@ -5962,7 +6244,10 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-origin-id="local:', body)
         self.assertIn('data-live-machine-online', body)
         self.assertIn('data-live-machine-state', body)
-        self.assertIn("fetch('/api/v1/dashboard-online'", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn(
+            "'/api/v1/dashboard-online' + window.location.search",
+            hysteria2_panel.PAGE_SCRIPT,
+        )
         self.assertIn(
             "window.setTimeout(refreshOnlineStatus, 2000)",
             hysteria2_panel.PAGE_SCRIPT,
@@ -5971,6 +6256,9 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("signal: controller.signal", hysteria2_panel.PAGE_SCRIPT)
         self.assertIn("Math.max(0, 2000", hysteria2_panel.PAGE_SCRIPT)
         self.assertIn("sortOnlineUserRows()", hysteria2_panel.PAGE_SCRIPT)
+        self.assertIn(
+            "renderedNames.size !== liveNames.size", hysteria2_panel.PAGE_SCRIPT
+        )
         self.assertIn(
             ".limit-alert[hidden]{display:none}",
             hysteria2_panel.PAGE_STYLE,
@@ -6784,6 +7072,59 @@ class PanelHttpTests(unittest.TestCase):
             self.assertIn(label, body)
         self.assertIn('value="3"', body)
         self.assertIn('value="250"', body)
+        self.assertIn("总流量（GiB）", body)
+
+    def test_dashboard_does_not_report_failed_or_unknown_service_as_stopped(self):
+        headers, _ = self.authenticated_headers()
+        for state, expected in (
+            ("failed", "Hysteria 启动失败"),
+            ("activating", "Hysteria 启动中"),
+            ("unknown", "Hysteria 状态未知"),
+        ):
+            with self.subTest(state=state):
+                self.service_controller.state = state
+                with self.request("/", headers=headers) as response:
+                    body = response.read().decode()
+                self.assertIn(expected, body)
+                self.assertNotIn("Hysteria 已停止", body)
+
+    def test_dashboard_marks_system_metrics_unavailable_instead_of_zero(self):
+        headers, _ = self.authenticated_headers()
+        self.application.system_metrics.snapshot = mock.Mock(
+            side_effect=OSError("proc unavailable")
+        )
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertIn("CPU 使用率</span><strong>—</strong>", body)
+        self.assertIn("内存占用</span><strong>—</strong>", body)
+        self.assertIn("磁盘占用</span><strong>—</strong>", body)
+        self.assertNotIn("CPU 使用率</span><strong>0.0%", body)
+
+    def test_dashboard_paginates_large_user_sets_and_live_polling_current_page(self):
+        for index in range(351):
+            self.db.create_proxy_user("paged-user-{:03d}".format(index))
+        headers, _ = self.authenticated_headers()
+
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+
+        self.assertEqual(50, body.count("data-user-name="))
+        self.assertLess(len(body.encode("utf-8")), 300_000)
+        self.assertIn("显示 1–50 / 符合 351（全部 351）", body)
+        self.assertIn('rel="next"', body)
+
+        with self.request("/?page=8", headers=headers) as response:
+            last_page = response.read().decode()
+        self.assertEqual(1, last_page.count("data-user-name="))
+        self.assertIn("显示 351–351 / 符合 351（全部 351）", last_page)
+
+        with self.request(
+            "/api/v1/dashboard-online?page=8", headers=headers
+        ) as response:
+            live = json.load(response)
+        self.assertEqual(1, len(live["users"]))
 
     def test_dashboard_renders_per_machine_devices_traffic_and_stale_warning(self):
         headers, _ = self.authenticated_headers()
@@ -7182,7 +7523,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(body.index(newest), body.index(middle))
         self.assertLess(body.index(middle), body.index(oldest))
 
-    def test_dashboard_lists_all_users_with_search_and_create_dialog(self):
+    def test_dashboard_paginates_users_with_search_and_create_dialog(self):
         for index in range(55):
             self.db.create_proxy_user("user{:03d}".format(index))
         headers, _ = self.authenticated_headers()
@@ -7190,9 +7531,11 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/", headers=headers) as response:
             body = response.read().decode()
 
-        self.assertEqual(55, body.count('data-user-name="'))
-        self.assertIn("<strong>user000</strong>", body)
-        self.assertNotIn("第 1 /", body)
+        self.assertEqual(50, body.count('data-user-name="'))
+        self.assertIn("<strong>user054</strong>", body)
+        self.assertNotIn("<strong>user000</strong>", body)
+        self.assertIn("第 1 / 2 页", body)
+        self.assertIn('aria-label="第 2 页"', body)
         self.assertIn('type="search"', body)
         self.assertIn('data-user-search', body)
         self.assertIn('class="section-head user-section-head"', body)
@@ -7200,7 +7543,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('for="user-search">用户名', body)
         self.assertLess(body.index('class="user-heading"'), body.index('class="user-search"'))
         self.assertIn('data-search-status', body)
-        self.assertIn('window.requestAnimationFrame(filterUsers)', body)
+        self.assertIn("url.searchParams.delete('page');", body)
+        self.assertIn("window.location.assign(url.pathname + url.search);", body)
         self.assertIn('data-dialog-open="create-user-dialog"', body)
         self.assertIn('<dialog id="create-user-dialog"', body)
         self.assertIn('aria-labelledby="create-user-title"', body)
@@ -7244,10 +7588,11 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-filter-empty', body)
         self.assertIn('data-clear-user-filters', body)
         self.assertIn("new URLSearchParams(new FormData(filterForm))", body)
-        self.assertIn("row.dataset.enabled === (statusFilter.value === 'enabled' ? '1' : '0')", body)
-        self.assertIn("row.dataset.allowUdp443 === (udp443Filter.value === 'allowed' ? '1' : '0')", body)
-        self.assertIn("history.replaceState", body)
-        self.assertIn("userSearch.value = '';", body)
+        self.assertNotIn('data-user-name="disabled-user"', body)
+        self.assertIn("url.searchParams.delete('page');", body)
+        self.assertIn("window.location.assign(url.pathname + url.search);", body)
+        self.assertNotIn("history.replaceState", body)
+        self.assertIn("field.value = '';", body)
         self.assertNotIn("filterForm.reset();", body)
 
     def test_dashboard_rejects_unknown_filter_values_and_bounds_search_text(self):
@@ -7323,6 +7668,52 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(1, self.restore_controller.queued)
         self.assertTrue(self.backup_manager.pending_archive.is_file())
         self.assertLess(events.index("queue_restore"), events.index("restore_queued"))
+
+    def test_restore_fetch_contract_rejects_expired_session_without_false_success(self):
+        queued_before = self.restore_controller.queued
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.request(
+                "/restore",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/zip",
+                    "X-HY2Panel-CSRF": "expired",
+                },
+                raw_data=b"not-uploaded",
+                follow_redirects=False,
+            )
+
+        self.assertEqual(401, rejected.exception.code)
+        self.assertEqual(
+            {
+                "error": "登录已失效，请重新登录",
+                "loginUrl": "/login",
+            },
+            json.loads(rejected.exception.read().decode("utf-8")),
+        )
+        self.assertEqual(queued_before, self.restore_controller.queued)
+
+    def test_restore_fetch_errors_are_bounded_json_not_full_html_pages(self):
+        headers, csrf_token = self.authenticated_headers()
+        self.backup_manager.stage_archive = mock.Mock(
+            side_effect=BackupValidationError("无效备份")
+        )
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.request(
+                "/restore",
+                headers={
+                    **headers,
+                    "Accept": "application/json",
+                    "Content-Type": "application/zip",
+                    "X-HY2Panel-CSRF": csrf_token,
+                },
+                raw_data=b"invalid",
+                follow_redirects=False,
+            )
+
+        payload = rejected.exception.read()
+        self.assertLess(len(payload), 1024)
+        self.assertEqual({"error": "无效备份"}, json.loads(payload.decode("utf-8")))
 
     def test_restore_streaming_does_not_hold_the_user_action_lock(self):
         headers, csrf_token = self.authenticated_headers()
@@ -8460,6 +8851,30 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(
             Path("/etc/hysteria2-panel/panel.key"), settings.panel_tls_key
         )
+
+    def test_https_reserves_port_80_for_automatic_certificate_renewal(self):
+        base = {
+            "HY2PANEL_HMAC_KEY": "ab" * 32,
+            "HY2PANEL_PUBLIC_HOST": "vpn.example.com",
+            "HY2PANEL_STATS_SECRET": "stats-secret",
+            "HY2PANEL_CERT_PIN": "NODE:CERT:PIN",
+            "HY2PANEL_PANEL_SCHEME": "https",
+            "HY2PANEL_PANEL_PUBLIC_HOST": "panel.example.com",
+            "HY2PANEL_PANEL_TLS_CERT": "/etc/hysteria2-panel/panel.crt",
+            "HY2PANEL_PANEL_TLS_KEY": "/etc/hysteria2-panel/panel.key",
+        }
+
+        with self.assertRaisesRegex(ValueError, "port 80"):
+            Settings.from_mapping({**base, "HY2PANEL_HYSTERIA_PORT": "80"})
+
+        http_settings = Settings.from_mapping(
+            {
+                **base,
+                "HY2PANEL_PANEL_SCHEME": "http",
+                "HY2PANEL_HYSTERIA_PORT": "80",
+            }
+        )
+        self.assertEqual(80, http_settings.hysteria_port)
 
     def test_https_rejects_missing_or_invalid_independent_panel_identity(self):
         base = {

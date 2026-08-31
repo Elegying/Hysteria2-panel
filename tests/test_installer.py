@@ -504,6 +504,81 @@ assert_reopenable_installer_entrypoint
         self.assertLess(first_payload, clear)
         self.assertLess(clear, committed)
 
+    def test_upgrade_recovery_survives_sigkill_and_restores_durable_runtime(self):
+        source = INSTALLER.read_text()
+
+        self.assertIn(
+            "UPGRADE_WATCH_UNIT=hysteria2-panel-upgrade-watch.service", source
+        )
+        self.assertIn("watch_upgrade_parent()", source)
+        self.assertIn("arm_upgrade_watchdog()", source)
+        watchdog = source[
+            source.index("watch_upgrade_parent()") : source.index(
+                "\n\narm_upgrade_transaction()"
+            )
+        ]
+        self.assertIn('/proc/${parent_pid}/stat', watchdog)
+        self.assertIn("--watch-upgrade", watchdog)
+        self.assertIn(
+            "systemctl start --no-block hysteria2-panel-upgrade-recover.service",
+            watchdog,
+        )
+        arm = source[
+            source.index("arm_upgrade_transaction()") : source.index(
+                "\n\nclear_upgrade_transaction()"
+            )
+        ]
+        self.assertLess(
+            arm.index('mv -f -- "${marker_stage}" "${UPGRADE_ACTIVE_MARKER}"'),
+            arm.index("arm_upgrade_watchdog"),
+        )
+
+        self.assertIn("UPGRADE_RUNTIME_SYSCTL_STATE=runtime-sysctl.state", source)
+        backup = source[source.index('timestamp="$(date') : source.index(
+            "\n\nif (( EXISTING_INSTALL == 1 )); then\n  arm_upgrade_transaction"
+        )]
+        self.assertLess(
+            backup.index("capture_upgrade_runtime_state"),
+            backup.index("write_backup_manifest"),
+        )
+        runtime_restore = source[
+            source.index("restore_upgrade_runtime_state()") : source.index(
+                "\n\nrequire_backup_space()"
+            )
+        ]
+        self.assertIn("0:0:600:1", runtime_restore)
+        self.assertIn('sysctl -w "net.core.rmem_max=${rmem}"', runtime_restore)
+        self.assertIn(
+            'sysctl -w "net.ipv4.tcp_congestion_control=${congestion_control}"',
+            runtime_restore,
+        )
+        recovery_unit = source[
+            source.index('cat > "${TMP_DIR}/hysteria2-panel-upgrade-recover.service"') :
+            source.index("\nEOF", source.index(
+                'cat > "${TMP_DIR}/hysteria2-panel-upgrade-recover.service"'
+            ))
+        ]
+        self.assertIn("ProtectKernelTunables=false", recovery_unit)
+
+        rollback = source[
+            source.index("rollback_existing_install()") : source.index("\n\nfail()")
+        ]
+        self.assertIn("sync_traffic_before_upgrade_rollback", rollback)
+        self.assertIn('${BACKUP_DIR}/opt/hysteria2_panel.py', source)
+        self.assertLess(
+            rollback.index("sync_traffic_before_upgrade_rollback"),
+            rollback.index("stop_loaded_units"),
+        )
+        verifier = source[
+            source.index("verify_recovered_upgrade()") : source.index(
+                "\n\nrestore_managed_directory()"
+            )
+        ]
+        self.assertLess(
+            verifier.index("start_backed_up_timers"),
+            verifier.index("clear_upgrade_transaction"),
+        )
+
     def test_upgrade_checks_backup_space_and_prunes_only_automatic_backups(self):
         source = INSTALLER.read_text()
 
@@ -557,7 +632,7 @@ assert_reopenable_installer_entrypoint
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.36.2"', source)
+        self.assertIn('PANEL_VERSION="0.36.3"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -654,6 +729,19 @@ assert_reopenable_installer_entrypoint
         )
         self.assertIn("CapabilityBoundingSet=CAP_DAC_OVERRIDE", offsite_unit)
         self.assertIn("AmbientCapabilities=CAP_DAC_OVERRIDE", offsite_unit)
+        self.assertIn(
+            "/var/backups/hysteria2-panel/offsite-staging", offsite_unit
+        )
+        self.assertIn(
+            "install -d -o hy2panel -g hy2panel -m 0700 "
+            "/var/lib/hysteria2-panel/backup-restore",
+            source,
+        )
+        self.assertIn(
+            "install -d -o root -g root -m 0700 "
+            "/var/backups/hysteria2-panel/offsite-staging",
+            source,
+        )
         self.assertIn("systemctl enable hysteria2-panel-offsite-backup.timer", source)
 
     def test_join_node_mode_is_isolated_from_hysteria_identity_and_network_mutations(self):
@@ -985,6 +1073,10 @@ printf '%s:%s:%s:%s\n' \
             source,
         )
         self.assertIn('ss -H -ltn "sport = :80"', source)
+        self.assertIn(
+            "HTTPS 自动续期固定使用 TCP 80；Hysteria、面板和内部服务端口均不能设为 80",
+            source,
+        )
         self.assertIn(
             'echo "面板地址：${PANEL_SCHEME}://${PANEL_PUBLIC_HOST}:${PANEL_PORT}/"',
             source,
