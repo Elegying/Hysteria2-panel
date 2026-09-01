@@ -1,13 +1,23 @@
 import unittest
 from pathlib import Path
 
+from hy2panel.mobile_api import match_mobile_route
+
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_SOURCES = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted((ROOT / "mobile" / "lib").rglob("*.dart"))
 )
-SERVER_SOURCE = (ROOT / "hysteria2_panel.py").read_text(encoding="utf-8")
+SERVER_SOURCE = "\n".join(
+    (
+        (ROOT / "hysteria2_panel.py").read_text(encoding="utf-8"),
+        (ROOT / "hy2panel/mobile_api.py").read_text(encoding="utf-8"),
+    )
+)
+SETTINGS_SOURCE = (ROOT / "mobile/lib/screens/settings_screen.dart").read_text(
+    encoding="utf-8"
+)
 
 
 class MobileApiContractTests(unittest.TestCase):
@@ -63,6 +73,46 @@ class MobileApiContractTests(unittest.TestCase):
     def test_external_update_check_uses_only_the_public_github_https_api(self):
         self.assertIn("https://api.github.com/repos/", APP_SOURCES)
         self.assertNotIn("http://api.github.com/", APP_SOURCES)
+
+    def test_update_check_uses_installed_version_and_formal_releases_only(self):
+        self.assertIn(
+            "_packageInfo ?? await PackageInfo.fromPlatform()", SETTINGS_SOURCE
+        )
+        self.assertIn("release['draft'] == true", SETTINGS_SOURCE)
+        self.assertIn("release['prerelease'] == true", SETTINGS_SOURCE)
+        self.assertIn("final current = packageInfo.version;", SETTINGS_SOURCE)
+        self.assertNotIn("?? '0.2.0'", SETTINGS_SOURCE)
+
+    def test_mobile_route_matching_is_fixed_and_method_specific(self):
+        node_id = "a" * 32
+        cases = (
+            ("GET", "/api/v1/mobile/overview", ("overview", ())),
+            ("POST", "/api/v1/mobile/service/restart", ("service-action", ("restart",))),
+            (
+                "POST",
+                "/api/v1/mobile/nodes/{}/disable".format(node_id),
+                ("remote-node-action", (node_id, "disable")),
+            ),
+            (
+                "POST",
+                "/api/v1/mobile/users/42/reset-traffic",
+                ("user-action", ("42", "reset-traffic")),
+            ),
+            ("PATCH", "/api/v1/mobile/users/42", ("update-user", ("42",))),
+            ("DELETE", "/api/v1/mobile/users/42", ("delete-user", ("42",))),
+        )
+        for method, path, expected in cases:
+            with self.subTest(method=method, path=path):
+                self.assertEqual(expected, match_mobile_route(method, path))
+
+        for method, path in (
+            ("GET", "/api/v1/mobile/service/restart"),
+            ("POST", "/api/v1/mobile/service/arbitrary"),
+            ("POST", "/api/v1/mobile/nodes/../../disable"),
+            ("DELETE", "/api/v1/mobile/users/not-a-number"),
+        ):
+            with self.subTest(method=method, path=path):
+                self.assertEqual((None, ()), match_mobile_route(method, path))
 
 
 if __name__ == "__main__":

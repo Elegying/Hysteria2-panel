@@ -61,7 +61,9 @@ from hy2panel.budgets import (
 )
 from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.mobile_api import (
+    MOBILE_API_VERSION,
     capabilities_payload,
+    match_mobile_route,
     nodes_payload,
     overview_payload,
     users_payload,
@@ -6311,7 +6313,7 @@ class PanelHandler(JsonHandler):
                 "meta": {
                     "requestId": self._request_id(),
                     "serverTime": int(time.time()),
-                    "apiVersion": "1",
+                    "apiVersion": MOBILE_API_VERSION,
                 },
                 "error": (
                     {"code": error_code, "message": str(message)[:512]}
@@ -6362,14 +6364,15 @@ class PanelHandler(JsonHandler):
         return False
 
     def _handle_mobile_get(self, path):
-        if path == "/api/v1/mobile/capabilities":
+        route, _parameters = match_mobile_route("GET", path)
+        if route == "capabilities":
             self._mobile_response(200, capabilities_payload(PANEL_VERSION))
             return
         session = self._require_mobile_session()
         if not session:
             return
         try:
-            if path == "/api/v1/mobile/auth/session":
+            if route == "session":
                 self._mobile_response(
                     200,
                     {
@@ -6381,16 +6384,16 @@ class PanelHandler(JsonHandler):
                     },
                 )
                 return
-            if path == "/api/v1/mobile/overview":
+            if route == "overview":
                 self._mobile_response(200, overview_payload(self.app, PANEL_VERSION))
                 return
-            if path == "/api/v1/mobile/users":
+            if route == "users":
                 self._mobile_response(200, users_payload(self.app))
                 return
-            if path == "/api/v1/mobile/nodes":
+            if route == "nodes":
                 self._mobile_response(200, nodes_payload(self.app))
                 return
-            if path == "/api/v1/mobile/updates/status":
+            if route == "update-status":
                 self._mobile_response(200, self.app.update_controller.status())
                 return
         except Exception:
@@ -6450,7 +6453,7 @@ class PanelHandler(JsonHandler):
                 "username": str(username)[:64],
                 "tokenType": "Bearer",
                 "panelVersion": PANEL_VERSION,
-                "apiVersion": "1",
+                "apiVersion": MOBILE_API_VERSION,
             }
         )
         self._mobile_response(200, tokens)
@@ -6464,7 +6467,13 @@ class PanelHandler(JsonHandler):
                 message="登录已失效，请重新登录",
             )
             return
-        tokens.update({"tokenType": "Bearer", "panelVersion": PANEL_VERSION, "apiVersion": "1"})
+        tokens.update(
+            {
+                "tokenType": "Bearer",
+                "panelVersion": PANEL_VERSION,
+                "apiVersion": MOBILE_API_VERSION,
+            }
+        )
         self._mobile_response(200, tokens)
 
     def _handle_mobile_user_create(self, session, payload):
@@ -6560,16 +6569,17 @@ class PanelHandler(JsonHandler):
         payload = self._mobile_read_json(maximum=32768)
         if payload is None:
             return
-        if path == "/api/v1/mobile/auth/login":
+        route, parameters = match_mobile_route("POST", path)
+        if route == "login":
             self._handle_mobile_login(payload)
             return
-        if path == "/api/v1/mobile/auth/refresh":
+        if route == "refresh":
             self._handle_mobile_refresh(payload)
             return
         session = self._require_mobile_session()
         if not session:
             return
-        if path == "/api/v1/mobile/auth/logout":
+        if route == "logout":
             revoked = self.app.database.revoke_mobile_session(self._bearer_token())
             self._audit_safely(
                 self._mobile_actor(session), "mobile_logout", session["device_id"]
@@ -6579,10 +6589,10 @@ class PanelHandler(JsonHandler):
         if not self._mobile_mutation_started():
             return
         try:
-            if path == "/api/v1/mobile/users":
+            if route == "create-user":
                 self._handle_mobile_user_create(session, payload)
                 return
-            if path == "/api/v1/mobile/system/reboot":
+            if route == "reboot":
                 def queue_reboot():
                     self._audit_safely(
                         self._mobile_actor(session), "server_reboot_queued", "system"
@@ -6592,11 +6602,8 @@ class PanelHandler(JsonHandler):
                 self.app.usage_manager.run_after_collect(queue_reboot)
                 self._mobile_response(202, {"accepted": True})
                 return
-            service_match = re.fullmatch(
-                r"/api/v1/mobile/service/(start|restart|stop)", path
-            )
-            if service_match:
-                action = service_match.group(1)
+            if route == "service-action":
+                action = parameters[0]
                 if action in {"stop", "restart"}:
                     state = self.app.usage_manager.run_after_collect(
                         lambda: self.app.service_controller.action(action)
@@ -6610,11 +6617,8 @@ class PanelHandler(JsonHandler):
                 )
                 self._mobile_response(200, {"status": state, "action": action})
                 return
-            local_node_match = re.fullmatch(
-                r"/api/v1/mobile/nodes/local/(enable|disable)", path
-            )
-            if local_node_match:
-                action = local_node_match.group(1)
+            if route == "local-node-action":
+                action = parameters[0]
                 service_action = "start" if action == "enable" else "stop"
                 if action == "disable":
                     state = self.app.usage_manager.run_after_collect(
@@ -6632,11 +6636,8 @@ class PanelHandler(JsonHandler):
                     {"enabled": action == "enable", "status": state},
                 )
                 return
-            remote_node_match = re.fullmatch(
-                r"/api/v1/mobile/nodes/([0-9a-f]{32})/(enable|disable)", path
-            )
-            if remote_node_match:
-                node_id, action = remote_node_match.groups()
+            if route == "remote-node-action":
+                node_id, action = parameters
                 if action == "disable":
                     command = self.app.database.request_node_stop(
                         node_id,
@@ -6662,19 +6663,15 @@ class PanelHandler(JsonHandler):
                     },
                 )
                 return
-            user_action_match = re.fullmatch(
-                r"/api/v1/mobile/users/(\d+)/(enable|disable|share|rotate-secret|reset-traffic)",
-                path,
-            )
-            if user_action_match:
+            if route == "user-action":
                 self._handle_mobile_user_action(
                     session,
-                    int(user_action_match.group(1)),
-                    user_action_match.group(2),
+                    int(parameters[0]),
+                    parameters[1],
                     payload,
                 )
                 return
-            if path == "/api/v1/mobile/node-enrollments":
+            if route == "create-enrollment":
                 if not self.app.secure_cookies or self.app.node_enrollment_service is None:
                     self._mobile_response(
                         409,
@@ -6694,10 +6691,7 @@ class PanelHandler(JsonHandler):
                 )
                 self._mobile_response(201, result)
                 return
-            verify_match = re.fullmatch(
-                r"/api/v1/mobile/nodes/([0-9a-f]{32})/verify", path
-            )
-            if verify_match:
+            if route == "verify-node":
                 fingerprint = str(payload.get("fingerprint", ""))
                 if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
                     self._mobile_response(
@@ -6707,7 +6701,7 @@ class PanelHandler(JsonHandler):
                     )
                     return
                 verified = self.app.database.verify_node(
-                    verify_match.group(1),
+                    parameters[0],
                     fingerprint,
                     actor=session["username"],
                     verified_at=int(time.time()),
@@ -6720,7 +6714,7 @@ class PanelHandler(JsonHandler):
                     )
                     return
                 self._audit_safely(
-                    self._mobile_actor(session), "node_verified", verify_match.group(1)
+                    self._mobile_actor(session), "node_verified", parameters[0]
                 )
                 self._mobile_response(200, {"verified": True})
                 return
@@ -6746,14 +6740,14 @@ class PanelHandler(JsonHandler):
         payload = self._mobile_read_json()
         if payload is None:
             return
-        match = re.fullmatch(r"/api/v1/mobile/users/(\d+)", path)
-        if not match:
+        route, parameters = match_mobile_route("PATCH", path)
+        if route != "update-user":
             self._mobile_response(404, error_code="NOT_FOUND", message="接口不存在")
             return
         if not self._mobile_mutation_started():
             return
         try:
-            user_id = int(match.group(1))
+            user_id = int(parameters[0])
             with self.app.user_action_lock:
                 user = self.app.database.update_proxy_user_limits(
                     user_id,
@@ -6795,10 +6789,10 @@ class PanelHandler(JsonHandler):
             return
         if not self._mobile_mutation_started():
             return
+        route, parameters = match_mobile_route("DELETE", path)
         try:
-            user_match = re.fullmatch(r"/api/v1/mobile/users/(\d+)", path)
-            if user_match:
-                user_id = int(user_match.group(1))
+            if route == "delete-user":
+                user_id = int(parameters[0])
                 generation = int(payload.get("generation", ""))
                 with self.app.user_action_lock:
                     user = self.app.database.delete_proxy_user(
@@ -6811,13 +6805,10 @@ class PanelHandler(JsonHandler):
                 )
                 self._mobile_response(200, {"deleted": True})
                 return
-            enrollment_match = re.fullmatch(
-                r"/api/v1/mobile/node-enrollments/([0-9a-f]{32})", path
-            )
-            if enrollment_match:
+            if route == "revoke-enrollment":
                 revoked = bool(
                     self.app.node_enrollment_service
-                    and self.app.node_enrollment_service.revoke(enrollment_match.group(1))
+                    and self.app.node_enrollment_service.revoke(parameters[0])
                 )
                 if not revoked:
                     self._mobile_response(
@@ -6829,7 +6820,7 @@ class PanelHandler(JsonHandler):
                 self._audit_safely(
                     self._mobile_actor(session),
                     "node_enrollment_revoked",
-                    enrollment_match.group(1),
+                    parameters[0],
                 )
                 self._mobile_response(200, {"revoked": True})
                 return

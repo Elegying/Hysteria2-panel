@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.38.5] - 2026-09-01
+
+### Android 管理 App v0.2.1
+
+- “检查 App 更新”只接受 GitHub 正式 Release，跳过草稿和预发布版本，避免测试 APK 被普通用户误装。
+- 版本比较始终读取设备中实际安装的版本；版本信息加载完成前不再显示写死的旧版本号。
+
+### 发布工程
+
+- Android 在线构建升级到支持 Node.js 24 的 `setup-java` v6 和 `upload-artifact` v7，并继续锁定到完整提交哈希。
+- 新增每月 GitHub Actions 与 Flutter 依赖更新检查；新增 Python CodeQL 扩展安全查询，并把结果纳入受保护主分支门禁。
+- 仓库级 GitHub Actions 策略要求所有外部 Action 使用完整提交 SHA，降低可变标签被替换的供应链风险。
+
+### 可维护性
+
+- Mobile API 的固定路径解析、HTTP 方法约束和动作白名单集中到 `hy2panel/mobile_api.py`；主服务只按已分类路由执行业务逻辑，未知方法、任意动作和路径穿越继续失败关闭。
+- 架构文档明确区分官方 Android API 与不提供的通用第三方特权 API，保持短期设备令牌、无 CORS 和固定 root 操作边界。
+
 ## [0.38.4] - 2026-09-01
 
 ### 备份、迁移与异地容灾
