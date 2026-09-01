@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
 import '../core/glass.dart';
+import 'domain_usage_screen.dart';
 
 class UsersScreen extends ConsumerStatefulWidget {
   const UsersScreen({super.key});
@@ -232,10 +233,28 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                user['name'].toString(),
-                style: Theme.of(sheetContext).textTheme.headlineSmall
-                    ?.copyWith(fontWeight: FontWeight.w800),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      user['name'].toString(),
+                      style: Theme.of(sheetContext).textTheme.headlineSmall
+                          ?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.of(sheetContext).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => DomainUsageScreen.user(
+                          userId: user['id'] as int,
+                          userName: user['name'].toString(),
+                        ),
+                      ),
+                    ),
+                    icon: const Icon(Icons.language_rounded, size: 18),
+                    label: const Text('流量详情'),
+                  ),
+                ],
               ),
               const SizedBox(height: 4),
               Text(user['enabled'] == true ? '启用中' : '已禁用'),
@@ -594,10 +613,26 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          '高流量用户',
-                          style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '高流量用户',
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: () => Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      const DomainUsageScreen.global(),
+                                ),
+                              ),
+                              icon: const Icon(Icons.language_rounded),
+                              label: const Text('流量详情'),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 9),
                         SizedBox(

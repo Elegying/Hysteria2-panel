@@ -602,6 +602,33 @@ class DistributedTrafficTests(DistributedControlCase):
         self.assertEqual("node-1", origins["node:" + self.nodes[0]]["display_name"])
         self.assertEqual("node-2", origins["node:" + self.nodes[1]]["display_name"])
 
+    def test_remote_domain_usage_is_signed_aggregated_and_replay_safe(self):
+        batch_id = "d" * 32
+        payload = self.traffic_payload(
+            self.nodes[0], 57, batch_id=batch_id, traffic={}
+        )
+        payload["domains"] = [
+            {"user": "alice", "domain": "example.test", "tx": 30, "rx": 70}
+        ]
+        first = self.service.apply_traffic_batch(
+            payload, remote_ip="203.0.113.1"
+        )
+        replay = self.traffic_payload(
+            self.nodes[0], 58, batch_id=batch_id, traffic={}
+        )
+        replay["domains"] = payload["domains"]
+        duplicate = self.service.apply_traffic_batch(
+            replay, remote_ip="203.0.113.1"
+        )
+        result = self.db.domain_usage_top(now=self.now[0])
+
+        self.assertTrue(first["committed"])
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(
+            [("example.test", 100)],
+            [(item["domain"], item["usedBytes"]) for item in result["items"]],
+        )
+
     def test_unknown_user_is_counted_without_blocking_known_traffic(self):
         result = self.service.apply_traffic_batch(
             self.traffic_payload(

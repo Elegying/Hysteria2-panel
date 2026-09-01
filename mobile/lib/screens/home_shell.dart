@@ -25,42 +25,50 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
     return Scaffold(
-      extendBody: true,
-      body: IndexedStack(index: _index, children: _pages),
-      bottomNavigationBar: SafeArea(
-        top: false,
-        minimum: const EdgeInsets.fromLTRB(12, 0, 12, 18),
-        child: GlassSurface(
-          borderRadius: 24,
-          blurSigma: 22,
-          child: NavigationBar(
-            selectedIndex: _index,
-            onDestinationSelected: (value) => setState(() => _index = value),
-            destinations: const [
-              NavigationDestination(
-                icon: Icon(Icons.dashboard_outlined),
-                selectedIcon: Icon(Icons.dashboard_rounded),
-                label: '首页',
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          IndexedStack(index: _index, children: _pages),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: bottomInset + 8,
+            child: GlassSurface(
+              borderRadius: 24,
+              blurSigma: 22,
+              child: NavigationBar(
+                backgroundColor: Colors.transparent,
+                selectedIndex: _index,
+                onDestinationSelected: (value) =>
+                    setState(() => _index = value),
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(Icons.dashboard_outlined),
+                    selectedIcon: Icon(Icons.dashboard_rounded),
+                    label: '首页',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.people_outline_rounded),
+                    selectedIcon: Icon(Icons.people_rounded),
+                    label: '用户',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.dns_outlined),
+                    selectedIcon: Icon(Icons.dns_rounded),
+                    label: '节点',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.settings_outlined),
+                    selectedIcon: Icon(Icons.settings_rounded),
+                    label: '设置',
+                  ),
+                ],
               ),
-              NavigationDestination(
-                icon: Icon(Icons.people_outline_rounded),
-                selectedIcon: Icon(Icons.people_rounded),
-                label: '用户',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.dns_outlined),
-                selectedIcon: Icon(Icons.dns_rounded),
-                label: '节点',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.settings_outlined),
-                selectedIcon: Icon(Icons.settings_rounded),
-                label: '设置',
-              ),
-            ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

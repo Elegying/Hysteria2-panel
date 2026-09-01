@@ -29,6 +29,11 @@ class MobileApiContractTests(unittest.TestCase):
             ("/api/v1/mobile/auth/logout", "/api/v1/mobile/auth/logout"),
             ("/api/v1/mobile/overview", "/api/v1/mobile/overview"),
             ("/api/v1/mobile/users", "/api/v1/mobile/users"),
+            ("/api/v1/mobile/domain-usage", "/api/v1/mobile/domain-usage"),
+            (
+                "/api/v1/mobile/users/${widget.userId}/domain-usage",
+                "users/(\\d+)/domain-usage",
+            ),
             ("/api/v1/mobile/nodes", "/api/v1/mobile/nodes"),
             ("/api/v1/mobile/node-enrollments", "/api/v1/mobile/node-enrollments"),
             ("/api/v1/mobile/service/$action", "service/(start|restart|stop)"),
@@ -87,6 +92,12 @@ class MobileApiContractTests(unittest.TestCase):
         node_id = "a" * 32
         cases = (
             ("GET", "/api/v1/mobile/overview", ("overview", ())),
+            ("GET", "/api/v1/mobile/domain-usage", ("domain-usage", ())),
+            (
+                "GET",
+                "/api/v1/mobile/users/42/domain-usage",
+                ("user-domain-usage", ("42",)),
+            ),
             ("POST", "/api/v1/mobile/service/restart", ("service-action", ("restart",))),
             (
                 "POST",

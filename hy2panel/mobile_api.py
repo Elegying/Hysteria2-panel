@@ -15,6 +15,7 @@ _MOBILE_EXACT_ROUTES = {
     ("GET", "/api/v1/mobile/auth/session"): "session",
     ("GET", "/api/v1/mobile/overview"): "overview",
     ("GET", "/api/v1/mobile/users"): "users",
+    ("GET", "/api/v1/mobile/domain-usage"): "domain-usage",
     ("GET", "/api/v1/mobile/nodes"): "nodes",
     ("GET", "/api/v1/mobile/updates/status"): "update-status",
     ("POST", "/api/v1/mobile/auth/login"): "login",
@@ -25,6 +26,11 @@ _MOBILE_EXACT_ROUTES = {
     ("POST", "/api/v1/mobile/node-enrollments"): "create-enrollment",
 }
 _MOBILE_ROUTE_PATTERNS = (
+    (
+        "GET",
+        "user-domain-usage",
+        re.compile(r"/api/v1/mobile/users/(\d+)/domain-usage"),
+    ),
     ("POST", "service-action", re.compile(r"/api/v1/mobile/service/(start|restart|stop)")),
     ("POST", "local-node-action", re.compile(r"/api/v1/mobile/nodes/local/(enable|disable)")),
     (
@@ -138,6 +144,16 @@ def users_payload(application):
         "available": bool(snapshot.get("available")),
         "onlineComplete": bool(snapshot.get("online_complete", True)),
         "observedAt": int(time.time()),
+    }
+
+
+def domain_usage_payload(application, user_id=None):
+    result = application.database.domain_usage_top(user_id=user_id, limit=10)
+    return {
+        **result,
+        "scope": "user" if user_id is not None else "global",
+        "approximate": True,
+        "description": "本月可识别 TCP 目标域名，按上传与下载流量合计排序",
     }
 
 
@@ -438,5 +454,6 @@ def capabilities_payload(panel_version):
             "service-control",
             "server-reboot",
             "app-update-check",
+            "domain-traffic-top10",
         ],
     }

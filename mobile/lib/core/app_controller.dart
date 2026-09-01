@@ -182,9 +182,10 @@ class AppController extends StateNotifier<AppState> {
         'local-node-control',
         'node-realtime-traffic',
         'server-reboot',
+        'domain-traffic-top10',
       };
       if (!features.containsAll(requiredFeatures)) {
-        throw const ApiException('面板版本暂不支持当前 App，请先将面板升级到 v0.38.0 或更高版本');
+        throw const ApiException('面板版本暂不支持当前 App，请先将面板升级到 v0.38.9 或更高版本');
       }
       var deviceId = await _storage.read(key: _deviceKey);
       if (deviceId == null || deviceId.length < 8) {
