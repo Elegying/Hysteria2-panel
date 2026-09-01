@@ -5632,16 +5632,21 @@ class JsonHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, message_format, *args):
+        remote_address = str(self.client_address[0]).replace("\r\n", "").replace("\n", "").replace("\r", "")
+        method = str(getattr(self, "command", "")).replace("\r\n", "").replace("\n", "").replace("\r", "")
+        path = str(getattr(self, "path", "")).split("?", 1)[0]
+        path = path.replace("\r\n", "").replace("\n", "").replace("\r", "")
+        message = (message_format % args).replace("\r\n", "").replace("\n", "").replace("\r", "")
         LOGGER.info(
             "%s",
             json.dumps(
                 {
                     "event": "http_request",
                     "requestId": self._request_id(),
-                    "remoteAddress": self.client_address[0],
-                    "method": getattr(self, "command", ""),
-                    "path": getattr(self, "path", "").split("?", 1)[0],
-                    "message": message_format % args,
+                    "remoteAddress": remote_address,
+                    "method": method,
+                    "path": path,
+                    "message": message,
                 },
                 separators=(",", ":"),
             )
