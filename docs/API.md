@@ -31,6 +31,8 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 
 - `GET /api/v1/mobile/overview`：首页聚合状态、统计、预算和资源。
 - `GET /api/v1/mobile/users`：返回全部用户，不分页。
+- `GET /api/v1/mobile/domain-usage`：返回本月全部用户合计的可识别 TCP 目标域名 TOP10，按上传与下载流量合计降序排列。
+- `GET /api/v1/mobile/users/{id}/domain-usage`：返回本月指定用户的可识别 TCP 目标域名 TOP10。
 - `POST /api/v1/mobile/users`、`PATCH /api/v1/mobile/users/{id}`、`DELETE /api/v1/mobile/users/{id}`：创建、编辑和删除用户。
 - `POST /api/v1/mobile/users/{id}/{enable|disable|share|rotate-secret|reset-traffic}`：用户操作。
 - `GET /api/v1/mobile/nodes`：返回面板本机与远程节点的安全裁剪详情、累计流量和采样时间，不包含节点私钥、HMAC 或机器令牌。
@@ -42,6 +44,8 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 - `POST /api/v1/mobile/system/reboot`：先结算流量并写入审计，再通过固定白名单排队重启服务器；成功返回 HTTP 202。
 
 写操作继续执行维护互斥、并发 generation、流量结算、断开连接和审计。客户端不得自动重试没有幂等保护的危险写操作。节点页每 5 秒重新读取累计值并在本机计算速率，不新增匿名流量接口，也不把节点地址写进 APK。
+
+域名流量接口是近似聚合，不是访问日志。采集端只读取 Hysteria 官方 `/dump/streams` 中采样时仍活动的 TCP 流，在内存中计算字节增量后只上传 `{user, domain, tx, rx}`；中央端每个来源/用户/月最多保留 500 个域名并只查询当前月 TOP10。IP 目标、原始流快照、URL 路径、请求内容、时间明细和 Cookie 均不落库；UDP/QUIC 目标及两次采样之间已经结束的短连接不会被统计。
 
 ### 返回格式
 
@@ -111,7 +115,7 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 |---|---|---:|---|
 | `POST` | `/api/v1/node-auth-decisions` | 16 KiB | 在中央事务中统一检查本机与所有就绪节点的在线实例、短租约和流量额度 |
 | `POST` | `/api/v1/node-online-snapshots` | 128 KiB | 以单调 `sequence` 完整替换该节点的稀疏在线计数和流量确认检查点 |
-| `POST` | `/api/v1/node-traffic-batches` | 256 KiB | 以 `(nodeId,batchId)` 幂等累计已持久化的增量流量，提交后返回 ACK |
+| `POST` | `/api/v1/node-traffic-batches` | 256 KiB | 以 `(nodeId,batchId)` 幂等累计已持久化的增量流量，可选携带有界域名聚合，提交后返回 ACK |
 | `POST` | `/api/v1/node-control-cycles` | 512 KiB | 新节点用一次签名和一次 HTTPS 往返提交至多 8 个流量批次、可选在线快照并轮询命令；旧接口继续兼容 |
 | `POST` | `/api/v1/node-commands/poll` | 8 KiB | 立即返回至多 32 条且总响应不超过 64 KiB 的固定枚举命令 |
 | `POST` | `/api/v1/node-commands/ack` | 16 KiB | 幂等确认发给同一节点的既有命令，不能修改命令内容 |

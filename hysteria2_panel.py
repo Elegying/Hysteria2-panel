@@ -63,6 +63,7 @@ from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.mobile_api import (
     MOBILE_API_VERSION,
     capabilities_payload,
+    domain_usage_payload,
     match_mobile_route,
     nodes_payload,
     overview_payload,
@@ -73,6 +74,7 @@ from hy2panel.distributed import (
     MAX_STATE_AGE_SECONDS,
     NodeRequestRejected,
 )
+from hy2panel.domain_usage import DomainStreamAccumulator, validate_domain_records
 from hy2panel.nodes import (
     DataPlaneBootstrapRejected,
     DataPlaneBootstrapService,
@@ -107,6 +109,8 @@ SCRYPT_P = 1
 PBKDF2_ITERATIONS = 600000
 NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
 LOGGER = logging.getLogger("hysteria2-panel")
+DOMAIN_USAGE_MAX_DOMAINS_PER_ORIGIN_USER = 500
+DOMAIN_USAGE_RETENTION_MONTHS = 3
 
 
 @contextlib.contextmanager
@@ -617,6 +621,7 @@ class BackupManager:
         ("mobile_sessions", "DELETE FROM mobile_sessions"),
         ("sessions", "DELETE FROM sessions"),
         ("audit_log", "DELETE FROM audit_log"),
+        ("domain_usage_monthly", "DELETE FROM domain_usage_monthly"),
         ("applied_traffic_batches", "DELETE FROM applied_traffic_batches"),
         ("node_online_counts", "DELETE FROM node_online_counts"),
         ("node_online_snapshots", "DELETE FROM node_online_snapshots"),
@@ -2112,6 +2117,21 @@ def _validate_token(token):
     return token
 
 
+def _usage_month(timestamp):
+    value = datetime.datetime.fromtimestamp(
+        int(timestamp), datetime.timezone(datetime.timedelta(hours=8))
+    )
+    return "{:04d}-{:02d}".format(value.year, value.month)
+
+
+def _usage_month_cutoff(timestamp, retention_months=DOMAIN_USAGE_RETENTION_MONTHS):
+    value = datetime.datetime.fromtimestamp(
+        int(timestamp), datetime.timezone(datetime.timedelta(hours=8))
+    )
+    month_index = value.year * 12 + value.month - 1 - max(0, int(retention_months) - 1)
+    return "{:04d}-{:02d}".format(month_index // 12, month_index % 12 + 1)
+
+
 class Database:
     # The agent loop is clamped to no less than one batch per second. This keeps
     # the complete eight-day idempotency window for a healthy node, while a
@@ -2252,6 +2272,24 @@ class Database:
                     updated_by TEXT NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS domain_usage_monthly (
+                    usage_month TEXT NOT NULL CHECK (
+                        length(usage_month) = 7
+                        AND substr(usage_month, 5, 1) = '-'
+                    ),
+                    origin_id TEXT NOT NULL REFERENCES usage_origins(origin_id)
+                        ON DELETE CASCADE,
+                    user_name TEXT NOT NULL COLLATE NOCASE,
+                    domain TEXT NOT NULL COLLATE NOCASE,
+                    tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (tx_bytes >= 0),
+                    rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (rx_bytes >= 0),
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (usage_month, origin_id, user_name, domain)
+                );
+                CREATE INDEX IF NOT EXISTS domain_usage_monthly_user_idx
+                    ON domain_usage_monthly(
+                        usage_month, user_name COLLATE NOCASE, domain
+                    );
                 CREATE TABLE IF NOT EXISTS nodes (
                     node_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -2958,6 +2996,10 @@ class Database:
                 "DELETE FROM usage_origin_users WHERE user_name = ? COLLATE NOCASE",
                 (row["name"],),
             )
+            connection.execute(
+                "DELETE FROM domain_usage_monthly WHERE user_name = ? COLLATE NOCASE",
+                (row["name"],),
+            )
             cursor = connection.execute(
                 "DELETE FROM proxy_users WHERE id = ? AND generation = ?",
                 (row["id"], generation),
@@ -3593,6 +3635,127 @@ class Database:
             results.append(node)
         return results
 
+    @staticmethod
+    def _record_domain_usage(connection, origin_id, records, observed_at, updated_at):
+        validate_domain_records(records)
+        if not records:
+            return
+        usage_month = _usage_month(observed_at)
+        known_users = {
+            row["name"].lower(): row["name"]
+            for row in connection.execute("SELECT name FROM proxy_users")
+        }
+        touched_users = set()
+        for record in records:
+            user_name = known_users.get(record["user"].lower())
+            if user_name is None:
+                continue
+            tx = int(record["tx"])
+            rx = int(record["rx"])
+            connection.execute(
+                """INSERT INTO domain_usage_monthly(
+                    usage_month, origin_id, user_name, domain,
+                    tx_bytes, rx_bytes, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(usage_month, origin_id, user_name, domain)
+                DO UPDATE SET
+                    tx_bytes = domain_usage_monthly.tx_bytes + excluded.tx_bytes,
+                    rx_bytes = domain_usage_monthly.rx_bytes + excluded.rx_bytes,
+                    updated_at = MAX(
+                        domain_usage_monthly.updated_at, excluded.updated_at
+                    )""",
+                (
+                    usage_month,
+                    origin_id,
+                    user_name,
+                    record["domain"],
+                    tx,
+                    rx,
+                    int(updated_at),
+                ),
+            )
+            touched_users.add(user_name)
+        for user_name in touched_users:
+            connection.execute(
+                """DELETE FROM domain_usage_monthly
+                WHERE usage_month = ? AND origin_id = ?
+                    AND user_name = ? COLLATE NOCASE
+                    AND rowid NOT IN (
+                        SELECT rowid FROM domain_usage_monthly
+                        WHERE usage_month = ? AND origin_id = ?
+                            AND user_name = ? COLLATE NOCASE
+                        ORDER BY tx_bytes + rx_bytes DESC, domain
+                        LIMIT ?
+                    )""",
+                (
+                    usage_month,
+                    origin_id,
+                    user_name,
+                    usage_month,
+                    origin_id,
+                    user_name,
+                    DOMAIN_USAGE_MAX_DOMAINS_PER_ORIGIN_USER,
+                ),
+            )
+        connection.execute(
+            "DELETE FROM domain_usage_monthly WHERE usage_month < ?",
+            (_usage_month_cutoff(updated_at),),
+        )
+
+    def domain_usage_top(self, user_id=None, limit=10, now=None):
+        now = int(time.time()) if now is None else int(now)
+        usage_month = _usage_month(now)
+        limit = max(1, min(10, int(limit)))
+        user_name = None
+        with self._connect() as connection:
+            if user_id is not None:
+                user = self._get_proxy_user(int(user_id), connection)
+                user_name = user["name"]
+                rows = connection.execute(
+                    """SELECT domain, SUM(tx_bytes) AS tx_bytes,
+                        SUM(rx_bytes) AS rx_bytes, MAX(updated_at) AS updated_at
+                    FROM domain_usage_monthly
+                    WHERE usage_month = ? AND user_name = ? COLLATE NOCASE
+                    GROUP BY domain
+                    ORDER BY SUM(tx_bytes) + SUM(rx_bytes) DESC, domain
+                    LIMIT ?""",
+                    (usage_month, user_name, limit),
+                ).fetchall()
+                observed_at = connection.execute(
+                    """SELECT MAX(updated_at) FROM domain_usage_monthly
+                    WHERE usage_month = ? AND user_name = ? COLLATE NOCASE""",
+                    (usage_month, user_name),
+                ).fetchone()[0]
+            else:
+                rows = connection.execute(
+                    """SELECT domain, SUM(tx_bytes) AS tx_bytes,
+                        SUM(rx_bytes) AS rx_bytes, MAX(updated_at) AS updated_at
+                    FROM domain_usage_monthly WHERE usage_month = ?
+                    GROUP BY domain
+                    ORDER BY SUM(tx_bytes) + SUM(rx_bytes) DESC, domain
+                    LIMIT ?""",
+                    (usage_month, limit),
+                ).fetchall()
+                observed_at = connection.execute(
+                    """SELECT MAX(updated_at) FROM domain_usage_monthly
+                    WHERE usage_month = ?""",
+                    (usage_month,),
+                ).fetchone()[0]
+        return {
+            "month": usage_month,
+            "user": user_name,
+            "observedAt": int(observed_at or 0),
+            "items": [
+                {
+                    "domain": row["domain"],
+                    "txBytes": int(row["tx_bytes"]),
+                    "rxBytes": int(row["rx_bytes"]),
+                    "usedBytes": int(row["tx_bytes"]) + int(row["rx_bytes"]),
+                }
+                for row in rows
+            ],
+        }
+
     def apply_traffic_batch(
         self,
         batch_id,
@@ -3600,6 +3763,8 @@ class Database:
         origin_id=LEGACY_USAGE_ORIGIN_ID,
         origin_kind="legacy",
         origin_name=LEGACY_USAGE_ORIGIN_NAME,
+        domain_usage=None,
+        observed_at=None,
     ):
         if not isinstance(batch_id, str) or not re.fullmatch(r"[0-9a-f]{32}", batch_id):
             raise ValueError("traffic batch id is invalid")
@@ -3628,7 +3793,9 @@ class Database:
             or not NAME_PATTERN.fullmatch(origin_name)
         ):
             raise ValueError("traffic origin is invalid")
+        domain_usage = [] if domain_usage is None else validate_domain_records(domain_usage)
         now = int(time.time())
+        observed_at = now if observed_at is None else int(observed_at)
         with self._connect() as connection:
             if connection.execute(
                 "SELECT 1 FROM applied_traffic_batches WHERE batch_id = ?", (batch_id,)
@@ -3673,6 +3840,23 @@ class Database:
             self._queue_kick_users_on_ready_nodes(
                 connection, exhausted_users, now
             )
+            if domain_usage:
+                connection.execute(
+                    """INSERT INTO usage_origins(
+                        origin_id, kind, node_id, display_name,
+                        created_at, last_traffic_at
+                    ) VALUES (?, ?, NULL, ?, ?, ?)
+                    ON CONFLICT(origin_id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        last_traffic_at = MAX(
+                            COALESCE(usage_origins.last_traffic_at, 0),
+                            excluded.last_traffic_at
+                        )""",
+                    (origin_id, origin_kind, origin_name, now, now),
+                )
+            self._record_domain_usage(
+                connection, origin_id, domain_usage, observed_at, now
+            )
             connection.execute(
                 "INSERT INTO applied_traffic_batches(batch_id, applied_at) VALUES (?, ?)",
                 (batch_id, now),
@@ -3709,6 +3893,10 @@ class Database:
                     updated_at = ? WHERE user_name = ? COLLATE NOCASE""",
                 (now, row["name"]),
             )
+            connection.execute(
+                "DELETE FROM domain_usage_monthly WHERE user_name = ? COLLATE NOCASE",
+                (row["name"],),
+            )
 
     def reset_all_traffic(self):
         with self._connect() as connection:
@@ -3722,6 +3910,7 @@ class Database:
                 "UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0, updated_at = ?",
                 (now,),
             )
+            connection.execute("DELETE FROM domain_usage_monthly")
 
     def create_node_enrollment(
         self,
@@ -4870,8 +5059,17 @@ class Database:
             return False
 
     def apply_node_traffic_batch(
-        self, node_id, batch_id, traffic, nonce_digest, accepted_at
+        self,
+        node_id,
+        batch_id,
+        traffic,
+        nonce_digest,
+        accepted_at,
+        domain_usage=None,
+        observed_at=None,
     ):
+        domain_usage = [] if domain_usage is None else validate_domain_records(domain_usage)
+        observed_at = int(accepted_at) if observed_at is None else int(observed_at)
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -4898,7 +5096,7 @@ class Database:
                         "duplicate": True,
                         "unknownUsers": existing["unknown_users"],
                     }
-                if not traffic:
+                if not traffic and not domain_usage:
                     connection.execute(
                         "UPDATE nodes SET last_traffic_ack_at = ? WHERE node_id = ?",
                         (int(accepted_at), node_id),
@@ -4940,6 +5138,27 @@ class Database:
                 }
                 unknown_users = 0
                 exhausted_users = set()
+                origin_id = "node:" + node_id
+                connection.execute(
+                    """INSERT INTO usage_origins(
+                        origin_id, kind, node_id, display_name,
+                        created_at, last_traffic_at
+                    ) VALUES (?, 'remote', ?, ?, ?, ?)
+                    ON CONFLICT(origin_id) DO UPDATE SET
+                        display_name = excluded.display_name,
+                        node_id = excluded.node_id,
+                        last_traffic_at = MAX(
+                            COALESCE(usage_origins.last_traffic_at, 0),
+                            excluded.last_traffic_at
+                        )""",
+                    (
+                        origin_id,
+                        node_id,
+                        node["name"],
+                        int(accepted_at),
+                        int(accepted_at),
+                    ),
+                )
                 for name, counters in traffic.items():
                     user = users.get(name)
                     if user is None:
@@ -4963,7 +5182,7 @@ class Database:
                     )
                     self._record_usage_origin_traffic(
                         connection,
-                        "node:" + node_id,
+                        origin_id,
                         "remote",
                         node["name"],
                         node_id,
@@ -4974,6 +5193,13 @@ class Database:
                     )
                 self._queue_kick_users_on_ready_nodes(
                     connection, exhausted_users, int(accepted_at)
+                )
+                self._record_domain_usage(
+                    connection,
+                    origin_id,
+                    domain_usage,
+                    observed_at,
+                    int(accepted_at),
                 )
                 connection.execute(
                     """INSERT INTO node_traffic_batches(
@@ -6370,7 +6596,7 @@ class PanelHandler(JsonHandler):
         return False
 
     def _handle_mobile_get(self, path):
-        route, _parameters = match_mobile_route("GET", path)
+        route, parameters = match_mobile_route("GET", path)
         if route == "capabilities":
             self._mobile_response(200, capabilities_payload(PANEL_VERSION))
             return
@@ -6396,12 +6622,25 @@ class PanelHandler(JsonHandler):
             if route == "users":
                 self._mobile_response(200, users_payload(self.app))
                 return
+            if route == "domain-usage":
+                self._mobile_response(200, domain_usage_payload(self.app))
+                return
+            if route == "user-domain-usage":
+                self._mobile_response(
+                    200, domain_usage_payload(self.app, int(parameters[0]))
+                )
+                return
             if route == "nodes":
                 self._mobile_response(200, nodes_payload(self.app))
                 return
             if route == "update-status":
                 self._mobile_response(200, self.app.update_controller.status())
                 return
+        except KeyError:
+            self._mobile_response(
+                404, error_code="USER_NOT_FOUND", message="用户不存在"
+            )
+            return
         except Exception:
             LOGGER.exception("mobile API read failed")
             self._mobile_response(
@@ -8090,6 +8329,57 @@ class HysteriaStatsClient:
         self._validate_traffic(traffic)
         return traffic
 
+    def dump_streams(self):
+        payload = self._request("/dump/streams")
+        streams = payload.get("streams")
+        if not isinstance(streams, list) or len(streams) > 10000:
+            raise ValueError("Hysteria stream response is invalid")
+        normalized = []
+        for stream in streams:
+            if not isinstance(stream, dict):
+                raise ValueError("Hysteria stream response is invalid")
+            auth = stream.get("auth")
+            connection = stream.get("connection")
+            stream_id = stream.get("stream")
+            tx = stream.get("tx")
+            rx = stream.get("rx")
+            initial_at = stream.get("initial_at")
+            req_addr = stream.get("req_addr", "")
+            hooked_req_addr = stream.get("hooked_req_addr", "")
+            if (
+                not isinstance(auth, str)
+                or not 1 <= len(auth) <= 64
+                or any(ord(character) < 32 for character in auth)
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                    for value in (connection, stream_id, tx, rx)
+                )
+                or tx > 2**63 - 1
+                or rx > 2**63 - 1
+                or not isinstance(initial_at, str)
+                or not 1 <= len(initial_at) <= 128
+                or not isinstance(req_addr, str)
+                or len(req_addr) > 320
+                or not isinstance(hooked_req_addr, str)
+                or len(hooked_req_addr) > 320
+            ):
+                raise ValueError("Hysteria stream response is invalid")
+            normalized.append(
+                {
+                    "auth": auth,
+                    "connection": connection,
+                    "stream": stream_id,
+                    "tx": tx,
+                    "rx": rx,
+                    "initial_at": initial_at,
+                    "req_addr": req_addr,
+                    "hooked_req_addr": hooked_req_addr,
+                }
+            )
+        return normalized
+
     def online(self):
         online = self._request("/online")
         if not isinstance(online, dict) or not all(
@@ -8209,6 +8499,9 @@ class UsageManager:
         self.pending_traffic_path = database.path.with_name("pending-traffic.json")
         self.pending_traffic_batch_id = None
         self.pending_traffic = {}
+        self.pending_domain_usage = []
+        self.pending_observed_at = None
+        self.domain_usage_collector = DomainStreamAccumulator()
         self._load_pending_traffic()
         self.last_online = {}
         self.health_monitor = health_monitor
@@ -8222,7 +8515,9 @@ class UsageManager:
         self.health_monitor.refresh_database()
         self.health_monitor.record_stats_sync(success)
 
-    def _apply_local_traffic_batch(self, batch_id, traffic):
+    def _apply_local_traffic_batch(
+        self, batch_id, traffic, domain_usage=None, observed_at=None
+    ):
         try:
             return self.database.apply_traffic_batch(
                 batch_id,
@@ -8230,6 +8525,8 @@ class UsageManager:
                 origin_id=self.local_origin_id,
                 origin_kind="local",
                 origin_name=self.local_origin_name,
+                domain_usage=[] if domain_usage is None else domain_usage,
+                observed_at=observed_at,
             )
         except TypeError as exc:
             if "unexpected keyword argument" not in str(exc):
@@ -8253,20 +8550,39 @@ class UsageManager:
         if not isinstance(batch_id, str) or not re.fullmatch(r"[0-9a-f]{32}", batch_id):
             raise ValueError("pending traffic batch id is invalid")
         HysteriaStatsClient._validate_traffic(traffic)
+        domains = payload.get("domains", [])
+        validate_domain_records(domains)
+        observed_at = payload.get("observed_at")
+        if observed_at is not None and (
+            isinstance(observed_at, bool) or not isinstance(observed_at, int)
+        ):
+            raise ValueError("pending traffic observation time is invalid")
         self.pending_traffic_batch_id = batch_id
         self.pending_traffic = traffic
+        self.pending_domain_usage = domains
+        self.pending_observed_at = observed_at
 
-    def _persist_pending_traffic_locked(self, traffic):
-        if not traffic:
+    def _persist_pending_traffic_locked(
+        self, traffic, domain_usage=None, observed_at=None
+    ):
+        domain_usage = [] if domain_usage is None else validate_domain_records(domain_usage)
+        if not traffic and not domain_usage:
             return
         batch_id = uuid.uuid4().hex
         self.pending_traffic_batch_id = batch_id
         self.pending_traffic = traffic
+        self.pending_domain_usage = domain_usage
+        self.pending_observed_at = observed_at
         descriptor = None
         temporary = None
         try:
             payload = json.dumps(
-                {"batch_id": batch_id, "traffic": traffic},
+                {
+                    "batch_id": batch_id,
+                    "traffic": traffic,
+                    "domains": domain_usage,
+                    "observed_at": observed_at,
+                },
                 ensure_ascii=False,
                 separators=(",", ":"),
                 sort_keys=True,
@@ -8306,7 +8622,9 @@ class UsageManager:
             database_error = None
             for _attempt in range(3):
                 try:
-                    self._apply_local_traffic_batch(batch_id, traffic)
+                    self._apply_local_traffic_batch(
+                        batch_id, traffic, domain_usage, observed_at
+                    )
                     database_error = None
                     break
                 except Exception as exc:
@@ -8321,6 +8639,8 @@ class UsageManager:
                 )
             self.pending_traffic_batch_id = None
             self.pending_traffic = {}
+            self.pending_domain_usage = []
+            self.pending_observed_at = None
 
     def _remove_pending_traffic_locked(self):
         try:
@@ -8340,26 +8660,37 @@ class UsageManager:
             os.close(descriptor)
 
     def _flush_pending_traffic_locked(self):
-        if not self.pending_traffic:
+        if not self.pending_traffic and not self.pending_domain_usage:
             return
         self._apply_local_traffic_batch(
-            self.pending_traffic_batch_id, self.pending_traffic
+            self.pending_traffic_batch_id,
+            self.pending_traffic,
+            self.pending_domain_usage,
+            self.pending_observed_at,
         )
         self._remove_pending_traffic_locked()
         self.pending_traffic_batch_id = None
         self.pending_traffic = {}
+        self.pending_domain_usage = []
+        self.pending_observed_at = None
 
     def _collect_locked(self):
         self._auth_stats_at = None
         try:
             self._flush_pending_traffic_locked()
+            observed_at = int(self.wall_clock())
+            domain_usage = self.domain_usage_collector.collect(self.stats_client)
             try:
                 traffic = self.stats_client.collect_and_clear()
             except PartialTrafficCollectionError as exc:
-                self._persist_pending_traffic_locked(exc.traffic)
+                self._persist_pending_traffic_locked(
+                    exc.traffic, domain_usage, observed_at
+                )
                 self._flush_pending_traffic_locked()
                 raise
-            self._persist_pending_traffic_locked(traffic)
+            self._persist_pending_traffic_locked(
+                traffic, domain_usage, observed_at
+            )
             self._flush_pending_traffic_locked()
         except Exception:
             self._record_health(False)

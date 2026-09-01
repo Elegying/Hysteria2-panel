@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.38.8"', source)
+        self.assertIn('PANEL_VERSION="0.38.9"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -751,6 +751,7 @@ restore_upgrade_runtime_state
             "hy2panel/systemd.py": "HY2PANEL_SYSTEMD_SHA256",
             "hy2panel/nodes.py": "HY2PANEL_NODES_SHA256",
             "hy2panel/distributed.py": "HY2PANEL_DISTRIBUTED_SHA256",
+            "hy2panel/domain_usage.py": "HY2PANEL_DOMAIN_USAGE_SHA256",
             "hy2panel/dashboard.py": "HY2PANEL_DASHBOARD_SHA256",
             "hy2panel/mobile_api.py": "HY2PANEL_MOBILE_API_SHA256",
         }

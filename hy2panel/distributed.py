@@ -11,6 +11,7 @@ import threading
 import time
 
 from .nodes import OpenSSLSignatureVerifier
+from .domain_usage import validate_domain_records
 
 
 NODE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -35,6 +36,7 @@ ONLINE_FIELDS = COMMON_FIELDS | {
     "online",
 }
 TRAFFIC_FIELDS = COMMON_FIELDS | {"batchId", "observedAt", "traffic"}
+TRAFFIC_FIELDS_WITH_DOMAINS = TRAFFIC_FIELDS | {"domains"}
 COMMAND_POLL_FIELDS = COMMON_FIELDS | {"requestId"}
 COMMAND_ACK_FIELDS = COMMON_FIELDS | {"commandId", "ok", "errorCode"}
 CONTROL_CYCLE_FIELDS = COMMON_FIELDS | {
@@ -44,6 +46,7 @@ CONTROL_CYCLE_FIELDS = COMMON_FIELDS | {
     "commandPoll",
 }
 CONTROL_TRAFFIC_FIELDS = {"batchId", "observedAt", "traffic"}
+CONTROL_TRAFFIC_FIELDS_WITH_DOMAINS = CONTROL_TRAFFIC_FIELDS | {"domains"}
 CONTROL_ONLINE_FIELDS = {
     "snapshotId",
     "sequence",
@@ -125,6 +128,14 @@ def _traffic_mapping(value):
             for name, counters in value.items()
         )
     )
+
+
+def _domain_records(value):
+    try:
+        validate_domain_records(value)
+    except ValueError:
+        return False
+    return True
 
 
 class DistributedControlService:
@@ -311,7 +322,12 @@ class DistributedControlService:
         return result
 
     def apply_traffic_batch(self, payload, remote_ip):
-        if not isinstance(payload, dict) or set(payload) != TRAFFIC_FIELDS:
+        expected_fields = (
+            TRAFFIC_FIELDS_WITH_DOMAINS
+            if isinstance(payload, dict) and "domains" in payload
+            else TRAFFIC_FIELDS
+        )
+        if not isinstance(payload, dict) or set(payload) != expected_fields:
             self._reject()
         if (
             not _object_id(payload.get("batchId"))
@@ -319,10 +335,11 @@ class DistributedControlService:
             or payload["observedAt"] > int(self.clock()) + MAX_CLOCK_SKEW_SECONDS
             or payload["observedAt"] < int(self.clock()) - MAX_TRAFFIC_BATCH_AGE_SECONDS
             or not _traffic_mapping(payload.get("traffic"))
+            or not _domain_records(payload.get("domains", []))
         ):
             self._reject()
         node, nonce_digest, now, _remote_ip = self._verify(
-            "traffic", payload, TRAFFIC_FIELDS, remote_ip
+            "traffic", payload, expected_fields, remote_ip
         )
         result = self.database.apply_node_traffic_batch(
             node["node_id"],
@@ -330,6 +347,8 @@ class DistributedControlService:
             payload["traffic"],
             nonce_digest,
             accepted_at=now,
+            domain_usage=payload.get("domains", []),
+            observed_at=payload["observedAt"],
         )
         if result is None:
             self._reject()
@@ -362,12 +381,14 @@ class DistributedControlService:
         for batch in traffic_batches:
             if (
                 not isinstance(batch, dict)
-                or set(batch) != CONTROL_TRAFFIC_FIELDS
+                or set(batch)
+                not in (CONTROL_TRAFFIC_FIELDS, CONTROL_TRAFFIC_FIELDS_WITH_DOMAINS)
                 or not _object_id(batch.get("batchId"))
                 or not _timestamp(batch.get("observedAt"))
                 or batch["observedAt"] > now + MAX_CLOCK_SKEW_SECONDS
                 or batch["observedAt"] < now - MAX_TRAFFIC_BATCH_AGE_SECONDS
                 or not _traffic_mapping(batch.get("traffic"))
+                or not _domain_records(batch.get("domains", []))
             ):
                 self._reject()
         if snapshot is not None and (
@@ -399,6 +420,8 @@ class DistributedControlService:
                     nonce_digest, "traffic", batch["batchId"]
                 ),
                 accepted_at=now,
+                domain_usage=batch.get("domains", []),
+                observed_at=batch["observedAt"],
             )
             if result is None:
                 self._reject()

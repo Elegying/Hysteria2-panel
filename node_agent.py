@@ -4,6 +4,7 @@
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -27,7 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.38.8"
+AGENT_VERSION = "0.38.9"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -36,6 +37,9 @@ CONTROL_LOOP_MAX_INTERVAL_SECONDS = 5
 CONTROL_LOOP_MAX_BACKOFF_SECONDS = 30
 CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES = 480 * 1024
 LOCAL_TRAFFIC_RESPONSE_MAX_BYTES = 512 * 1024
+LOCAL_STREAM_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
+DOMAIN_STREAM_INTERVAL_SECONDS = 10
+MAX_DOMAIN_RECORDS = 1000
 TRAFFIC_SPOOL_ENTRY_MAX_BYTES = 240 * 1024
 MAX_STATE_AGE_SECONDS = (
     NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS
@@ -479,6 +483,69 @@ class DurableTrafficSpool:
         ):
             raise ProtocolError("traffic batch is invalid")
 
+    @staticmethod
+    def _normalize_destination(value):
+        value = str(value or "").strip()
+        if not value or len(value) > 320:
+            return None
+        try:
+            host = urllib.parse.urlsplit("//" + value).hostname
+        except ValueError:
+            return None
+        if not host:
+            return None
+        host = host.rstrip(".").lower()
+        try:
+            ipaddress.ip_address(host)
+            return None
+        except ValueError:
+            pass
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            return None
+        labels = host.split(".")
+        if (
+            len(host) > 253
+            or len(labels) < 2
+            or any(
+                not label
+                or len(label) > 63
+                or label.startswith("-")
+                or label.endswith("-")
+                or any(
+                    not (character.isalnum() or character == "-")
+                    for character in label
+                )
+                for label in labels
+            )
+        ):
+            return None
+        return host
+
+    @staticmethod
+    def _validate_domains(domains):
+        if (
+            not isinstance(domains, list)
+            or len(domains) > MAX_DOMAIN_RECORDS
+            or any(
+                not isinstance(record, dict)
+                or set(record) != {"user", "domain", "tx", "rx"}
+                or not isinstance(record["user"], str)
+                or not 1 <= len(record["user"]) <= 64
+                or DurableTrafficSpool._normalize_destination(record["domain"])
+                != record["domain"]
+                or any(
+                    isinstance(record[field], bool)
+                    or not isinstance(record[field], int)
+                    or not 0 <= record[field] <= 2**63 - 1
+                    for field in ("tx", "rx")
+                )
+                for record in domains
+            )
+        ):
+            raise ProtocolError("domain usage batch is invalid")
+
     def _current_usage(self):
         total = 0
         count = 0
@@ -500,15 +567,20 @@ class DurableTrafficSpool:
 
     @staticmethod
     def _validate_batch(batch):
+        expected_fields = {"batchId", "observedAt", "traffic"}
+        if isinstance(batch, dict) and "domains" in batch:
+            expected_fields.add("domains")
         if (
             not isinstance(batch, dict)
-            or set(batch) != {"batchId", "observedAt", "traffic"}
+            or set(batch) != expected_fields
             or not NODE_ID_PATTERN.fullmatch(str(batch.get("batchId", "")))
             or isinstance(batch.get("observedAt"), bool)
             or not isinstance(batch.get("observedAt"), int)
         ):
             raise ProtocolError("traffic spool entry is invalid")
         DurableTrafficSpool._validate_traffic(batch["traffic"])
+        if "domains" in batch:
+            DurableTrafficSpool._validate_domains(batch["domains"])
 
     def _recover_staged_entries(self):
         changed = False
@@ -607,14 +679,58 @@ class DurableTrafficSpool:
         encoded_batches.append((batch, encoded))
         return encoded_batches
 
-    def enqueue_collections(self, traffic_collections, observed_at):
+    def _partition_domains(self, domains, observed_at):
+        self._validate_domains(domains)
+        if not domains:
+            return []
+        encoded_batches = []
+        current = []
+        batch_id = uuid.uuid4().hex
+        for record in domains:
+            candidate = current + [record]
+            batch = {
+                "batchId": batch_id,
+                "observedAt": observed_at,
+                "traffic": {},
+                "domains": candidate,
+            }
+            encoded = self._encode_batch(batch)
+            if len(encoded) <= TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
+                current = candidate
+                continue
+            if not current:
+                raise ProtocolError("domain usage entry exceeds the spool entry limit")
+            completed = {
+                "batchId": batch_id,
+                "observedAt": observed_at,
+                "traffic": {},
+                "domains": current,
+            }
+            encoded_batches.append((completed, self._encode_batch(completed)))
+            batch_id = uuid.uuid4().hex
+            current = [record]
+        completed = {
+            "batchId": batch_id,
+            "observedAt": observed_at,
+            "traffic": {},
+            "domains": current,
+        }
+        encoded = self._encode_batch(completed)
+        if len(encoded) > TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
+            raise ProtocolError("domain usage entry exceeds the spool entry limit")
+        encoded_batches.append((completed, encoded))
+        return encoded_batches
+
+    def enqueue_collections(self, traffic_collections, observed_at, domains=None):
         traffic_collections = list(traffic_collections)
-        if not traffic_collections:
+        domains = [] if domains is None else domains
+        if not traffic_collections and not domains:
             return []
         self._recover_staged_entries()
         encoded_batches = []
         for traffic in traffic_collections:
             encoded_batches.extend(self._partition(traffic, observed_at))
+        encoded_batches.extend(self._partition_domains(domains, observed_at))
         count, current_size = self._current_usage()
         total_size = sum(len(encoded) for _batch, encoded in encoded_batches)
         if (
@@ -1912,7 +2028,10 @@ class NodeProtocolClient:
         )
 
     def send_traffic(self, batch):
-        if not isinstance(batch, dict) or set(batch) != {"batchId", "observedAt", "traffic"}:
+        expected_fields = {"batchId", "observedAt", "traffic"}
+        if isinstance(batch, dict) and "domains" in batch:
+            expected_fields.add("domains")
+        if not isinstance(batch, dict) or set(batch) != expected_fields:
             raise ProtocolError("traffic batch is invalid")
         return self._post("traffic", batch)
 
@@ -1922,7 +2041,11 @@ class NodeProtocolClient:
             or len(traffic_batches) > 8
             or any(
                 not isinstance(batch, dict)
-                or set(batch) != {"batchId", "observedAt", "traffic"}
+                or set(batch)
+                not in (
+                    {"batchId", "observedAt", "traffic"},
+                    {"batchId", "observedAt", "traffic", "domains"},
+                )
                 for batch in traffic_batches
             )
             or (
@@ -2041,7 +2164,7 @@ class LocalStatsClient:
         self.opener = opener
 
     def _request(self, path, payload=None):
-        if path not in {"/online", "/traffic?clear=1", "/kick"}:
+        if path not in {"/online", "/traffic?clear=1", "/dump/streams", "/kick"}:
             raise ProtocolError("traffic stats path is invalid")
         data = None
         if payload is not None:
@@ -2059,10 +2182,15 @@ class LocalStatsClient:
                     "status",
                     response.getcode() if hasattr(response, "getcode") else 0,
                 )
-                body = response.read(LOCAL_TRAFFIC_RESPONSE_MAX_BYTES + 1)
+                maximum = (
+                    LOCAL_STREAM_RESPONSE_MAX_BYTES
+                    if path == "/dump/streams"
+                    else LOCAL_TRAFFIC_RESPONSE_MAX_BYTES
+                )
+                body = response.read(maximum + 1)
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             raise ProtocolError("local traffic stats request failed") from exc
-        if status != 200 or len(body) > LOCAL_TRAFFIC_RESPONSE_MAX_BYTES:
+        if status != 200 or len(body) > maximum:
             raise ProtocolError("local traffic stats response is invalid")
         if path == "/kick":
             return None
@@ -2089,6 +2217,57 @@ class LocalStatsClient:
         DurableTrafficSpool._validate_traffic(result)
         return result
 
+    def dump_streams(self):
+        result = self._request("/dump/streams")
+        streams = result.get("streams") if isinstance(result, dict) else None
+        if not isinstance(streams, list) or len(streams) > 10000:
+            raise ProtocolError("local stream response is invalid")
+        normalized = []
+        for stream in streams:
+            if not isinstance(stream, dict):
+                raise ProtocolError("local stream response is invalid")
+            auth = stream.get("auth")
+            connection = stream.get("connection")
+            stream_id = stream.get("stream")
+            tx = stream.get("tx")
+            rx = stream.get("rx")
+            initial_at = stream.get("initial_at")
+            req_addr = stream.get("req_addr", "")
+            hooked_req_addr = stream.get("hooked_req_addr", "")
+            if (
+                not isinstance(auth, str)
+                or not 1 <= len(auth) <= 64
+                or any(ord(character) < 32 for character in auth)
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                    for value in (connection, stream_id, tx, rx)
+                )
+                or tx > 2**63 - 1
+                or rx > 2**63 - 1
+                or not isinstance(initial_at, str)
+                or not 1 <= len(initial_at) <= 128
+                or not isinstance(req_addr, str)
+                or len(req_addr) > 320
+                or not isinstance(hooked_req_addr, str)
+                or len(hooked_req_addr) > 320
+            ):
+                raise ProtocolError("local stream response is invalid")
+            normalized.append(
+                {
+                    "auth": auth,
+                    "connection": connection,
+                    "stream": stream_id,
+                    "tx": tx,
+                    "rx": rx,
+                    "initial_at": initial_at,
+                    "req_addr": req_addr,
+                    "hooked_req_addr": hooked_req_addr,
+                }
+            )
+        return normalized
+
     def kick(self, users):
         users = list(users)
         if not users or len(users) > 100 or not all(
@@ -2096,6 +2275,77 @@ class LocalStatsClient:
         ):
             raise ProtocolError("kick user list is invalid")
         self._request("/kick", users)
+
+
+class DomainStreamAccumulator:
+    """Turn live stream counters into bounded user/domain deltas."""
+
+    def __init__(self):
+        self._previous = {}
+        self._initialized = set()
+
+    @staticmethod
+    def _dump_safely(client):
+        try:
+            return client.dump_streams()
+        except Exception:
+            return None
+
+    def collect(self, stats_client):
+        clients = getattr(stats_client, "clients", (stats_client,))
+        totals = {}
+        for endpoint, client in enumerate(clients):
+            streams = self._dump_safely(client)
+            if streams is None:
+                continue
+            current = {}
+            initialized = endpoint in self._initialized
+            for stream in streams:
+                key = (
+                    endpoint,
+                    stream["connection"],
+                    stream["stream"],
+                    stream["initial_at"],
+                )
+                tx = stream["tx"]
+                rx = stream["rx"]
+                current[key] = (tx, rx)
+                if not initialized:
+                    continue
+                previous = self._previous.get(key)
+                delta_tx = tx if previous is None else max(0, tx - previous[0])
+                delta_rx = rx if previous is None else max(0, rx - previous[1])
+                if not delta_tx and not delta_rx:
+                    continue
+                domain = DurableTrafficSpool._normalize_destination(
+                    stream.get("hooked_req_addr") or stream.get("req_addr")
+                )
+                if domain is None:
+                    continue
+                aggregate = totals.setdefault(
+                    (stream["auth"], domain), {"tx": 0, "rx": 0}
+                )
+                aggregate["tx"] += delta_tx
+                aggregate["rx"] += delta_rx
+            self._previous = {
+                key: value
+                for key, value in self._previous.items()
+                if key[0] != endpoint
+            }
+            self._previous.update(current)
+            self._initialized.add(endpoint)
+        records = [
+            {"user": user, "domain": domain, "tx": value["tx"], "rx": value["rx"]}
+            for (user, domain), value in totals.items()
+        ]
+        records.sort(
+            key=lambda item: (
+                -(item["tx"] + item["rx"]),
+                item["user"],
+                item["domain"],
+            )
+        )
+        return records[:MAX_DOMAIN_RECORDS]
 
 
 class CombinedLocalStatsClient:
@@ -2385,6 +2635,8 @@ class NodeControlCycle:
         self.stop_data_plane = stop_data_plane
         self.start_data_plane = start_data_plane
         self._combined_supported = hasattr(protocol_client, "send_control_cycle")
+        self.domain_usage_collector = DomainStreamAccumulator()
+        self._next_domain_collection_at = 0
 
     def _upload_pending(self):
         last_ack = None
@@ -2411,15 +2663,25 @@ class NodeControlCycle:
 
     def _collect_to_spool(self):
         observed_at = int(self.clock())
+        domains = []
+        if observed_at >= self._next_domain_collection_at:
+            domains = self.domain_usage_collector.collect(self.stats_client)
+            self._next_domain_collection_at = (
+                observed_at + DOMAIN_STREAM_INTERVAL_SECONDS
+            )
         try:
             if hasattr(self.stats_client, "collect_and_clear_batches"):
                 batches = self.stats_client.collect_and_clear_batches()
             else:
                 batches = [self.stats_client.collect_and_clear()]
         except PartialLocalTrafficCollectionError as exc:
-            self.spool.enqueue_collections(exc.batches, observed_at=observed_at)
+            self.spool.enqueue_collections(
+                exc.batches, observed_at=observed_at, domains=domains
+            )
             raise
-        self.spool.enqueue_collections(batches, observed_at=observed_at)
+        self.spool.enqueue_collections(
+            batches, observed_at=observed_at, domains=domains
+        )
 
     def flush_traffic(self):
         if not self._can_collect():
