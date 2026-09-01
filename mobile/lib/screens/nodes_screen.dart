@@ -106,7 +106,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     final label = enabled ? '启用' : '紧急停用';
     final confirmed = await showDialog<bool>(
       context: detailContext,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: Text('确认$label${local ? '面板本机节点' : '远程节点'}'),
         content: Text(
           enabled ? '启用后节点将重新承载连接。确认继续吗？' : '紧急停用会立即中断该节点上的现有连接，仅应在故障或安全事件中使用。',
@@ -156,7 +156,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     final short = node['fingerprintShort']?.toString() ?? '';
     final confirmed = await showDialog<bool>(
       context: detailContext,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: const Text('核对节点短码'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -246,10 +246,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             ('累计流量', formatBytes(node['totalBytes'])),
             ('实时流量', '${formatBytes(_trafficRates[node['nodeId']] ?? 0)}/s'),
           ];
-    return showModalBottomSheet<void>(
+    return showGlassModalBottomSheet<void>(
       context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
       builder: (sheetContext) => SafeArea(
         child: DraggableScrollableSheet(
           expand: false,
@@ -388,7 +386,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
-              pinned: true,
+              pinned: false,
               title: const Text('节点'),
               actions: [
                 IconButton(

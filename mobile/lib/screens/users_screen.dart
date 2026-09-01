@@ -140,7 +140,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+        builder: (context, setDialogState) => GlassDialog(
           title: const Text('新增用户'),
           content: SingleChildScrollView(
             child: Column(
@@ -219,10 +219,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   }
 
   Future<void> _showUser(Map<String, dynamic> user) async {
-    await showModalBottomSheet<void>(
+    await showGlassModalBottomSheet<void>(
       context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
       builder: (sheetContext) => SafeArea(
         child: SingleChildScrollView(
           padding: EdgeInsets.fromLTRB(
@@ -315,7 +313,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   }) async {
     return await showDialog<bool>(
           context: context,
-          builder: (context) => AlertDialog(
+          builder: (context) => GlassDialog(
             title: Text(title),
             content: Text(message),
             actions: [
@@ -421,7 +419,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final saved = await showDialog<bool>(
       context: sheetContext,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+        builder: (context, setDialogState) => GlassDialog(
           title: Text('编辑 ${user['name']}'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -492,7 +490,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final uri = data['uri']?.toString() ?? '';
     return showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: Text(title),
         content: SingleChildScrollView(
           child: Column(
@@ -525,7 +523,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final uri = data['uri']?.toString() ?? '';
     return showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: Text(data['name']?.toString() ?? '连接二维码'),
         content: QrImageView(
           data: uri,
@@ -565,7 +563,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverAppBar(
-                pinned: true,
+                pinned: false,
                 title: const Text('用户'),
                 actions: [
                   IconButton(
@@ -682,6 +680,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                             Expanded(
                               child: DropdownButtonFormField<String>(
                                 initialValue: _status,
+                                dropdownColor: glassMenuColor(context),
+                                borderRadius: BorderRadius.circular(16),
                                 decoration: const InputDecoration(
                                   labelText: '状态',
                                 ),
@@ -711,6 +711,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                             Expanded(
                               child: DropdownButtonFormField<String>(
                                 initialValue: _sort,
+                                dropdownColor: glassMenuColor(context),
+                                borderRadius: BorderRadius.circular(16),
                                 decoration: const InputDecoration(
                                   labelText: '排序',
                                 ),
@@ -872,8 +874,26 @@ class _UserFacts extends StatelessWidget {
       itemCount: values.length,
       itemBuilder: (context, index) => DecoratedBox(
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest
-              .withValues(alpha: .5),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white.withValues(
+                alpha: Theme.of(context).brightness == Brightness.dark
+                    ? .08
+                    : .58,
+              ),
+              Theme.of(context).colorScheme.surfaceContainerHighest
+                  .withValues(alpha: .28),
+            ],
+          ),
+          border: Border.all(
+            color: Colors.white.withValues(
+              alpha: Theme.of(context).brightness == Brightness.dark
+                  ? .16
+                  : .76,
+            ),
+          ),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Padding(
@@ -914,6 +934,14 @@ class _ActionChipButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ActionChip(
+    backgroundColor: Colors.white.withValues(
+      alpha: Theme.of(context).brightness == Brightness.dark ? .07 : .55,
+    ),
+    side: BorderSide(
+      color: Colors.white.withValues(
+        alpha: Theme.of(context).brightness == Brightness.dark ? .16 : .76,
+      ),
+    ),
     avatar: Icon(
       icon,
       size: 18,
