@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.38.5] - 2026-09-01
+## [0.38.6] - 2026-09-01
 
 ### Android 管理 App v0.2.1
 
@@ -14,6 +14,7 @@
 - Android 在线构建升级到支持 Node.js 24 的 `setup-java` v6 和 `upload-artifact` v7，并继续锁定到完整提交哈希。
 - 新增每月 GitHub Actions 与 Flutter 依赖更新检查；新增 Python CodeQL 扩展安全查询，并把结果纳入受保护主分支门禁。
 - 仓库级 GitHub Actions 策略要求所有外部 Action 使用完整提交 SHA，降低可变标签被替换的供应链风险。
+- 修复首次 CodeQL 主分支基线发现的日志注入写法；其余仅用于验证恢复权限合同的测试告警完成逐项审查并按测试用途记录处理。
 
 ### 可维护性
 
