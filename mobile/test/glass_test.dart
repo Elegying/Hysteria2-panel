@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/core/glass.dart';
 
 void main() {
-  testWidgets('liquid glass renders one shared blurred navigation surface', (
+  testWidgets('liquid glass surface renders one shared blur layer', (
     tester,
   ) async {
     await tester.pumpWidget(
