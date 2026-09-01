@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../core/app_controller.dart';
+import '../core/glass.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -57,7 +58,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             padding: const EdgeInsets.all(20),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 480),
-              child: Card(
+              child: GlassCard(
+                blurSigma: 22,
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Form(

@@ -2,6 +2,8 @@
 
 这是 Hysteria2-panel 同仓库维护的 Android 管理客户端，applicationId 为 `vip.ssrvpn.hysteria2manager`。
 
+正式 APK 只包含现代 Android 手机普遍使用的 64 位 ARM（`arm64-v8a`）机器码，不支持 32 位 ARM、x86 手机或模拟器。这样可以避免在一个安装包里重复携带三套 Flutter 引擎，显著减少下载体积。
+
 ## 当前能力
 
 - 首次打开时由用户自行填写面板 HTTPS 地址、端口、管理员账号和密码；APK 不内置任何生产面板入口。密码不保存，刷新令牌进入 Android 安全存储，退出登录会清除已保存的入口和账号。
@@ -10,6 +12,7 @@
 - 用户页不分页，默认按网页端的新增倒序显示；选择下拉项后可按流量、在线设备或用户名排序，并支持完整用户操作。
 - 节点页同时显示面板本机与远程节点，支持指纹核对、紧急停用和启用；底部按 5 秒采样展示每台服务器的实时流量。
 - 设置页支持退出登录、检查 GitHub APK 更新、主题模式和强调色。
+- 全局界面使用原生 Flutter 实现的液态玻璃视觉：动态强调色背景、半透明高光卡片与模糊悬浮底栏；长用户列表使用轻量透明材质，避免为每个条目重复执行模糊导致掉帧。
 
 ## 本地验证
 
@@ -25,7 +28,8 @@ flutter test
 正式包必须使用同一密钥。构建机从 `android/signing.properties` 读取密钥位置、别名和密码；该文件已被 Git 忽略。首次配置可参考 `android/signing.properties.example`。
 
 ```bash
-flutter build apk --release --build-name=0.2.1 --build-number=3
+flutter build apk --release --target-platform android-arm64 \
+  --build-name=0.2.2 --build-number=4
 ```
 
 每次更新必须同时满足：
@@ -34,5 +38,6 @@ flutter build apk --release --build-name=0.2.1 --build-number=3
 2. 使用同一个发布密钥。
 3. `versionCode` 高于已安装版本。
 4. APK Release 资产命名为 `Hysteria2-Manager-vX.Y.Z.apk`，App 才能自动发现更新。
+5. APK 内只能出现 `arm64-v8a` native 库；线上工作流会在上传前拒绝其他 ABI。
 
 发布密钥或密码一旦丢失，将无法覆盖更新已经安装的 App；应把密钥和本地签名配置放入受控的离线备份。

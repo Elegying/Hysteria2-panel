@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
+import '../core/glass.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -355,7 +356,7 @@ class _StatusHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final active = data['serviceStatus'] == 'active';
-    return Card(
+    return GlassCard(
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: Row(
@@ -438,7 +439,7 @@ class _SummaryGrid extends StatelessWidget {
       itemCount: cards.length,
       itemBuilder: (context, index) {
         final item = cards[index];
-        return Card(
+        return GlassCard(
           child: Padding(
             padding: const EdgeInsets.all(14),
             child: Column(
@@ -477,7 +478,7 @@ class _SectionCard extends StatelessWidget {
   final Widget? action;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => GlassCard(
     child: Padding(
       padding: const EdgeInsets.all(18),
       child: Column(

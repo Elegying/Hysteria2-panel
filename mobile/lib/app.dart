@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import 'core/app_controller.dart';
+import 'core/glass.dart';
 import 'core/theme_controller.dart';
 import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
@@ -20,6 +21,8 @@ class Hysteria2ManagerApp extends ConsumerWidget {
       themeMode: themeSettings.mode,
       theme: _theme(themeSettings.seedColor, Brightness.light),
       darkTheme: _theme(themeSettings.seedColor, Brightness.dark),
+      builder: (context, child) =>
+          LiquidBackdrop(child: child ?? const SizedBox.shrink()),
       home: appState.initializing
           ? const _StartupScreen()
           : appState.session == null
@@ -38,12 +41,10 @@ class Hysteria2ManagerApp extends ConsumerWidget {
       useMaterial3: true,
       brightness: brightness,
       colorScheme: scheme,
-      scaffoldBackgroundColor: dark
-          ? const Color(0xFF06111F)
-          : const Color(0xFFF5F7FA),
+      scaffoldBackgroundColor: Colors.transparent,
       cardTheme: CardThemeData(
         elevation: 0,
-        color: dark ? const Color(0xFF0B1A2C) : Colors.white,
+        color: Colors.transparent,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(18),
@@ -54,22 +55,49 @@ class Hysteria2ManagerApp extends ConsumerWidget {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: dark ? const Color(0xFF101F31) : Colors.white,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        fillColor: scheme.surface.withValues(alpha: dark ? .42 : .58),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(
+            color: Colors.white.withValues(alpha: dark ? .15 : .72),
+          ),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: BorderSide(
+            color: Colors.white.withValues(alpha: dark ? .15 : .72),
+          ),
+        ),
       ),
       navigationBarTheme: NavigationBarThemeData(
-        height: 70,
-        backgroundColor: dark ? const Color(0xFF0B1A2C) : Colors.white,
-        indicatorColor: scheme.primaryContainer,
+        height: 66,
+        backgroundColor: Colors.transparent,
+        indicatorColor: scheme.primary.withValues(alpha: dark ? .26 : .18),
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       ),
       appBarTheme: AppBarTheme(
         centerTitle: false,
         elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: dark
-            ? const Color(0xFF06111F)
-            : const Color(0xFFF5F7FA),
+        backgroundColor: scheme.surface.withValues(alpha: dark ? .66 : .76),
+        surfaceTintColor: Colors.transparent,
+      ),
+      dialogTheme: DialogThemeData(
+        backgroundColor: scheme.surface.withValues(alpha: dark ? .94 : .96),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+      ),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: scheme.surface.withValues(alpha: dark ? .94 : .96),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+        ),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
       ),
     );
   }

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
+import '../core/glass.dart';
 
 class NodesScreen extends ConsumerStatefulWidget {
   const NodesScreen({super.key});
@@ -269,7 +270,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
               const SizedBox(height: 18),
               if (node['status'] == 'pending_verification' &&
                   node['fingerprintShort'].toString().isNotEmpty) ...[
-                Card(
+                GlassCard(
                   child: Padding(
                     padding: const EdgeInsets.all(16),
                     child: Column(
@@ -415,7 +416,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
-                  child: Card(
+                  child: GlassCard(
                     child: Padding(
                       padding: const EdgeInsets.all(16),
                       child: Row(
@@ -458,7 +459,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                     separatorBuilder: (_, _) => const SizedBox(height: 9),
                     itemBuilder: (context, index) {
                       final node = _nodes[index];
-                      return Card(
+                      return GlassCard(
                         child: InkWell(
                           onTap: () => _showNode(node),
                           borderRadius: BorderRadius.circular(18),
@@ -547,7 +548,7 @@ class _RealtimeTrafficCard extends StatelessWidget {
   final Map<String, double> rates;
 
   @override
-  Widget build(BuildContext context) => Card(
+  Widget build(BuildContext context) => GlassCard(
     child: Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
