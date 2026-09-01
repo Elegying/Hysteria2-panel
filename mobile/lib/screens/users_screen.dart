@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
+import '../core/glass.dart';
 
 class UsersScreen extends ConsumerStatefulWidget {
   const UsersScreen({super.key});
@@ -604,7 +605,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         SizedBox(
                           height: 100,
                           child: top.isEmpty
-                              ? const Card(child: Center(child: Text('暂无用户')))
+                              ? const GlassCard(
+                                  child: Center(child: Text('暂无用户')),
+                                )
                               : ListView.separated(
                                   scrollDirection: Axis.horizontal,
                                   itemCount: top.take(5).length,
@@ -614,7 +617,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                     final user = top[index];
                                     return SizedBox(
                                       width: 190,
-                                      child: Card(
+                                      child: GlassCard(
                                         child: InkWell(
                                           borderRadius: BorderRadius.circular(
                                             18,
@@ -745,7 +748,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 100),
                   sliver: filtered.isEmpty
                       ? const SliverToBoxAdapter(
-                          child: Card(
+                          child: GlassCard(
                             child: Padding(
                               padding: EdgeInsets.all(24),
                               child: Center(child: Text('没有符合条件的用户')),
@@ -779,7 +782,7 @@ class _CompactUserCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final enabled = user['enabled'] == true;
     final percent = (user['trafficPercent'] as num? ?? 0).toDouble();
-    return Card(
+    return GlassCard(
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(18),

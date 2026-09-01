@@ -18,6 +18,9 @@ android {
 
     defaultConfig {
         applicationId = "vip.ssrvpn.hysteria2manager"
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -28,6 +31,16 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+    }
+
+    packaging {
+        jniLibs {
+            excludes += setOf(
+                "lib/armeabi-v7a/**",
+                "lib/x86/**",
+                "lib/x86_64/**",
+            )
+        }
     }
 
     val signingPropertiesFile = rootProject.file("signing.properties")

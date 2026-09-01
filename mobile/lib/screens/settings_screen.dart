@@ -6,6 +6,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_controller.dart';
+import '../core/glass.dart';
 import '../core/theme_controller.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -183,7 +184,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
             sliver: SliverList.list(
               children: [
-                Card(
+                GlassCard(
                   child: Padding(
                     padding: const EdgeInsets.all(18),
                     child: Row(
@@ -216,7 +217,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   ),
                 ),
                 const SizedBox(height: 14),
-                Card(
+                GlassCard(
                   child: Column(
                     children: [
                       ListTile(
@@ -243,7 +244,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   ),
                 ),
                 const SizedBox(height: 14),
-                Card(
+                GlassCard(
                   child: Padding(
                     padding: const EdgeInsets.all(18),
                     child: Column(

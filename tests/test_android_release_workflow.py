@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github/workflows/android-release.yml").read_text(
     encoding="utf-8"
 )
+GRADLE = (ROOT / "mobile/android/app/build.gradle.kts").read_text(encoding="utf-8")
 
 
 class AndroidReleaseWorkflowTests(unittest.TestCase):
@@ -51,6 +52,17 @@ class AndroidReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("versionCode='${build_number}'", WORKFLOW)
         self.assertIn("versionName='${app_version}'", WORKFLOW)
         self.assertIn("APK contains a denied production identifier", WORKFLOW)
+
+    def test_release_apk_targets_modern_arm64_android_only(self):
+        self.assertIn(
+            "flutter build apk --release --target-platform android-arm64",
+            WORKFLOW,
+        )
+        self.assertIn('native_abis != {"arm64-v8a"}', WORKFLOW)
+        self.assertIn("APK native ABI set is not arm64-only", WORKFLOW)
+        self.assertIn('abiFilters += listOf("arm64-v8a")', GRADLE)
+        for unsupported in ("armeabi-v7a", "x86", "x86_64"):
+            self.assertIn('"lib/{}/**"'.format(unsupported), GRADLE)
 
     def test_apk_is_uploaded_only_to_an_existing_draft_release(self):
         self.assertIn(
