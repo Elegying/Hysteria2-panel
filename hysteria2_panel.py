@@ -5633,6 +5633,7 @@ class JsonHandler(BaseHTTPRequestHandler):
 
     def log_message(self, message_format, *args):
         LOGGER.info(
+            "%s",
             json.dumps(
                 {
                     "event": "http_request",
