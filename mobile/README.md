@@ -25,7 +25,7 @@ flutter test
 正式包必须使用同一密钥。构建机从 `android/signing.properties` 读取密钥位置、别名和密码；该文件已被 Git 忽略。首次配置可参考 `android/signing.properties.example`。
 
 ```bash
-flutter build apk --release --build-name=0.2.0 --build-number=2
+flutter build apk --release --build-name=0.2.1 --build-number=3
 ```
 
 每次更新必须同时满足：

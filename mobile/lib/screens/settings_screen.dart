@@ -34,6 +34,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   Future<void> _checkUpdate() async {
     setState(() => _checking = true);
     try {
+      final packageInfo = _packageInfo ?? await PackageInfo.fromPlatform();
       final response =
           await Dio(
             BaseOptions(
@@ -55,6 +56,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       );
       for (final rawRelease in releases) {
         final release = Map<String, dynamic>.from(rawRelease as Map);
+        if (release['draft'] == true || release['prerelease'] == true) continue;
         for (final rawAsset in release['assets'] as List? ?? const []) {
           final asset = Map<String, dynamic>.from(rawAsset as Map);
           final match = pattern.firstMatch(asset['name']?.toString() ?? '');
@@ -70,7 +72,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         }
       }
       if (!mounted) return;
-      final current = _packageInfo?.version ?? '0.2.0';
+      final current = packageInfo.version;
       if (latest == null) {
         await _showMessage(
           '当前为内部测试版',
@@ -202,7 +204,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                     ?.copyWith(fontWeight: FontWeight.w800),
                               ),
                               Text(
-                                'Android v${_packageInfo?.version ?? '0.2.0'} (${_packageInfo?.buildNumber ?? '2'})',
+                                _packageInfo == null
+                                    ? 'Android 版本读取中'
+                                    : 'Android v${_packageInfo!.version} (${_packageInfo!.buildNumber})',
                               ),
                             ],
                           ),

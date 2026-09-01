@@ -60,6 +60,16 @@ class AndroidReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('gh release upload "${RELEASE_TAG}" "${APK}" --clobber', WORKFLOW)
         self.assertIn("retention-days: 30", WORKFLOW)
 
+    def test_release_actions_use_current_node_24_compatible_majors(self):
+        self.assertIn(
+            "actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0",
+            WORKFLOW,
+        )
+        self.assertIn(
+            "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1",
+            WORKFLOW,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

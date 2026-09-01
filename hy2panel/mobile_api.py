@@ -2,12 +2,67 @@
 
 import base64
 import hashlib
+import re
 import time
 
 
 MOBILE_API_VERSION = "1"
 MOBILE_APP_MIN_VERSION = "0.1.0"
 NODE_FRESHNESS_SECONDS = 150
+
+_MOBILE_EXACT_ROUTES = {
+    ("GET", "/api/v1/mobile/capabilities"): "capabilities",
+    ("GET", "/api/v1/mobile/auth/session"): "session",
+    ("GET", "/api/v1/mobile/overview"): "overview",
+    ("GET", "/api/v1/mobile/users"): "users",
+    ("GET", "/api/v1/mobile/nodes"): "nodes",
+    ("GET", "/api/v1/mobile/updates/status"): "update-status",
+    ("POST", "/api/v1/mobile/auth/login"): "login",
+    ("POST", "/api/v1/mobile/auth/refresh"): "refresh",
+    ("POST", "/api/v1/mobile/auth/logout"): "logout",
+    ("POST", "/api/v1/mobile/users"): "create-user",
+    ("POST", "/api/v1/mobile/system/reboot"): "reboot",
+    ("POST", "/api/v1/mobile/node-enrollments"): "create-enrollment",
+}
+_MOBILE_ROUTE_PATTERNS = (
+    ("POST", "service-action", re.compile(r"/api/v1/mobile/service/(start|restart|stop)")),
+    ("POST", "local-node-action", re.compile(r"/api/v1/mobile/nodes/local/(enable|disable)")),
+    (
+        "POST",
+        "remote-node-action",
+        re.compile(r"/api/v1/mobile/nodes/([0-9a-f]{32})/(enable|disable)"),
+    ),
+    (
+        "POST",
+        "user-action",
+        re.compile(
+            r"/api/v1/mobile/users/(\d+)/(enable|disable|share|rotate-secret|reset-traffic)"
+        ),
+    ),
+    ("POST", "verify-node", re.compile(r"/api/v1/mobile/nodes/([0-9a-f]{32})/verify")),
+    ("PATCH", "update-user", re.compile(r"/api/v1/mobile/users/(\d+)")),
+    ("DELETE", "delete-user", re.compile(r"/api/v1/mobile/users/(\d+)")),
+    (
+        "DELETE",
+        "revoke-enrollment",
+        re.compile(r"/api/v1/mobile/node-enrollments/([0-9a-f]{32})"),
+    ),
+)
+
+
+def match_mobile_route(method, path):
+    """Return the fixed route name and captured parameters for one mobile request."""
+    normalized_method = str(method).upper()
+    route = _MOBILE_EXACT_ROUTES.get((normalized_method, path))
+    if route:
+        return route, ()
+    for route_method, route_name, pattern in _MOBILE_ROUTE_PATTERNS:
+        if route_method != normalized_method:
+            continue
+        match = pattern.fullmatch(path)
+        if match:
+            return route_name, match.groups()
+    return None, ()
 
 
 def _non_negative_int(value):
