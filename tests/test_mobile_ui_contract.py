@@ -10,12 +10,13 @@ SCREENS = MOBILE / "screens"
 class MobileUiContractTests(unittest.TestCase):
     def test_bottom_navigation_respects_rounded_screen_safe_area(self) -> None:
         source = (SCREENS / "home_shell.dart").read_text()
-        self.assertNotIn("bottomNavigationBar:", source)
-        self.assertIn("body: Stack(", source)
-        self.assertIn("Positioned(", source)
-        self.assertIn("bottom: bottomInset + 8", source)
-        self.assertIn("left: 12", source)
-        self.assertIn("right: 12", source)
+        self.assertIn("bottomNavigationBar: AppBottomDock(", source)
+        self.assertNotIn("body: Stack(", source)
+        self.assertNotIn("Positioned(", source)
+        self.assertIn("return SafeArea(", source)
+        self.assertIn("minimum: const EdgeInsets.fromLTRB(16, 0, 16, 8)", source)
+        self.assertIn("height: 54", source)
+        self.assertIn("if (index > 0) const SizedBox(width: 8)", source)
 
     def test_primary_headers_scroll_without_an_opaque_mask(self) -> None:
         source = "\n".join(path.read_text() for path in SCREENS.glob("*_screen.dart"))

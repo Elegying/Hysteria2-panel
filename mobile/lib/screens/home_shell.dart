@@ -25,50 +25,111 @@ class _HomeShellState extends State<HomeShell> {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.paddingOf(context).bottom;
     return Scaffold(
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          IndexedStack(index: _index, children: _pages),
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: bottomInset + 8,
-            child: GlassSurface(
-              borderRadius: 24,
-              blurSigma: 22,
-              child: NavigationBar(
-                backgroundColor: Colors.transparent,
-                selectedIndex: _index,
-                onDestinationSelected: (value) =>
-                    setState(() => _index = value),
-                destinations: const [
-                  NavigationDestination(
-                    icon: Icon(Icons.dashboard_outlined),
-                    selectedIcon: Icon(Icons.dashboard_rounded),
-                    label: '首页',
+      body: IndexedStack(index: _index, children: _pages),
+      bottomNavigationBar: AppBottomDock(
+        selectedIndex: _index,
+        onSelected: (value) => setState(() => _index = value),
+      ),
+    );
+  }
+}
+
+class AppBottomDock extends StatelessWidget {
+  const AppBottomDock({
+    required this.selectedIndex,
+    required this.onSelected,
+    super.key,
+  });
+
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+
+  static const _items = [
+    (
+      label: '首页',
+      icon: Icons.dashboard_outlined,
+      selected: Icons.dashboard_rounded,
+    ),
+    (
+      label: '用户',
+      icon: Icons.people_outline_rounded,
+      selected: Icons.people_rounded,
+    ),
+    (label: '节点', icon: Icons.dns_outlined, selected: Icons.dns_rounded),
+    (
+      label: '设置',
+      icon: Icons.settings_outlined,
+      selected: Icons.settings_rounded,
+    ),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      minimum: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: SizedBox(
+        height: 54,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var index = 0; index < _items.length; index++) ...[
+              if (index > 0) const SizedBox(width: 8),
+              Expanded(
+                child: GlassSurface(
+                  borderRadius: 16,
+                  blurSigma: 12,
+                  child: InkWell(
+                    onTap: () => onSelected(index),
+                    borderRadius: BorderRadius.circular(16),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      color: selectedIndex == index
+                          ? scheme.primary.withValues(alpha: .18)
+                          : Colors.transparent,
+                      child: Semantics(
+                        button: true,
+                        selected: selectedIndex == index,
+                        label: _items[index].label,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              selectedIndex == index
+                                  ? _items[index].selected
+                                  : _items[index].icon,
+                              size: 22,
+                              color: selectedIndex == index
+                                  ? scheme.primary
+                                  : scheme.onSurfaceVariant,
+                            ),
+                            const SizedBox(height: 1),
+                            Text(
+                              _items[index].label,
+                              maxLines: 1,
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    height: 1,
+                                    fontWeight: selectedIndex == index
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                    color: selectedIndex == index
+                                        ? scheme.onSurface
+                                        : scheme.onSurfaceVariant,
+                                  ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                  NavigationDestination(
-                    icon: Icon(Icons.people_outline_rounded),
-                    selectedIcon: Icon(Icons.people_rounded),
-                    label: '用户',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.dns_outlined),
-                    selectedIcon: Icon(Icons.dns_rounded),
-                    label: '节点',
-                  ),
-                  NavigationDestination(
-                    icon: Icon(Icons.settings_outlined),
-                    selectedIcon: Icon(Icons.settings_rounded),
-                    label: '设置',
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
-        ],
+            ],
+          ],
+        ),
       ),
     );
   }
