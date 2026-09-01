@@ -8698,6 +8698,24 @@ class PanelHttpTests(unittest.TestCase):
 
         handler.log_message("bad request")
 
+    def test_http_logging_removes_line_breaks_from_untrusted_fields(self):
+        handler = PanelHandler.__new__(PanelHandler)
+        handler.client_address = ("127.0.0.1\r\nforged", 12345)
+        handler.command = "GET\nforged"
+        handler.path = "/safe\r\nforged?secret=hidden"
+
+        with mock.patch.object(hysteria2_panel, "LOGGER") as logger:
+            handler.log_message("status %s\r\nforged", "200\nforged")
+
+        logger.info.assert_called_once()
+        log_format, serialized = logger.info.call_args.args
+        self.assertEqual("%s", log_format)
+        payload = json.loads(serialized)
+        self.assertEqual("127.0.0.1forged", payload["remoteAddress"])
+        self.assertEqual("GETforged", payload["method"])
+        self.assertEqual("/safeforged", payload["path"])
+        self.assertEqual("status 200forgedforged", payload["message"])
+
     def test_dashboard_escapes_names_and_disabling_kicks_user(self):
         created = self.db.create_proxy_user("<script>alert(1)</script>")
         distributed_kicks = []
