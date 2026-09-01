@@ -79,18 +79,39 @@ class Hysteria2ManagerApp extends ConsumerWidget {
         centerTitle: false,
         elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: scheme.surface.withValues(alpha: dark ? .66 : .76),
+        backgroundColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: scheme.surface.withValues(alpha: dark ? .94 : .96),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        shadowColor: Colors.transparent,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
       ),
       bottomSheetTheme: BottomSheetThemeData(
-        backgroundColor: scheme.surface.withValues(alpha: dark ? .94 : .96),
+        backgroundColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
         ),
+      ),
+      dropdownMenuTheme: DropdownMenuThemeData(
+        menuStyle: MenuStyle(
+          backgroundColor: WidgetStatePropertyAll(
+            scheme.surface.withValues(alpha: dark ? .78 : .90),
+          ),
+          elevation: const WidgetStatePropertyAll(16),
+          shape: WidgetStatePropertyAll(
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+        ),
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: scheme.surface.withValues(alpha: dark ? .78 : .90),
+        elevation: 16,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(

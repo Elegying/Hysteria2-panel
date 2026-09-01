@@ -86,7 +86,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (action != 'start') {
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
+        builder: (context) => GlassDialog(
           title: Text('确认$label服务'),
           content: Text(
             action == 'stop'
@@ -124,7 +124,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Future<void> _rebootServer() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: const Text('确认重启服务器'),
         content: const Text('重启后面板和所有连接会暂时中断，通常需要 30 至 90 秒恢复。确认继续吗？'),
         actions: [
@@ -169,7 +169,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+        builder: (context, setDialogState) => GlassDialog(
           title: const Text('对接新节点'),
           content: SingleChildScrollView(
             child: Column(
@@ -189,6 +189,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 const SizedBox(height: 12),
                 DropdownButtonFormField<int>(
                   initialValue: ttl,
+                  dropdownColor: glassMenuColor(context),
+                  borderRadius: BorderRadius.circular(16),
                   decoration: const InputDecoration(labelText: '对接码有效期'),
                   items: const [5, 10, 30]
                       .map(
@@ -240,7 +242,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     final command = result['deploymentCommand']?.toString() ?? '';
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: const Text('部署代码已生成'),
         content: SizedBox(
           width: 620,
@@ -289,7 +291,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
-              pinned: true,
+              pinned: false,
               title: const Text('首页'),
               actions: [
                 IconButton(
@@ -670,9 +672,38 @@ class _ResourcesCard extends StatelessWidget {
         itemCount: rows.length,
         itemBuilder: (context, index) => DecoratedBox(
           decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest
-                .withValues(alpha: .5),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(
+                  alpha: Theme.of(context).brightness == Brightness.dark
+                      ? .09
+                      : .62,
+                ),
+                Theme.of(context).colorScheme.surfaceContainerHighest
+                    .withValues(alpha: .34),
+              ],
+            ),
+            border: Border.all(
+              color: Colors.white.withValues(
+                alpha: Theme.of(context).brightness == Brightness.dark
+                    ? .18
+                    : .82,
+              ),
+            ),
             borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(
+                  alpha: Theme.of(context).brightness == Brightness.dark
+                      ? .18
+                      : .07,
+                ),
+                blurRadius: 12,
+                offset: const Offset(0, 5),
+              ),
+            ],
           ),
           child: Padding(
             padding: const EdgeInsets.all(12),

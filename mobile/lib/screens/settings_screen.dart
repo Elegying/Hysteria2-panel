@@ -84,7 +84,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       } else {
         await showDialog<void>(
           context: context,
-          builder: (context) => AlertDialog(
+          builder: (context) => GlassDialog(
             title: const Text('发现新版本'),
             content: Text(
               '当前版本 v$current，可更新到 v${latest!.version}。下载后请直接覆盖安装，固定签名会保留应用数据。',
@@ -128,7 +128,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
 
   Future<void> _showMessage(String title, String body) => showDialog<void>(
     context: context,
-    builder: (context) => AlertDialog(
+    builder: (context) => GlassDialog(
       title: Text(title),
       content: Text(body),
       actions: [
@@ -143,7 +143,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   Future<void> _logout() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: const Text('退出登录'),
         content: const Text('退出后会撤销当前手机的设备会话，需要重新输入面板账号和密码。'),
         actions: [
@@ -179,7 +179,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     return SafeArea(
       child: CustomScrollView(
         slivers: [
-          const SliverAppBar(pinned: true, title: Text('设置')),
+          const SliverAppBar(pinned: false, title: Text('设置')),
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
             sliver: SliverList.list(

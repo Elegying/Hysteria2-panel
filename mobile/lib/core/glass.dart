@@ -92,6 +92,7 @@ class GlassSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final radius = BorderRadius.circular(borderRadius);
     final surface = DecoratedBox(
@@ -122,14 +123,14 @@ class GlassSurface extends StatelessWidget {
         borderRadius: radius,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? .24 : .08),
-            blurRadius: 24,
-            offset: const Offset(0, 10),
+            color: Colors.black.withValues(alpha: dark ? .28 : .10),
+            blurRadius: 26,
+            offset: const Offset(0, 9),
           ),
           BoxShadow(
-            color: Colors.white.withValues(alpha: dark ? .025 : .45),
-            blurRadius: 1,
-            offset: const Offset(0, 1),
+            color: scheme.primary.withValues(alpha: dark ? .08 : .06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
@@ -162,3 +163,107 @@ class GlassCard extends StatelessWidget {
   Widget build(BuildContext context) =>
       GlassSurface(margin: margin, blurSigma: blurSigma, child: child);
 }
+
+Color glassMenuColor(BuildContext context) {
+  final scheme = Theme.of(context).colorScheme;
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  return scheme.surface.withValues(alpha: dark ? .78 : .90);
+}
+
+class GlassDialog extends StatelessWidget {
+  const GlassDialog({
+    this.title,
+    this.content,
+    this.actions = const [],
+    super.key,
+  });
+
+  final Widget? title;
+  final Widget? content;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) => Dialog(
+    backgroundColor: Colors.transparent,
+    elevation: 0,
+    shadowColor: Colors.transparent,
+    child: GlassSurface(
+      borderRadius: 24,
+      blurSigma: 24,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (title != null)
+                DefaultTextStyle.merge(
+                  style: Theme.of(context).textTheme.titleLarge
+                      ?.copyWith(fontWeight: FontWeight.w800),
+                  child: title!,
+                ),
+              if (title != null && content != null) const SizedBox(height: 16),
+              if (content != null)
+                Flexible(
+                  fit: FlexFit.loose,
+                  child: DefaultTextStyle.merge(
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    child: content!,
+                  ),
+                ),
+              if (actions.isNotEmpty) const SizedBox(height: 18),
+              if (actions.isNotEmpty)
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: actions,
+                ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Future<T?> showGlassModalBottomSheet<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+}) => showModalBottomSheet<T>(
+  context: context,
+  isScrollControlled: true,
+  backgroundColor: Colors.transparent,
+  barrierColor: Colors.black.withValues(alpha: .38),
+  showDragHandle: false,
+  builder: (sheetContext) => GlassSurface(
+    borderRadius: 28,
+    blurSigma: 24,
+    child: Stack(
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 22),
+          child: builder(sheetContext),
+        ),
+        Positioned(
+          top: 9,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: Container(
+              width: 34,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Theme.of(sheetContext).colorScheme.onSurfaceVariant
+                    .withValues(alpha: .45),
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+);

@@ -26,10 +26,11 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBody: true,
       body: IndexedStack(index: _index, children: _pages),
       bottomNavigationBar: SafeArea(
         top: false,
-        minimum: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+        minimum: const EdgeInsets.fromLTRB(12, 0, 12, 18),
         child: GlassSurface(
           borderRadius: 24,
           blurSigma: 22,
