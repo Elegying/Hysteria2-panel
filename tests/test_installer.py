@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.38.10"', source)
+        self.assertIn('PANEL_VERSION="0.38.11"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -2065,6 +2065,24 @@ firewall-cmd() { printf 'not running\n'; return 1; }
 nft() { printf '%s\n' '{"nftables":[]}'; }
 iptables-save() { :; }
 ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
+'''
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], calls)
+        self.assertIn("未检测到正在生效的主机防火墙", result.stdout)
+
+    def test_mangle_only_iptables_compatibility_view_is_clean(self):
+        result, calls = self.run_firewall_function(
+            r'''
+ufw() { printf 'Status: inactive\n'; }
+firewall-cmd() { printf 'not running\n'; return 1; }
+nft() { printf '%s\n' '{"nftables":[]}'; }
+iptables-save() {
+  printf '%s\n' '*mangle' ':POSTROUTING ACCEPT [0:0]' \
+    '-A POSTROUTING -p tcp -j TCPMSS --set-mss 1400' 'COMMIT'
+}
+ip6tables-save() { :; }
 '''
         )
 

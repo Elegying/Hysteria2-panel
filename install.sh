@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.38.10"
+PANEL_VERSION="0.38.11"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,7 +30,7 @@ OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed9
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="a1d5fb0e899b993d2ef15c97ba44cc21f06b37646aa489d53f67181c0e189df3"
+HY2PANEL_VERSION_SHA256="8d94aaf34c7e94fe4255f613a4f954e0ff6975f02fa6e7fa64957ca1262ecbf6"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="0ab69e2879eb4b747b0a01fe2cdd2714b3ccb23732c205ae109c211801ca09a3"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="dc4db8854d50b687d2d77bd7a13388bc0f0b3feab111a1942b4
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="7e76c5d0b8868c6dcca45498b85cbdcde7406cf32cc72113d7f7506e496c16cf"
 HY2PANEL_MOBILE_API_SHA256="35cb9382909a0276481067e9ea867f87aa7cc20000c99d92a2eebdfc717a66e6"
-NODE_AGENT_SHA256="8d601893b44c5d79e7db039351fa509095fc31fbf9baf9faedc1aad876d5a842"
+NODE_AGENT_SHA256="6bc83727159732b0698e92124d0c152d7f3cf5a761559149c0454d59ed30b187"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -4801,8 +4801,24 @@ raise SystemExit(1)
     rules="$("${command_name}" 2>/dev/null)" || return 2
     [[ -n "${rules}" ]] || continue
     if awk '
-      $0 == "*filter" { in_filter = 1; found_filter = 1; next }
-      /^\*/ { in_filter = 0; next }
+      /^\*/ {
+        if (in_table) invalid = 1
+        in_table = 1
+        table_count++
+        in_filter = ($0 == "*filter")
+        if (in_filter) found_filter = 1
+        next
+      }
+      $1 == "COMMIT" {
+        if (!in_table) invalid = 1
+        if (in_filter) committed_filter = 1
+        in_table = 0
+        in_filter = 0
+        commit_count++
+        next
+      }
+      /^#/ || NF == 0 { next }
+      !in_table { invalid = 1; next }
       $1 == ":INPUT" || $1 == ":PREROUTING" {
         if (NF < 3) invalid = 1
         if (in_filter && $1 == ":INPUT") found_filter_input = 1
@@ -4816,9 +4832,9 @@ raise SystemExit(1)
       in_filter && $1 == ":INPUT" {
         found_filter_input = 1
       }
-      in_filter && $1 == "COMMIT" { committed_filter = 1; in_filter = 0 }
       END {
-        if (invalid || !found_filter || !found_filter_input || !committed_filter) exit 2
+        if (invalid || in_table || table_count == 0 || table_count != commit_count ||
+            (found_filter && (!found_filter_input || !committed_filter))) exit 2
         exit(restricted ? 0 : 1)
       }
     ' <<< "${rules}"; then
