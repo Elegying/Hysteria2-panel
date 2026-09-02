@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.38.11] - 2026-09-02
+
+### 安装器兼容性
+
+- 修复云服务器仅预置合法 `mangle/POSTROUTING` TCP MSS 规则时，非空 iptables 兼容视图因为没有 `filter` 表而被误判为“无法完整检查防火墙”的问题。
+- 安装器现在接受结构完整、没有 `INPUT`/`PREROUTING` 限制的 mangle-only 视图；损坏输出、未闭合表、未知入站规则和非 ACCEPT 入站策略仍然严格失败关闭。
+
+### 验证
+
+- 新增 mangle-only 供应商基础镜像回归测试，并保留 IPv4/IPv6、自定义链、raw/security 表、UFW、firewalld 与防火墙事务回滚的既有安全门禁。
+
 ## [0.38.10] - 2026-09-02
 
 ### Android 管理 App v0.2.5
