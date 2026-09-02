@@ -293,6 +293,22 @@ class OnlineSnapshotTests(DistributedControlCase):
         self.assertEqual(2, origins["node:" + self.nodes[0]]["last_known_online_devices"])
         self.assertEqual("stale", origins["node:" + self.nodes[0]]["online_state"])
 
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET status = 'revoked' WHERE node_id = ?",
+                (self.nodes[0],),
+            )
+            connection.execute(
+                "UPDATE nodes SET lifecycle_state = 'stopped' WHERE node_id = ?",
+                (self.nodes[1],),
+            )
+        inactive = manager.snapshot()
+        inactive_origins = {
+            row["origin_id"] for row in inactive["machine_stats"]["origins"]
+        }
+        self.assertEqual({"alice": 1}, inactive["online"])
+        self.assertEqual({"local:" + "9" * 32}, inactive_origins)
+
 
 class DistributedAuthorizationTests(DistributedControlCase):
     def setUp(self):

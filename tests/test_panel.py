@@ -6454,6 +6454,20 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("START_DATA_PLANE", resumed["data"]["command"])
 
+        self.assertTrue(
+            self.db.revoke_node(issued["nodeId"], revoked_at=now + 2)
+        )
+        status, nodes = self.mobile_json_request(
+            "GET", "/api/v1/mobile/nodes", access_token=access_token
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(["local"], [item["nodeId"] for item in nodes["data"]["items"]])
+        status, overview = self.mobile_json_request(
+            "GET", "/api/v1/mobile/overview", access_token=access_token
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(1, overview["data"]["nodes"]["total"])
+
         status, refreshed = self.mobile_json_request(
             "POST",
             "/api/v1/mobile/auth/refresh",

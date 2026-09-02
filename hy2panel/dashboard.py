@@ -548,7 +548,7 @@ def render_dashboard(
     current_time = int(time.time())
     for node in self.app.database.list_nodes():
         status = node["status"]
-        if status == "revoked" and node.get("registered_at") is None:
+        if status == "revoked":
             continue
         lifecycle_state = node.get("lifecycle_state") or "active"
         expired = bool(
@@ -731,6 +731,15 @@ def render_dashboard(
         ):
             node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/drain" data-confirm="开始摘流不会立刻断开用户。下一步请手工从 DNS 删除此节点 IP，再等待在线设备归零。确定开始吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">1. 开始摘流</button></form>""".format(
                 node_id=node["node_id"], csrf=csrf
+            )
+        if (
+            lifecycle_state in {"draining", "stopping", "stopped"}
+            and data_plane_state == "dns_admitted"
+        ):
+            node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/dns/remove" data-confirm="请先确认已从 {public_host} 的 A/AAAA 记录中删除该节点 IP；这里只记录撤出状态，不会自动修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">2. 记录 DNS 已撤出</button></form>""".format(
+                node_id=node["node_id"],
+                public_host=html.escape(self.app.public_host, quote=True),
+                csrf=csrf,
             )
         if lifecycle_state == "draining":
             node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/stop" data-confirm="面板会先确认 DNS 已移除、设备数为 0、流量已结算；任何一项不满足都会拒绝停机。确定检查并停用吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">3. 检查并安全停用</button></form>""".format(
