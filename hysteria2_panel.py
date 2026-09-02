@@ -3585,13 +3585,13 @@ class Database:
                 dict(row)
                 for row in connection.execute(
                     """SELECT n.node_id, n.name, n.status, n.policy_state,
-                        n.data_plane_state, s.observed_at, s.traffic_acked_at,
-                        s.accepted_at
+                        n.data_plane_state, n.lifecycle_state, s.observed_at,
+                        s.traffic_acked_at, s.accepted_at
                     FROM nodes AS n
                     LEFT JOIN node_online_snapshots AS s ON s.node_id = n.node_id
-                    WHERE NOT (
-                        n.status = 'revoked' AND n.registered_at IS NULL
-                    )
+                    WHERE n.status != 'revoked'
+                        AND COALESCE(n.lifecycle_state, 'active')
+                            NOT IN ('stopped', 'archived')
                     ORDER BY n.created_at, n.node_id"""
                 )
             ]
@@ -4080,7 +4080,7 @@ class Database:
                 "SELECT data_plane_state FROM nodes WHERE node_id = ?", (node_id,)
             ).fetchone()
             if node is not None and node["data_plane_state"] == "dns_admitted":
-                raise ValueError("请先从外部 DNS 撤出并记录撤出后再撤销节点")
+                raise ValueError("请先删除节点 DNS，再点击“2. 记录 DNS 已撤出”后撤销节点")
             updated = connection.execute(
                 "UPDATE nodes SET status = 'revoked' WHERE node_id = ?",
                 (node_id,),
@@ -4666,7 +4666,9 @@ class Database:
                 and node is not None
                 and node["data_plane_state"] == "dns_admitted"
             ):
-                raise ValueError("请先从外部 DNS 撤出并记录撤出后再停用控制协议")
+                raise ValueError(
+                    "请先删除节点 DNS，再点击“2. 记录 DNS 已撤出”后停用控制协议"
+                )
             if state == "protocol_ready":
                 updated = connection.execute(
                     """UPDATE nodes SET policy_state = ?, policy_enabled_at = ?,
@@ -8893,7 +8895,12 @@ class UsageManager:
                     }
                 )
         machine_origins = sorted(
-            origins.values(),
+            (
+                origin
+                for origin in origins.values()
+                if origin["kind"] != "remote"
+                or origin.get("node_id") in current_node_ids
+            ),
             key=lambda row: (
                 row["kind"] == "legacy",
                 row["online_state"] == "history",

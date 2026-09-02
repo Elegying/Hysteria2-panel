@@ -168,10 +168,10 @@ def _node_fingerprint(public_key):
 
 def _node_status(node, now):
     lifecycle_state = node.get("lifecycle_state") or "active"
-    if lifecycle_state in {"draining", "stopping", "stopped", "starting", "archived"}:
-        return lifecycle_state
     if node.get("status") == "revoked":
         return "revoked"
+    if lifecycle_state in {"draining", "stopping", "stopped", "starting", "archived"}:
+        return lifecycle_state
     if (
         node.get("status") == "pending_registration"
         and node.get("expires_at")
@@ -272,7 +272,7 @@ def nodes_payload(application, snapshot=None):
         }
     ]
     for node in application.database.list_nodes():
-        if node.get("status") == "revoked" and node.get("registered_at") is None:
+        if node.get("status") == "revoked":
             continue
         online_state = online_states.get(node["node_id"], {})
         fingerprint = _node_fingerprint(node.get("public_key"))

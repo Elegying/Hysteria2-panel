@@ -1632,6 +1632,16 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertIn(
             '/nodes/{}/lifecycle/drain'.format(self.node_id), body
         )
+        self.assertNotIn("2. 记录 DNS 已撤出", body)
+
+        self.assertTrue(
+            self.db.begin_node_drain(self.node_id, "admin", self.now[0] + 1)
+        )
+        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
+        self.assertIn(
+            '/nodes/{}/data-plane/dns/remove'.format(self.node_id), body
+        )
+        self.assertIn("2. 记录 DNS 已撤出", body)
 
         remove_request = urllib.request.Request(
             self.base_url + "/nodes/{}/data-plane/dns/remove".format(self.node_id),
@@ -1643,6 +1653,19 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             urllib.request.urlopen(remove_request, timeout=2).read().decode("utf-8")
         )
         self.assertEqual({"dnsRemoved": True}, result)
+
+        revoke_request = urllib.request.Request(
+            self.base_url + "/nodes/{}/revoke".format(self.node_id),
+            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
+            headers={**headers, "Accept": "application/json"},
+            method="POST",
+        )
+        result = json.loads(
+            urllib.request.urlopen(revoke_request, timeout=2).read().decode("utf-8")
+        )
+        self.assertEqual({"revoked": True}, result)
+        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
+        self.assertNotIn("node-{}".format(self.node_id[:4]), body)
 
 
 class NodeDataPlaneConfigTests(unittest.TestCase):
