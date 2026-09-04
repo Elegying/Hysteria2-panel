@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.3"
+PANEL_VERSION="0.39.4"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,7 +30,7 @@ OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed9
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="dd6e30bf053528ba8632035bcdc7d2618e7bf0c1b1e16b395529f8a1b88151b0"
+HY2PANEL_VERSION_SHA256="5d49988cc85596cc8b7f4e2357a85e24127633db92ab54cb66706b1c90ba3e7d"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="c57b34c16538837583bc606ba13ce469349fd0ed1f81840521eec9d300746dfb"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="c38986d1b8e8baa040ba7fe54f01d290affe47986c637100ed9d7fa6c0758f8d"
 HY2PANEL_MOBILE_API_SHA256="9b1ae9d2b804666e88af874bce2b5fb8847523fc65cfd10193b88617e38fdb7e"
-NODE_AGENT_SHA256="19e2e38e09e06b74d0abc0fc3b8bdf6265f8e764a42a9ba0b6d11dbaa38aab8f"
+NODE_AGENT_SHA256="60cf03850c4305fd6e947d697e4b1621dd3f5a5fc86ab0cfb44d8c82b0f7210e"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -3140,6 +3140,20 @@ EOF
   fi
 }
 
+retry_package_command() {
+  local attempt
+  for attempt in 1 2 3; do
+    if "$@"; then
+      return 0
+    fi
+    if (( attempt < 3 )); then
+      echo "软件源操作失败，${attempt} 次重试将在 $((attempt * 2)) 秒后进行" >&2
+      sleep "$((attempt * 2))" || return 1
+    fi
+  done
+  return 1
+}
+
 install_system_dependencies() {
   local command_name
   local -a coreutils_commands=(cat chmod chown cp date df du id install mktemp mv rm sha256sum sleep sort stat sync uname)
@@ -3150,8 +3164,8 @@ install_system_dependencies() {
   source /etc/os-release
   echo "检测到系统：${PRETTY_NAME:-${ID:-unknown}}，正在安装缺失依赖"
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    retry_package_command apt-get update
+    DEBIAN_FRONTEND=noninteractive retry_package_command apt-get install -y \
       ca-certificates curl openssl iproute2 python3 coreutils diffutils findutils gawk grep passwd procps sudo util-linux \
       nftables iptables
   elif command -v dnf >/dev/null 2>&1; then
@@ -3160,25 +3174,27 @@ install_system_dependencies() {
     for command_name in "${coreutils_commands[@]}"; do
       command -v "${command_name}" >/dev/null 2>&1 || { rhel_packages+=(coreutils); break; }
     done
-    dnf install -y "${rhel_packages[@]}"
-    dnf install -y nftables iptables-nft || dnf install -y nftables iptables
+    retry_package_command dnf install -y "${rhel_packages[@]}"
+    retry_package_command dnf install -y nftables iptables-nft \
+      || retry_package_command dnf install -y nftables iptables
   elif command -v yum >/dev/null 2>&1; then
     rhel_packages=(ca-certificates openssl iproute python3 diffutils findutils gawk grep shadow-utils procps-ng sed sudo util-linux)
     command -v curl >/dev/null 2>&1 || rhel_packages+=(curl)
     for command_name in "${coreutils_commands[@]}"; do
       command -v "${command_name}" >/dev/null 2>&1 || { rhel_packages+=(coreutils); break; }
     done
-    yum install -y "${rhel_packages[@]}"
-    yum install -y nftables iptables-nft || yum install -y nftables iptables
+    retry_package_command yum install -y "${rhel_packages[@]}"
+    retry_package_command yum install -y nftables iptables-nft \
+      || retry_package_command yum install -y nftables iptables
   else
     fail "当前系统没有受支持的包管理器（需要 apt、dnf 或 yum）"
   fi
 
   if ! select_python; then
     if command -v dnf >/dev/null 2>&1; then
-      dnf install -y python39 || true
+      retry_package_command dnf install -y python39 || true
     elif command -v yum >/dev/null 2>&1; then
-      yum install -y python39 || true
+      retry_package_command yum install -y python39 || true
     fi
   fi
 }
@@ -3187,19 +3203,19 @@ install_certbot_dependency() {
   [[ -x /usr/bin/certbot ]] && return 0
   echo "HTTPS 模式需要 Certbot，正在从系统软件源安装"
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y certbot
+    retry_package_command apt-get update
+    DEBIAN_FRONTEND=noninteractive retry_package_command apt-get install -y certbot
   elif command -v dnf >/dev/null 2>&1; then
-    if ! dnf install -y certbot; then
+    if ! retry_package_command dnf install -y certbot; then
       echo "当前 RHEL 系仓库未提供 Certbot，正在通过包管理器启用 EPEL"
-      dnf install -y epel-release
-      dnf install -y certbot
+      retry_package_command dnf install -y epel-release
+      retry_package_command dnf install -y certbot
     fi
   elif command -v yum >/dev/null 2>&1; then
-    if ! yum install -y certbot; then
+    if ! retry_package_command yum install -y certbot; then
       echo "当前 RHEL 系仓库未提供 Certbot，正在通过包管理器启用 EPEL"
-      yum install -y epel-release
-      yum install -y certbot
+      retry_package_command yum install -y epel-release
+      retry_package_command yum install -y certbot
     fi
   else
     fail "无法安装 Certbot：当前系统没有受支持的包管理器"
