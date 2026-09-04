@@ -6137,7 +6137,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_dashboard_places_node_onboarding_after_refresh_and_renders_safe_statuses(self):
         service = self.application.node_enrollment_service
-        pending = service.create("待注册 <节点>", "", 10, "Elegy")
+        pending = service.create("待注册 <节点>", "198.51.100.20", 10, "Elegy")
         token = self.enrollment_token(pending["deploymentCommand"])
         service.register(
             {
@@ -6165,15 +6165,16 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('id="node-onboarding-dialog"', body)
         self.assertIn('data-node-enrollment-form', body)
         self.assertIn('name="mode"', body)
-        self.assertIn('value="rebind"', body)
-        self.assertIn("待验证", body)
+        self.assertNotIn('value="rebind"', body)
+        self.assertIn("正在对接", body)
         self.assertIn("待注册 &lt;节点&gt;", body)
         self.assertNotIn("待注册 <节点>", body)
-        self.assertIn("Hysteria 长期身份只会原样复制", body)
-        self.assertIn("对接新节点：4 步完成", body)
-        self.assertIn("安全停用或换机：4 步完成", body)
-        self.assertIn("1. 开始摘流", body)
-        self.assertIn("3. 检查并安全停用", body)
+        self.assertIn("生成前请先完成 DNS 设置", body)
+        self.assertIn("一键对接", body)
+        self.assertIn("一键断连", body)
+        self.assertIn("删除对接", body)
+        self.assertNotIn("核对短码", body)
+        self.assertNotIn("开始摘流", body)
 
     def test_dashboard_online_endpoint_is_authenticated_and_returns_stable_contract(self):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
@@ -6236,6 +6237,8 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertEqual(200, status)
         self.assertEqual("1", capabilities["data"]["apiVersion"])
+        self.assertEqual("0.3.0", capabilities["data"]["minimumAppVersion"])
+        self.assertIn("one-click-node-pairing", capabilities["data"]["features"])
         self.assertIsNone(capabilities["error"])
 
         status, login = self.mobile_json_request(
@@ -6374,7 +6377,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(1, self.reboot_controller.queued)
 
         issued = self.application.node_enrollment_service.create(
-            "mobile-edge", "", 10, "Elegy"
+            "mobile-edge", "127.0.0.1", 10, "Elegy"
         )
         public_der = bytes.fromhex("302a300506032b6570032100") + b"m" * 32
         self.application.node_enrollment_service.register(
@@ -6386,19 +6389,12 @@ class PanelHttpTests(unittest.TestCase):
                 "hostname": "mobile-edge.example.test",
                 "platform": "linux",
                 "architecture": "amd64",
-                "agentVersion": "0.38.0",
+                "agentVersion": "0.39.0",
             },
             remote_ip="127.0.0.1",
         )
         now = int(time.time())
-        self.assertTrue(
-            self.db.verify_node(
-                issued["nodeId"],
-                hashlib.sha256(public_der).hexdigest(),
-                actor="Elegy",
-                verified_at=now,
-            )
-        )
+        self.assertIsNotNone(self.db.get_node_for_heartbeat(issued["nodeId"])["verified_at"])
         self.application.node_heartbeat_service.accept(
             {
                 "nodeId": issued["nodeId"],
@@ -6407,7 +6403,7 @@ class PanelHttpTests(unittest.TestCase):
                 .rstrip(b"=")
                 .decode("ascii"),
                 "hostname": "mobile-edge.example.test",
-                "agentVersion": "0.38.0",
+                "agentVersion": "0.39.0",
                 "signature": base64.b64encode(b"s" * 64).decode("ascii"),
             },
             "127.0.0.1",
@@ -6417,6 +6413,12 @@ class PanelHttpTests(unittest.TestCase):
                 issued["nodeId"], "protocol_ready", "Elegy", now
             )
         )
+        with self.db._connect() as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    lifecycle_state = 'active' WHERE node_id = ?""",
+                (issued["nodeId"],),
+            )
         status, nodes = self.mobile_json_request(
             "GET", "/api/v1/mobile/nodes", access_token=access_token
         )
@@ -6425,16 +6427,18 @@ class PanelHttpTests(unittest.TestCase):
             item for item in nodes["data"]["items"] if item["kind"] == "remote"
         )
         self.assertTrue(remote["canEmergencyControl"])
+        self.assertTrue(remote["canDisconnect"])
+        self.assertFalse(remote["canDeletePairing"])
         self.assertIn("totalBytes", remote)
 
         status, stopped = self.mobile_json_request(
             "POST",
-            "/api/v1/mobile/nodes/{}/disable".format(issued["nodeId"]),
+            "/api/v1/mobile/nodes/{}/disconnect".format(issued["nodeId"]),
             {},
             access_token=access_token,
         )
-        self.assertEqual(200, status)
-        self.assertEqual("STOP_DATA_PLANE", stopped["data"]["command"])
+        self.assertEqual(202, status)
+        self.assertTrue(stopped["data"]["disconnecting"])
         self.assertTrue(
             self.db.ack_node_command(
                 issued["nodeId"],
@@ -6444,18 +6448,6 @@ class PanelHttpTests(unittest.TestCase):
                 "7" * 64,
                 now + 1,
             )
-        )
-        status, resumed = self.mobile_json_request(
-            "POST",
-            "/api/v1/mobile/nodes/{}/enable".format(issued["nodeId"]),
-            {},
-            access_token=access_token,
-        )
-        self.assertEqual(200, status)
-        self.assertEqual("START_DATA_PLANE", resumed["data"]["command"])
-
-        self.assertTrue(
-            self.db.revoke_node(issued["nodeId"], revoked_at=now + 2)
         )
         status, nodes = self.mobile_json_request(
             "GET", "/api/v1/mobile/nodes", access_token=access_token
@@ -6594,10 +6586,10 @@ class PanelHttpTests(unittest.TestCase):
             headers={**headers, "Accept": "application/json"},
         )
         rebind = json.loads(rebind_response.read())
-        self.assertEqual("REBIND_PENDING_REGISTRATION", rebind["status"])
-        self.assertEqual("rebind", rebind["mode"])
-        self.assertIn("--rebind-node", rebind["deploymentCommand"])
-        self.assertNotIn("--join-node", rebind["deploymentCommand"])
+        self.assertEqual("PENDING_REGISTRATION", rebind["status"])
+        self.assertEqual("join", rebind["mode"])
+        self.assertIn("--join-node", rebind["deploymentCommand"])
+        self.assertNotIn("--rebind-node", rebind["deploymentCommand"])
 
         revoke = self.request(
             "/node-enrollments/{}/revoke".format(issued["enrollmentId"]),
@@ -6608,7 +6600,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_revoking_unused_enrollment_hides_placeholder_from_dashboard(self):
         issued = self.application.node_enrollment_service.create(
-            "cancelled-unused-node", "", 10, "Elegy"
+            "cancelled-unused-node", "203.0.113.50", 10, "Elegy"
         )
         headers, csrf = self.authenticated_headers()
 
@@ -6628,9 +6620,9 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertEqual("revoked", stored["status"])
 
-    def test_node_verification_requires_admin_csrf_and_exact_fingerprint(self):
+    def test_node_registration_is_auto_verified_and_manual_verify_is_not_rendered(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-verify", "", 10, "Elegy")
+        issued = service.create("edge-verify", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         public_der = bytes.fromhex("302a300506032b6570032100") + b"v" * 32
         service.register(
@@ -6647,14 +6639,12 @@ class PanelHttpTests(unittest.TestCase):
         path = "/nodes/{}/verify".format(issued["nodeId"])
         headers, csrf = self.authenticated_headers()
         fingerprint = hashlib.sha256(public_der).hexdigest()
+        stored = self.db.get_node_for_heartbeat(issued["nodeId"])
+        self.assertIsNotNone(stored["verified_at"])
+        self.assertEqual("system:one-click-enrollment", stored["verified_by"])
         dashboard = self.request("/", headers=headers).read().decode("utf-8")
-        self.assertIn(fingerprint[:16], dashboard)
-        self.assertIn(
-            'type="hidden" name="fingerprint" value="{}"'.format(fingerprint),
-            dashboard,
-        )
-        self.assertIn("短码一致，开始自动部署", dashboard)
-        self.assertNotIn("输入核对后的完整指纹", dashboard)
+        self.assertNotIn(fingerprint[:16], dashboard)
+        self.assertNotIn("短码一致", dashboard)
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
             self.request(
                 path,
@@ -6688,9 +6678,67 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertEqual({"verified": True}, json.loads(response.read()))
 
+    def test_web_pairing_actions_disconnect_online_and_delete_only_offline_nodes(self):
+        service = self.application.node_enrollment_service
+        issued = service.create("edge-disconnect", "127.0.0.1", 10, "Elegy")
+        token = self.enrollment_token(issued["deploymentCommand"])
+        service.register(
+            {
+                "enrollmentToken": token,
+                "publicKey": base64.b64encode(
+                    bytes.fromhex("302a300506032b6570032100") + b"d" * 32
+                ).decode("ascii"),
+                "hostname": "edge-disconnect.example.test",
+                "platform": "linux",
+                "architecture": "amd64",
+                "agentVersion": "0.39.0",
+            },
+            remote_ip="127.0.0.1",
+        )
+        now = int(time.time())
+        self.application.node_heartbeat_service.accept(
+            {
+                "nodeId": issued["nodeId"],
+                "sentAt": now,
+                "nonce": base64.urlsafe_b64encode(b"d" * 32)
+                .rstrip(b"=")
+                .decode("ascii"),
+                "hostname": "edge-disconnect.example.test",
+                "agentVersion": "0.39.0",
+                "signature": base64.b64encode(b"s" * 64).decode("ascii"),
+            },
+            "127.0.0.1",
+        )
+        self.db.set_node_policy_state(issued["nodeId"], "protocol_ready", "Elegy", now)
+        with self.db._connect() as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed'
+                WHERE node_id = ?""",
+                (issued["nodeId"],),
+            )
+        headers, csrf = self.authenticated_headers()
+
+        disconnect = self.request(
+            "/nodes/{}/disconnect".format(issued["nodeId"]),
+            data={"csrf": csrf},
+            headers={**headers, "Accept": "application/json"},
+        )
+        self.assertEqual(202, disconnect.status)
+        self.assertTrue(json.loads(disconnect.read())["disconnecting"])
+
+        stale = service.create("edge-lost", "203.0.113.77", 10, "Elegy")
+        deleted = self.request(
+            "/nodes/{}/delete".format(stale["nodeId"]),
+            data={"csrf": csrf},
+            headers={**headers, "Accept": "application/json"},
+        )
+        self.assertEqual(
+            {"deleted": True, "remoteCleanup": False}, json.loads(deleted.read())
+        )
+
     def test_public_signed_heartbeat_is_https_only_bounded_and_stable(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-heartbeat", "", 10, "Elegy")
+        issued = service.create("edge-heartbeat", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         public_der = bytes.fromhex("302a300506032b6570032100") + b"h" * 32
         service.register(
@@ -6757,7 +6805,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_protocol_enable_and_signed_snapshot_require_admin_and_verified_node(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-protocol", "", 10, "Elegy")
+        issued = service.create("edge-protocol", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
         service.register(
@@ -6791,9 +6839,9 @@ class PanelHttpTests(unittest.TestCase):
         self.application.node_heartbeat_service.accept(heartbeat, "127.0.0.1")
         headers, csrf = self.authenticated_headers()
         dashboard = self.request("/", headers=headers).read().decode()
-        self.assertIn("自动部署等待中", dashboard)
-        self.assertIn("旧节点手动启用", dashboard)
-        self.assertIn(
+        self.assertIn("正在对接", dashboard)
+        self.assertNotIn("旧节点手动启用", dashboard)
+        self.assertNotIn(
             "/nodes/{}/protocol/enable".format(issued["nodeId"]), dashboard
         )
 
@@ -6873,8 +6921,9 @@ class PanelHttpTests(unittest.TestCase):
             issued["nodeId"], "KICK_USERS", {"users": ["distributed-alice"]}, int(time.time())
         )
         dashboard = self.request("/", headers=headers).read().decode()
-        self.assertIn("待确认命令：1", dashboard)
-        self.assertIn("在线快照与流量检查点新鲜", dashboard)
+        self.assertNotIn("待确认命令", dashboard)
+        self.assertNotIn("在线快照与流量检查点新鲜", dashboard)
+        self.assertIn("一键断连", dashboard)
         poll = {
             "nodeId": issued["nodeId"],
             "sentAt": int(time.time()),
@@ -6904,7 +6953,7 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertTrue(json.loads(acknowledged.read())["acked"])
         dashboard = self.request("/", headers=headers).read().decode()
-        self.assertIn("待确认命令：0", dashboard)
+        self.assertNotIn("待确认命令", dashboard)
 
     def test_two_node_control_e2e_replays_durable_traffic_after_outage(self):
         """Exercise two node control planes over HTTP with outage/replay semantics."""
@@ -6913,7 +6962,7 @@ class PanelHttpTests(unittest.TestCase):
 
         def provision_node(name, key_byte):
             issued = self.application.node_enrollment_service.create(
-                name, "", 10, "Elegy"
+                name, "127.0.0.1", 10, "Elegy"
             )
             token = self.enrollment_token(issued["deploymentCommand"])
             public_der = bytes.fromhex("302a300506032b6570032100") + bytes(
@@ -7053,7 +7102,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_public_node_registration_is_https_only_bounded_and_has_stable_errors(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-02", "", 10, "Elegy")
+        issued = service.create("edge-02", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         payload = {
             "enrollmentToken": token,
@@ -7636,7 +7685,7 @@ class PanelHttpTests(unittest.TestCase):
             self.assertIn(">{}<".format(label), body)
         self.assertNotIn("更多操作", body)
         self.assertNotIn('class="action-menu"', body)
-        for label in ("启动", "重启", "停止", "刷新", "对接"):
+        for label in ("启动", "重启", "停止", "刷新", "对接管理"):
             self.assertIn(">{}<".format(label), body)
         self.assertIn('class="button-row service-actions"', body)
         self.assertIn('class="button-row version-actions"', body)
@@ -7690,11 +7739,9 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("event.key !== 'Escape'", hysteria2_panel.PAGE_SCRIPT)
         self.assertIn("dialogOpeners.set(dialog, opener)", hysteria2_panel.PAGE_SCRIPT)
         self.assertIn("opener.focus()", hysteria2_panel.PAGE_SCRIPT)
-        self.assertIn(
-            "const forbidden = ['server.crt', 'server.key', "
-            "'HY2PANEL_HMAC_KEY', 'HY2PANEL_PUBLIC_HOST'];",
-            body,
-        )
+        self.assertNotIn("data-data-plane-bootstrap-form", body)
+        self.assertNotIn("data-data-plane-canary-form", body)
+        self.assertNotIn("data-node-dns-action-form", body)
         self.assertIn('先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS', body)
         self.assertNotIn('.user-table td::before{content:attr(data-label)', body)
         self.assertNotIn('限 3 个并发连接', body)

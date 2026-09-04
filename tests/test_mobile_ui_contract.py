@@ -31,7 +31,7 @@ class MobileUiContractTests(unittest.TestCase):
         self.assertNotIn("showModalBottomSheet", source)
         self.assertGreaterEqual(source.count("GlassDialog("), 10)
         self.assertEqual(source.count("showGlassModalBottomSheet"), 2)
-        self.assertEqual(source.count("dropdownColor: glassMenuColor(context)"), 3)
+        self.assertEqual(source.count("dropdownColor: glassMenuColor(context)"), 2)
 
     def test_system_resource_cells_have_visible_edges_and_depth(self) -> None:
         source = (SCREENS / "home_screen.dart").read_text()

@@ -37,7 +37,7 @@ class NodeOperationsCase(unittest.TestCase):
                     policy_enabled_at, policy_enabled_by, data_plane_state
                 ) VALUES (?, '数据节点一', '203.0.113.10', '203.0.113.10',
                     'pending_verification', ?, 'node.example.test', 'linux',
-                    'amd64', '0.32.0', ?, ?, ?, ?, 'admin', ?, '203.0.113.10',
+                    'amd64', '0.39.0', ?, ?, ?, ?, 'admin', ?, '203.0.113.10',
                     'protocol_ready', ?, 'admin', 'dns_admitted')""",
                 (
                     self.node_id,
@@ -471,6 +471,117 @@ class NodeLifecycleTests(NodeOperationsCase):
         self.assertEqual("STOP_DATA_PLANE", command["kind"])
         node = self.db.list_nodes()[0]
         self.assertEqual("stopping", node["lifecycle_state"])
+
+    def test_one_click_disconnect_requires_fresh_heartbeat_and_retires_on_ack(self):
+        command = self.db.request_node_disconnect(
+            self.node_id, "admin", self.now, freshness_seconds=150
+        )
+
+        self.assertEqual("UNINSTALL_NODE", command["kind"])
+        self.assertEqual("disconnecting", self.db.list_nodes()[0]["lifecycle_state"])
+        self.assertTrue(
+            self.db.ack_node_command(
+                self.node_id,
+                command["commandId"],
+                True,
+                "",
+                "a" * 64,
+                self.now + 1,
+            )
+        )
+        retired = self.db.list_nodes()[0]
+        self.assertEqual("revoked", retired["status"])
+        self.assertEqual("archived", retired["lifecycle_state"])
+        self.assertEqual("standby", retired["policy_state"])
+        self.assertEqual("not_issued", retired["data_plane_state"])
+        self.assertEqual(public_key(1), retired["public_key"])
+
+    def test_one_click_disconnect_rejects_legacy_agents(self):
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET agent_version = '0.38.12' WHERE node_id = ?",
+                (self.node_id,),
+            )
+
+        with self.assertRaisesRegex(ValueError, "too old"):
+            self.db.request_node_disconnect(
+                self.node_id, "admin", self.now, freshness_seconds=150
+            )
+
+        self.assertEqual("active", self.db.list_nodes()[0]["lifecycle_state"])
+
+    def test_delete_pairing_is_only_for_an_unreachable_node_and_retains_history(self):
+        with self.assertRaisesRegex(ValueError, "online"):
+            self.db.delete_node_pairing(
+                self.node_id, "admin", self.now, freshness_seconds=150
+            )
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
+                (self.now - 151, self.node_id),
+            )
+
+        self.assertTrue(
+            self.db.delete_node_pairing(
+                self.node_id, "admin", self.now, freshness_seconds=150
+            )
+        )
+        retained = self.db.list_nodes()[0]
+        self.assertEqual("revoked", retained["status"])
+        self.assertEqual("archived", retained["lifecycle_state"])
+
+    def test_delete_pairing_keeps_a_delivered_uninstall_ack_recoverable(self):
+        command = self.db.request_node_disconnect(
+            self.node_id, "admin", changed_at=self.now
+        )
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
+                (self.now - 1_000, self.node_id),
+            )
+
+        self.assertTrue(
+            self.db.delete_node_pairing(
+                self.node_id, "admin", changed_at=self.now
+            )
+        )
+        self.assertTrue(
+            self.db.ack_node_command(
+                self.node_id,
+                command["commandId"],
+                True,
+                "",
+                "e" * 64,
+                self.now + 1,
+            )
+        )
+
+    def test_uninstall_executor_defers_ack_to_the_root_worker(self):
+        stop = mock.Mock()
+        flush = mock.Mock()
+        queue_uninstall = mock.Mock()
+        state = mock.Mock()
+        state.data_plane_stopped.return_value = False
+        command = {
+            "commandId": "b" * 32,
+            "kind": "UNINSTALL_NODE",
+            "payload": {},
+        }
+
+        result = node_agent.execute_control_command(
+            command,
+            mock.Mock(),
+            flush_traffic=flush,
+            protocol_state=state,
+            stop_data_plane=stop,
+            queue_uninstall=queue_uninstall,
+        )
+
+        self.assertEqual("deferred-ack", result)
+        flush.assert_called_once_with()
+        state.set_data_plane_stopped.assert_called_once_with(True)
+        stop.assert_called_once_with()
+        queue_uninstall.assert_called_once_with(command["commandId"])
 
     def test_stop_ack_and_resume_ack_advance_lifecycle_without_deleting_identity(self):
         self.db.begin_node_drain(self.node_id, "admin", self.now)

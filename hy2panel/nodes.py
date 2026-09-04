@@ -762,7 +762,7 @@ unset HY2PANEL_ENROLLMENT_TOKEN
 
     def create(self, name, expected_ip, ttl_minutes, actor, mode="join"):
         name = _normalize_name(name)
-        expected_ip = _normalize_ip(expected_ip, allow_empty=True)
+        expected_ip = _normalize_ip(expected_ip)
         mode = str(mode or "join")
         if mode not in {"join", "rebind"}:
             raise ValueError("enrollment mode must be join or rebind")

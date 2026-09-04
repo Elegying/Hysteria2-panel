@@ -347,7 +347,7 @@ class DataPlaneBootstrapStateTests(unittest.TestCase):
                     last_heartbeat_at, last_heartbeat_ip, policy_state,
                     policy_enabled_at, policy_enabled_by
                 ) VALUES (?, ?, ?, ?, ?, ?, 'node.example.test', 'linux',
-                    'amd64', '0.26.0', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    'amd64', '0.39.0', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     node_id,
                     "node-{}".format(node_id[:4]),
@@ -1550,122 +1550,46 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             ),
             timeout=2,
         ).read().decode("utf-8")
-        self.assertIn("自动部署中", dashboard)
+        self.assertIn("正在对接", dashboard)
         self.assertNotIn(
             "/nodes/{}/data-plane/bootstrap".format(self.node_id), dashboard
         )
 
-    def test_dashboard_exposes_only_eligible_deploy_and_separate_canary_controls(self):
-        raw_session, csrf = self.db.create_session(self.admin_id)
+    def test_dashboard_exposes_only_one_click_pairing_actions(self):
+        raw_session, _csrf = self.db.create_session(self.admin_id)
         headers = {"Cookie": "hy2panel_session={}".format(raw_session)}
         request = urllib.request.Request(self.base_url + "/", headers=headers)
 
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
 
-        self.assertIn(
-            '/nodes/{}/data-plane/bootstrap'.format(self.node_id), body
-        )
-        self.assertIn("旧节点手动部署", body)
-        self.assertIn("等待节点自动领取部署凭据", body)
-        self.assertIn("data-data-plane-bootstrap-form", body)
+        self.assertIn("一键对接", body)
+        self.assertIn("一键断连", body)
+        self.assertIn("删除对接", body)
+        self.assertNotIn('/nodes/{}/disconnect'.format(self.node_id), body)
+        self.assertNotIn('/nodes/{}/delete'.format(self.node_id), body)
+        self.assertNotIn("data-plane/bootstrap", body)
         self.assertNotIn("data-plane/canary/pass", body)
-        self.assertNotIn("dns/admit", body)
+        self.assertNotIn("data-plane/dns/admit", body)
+        self.assertNotIn("lifecycle/drain", body)
 
         with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
-                """UPDATE nodes SET data_plane_state = 'data_plane_installed',
-                    data_plane_installed_at = ? WHERE node_id = ?""",
-                (self.now[0], self.node_id),
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed'
+                WHERE node_id = ?""",
+                (self.node_id,),
             )
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertIn("数据面已安装 · 待直连灰度", body)
-        self.assertIn(
-            '/nodes/{}/data-plane/canary/pass'.format(self.node_id), body
-        )
-        self.assertIn("data-data-plane-canary-form", body)
-        self.assertIn(
-            '/nodes/{}/data-plane/bootstrap'.format(self.node_id), body
-        )
-        self.assertIn("生成数据面升级码", body)
-
-        canary_request = urllib.request.Request(
-            self.base_url
-            + "/nodes/{}/data-plane/canary/pass".format(self.node_id),
-            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
-            headers={**headers, "Accept": "application/json"},
-            method="POST",
-        )
-        result = json.loads(
-            urllib.request.urlopen(canary_request, timeout=2).read().decode("utf-8")
-        )
-        self.assertEqual({"directCanaryPassed": True}, result)
-        node = next(
-            item for item in self.db.list_nodes() if item["node_id"] == self.node_id
-        )
-        self.assertIsNotNone(node["direct_canary_passed_at"])
-        self.assertIsNone(node["dns_admitted_at"])
+        self.assertIn('/nodes/{}/disconnect'.format(self.node_id), body)
+        self.assertNotIn('/nodes/{}/delete'.format(self.node_id), body)
 
         with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
-                """UPDATE nodes SET last_heartbeat_at = ?, last_snapshot_at = ?,
-                    last_traffic_ack_at = ? WHERE node_id = ?""",
-                (self.now[0], self.now[0], self.now[0], self.node_id),
+                "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
+                (self.now[0] - 151, self.node_id),
             )
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertNotIn(
-            '/nodes/{}/data-plane/dns/admit'.format(self.node_id), body
-        )
-        self.assertIn("请手工添加 DNS", body)
-
-        admit_request = urllib.request.Request(
-            self.base_url + "/nodes/{}/data-plane/dns/admit".format(self.node_id),
-            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
-            headers={**headers, "Accept": "application/json"},
-            method="POST",
-        )
-        result = json.loads(
-            urllib.request.urlopen(admit_request, timeout=2).read().decode("utf-8")
-        )
-        self.assertEqual({"dnsAdmitted": True}, result)
-        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertIn("DNS 已检测并自动准入", body)
-        self.assertIn(
-            '/nodes/{}/lifecycle/drain'.format(self.node_id), body
-        )
-        self.assertNotIn("2. 记录 DNS 已撤出", body)
-
-        self.assertTrue(
-            self.db.begin_node_drain(self.node_id, "admin", self.now[0] + 1)
-        )
-        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertIn(
-            '/nodes/{}/data-plane/dns/remove'.format(self.node_id), body
-        )
-        self.assertIn("2. 记录 DNS 已撤出", body)
-
-        remove_request = urllib.request.Request(
-            self.base_url + "/nodes/{}/data-plane/dns/remove".format(self.node_id),
-            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
-            headers={**headers, "Accept": "application/json"},
-            method="POST",
-        )
-        result = json.loads(
-            urllib.request.urlopen(remove_request, timeout=2).read().decode("utf-8")
-        )
-        self.assertEqual({"dnsRemoved": True}, result)
-
-        revoke_request = urllib.request.Request(
-            self.base_url + "/nodes/{}/revoke".format(self.node_id),
-            data=urllib.parse.urlencode({"csrf": csrf}).encode("ascii"),
-            headers={**headers, "Accept": "application/json"},
-            method="POST",
-        )
-        result = json.loads(
-            urllib.request.urlopen(revoke_request, timeout=2).read().decode("utf-8")
-        )
-        self.assertEqual({"revoked": True}, result)
-        body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
-        self.assertNotIn("node-{}".format(self.node_id[:4]), body)
+        self.assertNotIn('/nodes/{}/disconnect'.format(self.node_id), body)
+        self.assertIn('/nodes/{}/delete'.format(self.node_id), body)
 
 
 class NodeDataPlaneConfigTests(unittest.TestCase):

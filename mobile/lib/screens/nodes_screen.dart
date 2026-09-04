@@ -102,12 +102,11 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     bool enabled,
     BuildContext detailContext,
   ) async {
-    final local = node['kind'] == 'local';
     final label = enabled ? '启用' : '紧急停用';
     final confirmed = await showDialog<bool>(
       context: detailContext,
       builder: (context) => GlassDialog(
-        title: Text('确认$label${local ? '面板本机节点' : '远程节点'}'),
+        title: Text('确认$label面板本机节点'),
         content: Text(
           enabled ? '启用后节点将重新承载连接。确认继续吗？' : '紧急停用会立即中断该节点上的现有连接，仅应在故障或安全事件中使用。',
         ),
@@ -124,18 +123,18 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       ),
     );
     if (confirmed != true) return;
-    final nodeId = local ? 'local' : node['nodeId'].toString();
     try {
       await ref
           .read(appControllerProvider.notifier)
           .postJson(
-            '/api/v1/mobile/nodes/$nodeId/${enabled ? 'enable' : 'disable'}',
+            '/api/v1/mobile/nodes/local/${enabled ? 'enable' : 'disable'}',
           );
       if (detailContext.mounted) Navigator.pop(detailContext);
       await _load(silent: true);
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$label任务已提交')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$label任务已提交')));
       }
     } on ApiException catch (error) {
       if (mounted) {
@@ -149,52 +148,44 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     }
   }
 
-  Future<void> _verify(
+  Future<void> _pairingAction(
     Map<String, dynamic> node,
+    String action,
     BuildContext detailContext,
   ) async {
-    final short = node['fingerprintShort']?.toString() ?? '';
+    final disconnect = action == 'disconnect';
     final confirmed = await showDialog<bool>(
       context: detailContext,
       builder: (context) => GlassDialog(
-        title: const Text('核对节点短码'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('请确认服务器终端显示的 16 位短码与下面完全一致：'),
-            const SizedBox(height: 16),
-            SelectableText(
-              short,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontFamily: 'monospace',
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ],
+        title: Text(disconnect ? '确认一键断连' : '确认删除对接'),
+        content: Text(
+          disconnect
+              ? '远端服务器会立即停止对接业务，并卸载本项目安装的服务、身份、配置、状态、防火墙规则和网络参数。'
+              : '仅在服务器已失联时使用。此操作只吊销面板中的对接，不会清理失联服务器上的文件。',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('不一致'),
+            child: const Text('取消'),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('短码一致，开始部署'),
+            child: Text(disconnect ? '一键断连' : '删除对接'),
           ),
         ],
       ),
     );
     if (confirmed != true) return;
     try {
-      await ref.read(appControllerProvider.notifier).postJson(
-        '/api/v1/mobile/nodes/${node['nodeId']}/verify',
-        {'fingerprint': node['fingerprint']},
-      );
+      await ref
+          .read(appControllerProvider.notifier)
+          .postJson('/api/v1/mobile/nodes/${node['nodeId']}/$action');
       if (detailContext.mounted) Navigator.pop(detailContext);
       await _load(silent: true);
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('节点已确认，自动部署即将开始')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(disconnect ? '远端卸载任务已提交' : '对接已从面板删除')),
+        );
       }
     } on ApiException catch (error) {
       if (mounted) {
@@ -234,7 +225,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             ('平台', '${node['platform']} ${node['architecture']}'),
             ('控制协议', node['policyState']),
             ('数据面', node['dataPlaneState']),
-            ('DNS 准入', node['dnsAdmitted'] == true ? '已准入' : '未准入'),
             ('在线设备', node['onlineDevices'] ?? '—'),
             ('最后心跳', formatTimestamp(node['lastHeartbeatAt'])),
             ('在线快照', formatTimestamp(node['lastSnapshotAt'])),
@@ -260,41 +250,14 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             children: [
               Text(
                 node['name'].toString(),
-                style: Theme.of(context).textTheme.headlineSmall
-                    ?.copyWith(fontWeight: FontWeight.w800),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const SizedBox(height: 4),
               _StatusPill(status: node['status'].toString()),
               const SizedBox(height: 18),
-              if (node['status'] == 'pending_verification' &&
-                  node['fingerprintShort'].toString().isNotEmpty) ...[
-                GlassCard(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Text(
-                          '等待安全确认',
-                          style: TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          '与服务器终端核对短码 ${node['fingerprintShort']}，一致后才能开始自动部署。',
-                        ),
-                        const SizedBox(height: 12),
-                        FilledButton.icon(
-                          onPressed: () => _verify(node, sheetContext),
-                          icon: const Icon(Icons.verified_user_rounded),
-                          label: const Text('核对短码并确认'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              if (node['canEmergencyControl'] == true) ...[
+              if (isLocal && node['canEmergencyControl'] == true) ...[
                 FilledButton.icon(
                   style: node['enabled'] == true
                       ? FilledButton.styleFrom(
@@ -312,6 +275,27 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                         : Icons.play_arrow_rounded,
                   ),
                   label: Text(node['enabled'] == true ? '紧急停用' : '启用节点'),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (!isLocal) ...[
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                  ),
+                  onPressed: node['canDisconnect'] == true
+                      ? () => _pairingAction(node, 'disconnect', sheetContext)
+                      : null,
+                  icon: const Icon(Icons.link_off_rounded),
+                  label: const Text('一键断连'),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: node['canDeletePairing'] == true
+                      ? () => _pairingAction(node, 'delete', sheetContext)
+                      : null,
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  label: const Text('删除对接'),
                 ),
                 const SizedBox(height: 12),
               ],
@@ -365,9 +349,9 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       case 'data_plane_installed':
         return '数据面已经安装，正在等待真实直连验证。';
       case 'direct_canary_passed':
-        return '直连验证已经通过，请手动把节点 IP 添加到 DNS。';
+        return '节点对接已经完成；DNS 由你自行维护，面板不会检查或修改。';
       case 'dns_admitted':
-        return 'DNS 已检测并准入，节点可以正常承载用户连接。';
+        return '节点对接已经完成；旧版本 DNS 状态不再参与控制。';
       default:
         return '数据面状态暂不可用。';
     }
@@ -500,15 +484,15 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                                         node['observedIp'].toString().isNotEmpty
                                             ? node['observedIp'].toString()
                                             : node['expectedIp'].toString(),
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
                                       ),
                                       Text(
                                         '${node['onlineDevices'] ?? '—'} 台在线 · 心跳 ${formatTimestamp(node['lastHeartbeatAt'])}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
                                       ),
                                     ],
                                   ),
@@ -554,8 +538,9 @@ class _RealtimeTrafficCard extends StatelessWidget {
         children: [
           Text(
             '服务器节点实时流量',
-            style: Theme.of(context).textTheme.titleMedium
-                ?.copyWith(fontWeight: FontWeight.w800),
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
           ),
           const SizedBox(height: 3),
           Text('每 5 秒采样一次节点累计流量', style: Theme.of(context).textTheme.bodySmall),
@@ -602,8 +587,10 @@ class _Count extends StatelessWidget {
     children: [
       Text(
         value,
-        style: Theme.of(context).textTheme.titleLarge
-            ?.copyWith(fontWeight: FontWeight.w800, color: color),
+        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+          fontWeight: FontWeight.w800,
+          color: color,
+        ),
       ),
       Text(label, style: Theme.of(context).textTheme.bodySmall),
     ],

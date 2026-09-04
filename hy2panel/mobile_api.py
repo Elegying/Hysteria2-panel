@@ -7,7 +7,7 @@ import time
 
 
 MOBILE_API_VERSION = "1"
-MOBILE_APP_MIN_VERSION = "0.1.0"
+MOBILE_APP_MIN_VERSION = "0.3.0"
 NODE_FRESHNESS_SECONDS = 150
 
 _MOBILE_EXACT_ROUTES = {
@@ -35,8 +35,8 @@ _MOBILE_ROUTE_PATTERNS = (
     ("POST", "local-node-action", re.compile(r"/api/v1/mobile/nodes/local/(enable|disable)")),
     (
         "POST",
-        "remote-node-action",
-        re.compile(r"/api/v1/mobile/nodes/([0-9a-f]{32})/(enable|disable)"),
+        "node-pairing-action",
+        re.compile(r"/api/v1/mobile/nodes/([0-9a-f]{32})/(disconnect|delete)"),
     ),
     (
         "POST",
@@ -45,7 +45,6 @@ _MOBILE_ROUTE_PATTERNS = (
             r"/api/v1/mobile/users/(\d+)/(enable|disable|share|rotate-secret|reset-traffic)"
         ),
     ),
-    ("POST", "verify-node", re.compile(r"/api/v1/mobile/nodes/([0-9a-f]{32})/verify")),
     ("PATCH", "update-user", re.compile(r"/api/v1/mobile/users/(\d+)")),
     ("DELETE", "delete-user", re.compile(r"/api/v1/mobile/users/(\d+)")),
     (
@@ -76,6 +75,15 @@ def _non_negative_int(value):
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _version_at_least(value, minimum):
+    parts = str(value or "").split(".")
+    return bool(
+        len(parts) == 3
+        and all(part.isdigit() for part in parts)
+        and tuple(int(part) for part in parts) >= minimum
+    )
 
 
 def _safe_snapshot(application):
@@ -170,7 +178,14 @@ def _node_status(node, now):
     lifecycle_state = node.get("lifecycle_state") or "active"
     if node.get("status") == "revoked":
         return "revoked"
-    if lifecycle_state in {"draining", "stopping", "stopped", "starting", "archived"}:
+    if lifecycle_state in {
+        "draining",
+        "stopping",
+        "stopped",
+        "starting",
+        "disconnecting",
+        "archived",
+    }:
         return lifecycle_state
     if (
         node.get("status") == "pending_registration"
@@ -178,10 +193,13 @@ def _node_status(node, now):
         and int(node["expires_at"]) <= now
     ):
         return "registration_expired"
-    if node.get("verified_at"):
+    if node.get("verified_at") and node.get("data_plane_state") in {
+        "direct_canary_passed",
+        "dns_admitted",
+    }:
         heartbeat_at = _non_negative_int(node.get("last_heartbeat_at"))
         return "online" if heartbeat_at and now - heartbeat_at <= NODE_FRESHNESS_SECONDS else "offline"
-    if node.get("status") == "pending_verification":
+    if node.get("status") == "pending_verification" or node.get("verified_at"):
         return "pending_verification"
     return "pending_registration"
 
@@ -319,6 +337,23 @@ def nodes_payload(application, snapshot=None):
                     and (node.get("lifecycle_state") or "active")
                     in {"active", "draining", "stopped"}
                 ),
+                "canDisconnect": bool(
+                    node.get("verified_at")
+                    and _version_at_least(node.get("agent_version"), (0, 39, 0))
+                    and node.get("policy_state") == "protocol_ready"
+                    and node.get("data_plane_state")
+                    in {"data_plane_installed", "direct_canary_passed", "dns_admitted"}
+                    and (node.get("lifecycle_state") or "active")
+                    in {"active", "draining"}
+                    and _non_negative_int(node.get("last_heartbeat_at"))
+                    >= now - NODE_FRESHNESS_SECONDS
+                    and _non_negative_int(node.get("pending_commands")) == 0
+                ),
+                "canDeletePairing": bool(
+                    _non_negative_int(node.get("last_heartbeat_at"))
+                    < now - NODE_FRESHNESS_SECONDS
+                    and (node.get("lifecycle_state") or "active") != "disconnecting"
+                ),
             }
         item.update(_traffic_fields(origin))
         items.append(item)
@@ -449,6 +484,7 @@ def capabilities_payload(panel_version):
             "users",
             "nodes",
             "node-enrollment",
+            "one-click-node-pairing",
             "local-node-control",
             "node-realtime-traffic",
             "service-control",

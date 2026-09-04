@@ -39,16 +39,12 @@ class MobileApiContractTests(unittest.TestCase):
             ("/api/v1/mobile/service/$action", "service/(start|restart|stop)"),
             ("/api/v1/mobile/system/reboot", "/api/v1/mobile/system/reboot"),
             (
-                "/api/v1/mobile/nodes/$nodeId/${enabled ? 'enable' : 'disable'}",
+                "/api/v1/mobile/nodes/local/${enabled ? 'enable' : 'disable'}",
                 "nodes/local/(enable|disable)",
             ),
             (
-                "/api/v1/mobile/nodes/$nodeId/${enabled ? 'enable' : 'disable'}",
-                "nodes/([0-9a-f]{32})/(enable|disable)",
-            ),
-            (
-                "/api/v1/mobile/nodes/${node['nodeId']}/verify",
-                "nodes/([0-9a-f]{32})/verify",
+                "/api/v1/mobile/nodes/${node['nodeId']}/$action",
+                "nodes/([0-9a-f]{32})/(disconnect|delete)",
             ),
             (
                 "/api/v1/mobile/users/$userId/$endpoint",
@@ -68,6 +64,8 @@ class MobileApiContractTests(unittest.TestCase):
             "share",
             "rotate-secret",
             "reset-traffic",
+            "disconnect",
+            "delete",
         ):
             self.assertIn(action, APP_SOURCES)
             self.assertIn(action, SERVER_SOURCE)
@@ -101,8 +99,13 @@ class MobileApiContractTests(unittest.TestCase):
             ("POST", "/api/v1/mobile/service/restart", ("service-action", ("restart",))),
             (
                 "POST",
-                "/api/v1/mobile/nodes/{}/disable".format(node_id),
-                ("remote-node-action", (node_id, "disable")),
+                "/api/v1/mobile/nodes/{}/disconnect".format(node_id),
+                ("node-pairing-action", (node_id, "disconnect")),
+            ),
+            (
+                "POST",
+                "/api/v1/mobile/nodes/{}/delete".format(node_id),
+                ("node-pairing-action", (node_id, "delete")),
             ),
             (
                 "POST",

@@ -412,84 +412,21 @@ document.addEventListener('submit', async function(event) {
     code.value = payload.deploymentCommand;
     expiry.textContent = '对接码将在 ' + new Date(Number(payload.expiresAt) * 1000).toLocaleTimeString() + ' 过期，且只能使用一次。';
     result.hidden = false;
+    let copied = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(payload.deploymentCommand);
+        copied = true;
+      }
+    } catch (_error) {}
     code.focus();
-    notify('一键部署代码已生成，请在有效期内使用', false);
+    code.select();
+    notify(copied ? '对接代码已生成并复制，请到目标服务器粘贴运行' : '对接代码已生成，请复制到目标服务器运行', false);
   } catch (error) {
     notify(error.message || '生成部署代码失败，请重试', true);
   } finally {
     button.disabled = false;
-    button.textContent = '生成部署代码';
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-data-plane-bootstrap-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  const original = button.textContent;
-  const result = document.querySelector('[data-data-plane-bootstrap-result]');
-  const code = document.getElementById('data-plane-deployment-code');
-  const expiry = document.querySelector('[data-data-plane-bootstrap-expiry]');
-  button.disabled = true;
-  button.textContent = '生成中…';
-  try {
-    const payload = await submitInlineForm(form);
-    const command = payload && payload.deploymentCommand;
-    const forbidden = ['server.crt', 'server.key', 'HY2PANEL_HMAC_KEY', 'HY2PANEL_PUBLIC_HOST'];
-    if (typeof command !== 'string' || !command.startsWith('set -euo pipefail') || !command.includes('--activate-data-plane') || forbidden.some(function(value) { return command.includes(value); })) {
-      throw new Error('数据面部署代码响应无效');
-    }
-    code.value = command;
-    expiry.textContent = '数据面授权将在 ' + new Date(Number(payload.expiresAt) * 1000).toLocaleTimeString() + ' 过期，最多允许获取配置 3 次；安装确认后立即失效。';
-    result.hidden = false;
-    code.focus();
-    notify('数据面一键部署代码已生成，请在有效期内使用', false);
-  } catch (error) {
-    notify(error.message || '生成数据面部署代码失败，请重试', true);
-  } finally {
-    button.disabled = false;
-    button.textContent = original;
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-data-plane-canary-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  button.disabled = true;
-  button.textContent = '确认中…';
-  try {
-    const payload = await submitInlineForm(form);
-    if (!payload || payload.directCanaryPassed !== true) {
-      throw new Error('直连灰度状态未更新');
-    }
-    notify('已记录直连灰度通过；DNS 仍未准入', false);
-    window.setTimeout(function() { window.location.reload(); }, 700);
-  } catch (error) {
-    button.disabled = false;
-    button.textContent = '确认直连灰度通过';
-    notify(error.message || '直连灰度确认失败，请重试', true);
-  }
-});
-document.addEventListener('submit', async function(event) {
-  const form = event.target.closest('[data-node-dns-action-form]');
-  if (!form || event.defaultPrevented) return;
-  event.preventDefault();
-  const button = form.querySelector('button[type="submit"]');
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = '记录中…';
-  try {
-    const payload = await submitInlineForm(form);
-    if (!payload || (payload.dnsAdmitted !== true && payload.dnsRemoved !== true)) {
-      throw new Error('DNS 准入状态未更新');
-    }
-    notify(payload.dnsAdmitted ? '已记录节点 DNS 准入' : '已记录节点撤出 DNS', false);
-    window.setTimeout(function() { window.location.reload(); }, 700);
-  } catch (error) {
-    button.disabled = false;
-    button.textContent = original;
-    notify(error.message || 'DNS 准入状态更新失败，请重试', true);
+    button.textContent = '一键对接';
   }
 });
 document.addEventListener('submit', async function(event) {
@@ -540,15 +477,9 @@ if (nodeOnboardingDialog) nodeOnboardingDialog.addEventListener('close', functio
   const code = document.getElementById('node-deployment-code');
   const result = document.querySelector('[data-node-enrollment-result]');
   const expiry = document.querySelector('[data-node-enrollment-expiry]');
-  const dataPlaneCode = document.getElementById('data-plane-deployment-code');
-  const dataPlaneResult = document.querySelector('[data-data-plane-bootstrap-result]');
-  const dataPlaneExpiry = document.querySelector('[data-data-plane-bootstrap-expiry]');
   if (code) code.value = '';
   if (expiry) expiry.textContent = '';
   if (result) result.hidden = true;
-  if (dataPlaneCode) dataPlaneCode.value = '';
-  if (dataPlaneExpiry) dataPlaneExpiry.textContent = '';
-  if (dataPlaneResult) dataPlaneResult.hidden = true;
 });
 const editUserSelect = document.querySelector('[data-edit-user-select]');
 if (editUserSelect) {

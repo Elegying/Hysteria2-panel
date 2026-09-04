@@ -198,11 +198,22 @@ class DistributedControlService:
         if len(nonce_bytes) != 32 or len(signature) != 64:
             self._reject()
         node = self.database.get_node_for_heartbeat(node_id)
+        acknowledgement_retry = (
+            purpose == "command-ack"
+            and node is not None
+            and node.get("status") == "revoked"
+            and node.get("policy_state") == "standby"
+        )
         if (
             node is None
-            or node["status"] != "pending_verification"
+            or (
+                not acknowledgement_retry
+                and (
+                    node["status"] != "pending_verification"
+                    or node.get("policy_state") != "protocol_ready"
+                )
+            )
             or node.get("verified_at") is None
-            or node.get("policy_state") != "protocol_ready"
         ):
             self._reject()
         bound_ip = node.get("expected_ip") or node.get("observed_ip")
