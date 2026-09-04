@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.0"
+PANEL_VERSION="0.39.1"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,7 +30,7 @@ OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed9
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="c7bef40222d3b03ba3be9007c725104b2d673002b70486d716d7623d7e03bf8d"
+HY2PANEL_VERSION_SHA256="d20cf40a830f2901bad89705c6caed63cfe05cdce1702f0cc513c05ecd847a40"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="5b9dace1abf080a3ddf6e6007e20c35bd0d12128dccccb24f5dc3f32fb4011ca"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="39fb0a1e9eb7e1b3d5e72f2dddb18001db5ce2ffcd4504059c09141cca7596c5"
 HY2PANEL_MOBILE_API_SHA256="9b1ae9d2b804666e88af874bce2b5fb8847523fc65cfd10193b88617e38fdb7e"
-NODE_AGENT_SHA256="e9875e6ac1ef7c2279b8deee4f74dabcf9b3d465793ae8e91f0ff3d289a1c453"
+NODE_AGENT_SHA256="10c3645b9a3e3454b98e31b2af55160e0f74145f7eeb57cec0467ecdaa491b1f"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1845,11 +1845,11 @@ TimeoutStartSec=20
 EOF
   cat > "${TMP_DIR}/hysteria2-panel-node-heartbeat.timer" <<'EOF'
 [Unit]
-Description=Run the Hysteria2-panel signed node heartbeat every minute
+Description=Run the Hysteria2-panel signed node heartbeat every 30 seconds
 
 [Timer]
-OnBootSec=60s
-OnUnitActiveSec=60s
+OnBootSec=30s
+OnUnitActiveSec=30s
 RandomizedDelaySec=5s
 Persistent=true
 AccuracySec=1s

@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.0"', source)
+        self.assertIn('PANEL_VERSION="0.39.1"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -950,7 +950,9 @@ printf '%s:%s:%s:%s\n' \
         self.assertIn("ProtectSystem=strict", activation)
         self.assertIn("PrivateDevices=true", activation)
         self.assertIn("CapabilityBoundingSet=", activation)
-        self.assertIn("OnUnitActiveSec=60s", activation)
+        self.assertIn("OnBootSec=30s", activation)
+        self.assertIn("OnUnitActiveSec=30s", activation)
+        self.assertIn("RandomizedDelaySec=5s", activation)
         self.assertIn("openssl pkey", activation)
         self.assertIn("sha256sum", activation)
         self.assertNotIn("configure_firewall", activation)
