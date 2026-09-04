@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.1"
+PANEL_VERSION="0.39.2"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,7 +30,7 @@ OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed9
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="d20cf40a830f2901bad89705c6caed63cfe05cdce1702f0cc513c05ecd847a40"
+HY2PANEL_VERSION_SHA256="07e4ae07221274d8d519a9038acd81e148833b14d63e258cc3ad314cec196aba"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="5b9dace1abf080a3ddf6e6007e20c35bd0d12128dccccb24f5dc3f32fb4011ca"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="39fb0a1e9eb7e1b3d5e72f2dddb18001db5ce2ffcd4504059c09141cca7596c5"
 HY2PANEL_MOBILE_API_SHA256="9b1ae9d2b804666e88af874bce2b5fb8847523fc65cfd10193b88617e38fdb7e"
-NODE_AGENT_SHA256="10c3645b9a3e3454b98e31b2af55160e0f74145f7eeb57cec0467ecdaa491b1f"
+NODE_AGENT_SHA256="d211f79eba3e47da737f68efe0afeb0d9e88211434020b0cabd5804a40981065"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1769,49 +1769,7 @@ require_node_agent_file() {
     || fail "节点 Agent 文件所有者或权限不符合要求：${path}"
 }
 
-activate_node_agent() {
-  local command_name generated_public
-  local -a activation_commands=(cat cmp curl install mktemp openssl rm sha256sum stat sync systemctl)
-
-  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
-    || fail "节点心跳只允许使用当前受签名正式版本 v${PANEL_VERSION}"
-  [[ -d /run/systemd/system ]] \
-    || fail "节点心跳需要使用 systemd 的 Linux 服务器"
-  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
-    || fail "完整面板服务器不能启用分流节点 Agent"
-  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
-  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
-  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
-  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
-  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node-public.der" 644
-  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
-  [[ ! -e "${NODE_AGENT_HEARTBEAT_SERVICE}" && ! -L "${NODE_AGENT_HEARTBEAT_SERVICE}" ]] \
-    || fail "节点心跳 service 已存在；为避免覆盖未知配置，启用已停止"
-  [[ ! -e "${NODE_AGENT_HEARTBEAT_TIMER}" && ! -L "${NODE_AGENT_HEARTBEAT_TIMER}" ]] \
-    || fail "节点心跳 timer 已存在；为避免覆盖未知配置，启用已停止"
-  for command_name in "${activation_commands[@]}"; do
-    command -v "${command_name}" >/dev/null 2>&1 \
-      || fail "节点心跳缺少命令 ${command_name}；未修改系统"
-  done
-  select_python || fail "节点心跳需要 Python 3.8 或更高版本；未修改系统"
-
-  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
-  download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
-  printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
-    | sha256sum --check --status \
-    || fail "节点 Agent SHA-256 校验失败"
-  "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" \
-    || fail "节点 Agent 语法检查失败"
-  generated_public="${TMP_DIR}/node-public.der"
-  openssl pkey -in "${NODE_AGENT_CONFIG_DIR}/node.key" -pubout -outform DER \
-    -out "${generated_public}" \
-    || fail "无法验证节点私钥"
-  cmp -s "${generated_public}" "${NODE_AGENT_CONFIG_DIR}/node-public.der" \
-    || fail "节点公钥与私钥不匹配；未修改系统"
-
-  NODE_AGENT_BACKUP_FILE="${TMP_DIR}/node_agent.py.previous"
-  install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
-    "${NODE_AGENT_BACKUP_FILE}"
+write_node_agent_heartbeat_units() {
   cat > "${TMP_DIR}/hysteria2-panel-node-heartbeat.service" <<EOF
 [Unit]
 Description=Hysteria2-panel signed node heartbeat
@@ -1858,6 +1816,52 @@ Unit=hysteria2-panel-node-heartbeat.service
 [Install]
 WantedBy=timers.target
 EOF
+}
+
+activate_node_agent() {
+  local command_name generated_public
+  local -a activation_commands=(cat cmp curl install mktemp openssl rm sha256sum stat sync systemctl)
+
+  [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
+    || fail "节点心跳只允许使用当前受签名正式版本 v${PANEL_VERSION}"
+  [[ -d /run/systemd/system ]] \
+    || fail "节点心跳需要使用 systemd 的 Linux 服务器"
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "完整面板服务器不能启用分流节点 Agent"
+  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
+  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node-public.der" 644
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
+  [[ ! -e "${NODE_AGENT_HEARTBEAT_SERVICE}" && ! -L "${NODE_AGENT_HEARTBEAT_SERVICE}" ]] \
+    || fail "节点心跳 service 已存在；为避免覆盖未知配置，启用已停止"
+  [[ ! -e "${NODE_AGENT_HEARTBEAT_TIMER}" && ! -L "${NODE_AGENT_HEARTBEAT_TIMER}" ]] \
+    || fail "节点心跳 timer 已存在；为避免覆盖未知配置，启用已停止"
+  for command_name in "${activation_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "节点心跳缺少命令 ${command_name}；未修改系统"
+  done
+  select_python || fail "节点心跳需要 Python 3.8 或更高版本；未修改系统"
+
+  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
+  printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
+    | sha256sum --check --status \
+    || fail "节点 Agent SHA-256 校验失败"
+  "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" \
+    || fail "节点 Agent 语法检查失败"
+  generated_public="${TMP_DIR}/node-public.der"
+  openssl pkey -in "${NODE_AGENT_CONFIG_DIR}/node.key" -pubout -outform DER \
+    -out "${generated_public}" \
+    || fail "无法验证节点私钥"
+  cmp -s "${generated_public}" "${NODE_AGENT_CONFIG_DIR}/node-public.der" \
+    || fail "节点公钥与私钥不匹配；未修改系统"
+
+  NODE_AGENT_BACKUP_FILE="${TMP_DIR}/node_agent.py.previous"
+  install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
+    "${NODE_AGENT_BACKUP_FILE}"
+  write_node_agent_heartbeat_units
 
   ACTIVATE_NODE_AGENT_MUTATED=1
   install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
@@ -2161,10 +2165,16 @@ write_data_plane_backup_manifest() {
   [[ ! -e "${DATA_PLANE_BACKUP_DIR}" && ! -L "${DATA_PLANE_BACKUP_DIR}" ]] \
     || return 1
   install -d -o root -g root -m 0700 "${NODE_DATA_PLANE_BACKUP_ROOT}"
-  install -d -o root -g root -m 0700 "${DATA_PLANE_BACKUP_DIR}"
+  install -d -o root -g root -m 0700 \
+    "${DATA_PLANE_BACKUP_DIR}" \
+    "${DATA_PLANE_BACKUP_DIR}/agent-units"
   DATA_PLANE_NODE_AGENT_BACKUP_FILE="${DATA_PLANE_BACKUP_DIR}/node_agent.py"
   install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
     "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}"
+  install -o root -g root -m 0644 "${NODE_AGENT_HEARTBEAT_SERVICE}" \
+    "${DATA_PLANE_BACKUP_DIR}/agent-units/${NODE_AGENT_HEARTBEAT_SERVICE##*/}"
+  install -o root -g root -m 0644 "${NODE_AGENT_HEARTBEAT_TIMER}" \
+    "${DATA_PLANE_BACKUP_DIR}/agent-units/${NODE_AGENT_HEARTBEAT_TIMER##*/}"
   write_data_plane_network_snapshot || return 1
   if (( DATA_PLANE_EXISTING == 1 )); then
     install -d -o root -g root -m 0700 \
@@ -2209,6 +2219,28 @@ write_data_plane_backup_manifest() {
   )
   chmod 0600 "${manifest}"
   sync -f "${DATA_PLANE_BACKUP_DIR}" "${NODE_DATA_PLANE_BACKUP_ROOT}"
+}
+
+restore_data_plane_heartbeat_units() {
+  local service_backup timer_backup
+  service_backup="${DATA_PLANE_BACKUP_DIR}/agent-units/${NODE_AGENT_HEARTBEAT_SERVICE##*/}"
+  timer_backup="${DATA_PLANE_BACKUP_DIR}/agent-units/${NODE_AGENT_HEARTBEAT_TIMER##*/}"
+  if [[ ! -e "${service_backup}" && ! -L "${service_backup}" \
+    && ! -e "${timer_backup}" && ! -L "${timer_backup}" ]]; then
+    return 0
+  fi
+  [[ -f "${service_backup}" && ! -L "${service_backup}" \
+    && -f "${timer_backup}" && ! -L "${timer_backup}" ]] || return 1
+  install -o root -g root -m 0644 "${service_backup}" \
+    "${NODE_AGENT_HEARTBEAT_SERVICE}" || return 1
+  install -o root -g root -m 0644 "${timer_backup}" \
+    "${NODE_AGENT_HEARTBEAT_TIMER}" || return 1
+}
+
+restart_node_agent_heartbeat_timer() {
+  systemctl enable --now hysteria2-panel-node-heartbeat.timer || return 1
+  systemctl restart hysteria2-panel-node-heartbeat.timer || return 1
+  systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer || return 1
 }
 
 arm_data_plane_transaction() {
@@ -2576,8 +2608,10 @@ restore_existing_data_plane() {
     install -o root -g root -m 0644 \
       "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}" "${path}" || return 1
   done
+  restore_data_plane_heartbeat_units || return 1
   restore_data_plane_network_snapshot || return 1
   systemctl daemon-reload || return 1
+  restart_node_agent_heartbeat_timer || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
     systemctl enable --now "${unit}" || return 1
@@ -2614,6 +2648,7 @@ rollback_data_plane_activation() {
     install -o root -g root -m 0755 "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}" \
       "${NODE_AGENT_OPT_DIR}/node_agent.py" || return 1
   fi
+  restore_data_plane_heartbeat_units || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}" \
     "${NODE_UNINSTALL_SERVICE}"; do
     rm -f -- "${path}" || return 1
@@ -2630,6 +2665,7 @@ rollback_data_plane_activation() {
   fi
   rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
   systemctl daemon-reload || return 1
+  restart_node_agent_heartbeat_timer || return 1
   sync -f "${NODE_AGENT_OPT_DIR}" "${NODE_AGENT_CONFIG_DIR}" \
     /etc/systemd/system || return 1
   DATA_PLANE_MUTATED=0
@@ -2703,6 +2739,7 @@ activate_data_plane() {
   "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" "${TMP_DIR}/tcp_probe.py" \
     || fail "数据节点 Python 构件语法检查失败"
   chmod 0755 "${TMP_DIR}/hysteria"
+  write_node_agent_heartbeat_units
   HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN="${bootstrap_token}" \
     "${PYTHON_BIN}" "${TMP_DIR}/node_agent.py" prepare-data-plane \
       --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
@@ -2739,6 +2776,12 @@ activate_data_plane() {
     /var/lib/hysteria2-panel-node/state
   install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
     "${NODE_AGENT_OPT_DIR}/node_agent.py"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-heartbeat.service" \
+    "${NODE_AGENT_HEARTBEAT_SERVICE}"
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-heartbeat.timer" \
+    "${NODE_AGENT_HEARTBEAT_TIMER}"
   install -o root -g root -m 0755 "${TMP_DIR}/tcp_probe.py" \
     "${NODE_AGENT_OPT_DIR}/tcp_probe.py"
   durable_replace_file "${TMP_DIR}/hysteria" \
@@ -3014,6 +3057,10 @@ EOF
     "${TMP_DIR}/hysteria2-panel-node-uninstall.service" \
     "${NODE_UNINSTALL_SERVICE}"
   systemctl daemon-reload
+  systemctl start hysteria2-panel-node-heartbeat.service \
+    || fail "升级后的节点签名心跳未被中央面板接受"
+  restart_node_agent_heartbeat_timer \
+    || fail "升级后的节点签名心跳 timer 未能健康启动"
   systemctl enable --now hysteria2-panel-node-auth.service
   systemctl enable --now hysteria2-panel-node-control.service
   systemctl enable --now hysteria2-panel-node-hysteria-main.service

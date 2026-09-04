@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.1"', source)
+        self.assertIn('PANEL_VERSION="0.39.2"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -941,18 +941,21 @@ printf '%s:%s:%s:%s\n' \
         start = source.index("activate_node_agent()")
         end = source.index("\n}\n", start) + 2
         activation = source[start:end]
+        units_start = source.index("write_node_agent_heartbeat_units()")
+        units = source[units_start:source.index("\n}\n", units_start) + 2]
 
         self.assertIn("--activate-node-agent", source)
         self.assertIn("hysteria2-panel-node-heartbeat.service", activation)
         self.assertIn("hysteria2-panel-node-heartbeat.timer", activation)
-        self.assertIn('node_agent.py\" heartbeat', activation)
-        self.assertIn("NoNewPrivileges=true", activation)
-        self.assertIn("ProtectSystem=strict", activation)
-        self.assertIn("PrivateDevices=true", activation)
-        self.assertIn("CapabilityBoundingSet=", activation)
-        self.assertIn("OnBootSec=30s", activation)
-        self.assertIn("OnUnitActiveSec=30s", activation)
-        self.assertIn("RandomizedDelaySec=5s", activation)
+        self.assertIn("write_node_agent_heartbeat_units", activation)
+        self.assertIn('node_agent.py\" heartbeat', units)
+        self.assertIn("NoNewPrivileges=true", units)
+        self.assertIn("ProtectSystem=strict", units)
+        self.assertIn("PrivateDevices=true", units)
+        self.assertIn("CapabilityBoundingSet=", units)
+        self.assertIn("OnBootSec=30s", units)
+        self.assertIn("OnUnitActiveSec=30s", units)
+        self.assertIn("RandomizedDelaySec=5s", units)
         self.assertIn("openssl pkey", activation)
         self.assertIn("sha256sum", activation)
         self.assertNotIn("configure_firewall", activation)
@@ -4699,6 +4702,39 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
         ]
         self.assertIn("DATA_PLANE_EXISTING", rollback)
         self.assertIn("restore_existing_data_plane", rollback)
+
+    def test_data_plane_upgrade_refreshes_and_rolls_back_heartbeat_units(self):
+        snapshot_start = self.source.index("write_data_plane_backup_manifest()")
+        snapshot = self.source[
+            snapshot_start:self.source.index("\n}\n", snapshot_start) + 2
+        ]
+        heartbeat_restore_start = self.source.index(
+            "restore_data_plane_heartbeat_units()"
+        )
+        heartbeat_restore = self.source[
+            heartbeat_restore_start:
+            self.source.index("\n}\n", heartbeat_restore_start) + 2
+        ]
+        restore_start = self.source.index("restore_existing_data_plane()")
+        restore = self.source[
+            restore_start:self.source.index("\n}\n", restore_start) + 2
+        ]
+        rollback_start = self.source.index("rollback_data_plane_activation()")
+        rollback = self.source[
+            rollback_start:self.source.index("\n}\n", rollback_start) + 2
+        ]
+
+        self.assertIn('"${DATA_PLANE_BACKUP_DIR}/agent-units"', snapshot)
+        self.assertIn('"${NODE_AGENT_HEARTBEAT_SERVICE}"', snapshot)
+        self.assertIn('"${NODE_AGENT_HEARTBEAT_TIMER}"', snapshot)
+        self.assertIn("write_node_agent_heartbeat_units", self.activation)
+        self.assertIn('"${TMP_DIR}/hysteria2-panel-node-heartbeat.timer"', self.activation)
+        self.assertIn('"${NODE_AGENT_HEARTBEAT_TIMER}"', self.activation)
+        self.assertIn("restart_node_agent_heartbeat_timer", self.activation)
+        self.assertIn("restore_data_plane_heartbeat_units", restore)
+        self.assertIn("restore_data_plane_heartbeat_units", rollback)
+        self.assertIn('[[ ! -e "${service_backup}"', heartbeat_restore)
+        self.assertIn('install -o root -g root -m 0644 "${timer_backup}"', heartbeat_restore)
 
     def test_existing_data_plane_tolerates_only_a_drained_spool_file(self):
         start = self.source.index("inspect_data_plane_state_item()")
