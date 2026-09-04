@@ -406,7 +406,7 @@ document.addEventListener('submit', async function(event) {
   button.textContent = '生成中…';
   try {
     const payload = await submitInlineForm(form);
-    if (!payload || typeof payload.deploymentCommand !== 'string' || !payload.deploymentCommand.startsWith('set -euo pipefail')) {
+    if (!payload || typeof payload.deploymentCommand !== 'string' || !payload.deploymentCommand.startsWith('(\\nset -euo pipefail')) {
       throw new Error('部署代码响应无效');
     }
     code.value = payload.deploymentCommand;

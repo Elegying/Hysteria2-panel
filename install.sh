@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.2"
+PANEL_VERSION="0.39.3"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -25,25 +25,25 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="c6d1c8a3b672a3df69186065c4adbe32114f25fb5197147a285d9d69da633e82"
+PANEL_SHA256="5076622d6e25cbcfe00d7de57b6a37b0dd045e4d85e7e21fad61cba088f2ae7c"
 OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed94b2f07f"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="07e4ae07221274d8d519a9038acd81e148833b14d63e258cc3ad314cec196aba"
+HY2PANEL_VERSION_SHA256="dd6e30bf053528ba8632035bcdc7d2618e7bf0c1b1e16b395529f8a1b88151b0"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
-HY2PANEL_WEB_ASSETS_SHA256="5b9dace1abf080a3ddf6e6007e20c35bd0d12128dccccb24f5dc3f32fb4011ca"
+HY2PANEL_WEB_ASSETS_SHA256="c57b34c16538837583bc606ba13ce469349fd0ed1f81840521eec9d300746dfb"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="1ed6c270f0aa2881ec138cbf1c2501e3d35397070f18735a823fe862ee35a38a"
+HY2PANEL_NODES_SHA256="85cb21fdabb5859c5261c9be79580578840c64390c6fdf76160d9d47e7ee9a4f"
 HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d0fc163548e9cb"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="39fb0a1e9eb7e1b3d5e72f2dddb18001db5ce2ffcd4504059c09141cca7596c5"
+HY2PANEL_DASHBOARD_SHA256="c38986d1b8e8baa040ba7fe54f01d290affe47986c637100ed9d7fa6c0758f8d"
 HY2PANEL_MOBILE_API_SHA256="9b1ae9d2b804666e88af874bce2b5fb8847523fc65cfd10193b88617e38fdb7e"
-NODE_AGENT_SHA256="d211f79eba3e47da737f68efe0afeb0d9e88211434020b0cabd5804a40981065"
+NODE_AGENT_SHA256="19e2e38e09e06b74d0abc0fc3b8bdf6265f8e764a42a9ba0b6d11dbaa38aab8f"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1548,7 +1548,7 @@ EOF
     sleep 5
   done
   [[ ! -e "${NODE_ONBOARDING_MARKER}" && ! -L "${NODE_ONBOARDING_MARKER}" ]] \
-    || fail "节点未在 10 分钟内完成对接；已保留安全后台重试，请检查网络后重试"
+    || fail "节点未在 10 分钟内完成对接；后台会每 30 秒继续重试，请勿重复粘贴代码。请检查云安全组、系统时间和网络，并查看 hysteria2-panel-node-onboarding.service 日志"
   echo "节点一键对接已完成；面板和安装器均未检查或修改 DNS。"
 }
 
@@ -2159,7 +2159,7 @@ assert_data_plane_main_port_available() {
 }
 
 write_data_plane_backup_manifest() {
-  local path timestamp manifest
+  local installer_presence path timestamp manifest
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   DATA_PLANE_BACKUP_DIR="${NODE_DATA_PLANE_BACKUP_ROOT}/${timestamp}-phase4"
   [[ ! -e "${DATA_PLANE_BACKUP_DIR}" && ! -L "${DATA_PLANE_BACKUP_DIR}" ]] \
@@ -2175,6 +2175,15 @@ write_data_plane_backup_manifest() {
     "${DATA_PLANE_BACKUP_DIR}/agent-units/${NODE_AGENT_HEARTBEAT_SERVICE##*/}"
   install -o root -g root -m 0644 "${NODE_AGENT_HEARTBEAT_TIMER}" \
     "${DATA_PLANE_BACKUP_DIR}/agent-units/${NODE_AGENT_HEARTBEAT_TIMER##*/}"
+  installer_presence=absent
+  if [[ -f "${NODE_ONBOARDING_INSTALLER}" && ! -L "${NODE_ONBOARDING_INSTALLER}" ]]; then
+    install -o root -g root -m 0700 "${NODE_ONBOARDING_INSTALLER}" \
+      "${DATA_PLANE_BACKUP_DIR}/onboarding-install.sh"
+    installer_presence=present
+  fi
+  printf '%s\n' "${installer_presence}" \
+    > "${DATA_PLANE_BACKUP_DIR}/onboarding-installer-presence"
+  chmod 0600 "${DATA_PLANE_BACKUP_DIR}/onboarding-installer-presence"
   write_data_plane_network_snapshot || return 1
   if (( DATA_PLANE_EXISTING == 1 )); then
     install -d -o root -g root -m 0700 \
@@ -2241,6 +2250,25 @@ restart_node_agent_heartbeat_timer() {
   systemctl enable --now hysteria2-panel-node-heartbeat.timer || return 1
   systemctl restart hysteria2-panel-node-heartbeat.timer || return 1
   systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer || return 1
+}
+
+restore_data_plane_onboarding_installer() {
+  local backup="${DATA_PLANE_BACKUP_DIR}/onboarding-install.sh"
+  local presence_file="${DATA_PLANE_BACKUP_DIR}/onboarding-installer-presence"
+  local presence
+  # Older snapshots did not manage this file.
+  [[ -e "${presence_file}" || -L "${presence_file}" ]] || return 0
+  [[ -f "${presence_file}" && ! -L "${presence_file}" ]] || return 1
+  presence="$(cat "${presence_file}")" || return 1
+  if [[ "${presence}" == "present" ]]; then
+    [[ -f "${backup}" && ! -L "${backup}" ]] || return 1
+    durable_replace_file "${backup}" "${NODE_ONBOARDING_INSTALLER}" 0700
+  elif [[ "${presence}" == "absent" ]]; then
+    rm -f -- "${NODE_ONBOARDING_INSTALLER}" || return 1
+    sync -f "${NODE_AGENT_OPT_DIR}" || return 1
+  else
+    return 1
+  fi
 }
 
 arm_data_plane_transaction() {
@@ -2609,6 +2637,7 @@ restore_existing_data_plane() {
       "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}" "${path}" || return 1
   done
   restore_data_plane_heartbeat_units || return 1
+  restore_data_plane_onboarding_installer || return 1
   restore_data_plane_network_snapshot || return 1
   systemctl daemon-reload || return 1
   restart_node_agent_heartbeat_timer || return 1
@@ -2649,6 +2678,7 @@ rollback_data_plane_activation() {
       "${NODE_AGENT_OPT_DIR}/node_agent.py" || return 1
   fi
   restore_data_plane_heartbeat_units || return 1
+  restore_data_plane_onboarding_installer || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}" \
     "${NODE_UNINSTALL_SERVICE}"; do
     rm -f -- "${path}" || return 1
@@ -2689,6 +2719,9 @@ activate_data_plane() {
   require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
   require_node_agent_file "${NODE_AGENT_HEARTBEAT_SERVICE}" 644
   require_node_agent_file "${NODE_AGENT_HEARTBEAT_TIMER}" 644
+  if [[ -e "${NODE_ONBOARDING_INSTALLER}" || -L "${NODE_ONBOARDING_INSTALLER}" ]]; then
+    require_node_agent_file "${NODE_ONBOARDING_INSTALLER}" 700
+  fi
   systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
     || fail "节点签名心跳 timer 未运行；未修改系统"
   systemctl start hysteria2-panel-node-heartbeat.service \
@@ -2763,6 +2796,8 @@ activate_data_plane() {
   arm_data_plane_transaction \
     || fail "无法持久化数据面回滚事务；未修改系统"
   DATA_PLANE_MUTATED=1
+  durable_replace_file "$0" "${NODE_ONBOARDING_INSTALLER}" 0700 \
+    || fail "无法更新节点一键断连安装器；已安排恢复"
   optimize_data_plane_network_stack \
     || fail "数据节点无法完成 fq/BBR 和 16 MiB UDP 缓冲优化；已安排恢复"
   if (( DATA_PLANE_EXISTING == 1 )); then

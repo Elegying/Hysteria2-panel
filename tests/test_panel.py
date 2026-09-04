@@ -6712,9 +6712,10 @@ class PanelHttpTests(unittest.TestCase):
         self.db.set_node_policy_state(issued["nodeId"], "protocol_ready", "Elegy", now)
         with self.db._connect() as connection:
             connection.execute(
-                """UPDATE nodes SET data_plane_state = 'direct_canary_passed'
+                """UPDATE nodes SET data_plane_state = 'direct_canary_passed',
+                    last_heartbeat_at = ?
                 WHERE node_id = ?""",
-                (issued["nodeId"],),
+                (now - 100, issued["nodeId"]),
             )
         headers, csrf = self.authenticated_headers()
 
@@ -7123,14 +7124,23 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(201, response.status)
         self.assertEqual("PENDING_VERIFICATION", json.loads(response.read())["status"])
 
-        with self.assertRaises(urllib.error.HTTPError) as replay:
+        retry = self.request(
+            "/api/v1/node-registrations",
+            raw_data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(201, retry.status)
+        self.assertEqual("PENDING_VERIFICATION", json.loads(retry.read())["status"])
+
+        changed_payload = dict(payload, hostname="different.example.test")
+        with self.assertRaises(urllib.error.HTTPError) as changed:
             self.request(
                 "/api/v1/node-registrations",
-                raw_data=json.dumps(payload).encode(),
+                raw_data=json.dumps(changed_payload).encode(),
                 headers={"Content-Type": "application/json"},
             )
-        self.assertEqual(403, replay.exception.code)
-        replay_body = json.loads(replay.exception.read())
+        self.assertEqual(403, changed.exception.code)
+        replay_body = json.loads(changed.exception.read())
         self.assertEqual("ENROLLMENT_REJECTED", replay_body["error"]["code"])
         self.assertNotIn(token, json.dumps(replay_body))
 

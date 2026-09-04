@@ -138,7 +138,7 @@ jobs:
           quick_command = (
               "(umask 077;i=$(mktemp)&&"
               "trap 'rm -f \"$i\"' EXIT&&"
-              'curl -fsSL {} -o "$i"&&bash "$i")'
+              'curl -fsSL --retry 3 {} -o "$i"&&bash "$i")'
           ).format(versionless_url)
           if quick_command not in readme:
               raise SystemExit("README one-line main installer is missing")

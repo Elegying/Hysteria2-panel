@@ -28,7 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.2"
+AGENT_VERSION = "0.39.3"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -943,6 +943,7 @@ def register(
     hostname=None,
     architecture=None,
     agent_version=AGENT_VERSION,
+    sleeper=time.sleep,
 ):
     """Register one public node identity and persist only non-secret state."""
     panel_url = _panel_url(panel_url)
@@ -963,12 +964,26 @@ def register(
         headers={"Accept": "application/json", "Content-Type": "application/json"},
         method="POST",
     )
-    try:
-        with opener(request, timeout=10) as response:
-            status = getattr(response, "status", response.getcode() if hasattr(response, "getcode") else 0)
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
-        raise RegistrationError("the panel rejected or could not receive node registration") from exc
+    for attempt in range(3):
+        try:
+            with opener(request, timeout=10) as response:
+                status = getattr(
+                    response,
+                    "status",
+                    response.getcode() if hasattr(response, "getcode") else 0,
+                )
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+            break
+        except urllib.error.HTTPError as exc:
+            raise RegistrationError(
+                "the panel rejected or could not receive node registration"
+            ) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            if attempt == 2:
+                raise RegistrationError(
+                    "the panel rejected or could not receive node registration"
+                ) from exc
+            sleeper(attempt + 1)
     if status != 201 or len(body) > MAX_RESPONSE_BYTES:
         raise RegistrationError("the panel returned an invalid node registration response")
     try:

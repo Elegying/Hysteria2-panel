@@ -38,6 +38,7 @@ HEARTBEAT_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 HEARTBEAT_PREFIX = b"hy2panel-node-heartbeat-v1\n"
 HEARTBEAT_CLOCK_SKEW_SECONDS = 120
 HEARTBEAT_INTERVAL_SECONDS = 60
+NODE_HEARTBEAT_FRESHNESS_SECONDS = 150
 DATA_PLANE_PURPOSES = {"claim", "bootstrap", "ack"}
 DATA_PLANE_COMMON_FIELDS = {"nodeId", "sentAt", "nonce", "signature"}
 DATA_PLANE_CLAIM_FIELDS = DATA_PLANE_COMMON_FIELDS | {"requestId"}
@@ -721,7 +722,8 @@ class NodeEnrollmentService:
                 repository, tag
             )
         )
-        return """set -euo pipefail
+        return """(
+set -euo pipefail
 if [ "$(id -u)" -ne 0 ]; then echo '请切换到 root 后重新粘贴此代码' >&2; exit 1; fi
 join_tmp="$(mktemp -d -t hy2panel-node-join.XXXXXXXX)"
 trap 'rm -rf -- "$join_tmp"' EXIT HUP INT TERM
@@ -730,13 +732,13 @@ case "$(uname -m)" in
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
   *) echo '仅支持 Linux amd64 和 arm64' >&2; exit 1 ;;
 esac
-curl -q -fL --connect-timeout 10 --max-time 300 \
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$join_tmp/cosign"
 printf '%s  %s\\n' "$cosign_sha" "$join_tmp/cosign" | sha256sum --check --status
 chmod 0700 "$join_tmp/cosign"
-curl -q -fL --connect-timeout 10 --max-time 300 {installer} -o "$join_tmp/install.sh"
-curl -q -fL --connect-timeout 10 --max-time 300 {bundle} -o "$join_tmp/install.sh.sigstore.json"
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {installer} -o "$join_tmp/install.sh"
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {bundle} -o "$join_tmp/install.sh.sigstore.json"
 "$join_tmp/cosign" verify-blob "$join_tmp/install.sh" \
   --bundle "$join_tmp/install.sh.sigstore.json" \
   --certificate-identity {identity} \
@@ -747,6 +749,7 @@ export HY2PANEL_ENROLLMENT_TOKEN={token}
 export PANEL_REF={tag}
 /bin/bash "$join_tmp/install.sh" {installer_mode}
 unset HY2PANEL_ENROLLMENT_TOKEN
+)
 """.format(
             cosign_sha_amd64=self.COSIGN_SHA_AMD64,
             cosign_sha_arm64=self.COSIGN_SHA_ARM64,
@@ -1080,7 +1083,8 @@ class DataPlaneBootstrapService:
                 repository, tag
             )
         )
-        return """set -euo pipefail
+        return """(
+set -euo pipefail
 if [ "$(id -u)" -ne 0 ]; then echo '请切换到 root 后重新粘贴此代码' >&2; exit 1; fi
 bootstrap_tmp="$(mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
 trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
@@ -1089,13 +1093,13 @@ case "$(uname -m)" in
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
   *) echo '仅支持 Linux amd64 和 arm64' >&2; exit 1 ;;
 esac
-curl -q -fL --connect-timeout 10 --max-time 300 \
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$bootstrap_tmp/cosign"
 printf '%s  %s\\n' "$cosign_sha" "$bootstrap_tmp/cosign" | sha256sum --check --status
 chmod 0700 "$bootstrap_tmp/cosign"
-curl -q -fL --connect-timeout 10 --max-time 300 {installer} -o "$bootstrap_tmp/install.sh"
-curl -q -fL --connect-timeout 10 --max-time 300 {bundle} -o "$bootstrap_tmp/install.sh.sigstore.json"
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {installer} -o "$bootstrap_tmp/install.sh"
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {bundle} -o "$bootstrap_tmp/install.sh.sigstore.json"
 "$bootstrap_tmp/cosign" verify-blob "$bootstrap_tmp/install.sh" \
   --bundle "$bootstrap_tmp/install.sh.sigstore.json" \
   --certificate-identity {identity} \
@@ -1106,6 +1110,7 @@ export HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN={token}
 export PANEL_REF={tag}
 /bin/bash "$bootstrap_tmp/install.sh" --activate-data-plane
 unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
+)
 """.format(
             cosign_sha_amd64=self.COSIGN_SHA_AMD64,
             cosign_sha_arm64=self.COSIGN_SHA_ARM64,

@@ -451,11 +451,11 @@ assert_reopenable_installer_entrypoint
         quick_command = (
             "(umask 077;i=$(mktemp)&&"
             "trap 'rm -f \"$i\"' EXIT&&"
-            "curl -fsSL https://raw.githubusercontent.com/Elegying/"
+            "curl -fsSL --retry 3 https://raw.githubusercontent.com/Elegying/"
             'Hysteria2-panel/main/install.sh -o "$i"&&bash "$i")'
         )
         self.assertIn(quick_command, source)
-        self.assertLess(len(quick_command), 160)
+        self.assertLess(len(quick_command), 180)
         self.assertNotRegex(source, r"(?m)^bash <\(curl")
         syntax = subprocess.run(
             ["bash", "-n", "-c", quick_command], capture_output=True, text=True
@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.2"', source)
+        self.assertIn('PANEL_VERSION="0.39.3"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -4723,6 +4723,13 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
         rollback = self.source[
             rollback_start:self.source.index("\n}\n", rollback_start) + 2
         ]
+        installer_restore_start = self.source.index(
+            "restore_data_plane_onboarding_installer()"
+        )
+        installer_restore = self.source[
+            installer_restore_start:
+            self.source.index("\n}\n", installer_restore_start) + 2
+        ]
 
         self.assertIn('"${DATA_PLANE_BACKUP_DIR}/agent-units"', snapshot)
         self.assertIn('"${NODE_AGENT_HEARTBEAT_SERVICE}"', snapshot)
@@ -4735,6 +4742,17 @@ printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$moc
         self.assertIn("restore_data_plane_heartbeat_units", rollback)
         self.assertIn('[[ ! -e "${service_backup}"', heartbeat_restore)
         self.assertIn('install -o root -g root -m 0644 "${timer_backup}"', heartbeat_restore)
+        self.assertIn('"${DATA_PLANE_BACKUP_DIR}/onboarding-install.sh"', snapshot)
+        self.assertIn("onboarding-installer-presence", snapshot)
+        self.assertIn(
+            'durable_replace_file "$0" "${NODE_ONBOARDING_INSTALLER}" 0700',
+            self.activation,
+        )
+        self.assertIn("restore_data_plane_onboarding_installer", restore)
+        self.assertIn("restore_data_plane_onboarding_installer", rollback)
+        self.assertIn('[[ "${presence}" == "present" ]]', installer_restore)
+        self.assertIn('[[ "${presence}" == "absent" ]]', installer_restore)
+        self.assertIn("Older snapshots did not manage this file", installer_restore)
 
     def test_existing_data_plane_tolerates_only_a_drained_spool_file(self):
         start = self.source.index("inspect_data_plane_state_item()")

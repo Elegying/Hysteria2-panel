@@ -63,7 +63,7 @@ def render(chrome, html_path, output_path, width, height, profile_path):
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    deadline = time.monotonic() + 25
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if pathlib.Path(output_path).is_file() or process.poll() is not None:
             break

@@ -45,7 +45,7 @@
 在服务器上用 `root` 执行：
 
 ```bash
-(umask 077;i=$(mktemp)&&trap 'rm -f "$i"' EXIT&&curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$i"&&bash "$i")
+(umask 077;i=$(mktemp)&&trap 'rm -f "$i"' EXIT&&curl -fsSL --retry 3 https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$i"&&bash "$i")
 ```
 
 安装器会询问节点名称、节点域名、Hysteria 端口、面板端口与协议，以及管理员账号和密码。密码不会回显。
@@ -66,11 +66,11 @@
 
 ## 更严格的固定版本验签安装
 
-生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.2`；安装其他版本时，请同时修改 `version`：
+生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.3`；安装其他版本时，请同时修改 `version`：
 
 ```bash
 set -euo pipefail
-version=0.39.2
+version=0.39.3
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in

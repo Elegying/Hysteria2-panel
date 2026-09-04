@@ -557,7 +557,8 @@ def render_dashboard(
         heartbeat_fresh = bool(
             verified
             and node.get("last_heartbeat_at")
-            and current_time - node["last_heartbeat_at"] <= 150
+            and current_time - node["last_heartbeat_at"]
+            <= context.max_state_age_seconds
         )
         if lifecycle_state == "disconnecting":
             status_label, status_class = "正在一键断连", "warning"
