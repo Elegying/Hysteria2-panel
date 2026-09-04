@@ -7,6 +7,17 @@ from hysteria2_panel import BoundedThreadingHTTPServer
 
 
 class RequestDeadlineTests(unittest.TestCase):
+    def test_bind_failure_is_not_masked_by_partial_server_cleanup(self):
+        def fail_bind(server, *_args, **_kwargs):
+            server.server_close()
+            raise OSError("bind failed")
+
+        with mock.patch(
+            "hysteria2_panel.ThreadingHTTPServer.__init__", new=fail_bind
+        ), mock.patch("hysteria2_panel.ThreadingHTTPServer.server_close"):
+            with self.assertRaisesRegex(OSError, "bind failed"):
+                BoundedThreadingHTTPServer(("127.0.0.1", 0), object)
+
     def test_replaced_deadline_cannot_expire_the_current_request(self):
         class Request:
             def __init__(self):

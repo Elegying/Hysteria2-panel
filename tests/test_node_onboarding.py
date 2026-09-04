@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -94,6 +95,9 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertIn("verify-blob", command)
         self.assertIn("release-signature.yml@refs/tags/v0.25.0", command)
         self.assertIn("--join-node", command)
+        self.assertTrue(command.startswith("(\nset -euo pipefail\n"))
+        self.assertTrue(command.rstrip().endswith(")"))
+        self.assertEqual(3, command.count("curl -q -fL --retry 3"))
         self.assertNotIn("vpn.example.com", command)
         self.assertNotIn("server.crt", command)
         self.assertNotIn("HY2PANEL_HMAC_KEY", command)
@@ -116,6 +120,8 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertNotIn("--join-node", command)
         self.assertIn("install.sh.sigstore.json", command)
         self.assertIn("verify-blob", command)
+        self.assertTrue(command.startswith("(\nset -euo pipefail\n"))
+        self.assertTrue(command.rstrip().endswith(")"))
         self.assertNotIn("server.crt", command)
         self.assertNotIn("server.key", command)
         self.assertNotIn("/var/lib/hysteria2-panel-node/spool", command)
@@ -131,7 +137,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "enrollment mode"):
             self.create(mode="automatic")
 
-    def test_registration_consumes_the_token_once_and_moves_the_node_to_pending_verification(self):
+    def test_registration_allows_only_an_exact_idempotent_response_retry(self):
         issued = self.create()
         token = token_from_command(issued["deploymentCommand"])
 
@@ -147,9 +153,14 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertEqual("system:one-click-enrollment", node["verified_by"])
         self.assertEqual("203.0.113.10", node["observed_ip"])
         self.assertEqual(ed25519_public_key(), node["public_key"])
+        retry = self.service.register(
+            registration_payload(token), remote_ip="203.0.113.10"
+        )
+        self.assertEqual(result, retry)
         with self.assertRaises(EnrollmentRejected):
             self.service.register(
-                registration_payload(token), remote_ip="203.0.113.10"
+                registration_payload(token, ed25519_public_key(8)),
+                remote_ip="203.0.113.10",
             )
 
     def test_expired_revoked_wrong_ip_and_malformed_public_keys_fail_closed(self):
@@ -336,6 +347,35 @@ class NodeAgentTests(unittest.TestCase):
         self.assertEqual("PENDING_VERIFICATION", state["status"])
         self.assertEqual("https://panel.example.com:19998", state["panelUrl"])
         self.assertNotIn("T" * 43, self.state_file.read_text())
+
+    def test_registration_retries_transient_transport_failures_only(self):
+        attempts = []
+        sleeps = []
+
+        def opener(_request, timeout):
+            attempts.append(timeout)
+            if len(attempts) < 3:
+                raise urllib.error.URLError("temporary")
+            return self.Response(
+                json.dumps(
+                    {"nodeId": "a" * 32, "status": "PENDING_VERIFICATION"}
+                ).encode()
+            )
+
+        result = node_agent.register(
+            panel_url="https://panel.example.com:19998",
+            token="T" * 43,
+            public_key_path=self.public_key,
+            state_path=self.state_file,
+            opener=opener,
+            hostname="edge-02.example.test",
+            architecture="amd64",
+            sleeper=sleeps.append,
+        )
+
+        self.assertEqual("PENDING_VERIFICATION", result["status"])
+        self.assertEqual([10, 10, 10], attempts)
+        self.assertEqual([1, 2], sleeps)
 
     def test_registration_rejects_http_bad_public_keys_and_oversized_responses(self):
         with self.assertRaises(ValueError):

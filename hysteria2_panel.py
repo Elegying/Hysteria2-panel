@@ -82,6 +82,7 @@ from hy2panel.nodes import (
     HeartbeatRejected,
     HysteriaCanaryRunner,
     HysteriaIdentityProvider,
+    NODE_HEARTBEAT_FRESHNESS_SECONDS,
     NodeEnrollmentService,
     NodeDnsAdmissionReconciler,
     NodeHeartbeatService,
@@ -3987,7 +3988,9 @@ class Database:
                 connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
                     """SELECT e.enrollment_id, e.node_id, e.expires_at,
-                        e.consumed_at, e.revoked_at, n.expected_ip
+                        e.consumed_at, e.revoked_at, n.expected_ip, n.observed_ip,
+                        n.status, n.public_key, n.hostname, n.platform,
+                        n.architecture, n.agent_version
                     FROM node_enrollments AS e
                     JOIN nodes AS n ON n.node_id = e.node_id
                     WHERE e.token_digest = ?""",
@@ -3995,7 +3998,6 @@ class Database:
                 ).fetchone()
                 if (
                     row is None
-                    or row["consumed_at"] is not None
                     or row["revoked_at"] is not None
                     or row["expires_at"] <= registered_at
                     or (
@@ -4003,6 +4005,18 @@ class Database:
                         and row["expected_ip"] != observed_ip
                     )
                 ):
+                    return None
+                if row["consumed_at"] is not None:
+                    if (
+                        row["status"] == "pending_verification"
+                        and row["observed_ip"] == observed_ip
+                        and row["public_key"] == public_key
+                        and row["hostname"] == hostname
+                        and row["platform"] == platform
+                        and row["architecture"] == architecture
+                        and row["agent_version"] == agent_version
+                    ):
+                        return {"node_id": row["node_id"]}
                     return None
                 updated = connection.execute(
                     """UPDATE node_enrollments SET consumed_at = ?
@@ -5291,7 +5305,7 @@ class Database:
         node_id,
         actor,
         changed_at=None,
-        freshness_seconds=MAX_STATE_AGE_SECONDS,
+        freshness_seconds=NODE_HEARTBEAT_FRESHNESS_SECONDS,
     ):
         """Queue the only remote-destructive node command after a fresh heartbeat."""
         node_id = str(node_id or "")
@@ -5353,7 +5367,7 @@ class Database:
         node_id,
         actor,
         changed_at=None,
-        freshness_seconds=MAX_STATE_AGE_SECONDS,
+        freshness_seconds=NODE_HEARTBEAT_FRESHNESS_SECONDS,
     ):
         """Revoke an unreachable node centrally while retaining its audit history."""
         node_id = str(node_id or "")
@@ -6074,6 +6088,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._active_requests_lock
         )
         self._active_request_shutdown_started = False
+        self._deadline_thread = None
         super().__init__(address, handler)
         self._deadline_thread = threading.Thread(
             target=self._run_deadline_scheduler,
@@ -6245,7 +6260,8 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             with self._deadline_condition:
                 self._deadline_shutdown = True
                 self._deadline_condition.notify_all()
-            self._deadline_thread.join(timeout=5)
+            if self._deadline_thread is not None:
+                self._deadline_thread.join(timeout=5)
 
     def handle_error(self, request, client_address):
         error = sys.exc_info()[1]
@@ -7041,7 +7057,7 @@ class PanelHandler(JsonHandler):
                 if action == "disconnect":
                     command = self.app.database.request_node_disconnect(
                         node_id, session["username"], int(time.time()),
-                        MAX_STATE_AGE_SECONDS,
+                        NODE_HEARTBEAT_FRESHNESS_SECONDS,
                     )
                     self._audit_safely(
                         self._mobile_actor(session),
@@ -7058,7 +7074,7 @@ class PanelHandler(JsonHandler):
                 else:
                     self.app.database.delete_node_pairing(
                         node_id, session["username"], int(time.time()),
-                        MAX_STATE_AGE_SECONDS,
+                        NODE_HEARTBEAT_FRESHNESS_SECONDS,
                     )
                     self._audit_safely(
                         self._mobile_actor(session), "node_pairing_deleted", node_id
@@ -7264,7 +7280,7 @@ class PanelHandler(JsonHandler):
             default_device_limit=DEFAULT_DEVICE_LIMIT,
             default_traffic_limit_bytes=DEFAULT_TRAFFIC_LIMIT_BYTES,
             panel_version=PANEL_VERSION,
-            max_state_age_seconds=MAX_STATE_AGE_SECONDS,
+            max_state_age_seconds=NODE_HEARTBEAT_FRESHNESS_SECONDS,
             bytes_to_gib_input=bytes_to_gib_input,
             human_bytes=_human_bytes,
             stat_int=_stat_int,
@@ -7653,13 +7669,19 @@ class PanelHandler(JsonHandler):
         try:
             if action == "disconnect":
                 command = self.app.database.request_node_disconnect(
-                    node_id, actor, int(time.time()), MAX_STATE_AGE_SECONDS
+                    node_id,
+                    actor,
+                    int(time.time()),
+                    NODE_HEARTBEAT_FRESHNESS_SECONDS,
                 )
                 self._audit_safely(actor, "node_disconnect_requested", node_id)
                 payload = {"disconnecting": True, "commandId": command["commandId"]}
             else:
                 self.app.database.delete_node_pairing(
-                    node_id, actor, int(time.time()), MAX_STATE_AGE_SECONDS
+                    node_id,
+                    actor,
+                    int(time.time()),
+                    NODE_HEARTBEAT_FRESHNESS_SECONDS,
                 )
                 self._audit_safely(actor, "node_pairing_deleted", node_id)
                 payload = {"deleted": True, "remoteCleanup": False}
