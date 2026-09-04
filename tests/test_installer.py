@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.3"', source)
+        self.assertIn('PANEL_VERSION="0.39.4"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -1224,6 +1224,32 @@ preflight_panel_acme_dns
             "uname",
         ):
             self.assertIn(command, required_commands.split())
+
+    def test_package_manager_operations_have_bounded_retry(self):
+        source = INSTALLER.read_text()
+        helper = source.split("retry_package_command() {", 1)[1].split(
+            "\n}\n\ninstall_system_dependencies()", 1
+        )[0]
+        dependencies = source.split("install_system_dependencies() {", 1)[1].split(
+            "\n}\n\ninstall_certbot_dependency()", 1
+        )[0]
+        certbot = source.split("install_certbot_dependency() {", 1)[1].split(
+            "\n}\n\nvalidate_panel_public_host()", 1
+        )[0]
+
+        self.assertIn("for attempt in 1 2 3", helper)
+        self.assertIn('sleep "$((attempt * 2))"', helper)
+        for command in (
+            "retry_package_command apt-get update",
+            "retry_package_command apt-get install -y",
+            "retry_package_command dnf install -y",
+            "retry_package_command yum install -y",
+        ):
+            self.assertIn(command, dependencies)
+        self.assertIn("retry_package_command apt-get update", certbot)
+        self.assertIn("retry_package_command apt-get install -y certbot", certbot)
+        self.assertIn("retry_package_command dnf install -y certbot", certbot)
+        self.assertIn("retry_package_command yum install -y certbot", certbot)
 
     def test_rhel_dependencies_preserve_minimal_package_variants(self):
         source = INSTALLER.read_text()
