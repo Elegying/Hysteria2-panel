@@ -37,9 +37,9 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 - `POST /api/v1/mobile/users/{id}/{enable|disable|share|rotate-secret|reset-traffic}`：用户操作。
 - `GET /api/v1/mobile/nodes`：返回面板本机与远程节点的安全裁剪详情、累计流量和采样时间，不包含节点私钥、HMAC 或机器令牌。
 - `POST /api/v1/mobile/node-enrollments`：生成短时节点对接授权和部署代码。
-- `POST /api/v1/mobile/nodes/{node-id}/verify`：核对完整公钥指纹后确认节点。
+- `POST /api/v1/mobile/nodes/{node-id}/disconnect`：向在线节点下发固定的一键卸载命令。
+- `POST /api/v1/mobile/nodes/{node-id}/delete`：节点失联时只撤销中央对接关系。
 - `POST /api/v1/mobile/nodes/local/{enable|disable}`：启用面板本机服务，或在先结算流量后紧急停用。
-- `POST /api/v1/mobile/nodes/{node-id}/{enable|disable}`：向已验证远程节点下发固定的恢复或紧急停用命令。
 - `POST /api/v1/mobile/service/{start|restart|stop}`：控制 Hysteria 服务；重启和停止前先结算流量。
 - `POST /api/v1/mobile/system/reboot`：先结算流量并写入审计，再通过固定白名单排队重启服务器；成功返回 HTTP 202。
 
@@ -107,7 +107,7 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 
 ## 签名节点控制协议
 
-仅在独立面板 HTTPS 启用后开放。每个请求都包含已人工核验的 `nodeId`、服务端时间窗内的 `sentAt`、32 字节 URL-safe `nonce` 与 Ed25519 `signature`；各接口使用不同签名域，来源 IP 必须与注册绑定一致。除自动 bootstrap claim 外，节点还必须已经进入 `protocol_ready`。稳定错误只返回 `error.code`，不回显 token、nonce、签名或完整请求。
+仅在独立面板 HTTPS 启用后开放。每个请求都包含自动确认的 `nodeId`、服务端时间窗内的 `sentAt`、32 字节 URL-safe `nonce` 与 Ed25519 `signature`；各接口使用不同签名域，来源 IP 必须与一次性对接码绑定的公网 IP 一致。除自动 bootstrap claim 外，节点还必须已经进入 `protocol_ready`。稳定错误只返回 `error.code`，不回显 token、nonce、签名或完整请求。
 
 这里的 ACK 指中央已经把状态或流量持久化，不只是“HTTP 请求已收到”。节点只有在确认 ACK 后才删除对应 spool 批次。
 
@@ -127,13 +127,13 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 
 每个数据节点还在同一回环认证代理提供 `GET /healthz` 和 `GET /metrics`。指标文件由控制循环以 `0600`、同目录临时文件、`fsync` 和原子替换写入；认证代理只接受当前 root 所有的普通 0600 文件，缺失、不安全或超过 64 KiB 时 `/metrics` 返回 503。指标仅为低基数进程与 spool 汇总，不包含用户名、节点名、token 或来源地址。认证代理和控制循环分别以 systemd `Type=notify`、30 秒与 90 秒 watchdog 运行，退避等待也会持续报活。
 
-正常全新节点流程由 root-only 的固定版本完成器调用 `claim`。服务端只允许已经人工核验完整 Ed25519 指纹、签名有效、来源 IP 精确匹配且心跳新鲜的节点领取；同一事务启用协议、废止未消费旧 grant 并返回新 grant。授权有效 10 分钟、最多成功取件 3 次，并同时绑定节点 ID、注册来源 IP 与 Ed25519 签名；服务端只保存 token SHA-256 摘要。原有管理员手工 bootstrap 路由继续作为旧节点故障恢复入口。
+正常全新节点流程由 root-only 的固定版本完成器调用 `claim`。一次性对接码消费时会原子确认节点身份；服务端随后只允许签名有效、来源 IP 精确匹配且心跳新鲜的节点领取。授权有效 10 分钟、最多成功取件 3 次，并同时绑定节点 ID、注册来源 IP 与 Ed25519 签名；服务端只保存 token SHA-256 摘要。原有管理员手工 bootstrap 路由继续作为旧节点故障恢复入口。
 
 bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定数据面参数，不传输数据库、HMAC、用户 token 或统计 secret。节点必须在内存中核验证书/私钥配对、证书文件 SHA-256、DER SHA-256 和私钥公钥 DER SHA-256，完成本机六个服务、双 stats 和四个 TCP/UDP 监听证明后才能 ACK。
 
 自动 grant 在 bootstrap 取件后临时允许一个与该 grant 绑定的保留认证身份。中央面板分别通过节点公网 IP 的主 UDP 端口和 UDP `443` 启动真实 Hysteria 客户端，经本机 SOCKS 取得外部响应并精确核对出口公网 IP；它不创建或修改真实用户，也不计入用户设备和流量。两个入口均通过时，安装 ACK 原子推进到 `direct_canary_passed` 并烧毁 grant；任一步失败都不会 ACK 或误标成功。
 
-独立的 DNS timer 只读解析 `PUBLIC_HOST`。仅当公开 A/AAAA 精确包含节点预期公网 IP，并且直连灰度、心跳、在线快照和流量 ACK 全部满足新鲜度门时，才调用既有状态转换记录 `dns_admitted`；它不写 DNS，也不自动移除记录。手工 canary 与 DNS admission/removal API 继续作为故障恢复接口。任何 bootstrap、中央认证或新鲜度校验失败都拒绝新认证，已经建立的 Hysteria 会话不会被控制面故障主动停止。
+面板不查询、等待或修改 DNS；管理员必须在生成对接码前自行完成解析。旧 DNS 状态路由与 systemd 单元仅为升级、回滚和故障恢复兼容而保留，单元安装后保持停用。任何 bootstrap、中央认证或新鲜度校验失败都拒绝新认证，已经建立的 Hysteria 会话不会被控制面故障主动停止。
 
 ## 管理面板
 
@@ -161,16 +161,8 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/usage-origins/legacy-unattributed/delete` | 明确确认后只删除固定的升级前未归属来源、拆分明细和日账本；不修改用户总流量或已归属节点统计 |
 | `POST` | `/node-enrollments` | 生成短时、单用途节点对接代码；要求面板 HTTPS |
 | `POST` | `/node-enrollments/{id}/revoke` | 作废尚未消费的节点对接码 |
-| `POST` | `/nodes/{id}/verify` | UI 核对双方 16 位短码，服务端仍精确确认完整 Ed25519 公钥 SHA-256 指纹 |
-| `POST` | `/nodes/{id}/revoke` | 撤销节点身份并拒绝后续心跳与控制协议请求 |
-| `POST` | `/nodes/{id}/protocol/{enable,disable}` | 独立启停中央控制协议参与状态；不部署 Hysteria 或修改 DNS |
-| `POST` | `/nodes/{id}/data-plane/bootstrap` | 为已验证且协议就绪节点生成短时数据面一键部署代码；要求面板 HTTPS |
-| `POST` | `/nodes/{id}/data-plane/canary/pass` | 仅记录独立直连灰度已通过；不修改或准入 DNS |
-| `POST` | `/nodes/{id}/data-plane/dns/{admit,remove}` | 故障恢复用的 DNS 准入/撤出状态记录；不调用外部 DNS API |
-| `POST` | `/nodes/{id}/lifecycle/drain` | 进入摘流状态但继续服务；等待管理员从外部 DNS 删除该节点 IP |
-| `POST` | `/nodes/{id}/lifecycle/stop` | 只读确认 DNS 已删除、在线设备为 0 且流量 ACK 新鲜后，下发固定停用命令 |
-| `POST` | `/nodes/{id}/lifecycle/emergency-stop` | 跳过 DNS 与设备门禁的紧急停用；旧 DNS 仍命中时用户会连接失败 |
-| `POST` | `/nodes/{id}/lifecycle/{resume,archive}` | 固定恢复数据面，或在已停用且无待处理命令时归档旧节点记录 |
+| `POST` | `/nodes/{id}/disconnect` | 仅对在线且心跳新鲜的节点下发固定 `UNINSTALL_NODE`；成功签名回执后归档中央记录 |
+| `POST` | `/nodes/{id}/delete` | 仅在节点心跳失效时撤销中央授权并删除待处理命令；保留身份和历史账本 |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
 | `POST` | `/egress/{web,full}` | 切换整台节点的出站策略；通过固定 root oneshot 同步更新两份 Hysteria 配置和持久状态，重启失败时恢复旧策略 |
 | `POST` | `/system/reboot` | 二次确认后通过固定 sudoers 白名单排队重启整台服务器，成功返回 HTTP 202 |
@@ -182,7 +174,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/logout` | 撤销管理会话 |
 
 面板没有对公网提供通用 JSON 管理 API，避免扩大认证和 CORS 攻击面。
-节点生命周期命令只有 `STOP_DATA_PLANE` 与 `START_DATA_PLANE` 两个固定空参数枚举；节点 Agent 不接收 unit 名、文件路径或 shell。安全停用只停止两路 Hysteria 和相应 TCP 探针，Agent、Ed25519 私钥、Hysteria TLS 身份和 durable traffic spool 均保留。恢复成功后回到直连灰度已通过状态，必须重新加入 DNS 并通过只读准入检查后用户才会到达。
+当前对接 UI 只下发固定空参数 `UNINSTALL_NODE`，节点 Agent 不接收 unit 名、文件路径或 shell。节点先刷出 durable traffic spool、停止数据面、持久化卸载命令，再由 root-only oneshot 撤销本项目拥有的服务和文件、恢复首次部署前网络快照，最后向中央发送签名 ACK。ACK 丢失可以幂等重试；中央撤销后只接受该卸载命令的成功重试回执。
 版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。编辑用户时设备限制范围为 1 到 100，总流量必须为正值，`allow_udp_443=1` 表示开放 UDP `443`，缺少该字段表示关闭；该操作递增 `generation`，保留名称、认证 token 派生种子和累计流量。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成的新凭据。
 
 登录错误响应不区分账号不存在与密码错误。每个来源 IP 在 15 分钟窗口内前 4 次错误返回 HTTP `401`，第 5 次立即返回 HTTP `429` 并设置整数秒 `Retry-After`；同一 IPv6 `/64` 前缀按一个来源统计。锁定期间正确密码也会被拒绝，成功登录清除该来源的失败记录。限速表最多记录 4096 个来源并仅保存在进程内存，面板重启后清空。所有登录响应均带 `no-store`、CSP、`nosniff`、拒绝嵌入和禁止 Referrer 等安全头。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal first-phase agent used to enroll a new node for verification."""
+"""Minimal agent used for signed one-click node enrollment and control."""
 
 import argparse
 import base64
@@ -28,7 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.38.12"
+AGENT_VERSION = "0.39.0"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -2415,6 +2415,7 @@ def execute_control_command(
     protocol_state=None,
     stop_data_plane=None,
     start_data_plane=None,
+    queue_uninstall=None,
 ):
     """Execute one fixed command without exposing a generic execution surface."""
     if not isinstance(command, dict) or set(command) != {"commandId", "kind", "payload"}:
@@ -2450,7 +2451,91 @@ def execute_control_command(
         start_data_plane()
         protocol_state.set_data_plane_stopped(False)
         return
+    if kind == "UNINSTALL_NODE" and payload == {}:
+        if (
+            protocol_state is None
+            or flush_traffic is None
+            or stop_data_plane is None
+            or queue_uninstall is None
+        ):
+            raise ProtocolError("node uninstall callbacks are unavailable")
+        if not protocol_state.data_plane_stopped():
+            flush_traffic()
+            protocol_state.set_data_plane_stopped(True)
+        stop_data_plane()
+        queue_uninstall(command["commandId"])
+        return "deferred-ack"
     raise ProtocolError("node command is invalid")
+
+
+def queue_node_uninstall(
+    command_id,
+    marker_path="/var/lib/hysteria2-panel-node/uninstall-command.json",
+    runner=subprocess.run,
+):
+    """Persist the fixed command before starting the root-owned uninstall worker."""
+    if not NODE_ID_PATTERN.fullmatch(str(command_id or "")):
+        raise ProtocolError("node uninstall command is invalid")
+    destination = pathlib.Path(marker_path)
+    parent = destination.parent
+    try:
+        metadata = parent.lstat()
+    except OSError as exc:
+        raise ProtocolError("node uninstall state directory is unavailable") from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise ProtocolError("node uninstall state directory is unsafe")
+    payload = json.dumps(
+        {"commandId": command_id}, sort_keys=True, separators=(",", ":")
+    ).encode("ascii") + b"\n"
+    if destination.exists() or destination.is_symlink():
+        if _read_private_regular_file(destination, 128) != payload:
+            raise ProtocolError("node uninstall command state conflicts")
+    else:
+        descriptor, staged_name = tempfile.mkstemp(
+            prefix=".uninstall-command-", dir=str(parent)
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = None
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(staged_name, str(destination))
+            staged_name = None
+            _fsync_directory(parent)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if staged_name is not None:
+                try:
+                    os.unlink(staged_name)
+                except FileNotFoundError:
+                    pass
+    try:
+        completed = runner(  # nosec B603 -- fixed executable, unit, and argv.
+            [
+                "/bin/systemctl",
+                "start",
+                "--no-block",
+                "hysteria2-panel-node-uninstall.service",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProtocolError("cannot start the node uninstall worker") from exc
+    if completed.returncode != 0:
+        raise ProtocolError("cannot start the node uninstall worker")
 
 
 class ProtocolState:
@@ -2626,6 +2711,7 @@ class NodeControlCycle:
         clock=time.time,
         stop_data_plane=stop_node_data_plane,
         start_data_plane=start_node_data_plane,
+        queue_uninstall=queue_node_uninstall,
     ):
         self.protocol_client = protocol_client
         self.stats_client = stats_client
@@ -2634,6 +2720,7 @@ class NodeControlCycle:
         self.clock = clock
         self.stop_data_plane = stop_data_plane
         self.start_data_plane = start_data_plane
+        self.queue_uninstall = queue_uninstall
         self._combined_supported = hasattr(protocol_client, "send_control_cycle")
         self.domain_usage_collector = DomainStreamAccumulator()
         self._next_domain_collection_at = 0
@@ -2806,7 +2893,7 @@ class NodeControlCycle:
                 self.protocol_client.ack_command(command_id, True, "")
                 continue
             try:
-                execute_control_command(
+                outcome = execute_control_command(
                     command,
                     self.stats_client,
                     refresh_snapshot=self.refresh_snapshot,
@@ -2814,11 +2901,14 @@ class NodeControlCycle:
                     protocol_state=self.state,
                     stop_data_plane=self.stop_data_plane,
                     start_data_plane=self.start_data_plane,
+                    queue_uninstall=self.queue_uninstall,
                 )
             except Exception:
                 self.protocol_client.ack_command(
                     command_id, False, "EXECUTION_FAILED"
                 )
+                continue
+            if outcome == "deferred-ack":
                 continue
             self.state.record_command_completed(command_id, int(self.clock()))
             self.protocol_client.ack_command(command_id, True, "")
@@ -2981,6 +3071,10 @@ def _parser():
     command.add_argument("--metadata", required=True)
     command.add_argument("--certificate", required=True)
     command.add_argument("--hysteria-key", required=True)
+    command = subcommands.add_parser("ack-command")
+    command.add_argument("--private-key", required=True)
+    command.add_argument("--state-file", required=True)
+    command.add_argument("--command-file", required=True)
     for name in ("control-once", "control-loop"):
         command = subcommands.add_parser(name)
         command.add_argument("--private-key", required=True)
@@ -3033,7 +3127,7 @@ def main(arguments=None):
         except (RegistrationError, ValueError) as exc:
             print("错误：{}".format(exc), file=sys.stderr)
             return 1
-        print("节点 {} 已注册，状态：待验证".format(result["nodeId"]))
+        print("节点 {} 身份已确认，正在自动部署".format(result["nodeId"]))
         return 0
     if options.command == "prepare-data-plane":
         token = os.environ.pop("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", "")
@@ -3102,6 +3196,32 @@ def main(arguments=None):
             del token
             del stats_secret
         print("数据面已通过本地健康证明并由中央面板确认")
+        return 0
+    if options.command == "ack-command":
+        try:
+            raw = _read_private_regular_file(pathlib.Path(options.command_file), 128)
+            command = json.loads(raw.decode("ascii"))
+            if (
+                not isinstance(command, dict)
+                or set(command) != {"commandId"}
+                or not NODE_ID_PATTERN.fullmatch(str(command["commandId"]))
+            ):
+                raise ProtocolError("node uninstall command state is invalid")
+            client = NodeProtocolClient(
+                pathlib.Path(options.state_file), pathlib.Path(options.private_key)
+            )
+            result = client.ack_command(command["commandId"], True, "")
+            if (
+                not isinstance(result, dict)
+                or set(result) != {"acked", "commandId"}
+                or result.get("acked") is not True
+                or result.get("commandId") != command["commandId"]
+            ):
+                raise ProtocolError("central command acknowledgement is invalid")
+        except (OSError, ProtocolError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+            print("错误：{}".format(exc), file=sys.stderr)
+            return 1
+        print("节点卸载命令已由中央面板确认")
         return 0
     if options.command == "serve-auth-proxy":
         try:

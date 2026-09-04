@@ -12,8 +12,9 @@ String formatBytes(Object? raw) {
 
 String formatTimestamp(Object? raw) {
   if (raw is! num || raw <= 0) return '尚未上报';
-  final value = DateTime.fromMillisecondsSinceEpoch(raw.toInt() * 1000)
-      .toLocal();
+  final value = DateTime.fromMillisecondsSinceEpoch(
+    raw.toInt() * 1000,
+  ).toLocal();
   String two(int number) => number.toString().padLeft(2, '0');
   return '${value.month}-${two(value.day)} ${two(value.hour)}:${two(value.minute)}:${two(value.second)}';
 }
@@ -37,7 +38,8 @@ String nodeStatusLabel(Object? status) {
     'offline': '已验证 · 离线',
     'pending_registration': '等待服务器注册',
     'registration_expired': '对接码已过期',
-    'pending_verification': '等待核对短码',
+    'disconnecting': '正在一键断连',
+    'pending_verification': '正在对接',
     'draining': '正在摘流',
     'stopping': '正在安全停用',
     'stopped': '已停用',

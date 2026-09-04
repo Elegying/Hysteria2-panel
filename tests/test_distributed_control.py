@@ -74,7 +74,7 @@ class DistributedControlCase(unittest.TestCase):
                     last_heartbeat_at, last_heartbeat_ip, policy_state,
                     policy_enabled_at, policy_enabled_by
                 ) VALUES (?, ?, ?, ?, 'pending_verification', ?, ?, 'linux',
-                    'amd64', '0.26.0', ?, ?, ?, ?, 'admin', ?, ?,
+                    'amd64', '0.39.0', ?, ?, ?, ?, 'admin', ?, ?,
                     'protocol_ready', ?, 'admin')""",
                 (
                     node_id,
@@ -997,6 +997,48 @@ class NodeCommandTests(DistributedControlCase):
             command["commandId"], redelivered["commands"][0]["commandId"]
         )
 
+    def test_revoked_node_can_retry_only_its_successful_uninstall_ack(self):
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET data_plane_state = 'data_plane_installed',
+                    lifecycle_state = 'active' WHERE node_id = ?""",
+                (self.nodes[0],),
+            )
+        command = self.db.request_node_disconnect(
+            self.nodes[0], "admin", changed_at=self.now[0]
+        )
+        first = self.common(self.nodes[0], 68)
+        first.update(
+            {"commandId": command["commandId"], "ok": True, "errorCode": ""}
+        )
+        self.assertTrue(
+            self.service.ack_command(first, remote_ip="203.0.113.1")["acked"]
+        )
+
+        retry = self.common(self.nodes[0], 69)
+        retry.update(
+            {"commandId": command["commandId"], "ok": True, "errorCode": ""}
+        )
+        self.assertTrue(
+            self.service.ack_command(retry, remote_ip="203.0.113.1")["acked"]
+        )
+
+        old_command = self.db.queue_node_command(
+            self.nodes[1], "REFRESH_SNAPSHOT", {}, self.now[0]
+        )
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute(
+                """UPDATE nodes SET status = 'revoked', policy_state = 'standby'
+                WHERE node_id = ?""",
+                (self.nodes[1],),
+            )
+        invalid = self.common(self.nodes[1], 70)
+        invalid.update(
+            {"commandId": old_command["commandId"], "ok": True, "errorCode": ""}
+        )
+        with self.assertRaises(NodeRequestRejected):
+            self.service.ack_command(invalid, remote_ip="203.0.113.2")
+
 
 class NodeAgentProtocolTests(unittest.TestCase):
     class Response:
@@ -1806,6 +1848,53 @@ class NodeAgentProtocolTests(unittest.TestCase):
 
         self.assertEqual([("kick", ["alice"])], [call for call in calls if call[0] == "kick"])
         self.assertEqual(2, len([call for call in calls if call[0] == "ack"]))
+
+    def test_control_cycle_defers_uninstall_ack_to_the_root_worker(self):
+        calls = []
+        command = {
+            "commandId": "e" * 32,
+            "kind": "UNINSTALL_NODE",
+            "payload": {},
+        }
+
+        class Stats:
+            def collect_and_clear(self):
+                return {}
+
+            def online(self):
+                return {}
+
+        class Protocol:
+            def send_traffic(self, batch):
+                return {"batchId": batch["batchId"], "committed": True}
+
+            def send_online(self, sequence, _online, _traffic_acked_at):
+                return {"sequence": sequence}
+
+            def poll_commands(self):
+                return [command]
+
+            def ack_command(self, command_id, ok, error_code):
+                calls.append(("ack", command_id, ok, error_code))
+
+        root = Path(self.temp_dir.name)
+        state = node_agent.ProtocolState(root / "uninstall-state.json")
+        cycle = node_agent.NodeControlCycle(
+            Protocol(),
+            Stats(),
+            node_agent.DurableTrafficSpool(root / "uninstall-spool"),
+            state,
+            clock=lambda: 2_000_000_000,
+            stop_data_plane=lambda: calls.append(("stop",)),
+            queue_uninstall=lambda command_id: calls.append(("queue", command_id)),
+        )
+
+        cycle.run_once()
+
+        self.assertIn(("stop",), calls)
+        self.assertIn(("queue", command["commandId"]), calls)
+        self.assertFalse(state.command_completed(command["commandId"]))
+        self.assertEqual([], [call for call in calls if call[0] == "ack"])
 
     def test_stats_client_rejects_non_loopback_and_short_secrets(self):
         with self.assertRaises(ValueError):

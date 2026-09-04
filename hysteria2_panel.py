@@ -4015,7 +4015,8 @@ class Database:
                     """UPDATE nodes SET
                         observed_ip = ?, status = 'pending_verification',
                         public_key = ?, hostname = ?, platform = ?, architecture = ?,
-                        agent_version = ?, registered_at = ?, last_seen_at = ?
+                        agent_version = ?, registered_at = ?, last_seen_at = ?,
+                        verified_at = ?, verified_by = 'system:one-click-enrollment'
                     WHERE node_id = ? AND status = 'pending_registration'""",
                     (
                         observed_ip,
@@ -4024,6 +4025,7 @@ class Database:
                         platform,
                         architecture,
                         agent_version,
+                        registered_at,
                         registered_at,
                         registered_at,
                         row["node_id"],
@@ -5238,6 +5240,7 @@ class Database:
             "FLUSH_TRAFFIC",
             "STOP_DATA_PLANE",
             "START_DATA_PLANE",
+            "UNINSTALL_NODE",
         } and payload == {}
 
     @staticmethod
@@ -5280,6 +5283,125 @@ class Database:
                     lifecycle_changed_at = ?, lifecycle_changed_by = ?
                 WHERE node_id = ?""",
                 (changed_at, actor, node_id),
+            )
+            return True
+
+    def request_node_disconnect(
+        self,
+        node_id,
+        actor,
+        changed_at=None,
+        freshness_seconds=MAX_STATE_AGE_SECONDS,
+    ):
+        """Queue the only remote-destructive node command after a fresh heartbeat."""
+        node_id = str(node_id or "")
+        actor = str(actor or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id) or not NAME_PATTERN.fullmatch(actor):
+            raise ValueError("node disconnect request is invalid")
+        changed_at = int(time.time()) if changed_at is None else int(changed_at)
+        freshness_seconds = max(1, int(freshness_seconds))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT status, verified_at, policy_state, data_plane_state,
+                    lifecycle_state, last_heartbeat_at, agent_version
+                FROM nodes WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if (
+                node is None
+                or node["status"] != "pending_verification"
+                or node["verified_at"] is None
+                or node["policy_state"] != "protocol_ready"
+                or node["data_plane_state"]
+                not in {"data_plane_installed", "direct_canary_passed", "dns_admitted"}
+                or node["lifecycle_state"] not in {"active", "draining"}
+            ):
+                raise ValueError("node is not eligible for disconnect")
+            try:
+                agent_version = tuple(
+                    int(part) for part in str(node["agent_version"] or "").split(".")
+                )
+            except ValueError:
+                agent_version = ()
+            if len(agent_version) != 3 or agent_version < (0, 39, 0):
+                raise ValueError("node agent is too old for one-click disconnect")
+            if (
+                node["last_heartbeat_at"] is None
+                or int(node["last_heartbeat_at"]) < changed_at - freshness_seconds
+            ):
+                raise ValueError("node is offline; use delete pairing instead")
+            if connection.execute(
+                """SELECT 1 FROM node_commands
+                WHERE node_id = ? AND acked_at IS NULL LIMIT 1""",
+                (node_id,),
+            ).fetchone() is not None:
+                raise ValueError("node still has a pending command")
+            command = self._insert_fixed_node_command(
+                connection, node_id, "UNINSTALL_NODE", changed_at
+            )
+            connection.execute(
+                """UPDATE nodes SET lifecycle_state = 'disconnecting',
+                    lifecycle_changed_at = ?, lifecycle_changed_by = ?
+                WHERE node_id = ?""",
+                (changed_at, actor, node_id),
+            )
+            return command
+
+    def delete_node_pairing(
+        self,
+        node_id,
+        actor,
+        changed_at=None,
+        freshness_seconds=MAX_STATE_AGE_SECONDS,
+    ):
+        """Revoke an unreachable node centrally while retaining its audit history."""
+        node_id = str(node_id or "")
+        actor = str(actor or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", node_id) or not NAME_PATTERN.fullmatch(actor):
+            raise ValueError("node delete request is invalid")
+        changed_at = int(time.time()) if changed_at is None else int(changed_at)
+        freshness_seconds = max(1, int(freshness_seconds))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute(
+                """SELECT status, last_heartbeat_at FROM nodes WHERE node_id = ?""",
+                (node_id,),
+            ).fetchone()
+            if node is None or node["status"] == "revoked":
+                raise ValueError("node pairing does not exist")
+            if (
+                node["last_heartbeat_at"] is not None
+                and int(node["last_heartbeat_at"]) >= changed_at - freshness_seconds
+            ):
+                raise ValueError("node is online; use one-click disconnect instead")
+            connection.execute(
+                """UPDATE nodes SET status = 'revoked', policy_state = 'standby',
+                    lifecycle_state = 'archived', lifecycle_changed_at = ?,
+                    lifecycle_changed_by = ? WHERE node_id = ?""",
+                (changed_at, actor, node_id),
+            )
+            connection.execute(
+                """UPDATE node_enrollments SET revoked_at = COALESCE(revoked_at, ?)
+                WHERE node_id = ? AND consumed_at IS NULL""",
+                (changed_at, node_id),
+            )
+            connection.execute(
+                """UPDATE node_data_plane_bootstrap_grants
+                SET revoked_at = COALESCE(revoked_at, ?)
+                WHERE node_id = ? AND acknowledged_at IS NULL""",
+                (changed_at, node_id),
+            )
+            connection.execute(
+                """DELETE FROM node_commands
+                WHERE node_id = ? AND acked_at IS NULL AND kind != 'UNINSTALL_NODE'""",
+                (node_id,),
+            )
+            connection.execute(
+                "DELETE FROM node_online_counts WHERE node_id = ?", (node_id,)
+            )
+            connection.execute(
+                "DELETE FROM node_online_snapshots WHERE node_id = ?", (node_id,)
             )
             return True
 
@@ -5587,12 +5709,20 @@ class Database:
                     connection, node_id, "command-ack", nonce_digest, accepted_at
                 )
                 row = connection.execute(
-                    """SELECT acked_at, kind FROM node_commands
-                    WHERE command_id = ? AND node_id = ?""",
+                    """SELECT c.acked_at, c.kind, n.status, n.policy_state
+                    FROM node_commands AS c
+                    JOIN nodes AS n ON n.node_id = c.node_id
+                    WHERE c.command_id = ? AND c.node_id = ?""",
                     (command_id, node_id),
                 ).fetchone()
                 if row is None:
                     raise sqlite3.IntegrityError("command does not belong to node")
+                if row["status"] == "revoked" and (
+                    row["policy_state"] != "standby"
+                    or row["kind"] != "UNINSTALL_NODE"
+                    or not ok
+                ):
+                    raise sqlite3.IntegrityError("revoked node may only retry uninstall ACK")
                 if row["acked_at"] is not None:
                     return True
                 if ok:
@@ -5616,6 +5746,29 @@ class Database:
                                 dns_removed_at = NULL, dns_removed_by = NULL
                             WHERE node_id = ? AND lifecycle_state = 'starting'""",
                             (int(accepted_at), node_id),
+                        )
+                    elif row["kind"] == "UNINSTALL_NODE":
+                        connection.execute(
+                            """UPDATE nodes SET status = 'revoked',
+                                policy_state = 'standby', lifecycle_state = 'archived',
+                                lifecycle_changed_at = ?, data_plane_state = 'not_issued',
+                                dns_admitted_at = NULL, dns_admitted_by = NULL
+                            WHERE node_id = ? AND lifecycle_state = 'disconnecting'""",
+                            (int(accepted_at), node_id),
+                        )
+                        connection.execute(
+                            """UPDATE node_data_plane_bootstrap_grants
+                            SET revoked_at = COALESCE(revoked_at, ?)
+                            WHERE node_id = ? AND acknowledged_at IS NULL""",
+                            (int(accepted_at), node_id),
+                        )
+                        connection.execute(
+                            "DELETE FROM node_online_counts WHERE node_id = ?",
+                            (node_id,),
+                        )
+                        connection.execute(
+                            "DELETE FROM node_online_snapshots WHERE node_id = ?",
+                            (node_id,),
                         )
                     connection.execute(
                         "DELETE FROM node_commands WHERE acked_at < ?",
@@ -6883,32 +7036,34 @@ class PanelHandler(JsonHandler):
                     {"enabled": action == "enable", "status": state},
                 )
                 return
-            if route == "remote-node-action":
+            if route == "node-pairing-action":
                 node_id, action = parameters
-                if action == "disable":
-                    command = self.app.database.request_node_stop(
+                if action == "disconnect":
+                    command = self.app.database.request_node_disconnect(
+                        node_id, session["username"], int(time.time()),
+                        MAX_STATE_AGE_SECONDS,
+                    )
+                    self._audit_safely(
+                        self._mobile_actor(session),
+                        "node_disconnect_requested",
                         node_id,
-                        session["username"],
-                        int(time.time()),
-                        emergency=True,
                     )
-                    audit_action = "node_emergency_stop_requested"
+                    self._mobile_response(
+                        202,
+                        {
+                            "disconnecting": True,
+                            "commandId": command["commandId"],
+                        },
+                    )
                 else:
-                    command = self.app.database.request_node_resume(
-                        node_id, session["username"], int(time.time())
+                    self.app.database.delete_node_pairing(
+                        node_id, session["username"], int(time.time()),
+                        MAX_STATE_AGE_SECONDS,
                     )
-                    audit_action = "node_resume_requested"
-                self._audit_safely(
-                    self._mobile_actor(session), audit_action, node_id
-                )
-                self._mobile_response(
-                    200,
-                    {
-                        "enabled": action == "enable",
-                        "commandId": command["commandId"],
-                        "command": command["kind"],
-                    },
-                )
+                    self._audit_safely(
+                        self._mobile_actor(session), "node_pairing_deleted", node_id
+                    )
+                    self._mobile_response(200, {"deleted": True, "remoteCleanup": False})
                 return
             if route == "user-action":
                 self._handle_mobile_user_action(
@@ -6929,41 +7084,14 @@ class PanelHandler(JsonHandler):
                 result = self.app.node_enrollment_service.create(
                     name=payload.get("name", ""),
                     expected_ip=payload.get("expectedIp", ""),
-                    ttl_minutes=payload.get("ttlMinutes", 10),
+                    ttl_minutes=10,
                     actor=session["username"],
-                    mode=payload.get("mode", "join"),
+                    mode="join",
                 )
                 self._audit_safely(
                     self._mobile_actor(session), "node_enrollment_created", result["nodeId"]
                 )
                 self._mobile_response(201, result)
-                return
-            if route == "verify-node":
-                fingerprint = str(payload.get("fingerprint", ""))
-                if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
-                    self._mobile_response(
-                        400,
-                        error_code="FINGERPRINT_INVALID",
-                        message="节点公钥指纹格式无效",
-                    )
-                    return
-                verified = self.app.database.verify_node(
-                    parameters[0],
-                    fingerprint,
-                    actor=session["username"],
-                    verified_at=int(time.time()),
-                )
-                if not verified:
-                    self._mobile_response(
-                        409,
-                        error_code="NODE_STATE_CONFLICT",
-                        message="节点状态或公钥指纹不匹配",
-                    )
-                    return
-                self._audit_safely(
-                    self._mobile_actor(session), "node_verified", parameters[0]
-                )
-                self._mobile_response(200, {"verified": True})
                 return
         except (TypeError, ValueError) as exc:
             self._mobile_response(400, error_code="REQUEST_INVALID", message=str(exc))
@@ -7487,9 +7615,9 @@ class PanelHandler(JsonHandler):
             result = service.create(
                 name=form.get("name", ""),
                 expected_ip=form.get("expected_ip", ""),
-                ttl_minutes=form.get("ttl_minutes", "10"),
+                ttl_minutes=10,
                 actor=session["username"],
-                mode=form.get("mode", "join"),
+                mode="join",
             )
         except (TypeError, ValueError) as exc:
             self.send_json(400, {"error": str(exc)})
@@ -7517,6 +7645,43 @@ class PanelHandler(JsonHandler):
         )
         if "application/json" in self.headers.get("Accept", ""):
             self.send_json(200, {"revoked": True})
+        else:
+            self._redirect("/")
+
+    def _handle_node_pairing_action(self, session, node_id, action):
+        actor = session["username"]
+        try:
+            if action == "disconnect":
+                command = self.app.database.request_node_disconnect(
+                    node_id, actor, int(time.time()), MAX_STATE_AGE_SECONDS
+                )
+                self._audit_safely(actor, "node_disconnect_requested", node_id)
+                payload = {"disconnecting": True, "commandId": command["commandId"]}
+            else:
+                self.app.database.delete_node_pairing(
+                    node_id, actor, int(time.time()), MAX_STATE_AGE_SECONDS
+                )
+                self._audit_safely(actor, "node_pairing_deleted", node_id)
+                payload = {"deleted": True, "remoteCleanup": False}
+        except (sqlite3.IntegrityError, TypeError, ValueError) as exc:
+            message = str(exc)
+            if "offline" in message:
+                message = "节点已失联，请改用“删除对接”"
+            elif "online" in message:
+                message = "节点仍在线，请先使用“一键断连”"
+            elif "pending command" in message:
+                message = "节点还有未完成命令，请稍后刷新再试"
+            elif "too old" in message:
+                message = "该节点 Agent 版本过旧，不支持安全的一键断连"
+            else:
+                message = "当前节点状态不允许执行此操作，请刷新后重试"
+            if "application/json" in self.headers.get("Accept", ""):
+                self.send_json(409, {"error": message})
+            else:
+                self._error_page(409, message)
+            return
+        if "application/json" in self.headers.get("Accept", ""):
+            self.send_json(202 if action == "disconnect" else 200, payload)
         else:
             self._redirect("/")
 
@@ -7767,6 +7932,14 @@ class PanelHandler(JsonHandler):
         )
         if enrollment_match:
             self._handle_revoke_node_enrollment(session, enrollment_match.group(1))
+            return
+        pairing_match = re.fullmatch(
+            r"/nodes/([0-9a-f]{32})/(disconnect|delete)", path
+        )
+        if pairing_match:
+            self._handle_node_pairing_action(
+                session, pairing_match.group(1), pairing_match.group(2)
+            )
             return
         node_match = re.fullmatch(r"/nodes/([0-9a-f]{32})/(verify|revoke)", path)
         if node_match:

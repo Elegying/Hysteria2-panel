@@ -1,7 +1,5 @@
 """Dashboard rendering isolated from the HTTP transport entrypoint."""
 
-import base64
-import hashlib
 import html
 import json
 import time
@@ -101,7 +99,6 @@ def render_dashboard(
     DEFAULT_DEVICE_LIMIT = context.default_device_limit
     DEFAULT_TRAFFIC_LIMIT_BYTES = context.default_traffic_limit_bytes
     PANEL_VERSION = context.panel_version
-    MAX_STATE_AGE_SECONDS = context.max_state_age_seconds
     bytes_to_gib_input = context.bytes_to_gib_input
     _human_bytes = context.human_bytes
     _stat_int = context.stat_int
@@ -562,64 +559,24 @@ def render_dashboard(
             and node.get("last_heartbeat_at")
             and current_time - node["last_heartbeat_at"] <= 150
         )
-        if status == "revoked":
-            status_label, status_class = "已撤销", "bad"
-        elif heartbeat_fresh:
-            status_label, status_class = "在线", "ok"
-        elif verified:
-            status_label, status_class = "已验证 · 离线", "warning"
-        elif status == "pending_verification":
-            status_label, status_class = "待验证", "warning"
-        elif expired:
-            status_label, status_class = "注册链接已过期", "bad"
-        else:
-            status_label, status_class = "待注册", "warning"
-        lifecycle_labels = {
-            "draining": ("摘流中", "warning"),
-            "stopping": ("正在停用", "warning"),
-            "stopped": ("已安全停用", "muted"),
-            "starting": ("正在恢复", "warning"),
-            "archived": ("已归档", "muted"),
-        }
-        if lifecycle_state in lifecycle_labels:
-            status_label, status_class = lifecycle_labels[lifecycle_state]
-        node_actions = ""
-        if (
-            status == "pending_registration"
-            and not expired
-            and node.get("enrollment_id")
-            and node.get("consumed_at") is None
-            and node.get("revoked_at") is None
+        if lifecycle_state == "disconnecting":
+            status_label, status_class = "正在一键断连", "warning"
+        elif (
+            verified
+            and node.get("policy_state") == "protocol_ready"
+            and node.get("data_plane_state")
+            in {"direct_canary_passed", "dns_admitted"}
         ):
-            node_actions = """<form method="post" action="/node-enrollments/{enrollment_id}/revoke" data-confirm="确定作废该对接码吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">立即作废</button></form>""".format(
-                enrollment_id=node["enrollment_id"], csrf=csrf
+            status_label, status_class = (
+                ("已对接 · 在线", "ok")
+                if heartbeat_fresh
+                else ("已对接 · 离线", "warning")
             )
-        fingerprint = ""
-        if node.get("public_key"):
-            try:
-                fingerprint = hashlib.sha256(
-                    base64.b64decode(node["public_key"], validate=True)
-                ).hexdigest()
-            except (TypeError, ValueError):
-                fingerprint = ""
-        if status == "pending_verification" and not verified and fingerprint:
-            node_actions = """<form method="post" action="/nodes/{node_id}/verify" data-confirm="请确认服务器显示的指纹短码也是 {short_fingerprint}；确认后节点将自动完成部署。"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="fingerprint" value="{fingerprint}"><span class="muted">与服务器输出核对短码</span><strong><code>{short_fingerprint}</code></strong><button class="compact-button" type="submit">短码一致，开始自动部署</button></form>""".format(
-                node_id=node["node_id"],
-                csrf=csrf,
-                fingerprint=fingerprint,
-                short_fingerprint=fingerprint[:16],
-            )
-        if status == "pending_verification" and lifecycle_state != "archived":
-            node_actions += """<form method="post" action="/nodes/{node_id}/revoke" data-confirm="撤销后该节点的后续心跳会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">撤销节点</button></form>""".format(
-                node_id=node["node_id"], csrf=csrf
-            )
-        details = [
-            node.get("observed_ip")
-            or node.get("expected_ip")
-            or "尚未绑定公网 IP"
-        ]
-        if fingerprint:
-            details.append("公钥 SHA-256：{}".format(fingerprint))
+        elif expired:
+            status_label, status_class = "对接代码已过期", "bad"
+        else:
+            status_label, status_class = "正在对接", "warning"
+        details = [node.get("observed_ip") or node.get("expected_ip") or "公网 IP 未知"]
         if node.get("last_heartbeat_at"):
             details.append(
                 "最后心跳：{}".format(
@@ -629,132 +586,45 @@ def render_dashboard(
                     )
                 )
             )
-        policy_state = node.get("policy_state") or "standby"
-        if policy_state == "protocol_ready" and lifecycle_state != "archived":
-            snapshot_fresh = bool(
-                node.get("last_snapshot_at")
-                and node.get("last_traffic_ack_at")
-                and current_time - node["last_snapshot_at"]
-                <= MAX_STATE_AGE_SECONDS
-                and current_time - node["last_traffic_ack_at"]
-                <= MAX_STATE_AGE_SECONDS
-            )
-            details.append(
-                "协议就绪 · {}".format(
-                    "在线快照与流量检查点新鲜"
-                    if snapshot_fresh
-                    else "等待在线快照/流量队列确认"
-                )
-            )
-            details.append(
-                "节点运营状态：{}".format(
-                    {
-                        "active": "正常服务",
-                        "draining": "等待 DNS 撤出和设备归零",
-                        "stopping": "停止命令等待节点确认",
-                        "stopped": "数据面已停止，身份与流量队列保留",
-                        "starting": "启动命令等待节点确认",
-                        "archived": "历史记录已归档",
-                    }.get(lifecycle_state, "未知")
-                )
-            )
-            details.append(
-                "待确认命令：{}{}".format(
-                    int(node.get("pending_commands") or 0),
-                    "（含失败重试 {}）".format(
-                        int(node.get("failed_commands") or 0)
-                    )
-                    if node.get("failed_commands")
-                    else "",
-                )
-            )
-            if lifecycle_state == "active":
-                node_actions += """<form method="post" action="/nodes/{node_id}/protocol/disable" data-confirm="停用后该节点的中央认证、快照、流量和命令都会被拒绝，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">停用控制协议</button></form>""".format(
-                    node_id=node["node_id"], csrf=csrf
-                )
-        elif verified and status == "pending_verification":
-            details.append("自动部署等待中（通常 30 秒内开始）")
-            node_actions += """<form method="post" action="/nodes/{node_id}/protocol/enable" data-confirm="这是旧节点故障恢复入口，只启用中央控制协议，不会部署 Hysteria 或修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">旧节点手动启用</button></form>""".format(
-                node_id=node["node_id"], csrf=csrf
-            )
-        data_plane_state = node.get("data_plane_state") or "not_issued"
-        data_plane_labels = {
-            "not_issued": "等待节点自动领取部署凭据",
-            "bootstrap_issued": "自动部署中 · 正在配置 FULL/双入口/网络优化",
-            "data_plane_installed": "数据面已安装 · 待直连灰度",
-            "direct_canary_passed": "主 UDP {}/443 真实验收通过 · 请手工添加 DNS".format(
-                self.app.hysteria_port
-            ),
-            "dns_admitted": "DNS 已检测并自动准入 · 节点可用",
-        }
-        details.append(data_plane_labels.get(data_plane_state, "数据面状态异常"))
-        data_plane_eligible = bool(
+        if lifecycle_state == "disconnecting":
+            details.append("远端正在卸载；收到签名回执后自动从当前列表隐藏")
+        elif status == "pending_registration":
+            details.append("请在目标服务器以 root 粘贴运行生成的代码")
+        else:
+            details.append("DNS 由你自行维护；面板不会检查或修改")
+        agent_version_parts = str(node.get("agent_version") or "").split(".")
+        agent_supports_disconnect = bool(
+            len(agent_version_parts) == 3
+            and all(part.isdigit() for part in agent_version_parts)
+            and tuple(int(part) for part in agent_version_parts) >= (0, 39, 0)
+        )
+        if verified and not agent_supports_disconnect:
+            details.append("旧版 Agent 不支持安全的一键断连")
+        can_disconnect = bool(
             status == "pending_verification"
             and verified
-            and policy_state == "protocol_ready"
-            and lifecycle_state == "active"
-        )
-        if (
-            data_plane_eligible
-            and data_plane_state
-            in {
-                "not_issued",
-                "bootstrap_issued",
-                "data_plane_installed",
-                "direct_canary_passed",
-                "dns_admitted",
-            }
-            and self.app.secure_cookies
-            and self.app.data_plane_bootstrap_service is not None
-            and not (
-                data_plane_state == "bootstrap_issued"
-                and node.get("active_automatic_canary")
-            )
-        ):
-            if data_plane_state == "not_issued":
-                data_plane_action = "旧节点手动部署"
-            elif data_plane_state == "bootstrap_issued":
-                data_plane_action = "重新生成部署码"
-            else:
-                data_plane_action = "生成数据面升级码"
-            node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/bootstrap" data-data-plane-bootstrap-form><input type="hidden" name="csrf" value="{csrf}"><button class="success compact-button" type="submit">{action}</button></form>""".format(
-                node_id=node["node_id"], csrf=csrf, action=data_plane_action
-            )
-        if data_plane_eligible and data_plane_state == "data_plane_installed":
-            node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/canary/pass" data-data-plane-canary-form data-confirm="只记录该节点直连灰度通过，不会修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">确认直连灰度通过</button></form>""".format(
-                node_id=node["node_id"], csrf=csrf
-            )
-        if (
-            lifecycle_state == "active"
-            and data_plane_state == "dns_admitted"
+            and agent_supports_disconnect
+            and node.get("policy_state") == "protocol_ready"
+            and node.get("data_plane_state")
+            in {"data_plane_installed", "direct_canary_passed", "dns_admitted"}
+            and lifecycle_state in {"active", "draining"}
             and heartbeat_fresh
-        ):
-            node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/drain" data-confirm="开始摘流不会立刻断开用户。下一步请手工从 DNS 删除此节点 IP，再等待在线设备归零。确定开始吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">1. 开始摘流</button></form>""".format(
+            and int(node.get("pending_commands") or 0) == 0
+        )
+        can_delete = bool(not heartbeat_fresh and lifecycle_state != "disconnecting")
+        if can_disconnect:
+            disconnect_action = """<form method="post" action="/nodes/{node_id}/disconnect" data-confirm="一键断连会立即停止该服务器上的对接业务，并卸载本项目安装的服务、身份、配置、状态、防火墙规则和网络参数。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">一键断连</button></form>""".format(
                 node_id=node["node_id"], csrf=csrf
             )
-        if (
-            lifecycle_state in {"draining", "stopping", "stopped"}
-            and data_plane_state == "dns_admitted"
-        ):
-            node_actions += """<form method="post" action="/nodes/{node_id}/data-plane/dns/remove" data-confirm="请先确认已从 {public_host} 的 A/AAAA 记录中删除该节点 IP；这里只记录撤出状态，不会自动修改 DNS。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning compact-button" type="submit">2. 记录 DNS 已撤出</button></form>""".format(
-                node_id=node["node_id"],
-                public_host=html.escape(self.app.public_host, quote=True),
-                csrf=csrf,
-            )
-        if lifecycle_state == "draining":
-            node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/stop" data-confirm="面板会先确认 DNS 已移除、设备数为 0、流量已结算；任何一项不满足都会拒绝停机。确定检查并停用吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">3. 检查并安全停用</button></form>""".format(
+        else:
+            disconnect_action = '<button class="danger compact-button" type="button" disabled aria-disabled="true" title="仅已完成对接、在线且无待处理命令的节点可一键断连">一键断连</button>'
+        if can_delete:
+            delete_action = """<form method="post" action="/nodes/{node_id}/delete" data-confirm="仅当服务器失联、无法执行一键断连时使用。此操作只会吊销并删除面板中的当前对接，不会清理失联服务器上的文件。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">删除对接</button></form>""".format(
                 node_id=node["node_id"], csrf=csrf
             )
-        if lifecycle_state in {"active", "draining"}:
-            node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/emergency-stop" data-confirm="紧急停用会立即停止数据面。若 DNS 仍包含此 IP，部分用户会立刻连接失败。仅在故障或流量耗尽时使用，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">紧急停用</button></form>""".format(
-                node_id=node["node_id"], csrf=csrf
-            )
-        if lifecycle_state == "stopped":
-            node_actions += """<form method="post" action="/nodes/{node_id}/lifecycle/resume" data-confirm="恢复后还需要把节点 IP 重新加入 DNS，面板检测和真实验收通过后用户才会使用。确定恢复吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="success compact-button" type="submit">恢复此节点</button></form><form method="post" action="/nodes/{node_id}/lifecycle/archive" data-confirm="请先把替换服务器按“全新节点对接”完成并加入 DNS。归档只隐藏旧节点操作入口，统计和审计仍保留。确定归档吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">换机完成，归档旧节点</button></form>""".format(
-                node_id=node["node_id"], csrf=csrf
-            )
-        if lifecycle_state == "archived":
-            node_actions = '<span class="muted">统计与审计记录已保留</span>'
+        else:
+            delete_action = '<button class="secondary compact-button" type="button" disabled aria-disabled="true" title="节点在线时请使用一键断连；删除对接只用于失联节点">删除对接</button>'
+        node_actions = disconnect_action + delete_action
         node_rows.append(
             """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                 name=html.escape(node["name"]),
@@ -810,7 +680,7 @@ def render_dashboard(
 <article class="card"><div class="section-head"><div><h2>服务控制</h2><p class="muted">启停、重启和版本检查集中在这里。</p></div><span class="service-badge{service_class}">{service_label}</span></div>
 <div class="button-row service-actions"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动</button></form>
 <form method="post" action="/service/restart" data-confirm="确定重启 Hysteria 服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启</button></form>
-<form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止</button></form><a class="button secondary" href="/">刷新</a><button class="secondary" type="button" data-dialog-open="node-onboarding-dialog"{onboarding_disabled}>对接</button></div>
+<form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止</button></form><a class="button secondary" href="/">刷新</a><button class="secondary" type="button" data-dialog-open="node-onboarding-dialog"{onboarding_disabled}>对接管理</button></div>
 <div class="service-details primary-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail port-detail"><div><span class="muted">服务端口</span><strong>UDP {port}</strong></div><form class="egress-control" method="post" action="/egress/{egress_target}" data-egress-form data-confirm="{egress_confirm}"><input type="hidden" name="csrf" value="{csrf}"><span class="egress-state{egress_state_class}" data-egress-state>{egress_state}</span><button class="egress-switch{egress_state_class}" type="submit" aria-pressed="{egress_checked}" aria-label="{egress_action} FULL 出口策略"><span class="egress-switch-track" aria-hidden="true"><span></span></span><span class="egress-switch-action">{egress_action}</span></button></form></div></div>
 <div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row version-actions"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
@@ -819,12 +689,10 @@ def render_dashboard(
 <div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong></div></div></article>
 <article class="card traffic-card"><div class="section-head"><div><h2>高流量用户</h2><p class="muted">当前累计总流量最高的 5 个账号。</p></div></div><div class="rank-list">{rank_rows}</div></article>
 </section>
-<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">节点对接与停用</h2><p class="muted">按 1-2-3-4 操作；面板会把可以自动完成的步骤全部完成。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">关闭</button></div>
-<p class="notice"><strong>固定安全边界：</strong>面板不会自动写入或删除 DNS；Hysteria 长期身份只会原样复制，不会自动轮换；现有用户配置不会改变。</p>
-<div class="operation-guides"><section class="operation-guide"><h3>对接新节点：4 步完成</h3><ol class="numbered-steps"><li><strong>生成代码</strong><span>填写名称和公网 IP，点击“生成部署代码”。</span></li><li><strong>新机执行</strong><span>在新服务器用 root 运行整条代码，等待它显示 16 位短码。</span></li><li><strong>核对短码</strong><span>回到节点卡片逐字核对。相同后点击确认，面板自动配置 FULL、UDP {port}/443、fq/BBR 和 16 MiB 缓冲。</span></li><li><strong>添加 DNS</strong><span>真实出口验收通过后，把节点 IP 加入 <code>{public_host}</code> 的 A/AAAA；面板只读检测并自动准入。</span></li></ol></section><section class="operation-guide danger-guide"><h3>安全停用或换机：4 步完成</h3><ol class="numbered-steps"><li><strong>开始摘流</strong><span>在节点卡片点击“1. 开始摘流”，此时不会断开用户。</span></li><li><strong>删除 DNS</strong><span>手工从 <code>{public_host}</code> 删除旧节点 IP，等待 DNS 生效和在线设备归零。</span></li><li><strong>安全停用</strong><span>点击“3. 检查并安全停用”。面板确认 DNS、设备和流量 ACK 后才会停止 Hysteria，Agent、私钥和 spool 保留。</span></li><li><strong>恢复或换机</strong><span>原机恢复可直接点击“恢复此节点”；换服务器请在新机选择“全新节点对接”，加入 DNS 后再归档旧节点。“安全重绑定”只用于已部署节点重新连接面板。</span></li></ol></section></div>
-<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">节点公网 IP（可选）</label><input id="node-expected-ip" name="expected_ip" inputmode="text" placeholder="例如：203.0.113.10"></div><div><label for="node-enrollment-mode">操作类型</label><select id="node-enrollment-mode" name="mode"><option value="join" selected>全新节点对接</option><option value="rebind">已有数据节点安全重绑定</option></select></div><div><label for="node-enrollment-ttl">对接码有效期</label><select id="node-enrollment-ttl" name="ttl_minutes"><option value="5">5 分钟</option><option value="10" selected>10 分钟</option><option value="30">30 分钟</option></select></div><button type="submit"{onboarding_disabled}>生成部署代码</button></form>
-<section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">一键部署代码</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="node-deployment-code">复制部署代码</button></div><p class="muted" data-node-enrollment-expiry role="status"></p></section>
-<section class="enrollment-result" data-data-plane-bootstrap-result hidden><label for="data-plane-deployment-code">数据面一键部署代码</label><textarea id="data-plane-deployment-code" rows="12" readonly spellcheck="false"></textarea><div class="credential-actions"><button type="button" data-copy-target="data-plane-deployment-code">复制数据面部署代码</button></div><p class="muted" data-data-plane-bootstrap-expiry role="status"></p><p class="notice"><strong>安全边界：</strong>代码只携带绑定节点与来源 IP 的短时授权；不会携带 Hysteria 证书私钥、HMAC、统计密钥、用户数据，也不会修改 DNS。</p></section>
+<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">第二台服务器对接</h2><p class="muted">生成代码后，在目标服务器以 root 粘贴运行一次即可。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">关闭</button></div>
+<p class="notice"><strong>生成前请先完成 DNS 设置：</strong>请自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS，也不会把 DNS 作为对接成功条件。</p>
+<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="例如：203.0.113.10"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
+<section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">在目标服务器粘贴运行</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <div class="node-list-head"><h3>节点状态</h3><span class="muted">刷新页面可获取最新注册状态</span></div><div class="node-list">{node_rows}</div></div></dialog>
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">完整备份或恢复节点身份与全部用户数据。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
 <p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS。当前面板管理员账号不会被替换。</p>

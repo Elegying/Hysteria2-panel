@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.38.12"
+PANEL_VERSION="0.39.0"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -25,25 +25,25 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="93ec5edc06cc86d57b4de14bc50e6be37839f4d58e16ab953863d0e6fc38d1a8"
+PANEL_SHA256="c6d1c8a3b672a3df69186065c4adbe32114f25fb5197147a285d9d69da633e82"
 OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed94b2f07f"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="a457b2bbbf6726db04dd1b38ca86d4ac36505fb5c2b21d6663a20a4e6137250b"
+HY2PANEL_VERSION_SHA256="c7bef40222d3b03ba3be9007c725104b2d673002b70486d716d7623d7e03bf8d"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
-HY2PANEL_WEB_ASSETS_SHA256="0ab69e2879eb4b747b0a01fe2cdd2714b3ccb23732c205ae109c211801ca09a3"
+HY2PANEL_WEB_ASSETS_SHA256="5b9dace1abf080a3ddf6e6007e20c35bd0d12128dccccb24f5dc3f32fb4011ca"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
 HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="b6d4986c4c8169b7d3bbacc2ae2aefb95e2285b9843afaece58b553c1092e1d0"
-HY2PANEL_DISTRIBUTED_SHA256="dc4db8854d50b687d2d77bd7a13388bc0f0b3feab111a1942b401e9b6acb5e19"
+HY2PANEL_NODES_SHA256="1ed6c270f0aa2881ec138cbf1c2501e3d35397070f18735a823fe862ee35a38a"
+HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d0fc163548e9cb"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="a999070a92e7546eb8fa0c3b4d78b8838e5227cfe412cfdca47ab2cf10253b2b"
-HY2PANEL_MOBILE_API_SHA256="9d8ca5b4e483a8c6b9378e70a2bb0aad4b3bba4816b44f609016a3cd1c60217e"
-NODE_AGENT_SHA256="590b37ac9b0417edf4910c0244512b76fe42246c71bc8048e25ecbc18a6a71fb"
+HY2PANEL_DASHBOARD_SHA256="39fb0a1e9eb7e1b3d5e72f2dddb18001db5ce2ffcd4504059c09141cca7596c5"
+HY2PANEL_MOBILE_API_SHA256="9b1ae9d2b804666e88af874bce2b5fb8847523fc65cfd10193b88617e38fdb7e"
+NODE_AGENT_SHA256="e9875e6ac1ef7c2279b8deee4f74dabcf9b3d465793ae8e91f0ff3d289a1c453"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -81,6 +81,8 @@ NODE_ONBOARDING_TIMER=/etc/systemd/system/hysteria2-panel-node-onboarding.timer
 NODE_ONBOARDING_MARKER=${NODE_AGENT_CONFIG_DIR}/.onboarding-pending
 NODE_ONBOARDING_RUNTIME_DIR=/run/hysteria2-panel-node-onboarding
 NODE_ONBOARDING_TOKEN_FILE=${NODE_ONBOARDING_RUNTIME_DIR}/bootstrap.token
+NODE_UNINSTALL_SERVICE=/etc/systemd/system/hysteria2-panel-node-uninstall.service
+NODE_UNINSTALL_COMMAND=${NODE_AGENT_STATE_DIR}/uninstall-command.json
 NODE_DATA_PLANE_BACKUP_ROOT=/var/backups/hysteria2-panel-node
 NODE_DATA_PLANE_TRANSACTION=/etc/hysteria2-panel-node/.data-plane-transaction
 DATA_PLANE_TRANSACTION_MAGIC=HYSTERIA2_PANEL_NODE_DATA_PLANE_V1
@@ -154,6 +156,7 @@ ACTIVATE_NODE_AGENT_MUTATED=0
 NODE_AGENT_BACKUP_FILE=""
 ACTIVATE_DATA_PLANE=0
 COMPLETE_NODE_ONBOARDING=0
+UNINSTALL_NODE=0
 DATA_PLANE_MUTATED=0
 DATA_PLANE_EXISTING=0
 DATA_PLANE_BACKUP_DIR=""
@@ -183,6 +186,9 @@ Hysteria2-panel 一键部署
 
 自动对接收尾（仅供安装器创建的 systemd timer 调用）：
   sudo bash /opt/hysteria2-panel-node/onboarding-install.sh --complete-node-onboarding
+
+远端一键断连（仅供面板签名命令触发的 systemd 服务调用）：
+  sudo bash /opt/hysteria2-panel-node/onboarding-install.sh --uninstall-node
 
 默认端口：
   Hysteria 2: UDP 19999（同时提供 TCP 连通性探测）
@@ -1412,8 +1418,8 @@ rebind_node() {
 }
 
 install_join_node() {
-  local command_name enrollment_token fingerprint panel_url path
-  local -a join_commands=(awk cat curl install mkdir mktemp openssl rm sha256sum stat sync systemctl uname)
+  local command_name enrollment_token panel_url path
+  local -a join_commands=(cat curl install mkdir mktemp openssl rm sha256sum sleep stat sync systemctl uname)
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "节点对接只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1458,7 +1464,7 @@ install_join_node() {
 
   cat > "${TMP_DIR}/hysteria2-panel-node-onboarding.service" <<EOF
 [Unit]
-Description=Complete Hysteria2-panel node onboarding after operator verification
+Description=Complete Hysteria2-panel one-click node onboarding
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=${NODE_ONBOARDING_MARKER}
@@ -1483,7 +1489,7 @@ MemoryMax=2G
 EOF
   cat > "${TMP_DIR}/hysteria2-panel-node-onboarding.timer" <<'EOF'
 [Unit]
-Description=Retry Hysteria2-panel node onboarding until operator verification
+Description=Retry Hysteria2-panel one-click node onboarding
 
 [Timer]
 OnBootSec=10s
@@ -1531,11 +1537,19 @@ EOF
   sync -f "${NODE_AGENT_OPT_DIR}"
   sync -f "${NODE_AGENT_CONFIG_DIR}"
   sync -f /etc/systemd/system
-  fingerprint="$(sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der" | awk '{print $1}')"
-  echo "节点 Agent 已安装；请在面板核对并确认此公钥指纹："
-  echo "  短码：${fingerprint:0:16}"
-  echo "  完整：${fingerprint}"
-  echo "确认后本机将自动完成签名心跳、FULL/UDP 443、fq/BBR、16 MiB UDP 缓冲和数据面部署。安装器不会修改 DNS。"
+  # Registration, retry units and the installer are now durable. A later
+  # network failure must not erase the identity that the timer can resume.
+  JOIN_NODE_MUTATED=0
+  systemctl start --no-block hysteria2-panel-node-onboarding.service \
+    || fail "无法启动节点自动收尾；后台 timer 会继续重试"
+  for _attempt in {1..120}; do
+    [[ -e "${NODE_ONBOARDING_MARKER}" || -L "${NODE_ONBOARDING_MARKER}" ]] \
+      || break
+    sleep 5
+  done
+  [[ ! -e "${NODE_ONBOARDING_MARKER}" && ! -L "${NODE_ONBOARDING_MARKER}" ]] \
+    || fail "节点未在 10 分钟内完成对接；已保留安全后台重试，请检查网络后重试"
+  echo "节点一键对接已完成；面板和安装器均未检查或修改 DNS。"
 }
 
 complete_node_onboarding() {
@@ -1579,22 +1593,6 @@ complete_node_onboarding() {
     fi
   fi
 
-  install -d -o root -g root -m 0700 "${NODE_ONBOARDING_RUNTIME_DIR}"
-  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
-  if ! "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" claim-data-plane \
-    --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
-    --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
-    --output-token "${NODE_ONBOARDING_TOKEN_FILE}"; then
-    rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
-    echo "节点尚未通过面板指纹确认，自动收尾将在 30 秒后安全重试。"
-    return 0
-  fi
-  require_node_agent_file "${NODE_ONBOARDING_TOKEN_FILE}" 600
-  bootstrap_token="$(< "${NODE_ONBOARDING_TOKEN_FILE}")"
-  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
-  [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
-    || fail "面板返回的一次性数据面凭据无效"
-
   if [[ ! -e "${NODE_AGENT_HEARTBEAT_SERVICE}" && \
     ! -L "${NODE_AGENT_HEARTBEAT_SERVICE}" && \
     ! -e "${NODE_AGENT_HEARTBEAT_TIMER}" && \
@@ -1610,6 +1608,22 @@ complete_node_onboarding() {
       || fail "既有节点签名心跳 timer 未运行；自动收尾已停止"
   fi
 
+  install -d -o root -g root -m 0700 "${NODE_ONBOARDING_RUNTIME_DIR}"
+  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+  if ! "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" claim-data-plane \
+    --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
+    --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+    --output-token "${NODE_ONBOARDING_TOKEN_FILE}"; then
+    rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+    echo "节点尚未获准自动部署，自动收尾将在 30 秒后安全重试。"
+    return 0
+  fi
+  require_node_agent_file "${NODE_ONBOARDING_TOKEN_FILE}" 600
+  bootstrap_token="$(< "${NODE_ONBOARDING_TOKEN_FILE}")"
+  rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"
+  [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
+    || fail "面板返回的一次性数据面凭据无效"
+
   ACTIVATE_DATA_PLANE=1
   HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN="${bootstrap_token}" activate_data_plane
   bootstrap_token=""
@@ -1619,7 +1633,109 @@ complete_node_onboarding() {
   systemctl disable --now --no-block hysteria2-panel-node-onboarding.timer \
     >/dev/null 2>&1 || true
   sync -f "${NODE_AGENT_CONFIG_DIR}" /etc/systemd/system
-  echo "节点自动对接已完成；可继续为该节点配置 DNS。"
+  echo "节点自动对接已完成；未检查或修改 DNS。"
+}
+
+uninstall_node() {
+  local backup command_name directory path unit
+  local -a uninstall_commands=(cat find install rm sha256sum sort stat sync systemctl sysctl)
+  local -a uninstall_directories=(
+    "${NODE_AGENT_STATE_DIR}"
+    "${NODE_AGENT_CONFIG_DIR}"
+    "${NODE_AGENT_OPT_DIR}"
+    "${NODE_DATA_PLANE_BACKUP_ROOT}"
+  )
+
+  [[ ! -e "${MANAGED_MARKER}" && ! -L "${MANAGED_MARKER}" ]] \
+    || fail "完整面板服务器不能执行分流节点卸载"
+  for command_name in "${uninstall_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "节点卸载缺少命令 ${command_name}；尚未删除任何文件"
+  done
+  select_python || fail "节点卸载需要 Python 3.8 或更高版本"
+  require_node_agent_directory "${NODE_AGENT_OPT_DIR}" 755
+  require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}" 700
+  require_node_agent_directory "${NODE_AGENT_STATE_DIR}" 700
+  require_node_agent_directory "${NODE_DATA_PLANE_BACKUP_ROOT}" 700
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
+  require_node_agent_file "${NODE_ONBOARDING_INSTALLER}" 700
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/node.key" 600
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
+  require_node_agent_file "${NODE_UNINSTALL_COMMAND}" 600
+  require_node_agent_file "${NODE_UNINSTALL_SERVICE}" 644
+  for directory in "${uninstall_directories[@]}"; do
+    [[ -d "${directory}" && ! -L "${directory}" ]] \
+      || fail "节点卸载目录缺失或不安全：${directory}"
+    [[ -z "$(find "${directory}" -xdev -type l -print -quit)" ]] \
+      || fail "节点卸载目录包含符号链接：${directory}"
+    [[ -z "$(find "${directory}" -xdev ! -type d ! -type f -print -quit)" ]] \
+      || fail "节点卸载目录包含特殊文件：${directory}"
+  done
+  initialize_data_plane_owned_paths
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}" \
+    "${NODE_AGENT_HEARTBEAT_SERVICE}" "${NODE_AGENT_HEARTBEAT_TIMER}" \
+    "${NODE_ONBOARDING_SERVICE}" "${NODE_ONBOARDING_TIMER}"; do
+    [[ ! -e "${path}" && ! -L "${path}" ]] && continue
+    require_node_agent_file "${path}" 644
+  done
+
+  DATA_PLANE_BACKUP_DIR=""
+  while IFS= read -r backup; do
+    [[ "${backup}" =~ ^${NODE_DATA_PLANE_BACKUP_ROOT}/[0-9]{8}T[0-9]{6}Z-phase4$ ]] \
+      || continue
+    [[ -d "${backup}" && ! -L "${backup}" \
+      && "$(stat -c '%u:%g:%a' "${backup}")" == "0:0:700" ]] || continue
+    [[ -f "${backup}/deployment-kind" && ! -L "${backup}/deployment-kind" \
+      && "$(cat "${backup}/deployment-kind")" == "fresh" ]] || continue
+    [[ -f "${backup}/manifest.sha256" && ! -L "${backup}/manifest.sha256" ]] \
+      || continue
+    if (cd "${backup}" && sha256sum --check --status manifest.sha256); then
+      DATA_PLANE_BACKUP_DIR="${backup}"
+      break
+    fi
+  done < <(find "${NODE_DATA_PLANE_BACKUP_ROOT}" -mindepth 1 -maxdepth 1 \
+    -type d -name '*-phase4' -print | sort)
+  [[ -n "${DATA_PLANE_BACKUP_DIR}" ]] \
+    || fail "找不到完整的首次部署网络快照；为避免破坏服务器网络参数，拒绝卸载"
+
+  systemctl disable --now \
+    hysteria2-panel-node-heartbeat.timer \
+    hysteria2-panel-node-onboarding.timer \
+    hysteria2-panel-node-auth.service \
+    hysteria2-panel-node-control.service \
+    hysteria2-panel-node-hysteria-main.service \
+    hysteria2-panel-node-hysteria-udp443.service \
+    hysteria2-panel-node-tcp-probe-main.service \
+    hysteria2-panel-node-tcp-probe-udp443.service >/dev/null 2>&1 || true
+  systemctl stop hysteria2-panel-node-heartbeat.service \
+    hysteria2-panel-node-onboarding.service >/dev/null 2>&1 || true
+  rollback_data_plane_firewall \
+    || fail "无法只撤销本项目添加的防火墙规则；卸载将在 30 秒后重试"
+  restore_data_plane_network_snapshot \
+    || fail "无法恢复对接前的网络参数；卸载将在 30 秒后重试"
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}"; do
+    rm -f -- "${path}" \
+      || fail "无法删除受管节点文件：${path}；卸载将在 30 秒后重试"
+  done
+  sync -f /etc/systemd/system /etc/sysctl.d "${NODE_AGENT_CONFIG_DIR}"
+
+  "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" ack-command \
+    --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
+    --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+    --command-file "${NODE_UNINSTALL_COMMAND}" \
+    || fail "中央面板尚未确认节点卸载；本机业务已停止，将在 30 秒后重试签名回执"
+
+  rm -f -- "${NODE_AGENT_HEARTBEAT_SERVICE}" "${NODE_AGENT_HEARTBEAT_TIMER}" \
+    "${NODE_ONBOARDING_SERVICE}" "${NODE_ONBOARDING_TIMER}" \
+    "${NODE_UNINSTALL_SERVICE}"
+  for directory in "${uninstall_directories[@]}"; do
+    rm -r -- "${directory}" \
+      || fail "中央已确认断连，但本机残留目录删除失败：${directory}"
+  done
+  systemctl daemon-reload
+  systemctl reset-failed >/dev/null 2>&1 || true
+  sync -f /etc/systemd/system /etc /opt /var/lib /var/backups
+  echo "节点一键断连完成：对接服务、身份、配置、状态、备份、防火墙规则和网络参数均已清理。"
 }
 
 rollback_node_agent_activation() {
@@ -1901,7 +2017,7 @@ assert_data_plane_paths_unclaimed() {
   initialize_data_plane_owned_paths
   for path in "${DATA_PLANE_OWNED_FILES[@]}" "${DATA_PLANE_OWNED_UNITS[@]}" \
     "${NODE_AGENT_OPT_DIR}/bin" /var/lib/hysteria2-panel-node \
-    "${NODE_DATA_PLANE_TRANSACTION}"; do
+    "${NODE_DATA_PLANE_TRANSACTION}" "${NODE_UNINSTALL_SERVICE}"; do
     [[ ! -e "${path}" && ! -L "${path}" ]] \
       || fail "数据面路径已存在；为避免覆盖未知数据，部署已停止：${path}"
   done
@@ -1965,6 +2081,11 @@ assert_existing_data_plane_healthy() {
     systemctl is-active --quiet "${unit}" \
       || fail "已安装数据面单元未运行：${unit}"
   done
+  if [[ -e "${NODE_UNINSTALL_SERVICE}" || -L "${NODE_UNINSTALL_SERVICE}" ]]; then
+    [[ -f "${NODE_UNINSTALL_SERVICE}" && ! -L "${NODE_UNINSTALL_SERVICE}" \
+      && "$(stat -c '%u:%g:%a' "${NODE_UNINSTALL_SERVICE}")" == "0:0:644" ]] \
+      || fail "已安装节点卸载单元不安全：${NODE_UNINSTALL_SERVICE}"
+  fi
   [[ -d "${NODE_AGENT_OPT_DIR}/bin" \
     && ! -L "${NODE_AGENT_OPT_DIR}/bin" \
     && "$(stat -c '%u:%g:%a' "${NODE_AGENT_OPT_DIR}/bin")" == "0:0:755" ]] \
@@ -2067,6 +2188,10 @@ write_data_plane_backup_manifest() {
       install -o root -g root -m 0644 "${path}" \
         "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}"
     done
+    if [[ -f "${NODE_UNINSTALL_SERVICE}" && ! -L "${NODE_UNINSTALL_SERVICE}" ]]; then
+      install -o root -g root -m 0644 "${NODE_UNINSTALL_SERVICE}" \
+        "${DATA_PLANE_BACKUP_DIR}/units/${NODE_UNINSTALL_SERVICE##*/}"
+    fi
     cp -a -- /var/lib/hysteria2-panel-node \
       "${DATA_PLANE_BACKUP_DIR}/state"
     printf '%s\n' existing > "${DATA_PLANE_BACKUP_DIR}/deployment-kind"
@@ -2421,6 +2546,12 @@ restore_existing_data_plane() {
     unit="${path##*/}"
     systemctl disable --now "${unit}" >/dev/null 2>&1 || true
   done
+  rm -f -- "${NODE_UNINSTALL_SERVICE}" || return 1
+  if [[ -f "${DATA_PLANE_BACKUP_DIR}/units/${NODE_UNINSTALL_SERVICE##*/}" ]]; then
+    install -o root -g root -m 0644 \
+      "${DATA_PLANE_BACKUP_DIR}/units/${NODE_UNINSTALL_SERVICE##*/}" \
+      "${NODE_UNINSTALL_SERVICE}" || return 1
+  fi
   install -o root -g root -m 0755 \
     "${DATA_PLANE_BACKUP_DIR}/opt/node_agent.py" \
     "${NODE_AGENT_OPT_DIR}/node_agent.py" || return 1
@@ -2483,7 +2614,8 @@ rollback_data_plane_activation() {
     install -o root -g root -m 0755 "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}" \
       "${NODE_AGENT_OPT_DIR}/node_agent.py" || return 1
   fi
-  for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}"; do
+  for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}" \
+    "${NODE_UNINSTALL_SERVICE}"; do
     rm -f -- "${path}" || return 1
   done
   if [[ -e /var/lib/hysteria2-panel-node || -L /var/lib/hysteria2-panel-node ]]; then
@@ -2700,6 +2832,33 @@ LimitNOFILE=4096
 WantedBy=multi-user.target
 EOF
 
+  cat > "${TMP_DIR}/hysteria2-panel-node-uninstall.service" <<EOF
+[Unit]
+Description=Uninstall Hysteria2-panel paired node after a signed command
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=${NODE_ONBOARDING_INSTALLER} --uninstall-node
+Restart=on-failure
+RestartSec=30s
+UMask=0077
+TimeoutStartSec=20min
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+TasksMax=512
+MemoryMax=2G
+EOF
+
   cat > "${TMP_DIR}/hysteria2-panel-node-hysteria-main.service" <<EOF
 [Unit]
 Description=Hysteria2-panel data node main UDP ${DATA_PLANE_MAIN_PORT}
@@ -2851,6 +3010,9 @@ EOF
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     install -o root -g root -m 0644 "${TMP_DIR}/${path##*/}" "${path}"
   done
+  install -o root -g root -m 0644 \
+    "${TMP_DIR}/hysteria2-panel-node-uninstall.service" \
+    "${NODE_UNINSTALL_SERVICE}"
   systemctl daemon-reload
   systemctl enable --now hysteria2-panel-node-auth.service
   systemctl enable --now hysteria2-panel-node-control.service
@@ -3557,7 +3719,8 @@ verify_fresh_install_commit_payload() {
   elif [[ "${panel_scheme_value}" != "http" ]]; then
     return 1
   fi
-  [[ -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
+  [[ ! -e /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer \
+    && ! -L /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer ]] \
     || return 1
   [[ -L /etc/systemd/system/timers.target.wants/hysteria2-panel-offsite-backup.timer ]] \
     || return 1
@@ -5705,6 +5868,9 @@ elif [[ "${1:-}" == "--activate-data-plane" ]]; then
 elif [[ "${1:-}" == "--complete-node-onboarding" ]]; then
   COMPLETE_NODE_ONBOARDING=1
   shift
+elif [[ "${1:-}" == "--uninstall-node" ]]; then
+  UNINSTALL_NODE=1
+  shift
 fi
 [[ $# -eq 0 ]] || fail "未知参数：$1"
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
@@ -5719,6 +5885,11 @@ if (( WATCH_UPGRADE == 1 )); then
   INSTALL_COMMITTED=1
   watch_upgrade_parent "${WATCH_UPGRADE_PID}" "${WATCH_UPGRADE_START}" \
     || fail "升级 watchdog 无法启动恢复服务；事务标记已保留"
+  exit 0
+fi
+if (( UNINSTALL_NODE == 1 )); then
+  INSTALL_COMMITTED=1
+  uninstall_node
   exit 0
 fi
 if (( JOIN_NODE == 1 )); then
@@ -7035,7 +7206,7 @@ fi
 
 cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.service <<EOF
 [Unit]
-Description=Observe manual DNS and admit fresh Hysteria2 data nodes
+Description=Legacy disabled Hysteria2 data-node DNS observer
 After=network-online.target hysteria2-panel.service
 Requires=hysteria2-panel.service
 Wants=network-online.target
@@ -7071,7 +7242,7 @@ TimeoutStartSec=20s
 EOF
 cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.timer <<'EOF'
 [Unit]
-Description=Check manually managed data-node DNS every 30 seconds
+Description=Legacy disabled Hysteria2 data-node DNS observer timer
 
 [Timer]
 OnBootSec=30s
@@ -7183,7 +7354,9 @@ assert_units_claimed_by_installer
 systemctl enable hysteria2-panel-restore-resume.service
 systemctl enable hysteria2-panel.service
 systemctl enable hysteria2-panel-server.service
-systemctl enable hysteria2-panel-node-dns-admission.timer
+systemctl disable --now hysteria2-panel-node-dns-admission.timer \
+  hysteria2-panel-node-dns-admission.service >/dev/null 2>&1 || true
+rm -f -- /etc/systemd/system/timers.target.wants/hysteria2-panel-node-dns-admission.timer
 systemctl enable hysteria2-panel-offsite-backup.timer
 if [[ "${PANEL_SCHEME}" == "https" ]]; then
   systemctl enable hysteria2-panel-cert-renew.timer
@@ -7234,8 +7407,6 @@ wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz" "${PANEL_HEAL
   || fail "面板就绪检查失败"
 wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
-systemctl start hysteria2-panel-node-dns-admission.timer \
-  || fail "节点 DNS 只读监测 timer 启动失败"
 systemctl start hysteria2-panel-offsite-backup.timer \
   || fail "异地备份 timer 启动失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"

@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.38.12"', source)
+        self.assertIn('PANEL_VERSION="0.39.0"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -4300,7 +4300,15 @@ class StreamlinedOnboardingInstallerTests(unittest.TestCase):
         self.assertIn("ConditionPathExists=", join)
         self.assertIn("--complete-node-onboarding", join)
         self.assertIn("OnUnitActiveSec=30s", join)
-        self.assertIn('sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der"', join)
+        self.assertIn("JOIN_NODE_MUTATED=0", join)
+        self.assertIn(
+            "systemctl start --no-block hysteria2-panel-node-onboarding.service",
+            join,
+        )
+        self.assertIn('sleep 5', join)
+        self.assertIn('节点一键对接已完成', join)
+        self.assertNotIn('sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der"', join)
+        self.assertNotIn("指纹", join)
         self.assertNotIn("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", join)
         self.assertNotIn("server.key", join)
 
@@ -4312,8 +4320,9 @@ class StreamlinedOnboardingInstallerTests(unittest.TestCase):
         claim = completion.index("claim-data-plane")
         activate_agent = completion.index("activate_node_agent")
         activate_data_plane = completion.index("activate_data_plane")
-        self.assertLess(claim, activate_agent)
+        self.assertLess(activate_agent, claim)
         self.assertLess(activate_agent, activate_data_plane)
+        self.assertLess(claim, activate_data_plane)
         self.assertIn("NODE_ONBOARDING_TOKEN_FILE", completion)
         self.assertIn('rm -f -- "${NODE_ONBOARDING_TOKEN_FILE}"', completion)
         self.assertIn("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", completion)
@@ -4348,7 +4357,7 @@ class StreamlinedOnboardingInstallerTests(unittest.TestCase):
             self.assertIn(artifact, rollback)
         self.assertIn("daemon-reload", rollback)
 
-    def test_panel_installs_a_read_only_dns_admission_timer(self):
+    def test_panel_keeps_legacy_dns_units_disabled_for_rollback_compatibility(self):
         service = self.source.split(
             "cat > /etc/systemd/system/hysteria2-panel-node-dns-admission.service <<EOF",
             1,
@@ -4362,7 +4371,18 @@ class StreamlinedOnboardingInstallerTests(unittest.TestCase):
         self.assertIn("ProtectSystem=strict", service)
         self.assertIn("ReadWritePaths=/var/lib/hysteria2-panel", service)
         self.assertIn("OnUnitActiveSec=30s", timer)
+        self.assertIn("Legacy disabled", service)
+        self.assertIn("Legacy disabled", timer)
         self.assertIn(
+            "systemctl disable --now hysteria2-panel-node-dns-admission.timer",
+            self.source,
+        )
+        self.assertIn(
+            "rm -f -- /etc/systemd/system/timers.target.wants/"
+            "hysteria2-panel-node-dns-admission.timer",
+            self.source,
+        )
+        self.assertNotIn(
             "systemctl start hysteria2-panel-node-dns-admission.timer",
             self.source,
         )
@@ -4382,6 +4402,26 @@ class StreamlinedOnboardingInstallerTests(unittest.TestCase):
             '"${BACKUP_DIR}/hysteria2-panel-node-dns-admission.wants"',
             self.source,
         )
+
+    def test_one_click_disconnect_uses_a_fixed_root_only_uninstall_worker(self):
+        start = self.source.index("uninstall_node()")
+        uninstall = self.source[start:self.source.index("\n}\n", start) + 2]
+        service = self.source.split(
+            'cat > "${TMP_DIR}/hysteria2-panel-node-uninstall.service" <<EOF',
+            1,
+        )[1].split("EOF", 1)[0]
+
+        self.assertIn("--uninstall-node", self.source)
+        self.assertIn("User=root", service)
+        self.assertIn("Restart=on-failure", service)
+        self.assertIn("ExecStart=${NODE_ONBOARDING_INSTALLER} --uninstall-node", service)
+        self.assertIn('require_node_agent_file "${NODE_UNINSTALL_COMMAND}" 600', uninstall)
+        self.assertIn('require_node_agent_directory "${NODE_DATA_PLANE_BACKUP_ROOT}" 700', uninstall)
+        self.assertIn("rollback_data_plane_firewall", uninstall)
+        self.assertIn("restore_data_plane_network_snapshot", uninstall)
+        self.assertIn("ack-command", uninstall)
+        self.assertNotIn("eval ", uninstall)
+        self.assertNotIn("bash -c", uninstall)
 
 
 class DataPlaneInstallerContractTests(unittest.TestCase):

@@ -165,17 +165,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Future<void> _showEnrollment() async {
     final name = TextEditingController();
     final expectedIp = TextEditingController();
-    var ttl = 10;
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => GlassDialog(
+        builder: (context, _) => GlassDialog(
           title: const Text('对接新节点'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('生成短时授权后，在新服务器使用 root 执行完整部署代码。面板不会自动修改 DNS。'),
+                const Text('生成前请先自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS。'),
                 const SizedBox(height: 16),
                 TextField(
                   controller: name,
@@ -184,23 +183,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 const SizedBox(height: 12),
                 TextField(
                   controller: expectedIp,
-                  decoration: const InputDecoration(labelText: '预期公网 IP（可选）'),
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<int>(
-                  initialValue: ttl,
-                  dropdownColor: glassMenuColor(context),
-                  borderRadius: BorderRadius.circular(16),
-                  decoration: const InputDecoration(labelText: '对接码有效期'),
-                  items: const [5, 10, 30]
-                      .map(
-                        (value) => DropdownMenuItem(
-                          value: value,
-                          child: Text('$value 分钟'),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (value) => setDialogState(() => ttl = value ?? 10),
+                  decoration: const InputDecoration(labelText: '目标服务器公网 IP'),
                 ),
               ],
             ),
@@ -212,14 +195,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
             FilledButton(
               onPressed: () async {
-                if (name.text.trim().isEmpty) return;
+                if (name.text.trim().isEmpty ||
+                    expectedIp.text.trim().isEmpty) {
+                  ScaffoldMessenger.of(dialogContext).showSnackBar(
+                    const SnackBar(content: Text('请填写节点名称和目标服务器公网 IP')),
+                  );
+                  return;
+                }
                 try {
                   final data = await ref
                       .read(appControllerProvider.notifier)
                       .postJson('/api/v1/mobile/node-enrollments', {
                         'name': name.text.trim(),
                         'expectedIp': expectedIp.text.trim(),
-                        'ttlMinutes': ttl,
+                        'ttlMinutes': 10,
                         'mode': 'join',
                       });
                   if (dialogContext.mounted) Navigator.pop(dialogContext, data);
@@ -230,7 +219,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   }
                 }
               },
-              child: const Text('生成部署代码'),
+              child: const Text('一键对接'),
             ),
           ],
         ),
@@ -240,6 +229,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     expectedIp.dispose();
     if (result == null || !mounted) return;
     final command = result['deploymentCommand']?.toString() ?? '';
+    await Clipboard.setData(ClipboardData(text: command));
+    if (!mounted) return;
     await showDialog<void>(
       context: context,
       builder: (context) => GlassDialog(
@@ -250,7 +241,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('代码包含短时授权，请只在目标服务器执行；过期后会自动失效。'),
+                const Text('代码已复制。请在目标服务器以 root 粘贴运行；短时授权只能使用一次。'),
                 const SizedBox(height: 12),
                 SelectableText(
                   command,
@@ -265,15 +256,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('关闭'),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: command));
-              if (context.mounted) Navigator.pop(context);
-              if (mounted) _message('部署代码已复制');
-            },
-            icon: const Icon(Icons.copy_rounded),
-            label: const Text('复制代码'),
           ),
         ],
       ),
@@ -530,7 +512,7 @@ class _ServiceButtons extends StatelessWidget {
       ('重启', Icons.restart_alt_rounded, onRestart, Colors.orange),
       ('停止', Icons.stop_rounded, onStop, Colors.red),
       (
-        '对接',
+        '一键对接',
         Icons.add_link_rounded,
         onEnroll,
         Theme.of(context).colorScheme.secondary,
