@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class RefreshWarning extends StatelessWidget {
   const RefreshWarning({required this.message, super.key});
@@ -23,78 +24,52 @@ class RefreshWarning extends StatelessWidget {
   );
 }
 
-/// Shared background and surfaces for the app's lightweight liquid-glass UI.
+/// Static tinted backdrop makes the frosted surfaces visible without motion.
 class LiquidBackdrop extends StatelessWidget {
   const LiquidBackdrop({required this.child, super.key});
-
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return ColoredBox(
-      color: dark ? const Color(0xFF04101D) : const Color(0xFFEFF5FF),
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: dark
-                    ? const [
-                        Color(0xFF061526),
-                        Color(0xFF0A1730),
-                        Color(0xFF071A23),
-                      ]
-                    : const [
-                        Color(0xFFF8FBFF),
-                        Color(0xFFEDF4FF),
-                        Color(0xFFF4FAF8),
-                      ],
-              ),
-            ),
+    final theme = Theme.of(context);
+    final dark = theme.brightness == Brightness.dark;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: (dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark)
+          .copyWith(
+            statusBarColor: Colors.transparent,
+            systemNavigationBarColor: theme.colorScheme.surface,
+            systemNavigationBarIconBrightness: dark
+                ? Brightness.light
+                : Brightness.dark,
           ),
-          _Glow(
-            alignment: const Alignment(-1.15, -1.05),
-            color: scheme.primary.withValues(alpha: dark ? .28 : .22),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: dark
+                ? [
+                    const Color(0xFF0B111D),
+                    Color.alphaBlend(
+                      theme.colorScheme.primary.withValues(alpha: .09),
+                      const Color(0xFF11151F),
+                    ),
+                    const Color(0xFF101B23),
+                  ]
+                : [
+                    const Color(0xFFF2F6FB),
+                    Color.alphaBlend(
+                      theme.colorScheme.primary.withValues(alpha: .10),
+                      const Color(0xFFF5F5FA),
+                    ),
+                    const Color(0xFFE8F3F1),
+                  ],
           ),
-          _Glow(
-            alignment: const Alignment(1.15, -.05),
-            color: scheme.tertiary.withValues(alpha: dark ? .20 : .16),
-          ),
-          _Glow(
-            alignment: const Alignment(-.15, 1.25),
-            color: scheme.secondary.withValues(alpha: dark ? .16 : .12),
-          ),
-          child,
-        ],
+        ),
+        child: BackdropGroup(child: child),
       ),
     );
   }
-}
-
-class _Glow extends StatelessWidget {
-  const _Glow({required this.alignment, required this.color});
-
-  final Alignment alignment;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) => IgnorePointer(
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: RadialGradient(
-          center: alignment,
-          radius: 1.15,
-          colors: [color, color.withValues(alpha: 0)],
-          stops: const [0, 1],
-        ),
-      ),
-    ),
-  );
 }
 
 class GlassSurface extends StatelessWidget {
@@ -103,9 +78,11 @@ class GlassSurface extends StatelessWidget {
     this.borderRadius = 20,
     this.blurSigma = 0,
     this.margin,
+    this.grouped = false,
     super.key,
   });
 
+  final bool grouped;
   final Widget child;
   final double borderRadius;
   final double blurSigma;
@@ -115,26 +92,26 @@ class GlassSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final opaque = MediaQuery.highContrastOf(context);
+    final floating = blurSigma > 0;
     final radius = BorderRadius.circular(borderRadius);
     final surface = DecoratedBox(
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: dark
+          colors: opaque
+              ? [scheme.surfaceContainerLow, scheme.surfaceContainerLow]
+              : dark
               ? [
-                  Colors.white.withValues(alpha: .105),
-                  Colors.white.withValues(alpha: .045),
+                  const Color(0xFF293342).withValues(alpha: .72),
+                  const Color(0xFF1B2533).withValues(alpha: .52),
                 ]
               : [
-                  Colors.white.withValues(alpha: .84),
-                  Colors.white.withValues(alpha: .48),
+                  Colors.white.withValues(alpha: .80),
+                  Colors.white.withValues(alpha: .52),
                 ],
         ),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: dark ? .17 : .82),
-        ),
-        borderRadius: radius,
       ),
       child: Material(type: MaterialType.transparency, child: child),
     );
@@ -142,26 +119,39 @@ class GlassSurface extends StatelessWidget {
       margin: margin,
       decoration: BoxDecoration(
         borderRadius: radius,
+        border: Border.all(
+          color: MediaQuery.highContrastOf(context)
+              ? scheme.outline
+              : Colors.white.withValues(alpha: dark ? .16 : .75),
+          width: MediaQuery.highContrastOf(context) ? 1.5 : .5,
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? .28 : .10),
-            blurRadius: 26,
-            offset: const Offset(0, 9),
-          ),
-          BoxShadow(
-            color: scheme.primary.withValues(alpha: dark ? .08 : .06),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
+            color: Colors.black.withValues(alpha: dark ? .20 : .055),
+            blurRadius: floating ? 24 : 14,
+            offset: const Offset(0, 6),
+            spreadRadius: -4,
           ),
         ],
       ),
       child: ClipRRect(
         borderRadius: radius,
-        child: blurSigma > 0
-            ? BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
-                child: surface,
-              )
+        child: floating && !opaque
+            ? grouped
+                  ? BackdropFilter.grouped(
+                      filter: ImageFilter.blur(
+                        sigmaX: blurSigma,
+                        sigmaY: blurSigma,
+                      ),
+                      child: surface,
+                    )
+                  : BackdropFilter(
+                      filter: ImageFilter.blur(
+                        sigmaX: blurSigma,
+                        sigmaY: blurSigma,
+                      ),
+                      child: surface,
+                    )
             : surface,
       ),
     );
@@ -172,7 +162,7 @@ class GlassCard extends StatelessWidget {
   const GlassCard({
     required this.child,
     this.margin,
-    this.blurSigma = 0,
+    this.blurSigma = 12,
     super.key,
   });
 
@@ -181,14 +171,16 @@ class GlassCard extends StatelessWidget {
   final double blurSigma;
 
   @override
-  Widget build(BuildContext context) =>
-      GlassSurface(margin: margin, blurSigma: blurSigma, child: child);
+  Widget build(BuildContext context) => GlassSurface(
+    margin: margin,
+    blurSigma: blurSigma,
+    grouped: true,
+    child: child,
+  );
 }
 
 Color glassMenuColor(BuildContext context) {
-  final scheme = Theme.of(context).colorScheme;
-  final dark = Theme.of(context).brightness == Brightness.dark;
-  return scheme.surface.withValues(alpha: dark ? .78 : .90);
+  return Theme.of(context).colorScheme.surfaceContainerLow;
 }
 
 // Keep caller-owned input controllers alive until the closing animation ends.

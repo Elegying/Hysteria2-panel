@@ -55,12 +55,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   void _startTimer() {
     _timer?.cancel();
-    _timer = Timer.periodic(
-      const Duration(seconds: 10),
-      (_) {
-        if (!_refreshing) _load(silent: true);
-      },
-    );
+    _timer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!_refreshing) _load(silent: true);
+    });
   }
 
   Future<void> _load({bool silent = false}) async {
@@ -199,7 +196,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 if (formError != null)
                   Text(
                     formError!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
                   ),
               ],
             ),
@@ -210,40 +209,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: submitting ? null : () async {
-                if (submitting) return;
-                if (name.text.trim().isEmpty ||
-                    expectedIp.text.trim().isEmpty) {
-                  setDialogState(() => formError = '请填写节点名称和目标服务器公网 IP');
-                  return;
-                }
-                setDialogState(() {
-                  submitting = true;
-                  formError = null;
-                });
-                try {
-                  final data = await ref
-                      .read(appControllerProvider.notifier)
-                      .postJson('/api/v1/mobile/node-enrollments', {
-                        'name': name.text.trim(),
-                        'expectedIp': expectedIp.text.trim(),
-                        'ttlMinutes': 10,
-                        'mode': 'join',
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      if (submitting) return;
+                      if (name.text.trim().isEmpty ||
+                          expectedIp.text.trim().isEmpty) {
+                        setDialogState(() => formError = '请填写节点名称和目标服务器公网 IP');
+                        return;
+                      }
+                      setDialogState(() {
+                        submitting = true;
+                        formError = null;
                       });
-                  if (dialogContext.mounted &&
-                      ModalRoute.of(dialogContext)?.isCurrent == true) {
-                    Navigator.pop(dialogContext, data);
-                  }
-                } on ApiException catch (error) {
-                  if (dialogContext.mounted &&
-                      ModalRoute.of(dialogContext)?.isCurrent == true) {
-                    setDialogState(() {
-                      submitting = false;
-                      formError = error.message;
-                    });
-                  }
-                }
-              },
+                      try {
+                        final data = await ref
+                            .read(appControllerProvider.notifier)
+                            .postJson('/api/v1/mobile/node-enrollments', {
+                              'name': name.text.trim(),
+                              'expectedIp': expectedIp.text.trim(),
+                              'ttlMinutes': 10,
+                              'mode': 'join',
+                            });
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          Navigator.pop(dialogContext, data);
+                        }
+                      } on ApiException catch (error) {
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          setDialogState(() {
+                            submitting = false;
+                            formError = error.message;
+                          });
+                        }
+                      }
+                    },
               child: Text(submitting ? '生成中…' : '一键对接'),
             ),
           ],
@@ -298,6 +299,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
+              toolbarHeight: 64,
               pinned: false,
               title: const Text('首页'),
               actions: [
@@ -331,7 +333,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     const SizedBox(height: 14),
                     _SectionCard(
                       title: '服务控制',
-                      subtitle: '启动、重启、停止和节点对接集中在这里',
+                      subtitle: '管理本机服务，或连接新的服务器',
                       child: _ServiceButtons(
                         disabled: _acting,
                         onStart: () => _serviceAction('start', '启动'),
@@ -392,7 +394,7 @@ class _StatusHeader extends StatelessWidget {
                   Text(
                     serviceLabel(data['serviceStatus']),
                     style: Theme.of(context).textTheme.titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w800),
+                        ?.copyWith(fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 3),
                   Text(
@@ -439,9 +441,10 @@ class _SummaryGrid extends StatelessWidget {
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
-        childAspectRatio: 1.65,
+        mainAxisExtent:
+            132 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
       ),
@@ -462,8 +465,11 @@ class _SummaryGrid extends StatelessWidget {
                   item.$2,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w800),
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 28,
+                    letterSpacing: -.6,
+                  ),
                 ),
               ],
             ),
@@ -500,7 +506,7 @@ class _SectionCard extends StatelessWidget {
                 child: Text(
                   title,
                   style: Theme.of(context).textTheme.titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w800),
+                      ?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ),
               if (action != null) ...[const SizedBox(width: 10), action!],
@@ -670,47 +676,18 @@ class _ResourcesCard extends StatelessWidget {
       child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 2,
-          childAspectRatio: 2.15,
+          mainAxisExtent:
+              92 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
           crossAxisSpacing: 9,
           mainAxisSpacing: 9,
         ),
         itemCount: rows.length,
         itemBuilder: (context, index) => DecoratedBox(
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Colors.white.withValues(
-                  alpha: Theme.of(context).brightness == Brightness.dark
-                      ? .09
-                      : .62,
-                ),
-                Theme.of(context).colorScheme.surfaceContainerHighest
-                    .withValues(alpha: .34),
-              ],
-            ),
-            border: Border.all(
-              color: Colors.white.withValues(
-                alpha: Theme.of(context).brightness == Brightness.dark
-                    ? .18
-                    : .82,
-              ),
-            ),
+            color: Theme.of(context).colorScheme.surface,
             borderRadius: BorderRadius.circular(12),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(
-                  alpha: Theme.of(context).brightness == Brightness.dark
-                      ? .18
-                      : .07,
-                ),
-                blurRadius: 12,
-                offset: const Offset(0, 5),
-              ),
-            ],
           ),
           child: Padding(
             padding: const EdgeInsets.all(12),
@@ -727,7 +704,7 @@ class _ResourcesCard extends StatelessWidget {
                   rows[index].$2,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ],
             ),

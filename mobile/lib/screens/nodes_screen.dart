@@ -36,12 +36,9 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     Future.microtask(_load);
-    _timer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) {
-        if (!_refreshing) _load(silent: true);
-      },
-    );
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_refreshing) _load(silent: true);
+    });
   }
 
   @override
@@ -142,9 +139,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       if (detailContext.mounted) Navigator.pop(detailContext);
       await _load(silent: true);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('$label任务已提交')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$label任务已提交')));
       }
     } on ApiException catch (error) {
       if (mounted) {
@@ -260,9 +256,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             children: [
               Text(
                 node['name'].toString(),
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w800,
-                ),
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 4),
               _StatusPill(status: node['status'].toString()),
@@ -380,6 +375,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
+              toolbarHeight: 64,
               pinned: false,
               title: const Text('节点'),
               actions: [
@@ -487,7 +483,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                                               maxLines: 1,
                                               overflow: TextOverflow.ellipsis,
                                               style: const TextStyle(
-                                                fontWeight: FontWeight.w800,
+                                                fontWeight: FontWeight.w700,
                                               ),
                                             ),
                                           ),
@@ -501,15 +497,15 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                                         node['observedIp'].toString().isNotEmpty
                                             ? node['observedIp'].toString()
                                             : node['expectedIp'].toString(),
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall,
                                       ),
                                       Text(
                                         '${node['onlineDevices'] ?? '—'} 台在线 · 心跳 ${formatTimestamp(node['lastHeartbeatAt'])}',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall,
                                       ),
                                     ],
                                   ),
@@ -555,9 +551,8 @@ class _RealtimeTrafficCard extends StatelessWidget {
         children: [
           Text(
             '服务器节点实时流量',
-            style: Theme.of(
-              context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+            style: Theme.of(context).textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 3),
           Text('每 5 秒采样一次节点累计流量', style: Theme.of(context).textTheme.bodySmall),
@@ -565,24 +560,30 @@ class _RealtimeTrafficCard extends StatelessWidget {
           ...nodes.map(
             (node) => Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: Text(
-                      node['name'].toString(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
                   Text(
-                    '${formatBytes(rates[node['nodeId']] ?? 0)}/s',
-                    style: const TextStyle(fontWeight: FontWeight.w800),
+                    node['name'].toString(),
+                    style: const TextStyle(fontWeight: FontWeight.w600),
                   ),
-                  const SizedBox(width: 10),
-                  Text(
-                    '累计 ${formatBytes(node['totalBytes'])}',
-                    style: Theme.of(context).textTheme.bodySmall,
+                  const SizedBox(height: 4),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 4,
+                    children: [
+                      Text(
+                        '${formatBytes(rates[node['nodeId']] ?? 0)}/s',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                      Text(
+                        '累计 ${formatBytes(node['totalBytes'])}',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -604,10 +605,8 @@ class _Count extends StatelessWidget {
     children: [
       Text(
         value,
-        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-          fontWeight: FontWeight.w800,
-          color: color,
-        ),
+        style: Theme.of(context).textTheme.titleLarge
+            ?.copyWith(fontWeight: FontWeight.w700, color: color),
       ),
       Text(label, style: Theme.of(context).textTheme.bodySmall),
     ],

@@ -179,7 +179,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     return SafeArea(
       child: CustomScrollView(
         slivers: [
-          const SliverAppBar(pinned: false, title: Text('设置')),
+          const SliverAppBar(
+            toolbarHeight: 64,
+            pinned: false,
+            title: Text('设置'),
+          ),
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
             sliver: SliverList.list(
@@ -202,7 +206,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                               Text(
                                 'Hysteria2管理',
                                 style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.w800),
+                                    ?.copyWith(fontWeight: FontWeight.w700),
                               ),
                               Text(
                                 _packageInfo == null
@@ -236,7 +240,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                               )
                             : const Icon(Icons.system_update_alt_rounded),
                         title: const Text('检查 App 更新'),
-                        subtitle: const Text('从 GitHub 获取固定签名的新版本 APK'),
+                        subtitle: const Text('查看是否有新版本可安装'),
                         trailing: const Icon(Icons.chevron_right_rounded),
                         onTap: _checking ? null : _checkUpdate,
                       ),
@@ -251,9 +255,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '界面颜色',
+                          '外观',
                           style: Theme.of(context).textTheme.titleLarge
-                              ?.copyWith(fontWeight: FontWeight.w800),
+                              ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                         const SizedBox(height: 5),
                         Text(
@@ -261,28 +265,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                         const SizedBox(height: 10),
-                        SegmentedButton<ThemeMode>(
-                          segments: const [
-                            ButtonSegment(
-                              value: ThemeMode.system,
-                              icon: Icon(Icons.brightness_auto_rounded),
-                              label: Text('跟随系统'),
-                            ),
-                            ButtonSegment(
-                              value: ThemeMode.light,
-                              icon: Icon(Icons.light_mode_rounded),
-                              label: Text('浅色'),
-                            ),
-                            ButtonSegment(
-                              value: ThemeMode.dark,
-                              icon: Icon(Icons.dark_mode_rounded),
-                              label: Text('深色'),
-                            ),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final item in const [
+                              (
+                                ThemeMode.system,
+                                '跟随系统',
+                                Icons.brightness_auto_rounded,
+                              ),
+                              (ThemeMode.light, '浅色', Icons.light_mode_rounded),
+                              (ThemeMode.dark, '深色', Icons.dark_mode_rounded),
+                            ])
+                              ChoiceChip(
+                                avatar: Icon(item.$3, size: 18),
+                                label: Text(item.$2),
+                                selected: settings.mode == item.$1,
+                                showCheckmark: false,
+                                onSelected: (_) =>
+                                    themeController.setMode(item.$1),
+                              ),
                           ],
-                          selected: {settings.mode},
-                          showSelectedIcon: false,
-                          onSelectionChanged: (value) =>
-                              themeController.setMode(value.first),
                         ),
                         const SizedBox(height: 18),
                         Text(
@@ -299,13 +303,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                   button: true,
                                   selected:
                                       settings.seedValue == color.toARGB32(),
-                                  label: '选择界面强调色',
+                                  label:
+                                      '选择${const ['蓝色', '绿色', '紫色', '橙色', '粉色'][colors.indexOf(color)]}强调色',
                                   child: InkWell(
                                     onTap: () => themeController.setSeed(color),
                                     borderRadius: BorderRadius.circular(999),
                                     child: Container(
-                                      width: 44,
-                                      height: 44,
+                                      width: 48,
+                                      height: 48,
                                       decoration: BoxDecoration(
                                         color: color,
                                         shape: BoxShape.circle,
