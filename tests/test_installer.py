@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.4"', source)
+        self.assertIn('PANEL_VERSION="0.39.5"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -967,17 +967,15 @@ printf '%s:%s:%s:%s\n' \
         full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
         self.assertLess(dispatch, full_install)
 
-    def test_ci_static_analysis_covers_the_standalone_node_agent(self):
+    def test_ci_static_analysis_covers_the_standalone_services(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
-        self.assertIn(
-            "ruff check hysteria2_panel.py tcp_probe.py node_agent.py hy2panel",
-            workflow,
-        )
-        self.assertIn(
-            "bandit -q -r hysteria2_panel.py tcp_probe.py node_agent.py hy2panel",
-            workflow,
-        )
+        for command in ("python -m py_compile", "ruff check", "bandit -q -r"):
+            with self.subTest(command=command):
+                line = next(line for line in workflow.splitlines() if "run: " + command in line)
+                arguments = shlex.split(line.split("run: ", 1)[1])
+                for service in ("hysteria2_panel.py", "tcp_probe.py", "node_agent.py", "offsite_backup.py"):
+                    self.assertIn(service, arguments)
 
     def test_tag_ci_requires_the_tag_to_match_both_source_versions(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
@@ -1263,6 +1261,121 @@ preflight_panel_acme_dns
         self.assertNotIn("dnf install -y ca-certificates curl", function)
         self.assertNotIn("yum install -y ca-certificates curl", function)
         self.assertNotIn("python3 coreutils findutils", function)
+
+    def test_node_join_installs_missing_dependencies_before_registering_identity(self):
+        source = INSTALLER.read_text()
+        start = source.index("install_join_node()")
+        join = source[start:source.index("\n}\n", start) + 2]
+        join = join.replace("[[ -d /run/systemd/system ]]", "true")
+        dependency_helpers = ""
+        if "ensure_node_dependencies()" in source:
+            start = source.index("ensure_node_dependencies()")
+            dependency_helpers = source[start:source.index("\n}\n", start) + 2]
+        for dependency in ("python", "openssl", "ss", "nft", "cmp", "modprobe"):
+            with self.subTest(dependency=dependency), tempfile.TemporaryDirectory() as root:
+                script = f"""
+set -euo pipefail
+{dependency_helpers}
+{join}
+PANEL_VERSION=0.39.4
+PANEL_REF=v0.39.4
+HY2PANEL_PANEL_URL=https://panel.example.test
+HY2PANEL_ENROLLMENT_TOKEN={'a' * 43}
+MANAGED_MARKER={shlex.quote(root)}/panel-marker
+NODE_AGENT_OPT_DIR={shlex.quote(root)}/opt
+NODE_AGENT_CONFIG_DIR={shlex.quote(root)}/etc
+NODE_AGENT_SOURCE_URL=https://example.test/node_agent.py
+installed=0
+missing={shlex.quote(dependency)}
+fail() {{ printf 'FAIL:%s\\n' "$*" >&2; exit 97; }}
+uname() {{ printf 'x86_64\\n'; }}
+command() {{
+  if [[ "$1" == -v ]]; then
+    [[ "$2" != "$missing" || "$installed" == 1 ]]
+  else
+    builtin command "$@"
+  fi
+}}
+select_python() {{ [[ "$missing" != python || "$installed" == 1 ]]; }}
+install_system_dependencies() {{ installed=1; printf 'dependencies-installed\\n'; }}
+mktemp() {{ printf '%s\\n' {shlex.quote(root)}; }}
+download_file() {{
+  [[ "$installed" == 1 ]] || fail 'dependencies were not installed'
+  printf 'ready-to-download\\n'
+  exit 0
+}}
+install_join_node
+"""
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, timeout=10
+                )
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn("dependencies-installed\nready-to-download", result.stdout)
+                self.assertFalse((Path(root) / "etc").exists())
+
+    def test_node_dependencies_skip_ready_hosts_and_stop_after_package_failure(self):
+        source = INSTALLER.read_text()
+        start = source.index("ensure_node_dependencies()")
+        helper = source[start:source.index("\n}\n", start) + 2]
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                script = f"""
+set -euo pipefail
+{helper}
+command() {{ [[ "$2" != openssl || {int(missing)} == 0 ]]; }}
+select_python() {{ return 0; }}
+install_system_dependencies() {{ printf 'package-failed\\n'; return 42; }}
+fail() {{ exit 97; }}
+ensure_node_dependencies
+printf 'ready\\n'
+"""
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, timeout=10
+                )
+                self.assertEqual(42 if missing else 0, result.returncode, result.stderr)
+                self.assertEqual(not missing, "ready\n" in result.stdout)
+                self.assertEqual(missing, "package-failed\n" in result.stdout)
+
+    def test_python_selection_rejects_incomplete_standard_library(self):
+        source = INSTALLER.read_text()
+        start = source.index("select_python()")
+        helper = source[start:source.index("\n}\n", start) + 2]
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "sqlite3.py").write_text("raise ImportError('missing SQLite fixture')\n")
+            environment = dict(os.environ, PYTHONPATH=root)
+            result = subprocess.run(
+                ["bash", "-c", helper + "\nselect_python"],
+                capture_output=True, text=True, timeout=20, env=environment,
+            )
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+
+    def test_port_validation_rejects_octal_and_overflow_before_firewall_changes(self):
+        source = INSTALLER.read_text()
+        start = source.index('\nAUTH_PORT="${AUTH_PORT:-${EXISTING_AUTH_PORT}}"')
+        validation = source[start:source.index("\nprepare_firewall", start)]
+        for port, accepted in (
+            ("19999", True), ("65535", True), ("1", True),
+            ("0", False), ("65536", False), ("080", False), ("0443", False),
+            ("0100000", False), ("18446744073709571615", False),
+        ):
+            with self.subTest(port=port):
+                script = f"""
+set -euo pipefail
+HYSTERIA_PORT={shlex.quote(port)}
+PANEL_PORT=19998
+AUTH_PORT=19996
+STATS_PORT=19997
+STATS_443_PORT=19995
+PANEL_SCHEME=http
+fail() {{ printf 'FAIL:%s\\n' "$*" >&2; exit 97; }}
+{validation}
+printf 'accepted\\n'
+"""
+                result = subprocess.run(
+                    ["bash", "-c", script], capture_output=True, text=True, timeout=10
+                )
+                self.assertEqual(0 if accepted else 97, result.returncode,
+                                 result.stdout + result.stderr)
 
     def test_verified_root_owned_hysteria_and_cosign_are_reused_before_download(self):
         source = INSTALLER.read_text()
@@ -4667,7 +4780,7 @@ if ! command -v mapfile >/dev/null 2>&1; then
     local _option="$1" _name="$2" _line
     eval "${{_name}}=()"
     while IFS= read -r _line; do
-      eval "${{_name}}+=(\"\${{_line}}\")"
+      eval "${{_name}}+=(\"\\${{_line}}\")"
     done
   }}
 fi

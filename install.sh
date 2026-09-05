@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.4"
+PANEL_VERSION="0.39.5"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -26,11 +26,11 @@ HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyster
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
 PANEL_SHA256="5076622d6e25cbcfe00d7de57b6a37b0dd045e4d85e7e21fad61cba088f2ae7c"
-OFFSITE_BACKUP_SHA256="631e756b4eba363f21e8e48603d8b672c646576b820699ffbf5d4eed94b2f07f"
+OFFSITE_BACKUP_SHA256="ee60a3ccadc007f92559721ebf5afe0fbd49ec7131def208d903a4787c1b7782"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="5d49988cc85596cc8b7f4e2357a85e24127633db92ab54cb66706b1c90ba3e7d"
+HY2PANEL_VERSION_SHA256="91fb8501238c4aa5310dbff4511a913f7c723e6e6959bfcfc726cc38f024f031"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="c57b34c16538837583bc606ba13ce469349fd0ed1f81840521eec9d300746dfb"
 HY2PANEL_OPERATIONS_SHA256="1efa9e0435aa230db1c3c35371c07bfd5e290cfc3df0aa745bf2b065bed7c614"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="c38986d1b8e8baa040ba7fe54f01d290affe47986c637100ed9d7fa6c0758f8d"
 HY2PANEL_MOBILE_API_SHA256="9b1ae9d2b804666e88af874bce2b5fb8847523fc65cfd10193b88617e38fdb7e"
-NODE_AGENT_SHA256="60cf03850c4305fd6e947d697e4b1621dd3f5a5fc86ab0cfb44d8c82b0f7210e"
+NODE_AGENT_SHA256="ed6d8713f40fcb1c3abeb3d871ada7f74c8f5f6ce8849a6285d5ae09553f350a"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1218,13 +1218,31 @@ select_python() {
   PYTHON_BIN=""
   for candidate in python3 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8; do
     command -v "${candidate}" >/dev/null 2>&1 || continue
-    if "${candidate}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' \
+    if "${candidate}" -c 'import hashlib, sqlite3, ssl, sys; raise SystemExit(0 if sys.version_info >= (3, 8) and hasattr(hashlib, "scrypt") else 1)' \
       >/dev/null 2>&1; then
       PYTHON_BIN="$(command -v "${candidate}")"
       return 0
     fi
   done
   return 1
+}
+
+ensure_node_dependencies() {
+  local command_name
+  local -a node_commands=(awk busctl cat chmod cmp cp curl date df find grep install ip ip6tables-save iptables-save mkdir mktemp modprobe mv nft openssl rm rmdir sed sha256sum sleep sort ss stat sync sysctl systemctl uname)
+  local -a missing_commands=()
+  for command_name in "${node_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
+  done
+  if ! select_python || (( ${#missing_commands[@]} > 0 )); then
+    echo "节点缺失运行依赖：${missing_commands[*]:-Python 3.8+}，正在补装"
+    install_system_dependencies
+  fi
+  for command_name in "${node_commands[@]}"; do
+    command -v "${command_name}" >/dev/null 2>&1 \
+      || fail "节点依赖补装后仍缺少命令 ${command_name}；请检查系统软件源"
+  done
+  select_python || fail "节点需要完整的 Python 3.8+（包含 SQLite、SSL 和 scrypt）；请检查系统软件源"
 }
 
 rollback_join_node_install() {
@@ -1333,8 +1351,7 @@ recover_interrupted_node_rebind() {
 }
 
 rebind_node() {
-  local command_name enrollment_token generated_public panel_url
-  local -a rebind_commands=(cat chmod cmp curl date install mkdir mktemp mv openssl rm sha256sum stat sync systemctl uname)
+  local enrollment_token generated_public panel_url
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "节点重绑定只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1350,18 +1367,10 @@ rebind_node() {
   require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
   require_node_agent_file "${NODE_AGENT_HEARTBEAT_SERVICE}" 644
   require_node_agent_file "${NODE_AGENT_HEARTBEAT_TIMER}" 644
-  for command_name in "${rebind_commands[@]}"; do
-    command -v "${command_name}" >/dev/null 2>&1 \
-      || fail "节点重绑定缺少命令 ${command_name}；未修改系统"
-  done
-  select_python || fail "节点重绑定需要 Python 3.8 或更高版本；未修改系统"
   case "$(uname -m)" in
     x86_64|amd64|aarch64|arm64) ;;
     *) fail "节点重绑定仅支持 Linux amd64 和 arm64" ;;
   esac
-  recover_interrupted_node_rebind
-  systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
-    || fail "节点签名心跳 timer 未运行；未修改系统"
   panel_url="${HY2PANEL_PANEL_URL:-}"
   enrollment_token="${HY2PANEL_ENROLLMENT_TOKEN:-}"
   unset HY2PANEL_ENROLLMENT_TOKEN
@@ -1369,6 +1378,10 @@ rebind_node() {
     || fail "节点重绑定要求有效的 HTTPS 面板地址"
   [[ "${enrollment_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
     || fail "缺少或无效的一次性节点重绑定凭据"
+  ensure_node_dependencies
+  recover_interrupted_node_rebind
+  systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
+    || fail "节点签名心跳 timer 未运行；未修改系统"
 
   TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
   download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
@@ -1418,8 +1431,7 @@ rebind_node() {
 }
 
 install_join_node() {
-  local command_name enrollment_token panel_url path
-  local -a join_commands=(cat curl install mkdir mktemp openssl rm sha256sum sleep stat sync systemctl uname)
+  local enrollment_token panel_url path
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "节点对接只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1438,15 +1450,11 @@ install_join_node() {
     [[ ! -e "${path}" && ! -L "${path}" ]] \
       || fail "节点 Agent 路径已存在；为避免覆盖未知数据，对接已停止：${path}"
   done
-  for command_name in "${join_commands[@]}"; do
-    command -v "${command_name}" >/dev/null 2>&1 \
-      || fail "节点对接缺少命令 ${command_name}；未修改系统"
-  done
-  select_python || fail "节点对接需要 Python 3.8 或更高版本；未修改系统"
   case "$(uname -m)" in
     x86_64|amd64|aarch64|arm64) ;;
     *) fail "节点对接仅支持 Linux amd64 和 arm64" ;;
   esac
+  ensure_node_dependencies
 
   TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
   download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
@@ -1574,7 +1582,7 @@ complete_node_onboarding() {
   marker_value="$(cat "${NODE_ONBOARDING_MARKER}")"
   [[ "${marker_value}" == "HYSTERIA2_PANEL_NODE_ONBOARDING_V1" ]] \
     || fail "节点自动收尾标记无效；拒绝继续"
-  select_python || fail "节点自动收尾需要 Python 3.8 或更高版本"
+  ensure_node_dependencies
 
   # A successful activation removes its durable data-plane transaction only
   # after the central ACK.  If the process then dies before removing the
@@ -1819,8 +1827,7 @@ EOF
 }
 
 activate_node_agent() {
-  local command_name generated_public
-  local -a activation_commands=(cat cmp curl install mktemp openssl rm sha256sum stat sync systemctl)
+  local generated_public
 
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "节点心跳只允许使用当前受签名正式版本 v${PANEL_VERSION}"
@@ -1838,11 +1845,7 @@ activate_node_agent() {
     || fail "节点心跳 service 已存在；为避免覆盖未知配置，启用已停止"
   [[ ! -e "${NODE_AGENT_HEARTBEAT_TIMER}" && ! -L "${NODE_AGENT_HEARTBEAT_TIMER}" ]] \
     || fail "节点心跳 timer 已存在；为避免覆盖未知配置，启用已停止"
-  for command_name in "${activation_commands[@]}"; do
-    command -v "${command_name}" >/dev/null 2>&1 \
-      || fail "节点心跳缺少命令 ${command_name}；未修改系统"
-  done
-  select_python || fail "节点心跳需要 Python 3.8 或更高版本；未修改系统"
+  ensure_node_dependencies
 
   TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
   download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
@@ -2702,9 +2705,12 @@ rollback_data_plane_activation() {
 }
 
 activate_data_plane() {
-  local bootstrap_token command_name existing_main_port="" hysteria_arch hysteria_sha hysteria_url main_capability="" path unit
-  local -a data_plane_commands=(awk cat chmod cp curl date df find grep install mkdir mktemp mv openssl rm rmdir sha256sum sort ss stat sync sysctl systemctl)
+  local bootstrap_token existing_main_port="" hysteria_arch hysteria_sha hysteria_url main_capability="" path unit
 
+  bootstrap_token="${HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN:-}"
+  unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
+  [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
+    || fail "缺少或无效的一次性数据面部署凭据"
   [[ "${PANEL_REF}" == "v${PANEL_VERSION}" ]] \
     || fail "数据面只允许使用当前受签名正式版本 v${PANEL_VERSION}"
   [[ -d /run/systemd/system ]] \
@@ -2722,15 +2728,11 @@ activate_data_plane() {
   if [[ -e "${NODE_ONBOARDING_INSTALLER}" || -L "${NODE_ONBOARDING_INSTALLER}" ]]; then
     require_node_agent_file "${NODE_ONBOARDING_INSTALLER}" 700
   fi
+  ensure_node_dependencies
   systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
     || fail "节点签名心跳 timer 未运行；未修改系统"
   systemctl start hysteria2-panel-node-heartbeat.service \
     || fail "节点签名心跳未被中央面板接受；未修改系统"
-  for command_name in "${data_plane_commands[@]}"; do
-    command -v "${command_name}" >/dev/null 2>&1 \
-      || fail "数据面部署缺少命令 ${command_name}；未修改系统"
-  done
-  select_python || fail "数据面部署需要 Python 3.8 或更高版本；未修改系统"
   recover_interrupted_data_plane
   assert_data_plane_network_stack_claimable
   inspect_existing_data_plane
@@ -2742,10 +2744,6 @@ activate_data_plane() {
   fi
   (( $(df -Pk "${NODE_AGENT_OPT_DIR}" | awk 'NR == 2 {print $4}') >= 131072 )) \
     || fail "数据面部署至少需要 128 MiB 可用磁盘；未修改系统"
-  bootstrap_token="${HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN:-}"
-  unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
-  [[ "${bootstrap_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
-    || fail "缺少或无效的一次性数据面部署凭据"
   case "$(uname -m)" in
     x86_64|amd64)
       hysteria_arch=amd64
@@ -3166,10 +3164,10 @@ install_system_dependencies() {
   if command -v apt-get >/dev/null 2>&1; then
     retry_package_command apt-get update
     DEBIAN_FRONTEND=noninteractive retry_package_command apt-get install -y \
-      ca-certificates curl openssl iproute2 python3 coreutils diffutils findutils gawk grep passwd procps sudo util-linux \
+      ca-certificates curl openssl iproute2 python3 coreutils diffutils findutils gawk grep kmod passwd procps sudo util-linux \
       nftables iptables
   elif command -v dnf >/dev/null 2>&1; then
-    rhel_packages=(ca-certificates openssl iproute python3 diffutils findutils gawk grep shadow-utils procps-ng sed sudo util-linux)
+    rhel_packages=(ca-certificates openssl iproute python3 diffutils findutils gawk grep kmod shadow-utils procps-ng sed sudo util-linux)
     command -v curl >/dev/null 2>&1 || rhel_packages+=(curl)
     for command_name in "${coreutils_commands[@]}"; do
       command -v "${command_name}" >/dev/null 2>&1 || { rhel_packages+=(coreutils); break; }
@@ -3178,7 +3176,7 @@ install_system_dependencies() {
     retry_package_command dnf install -y nftables iptables-nft \
       || retry_package_command dnf install -y nftables iptables
   elif command -v yum >/dev/null 2>&1; then
-    rhel_packages=(ca-certificates openssl iproute python3 diffutils findutils gawk grep shadow-utils procps-ng sed sudo util-linux)
+    rhel_packages=(ca-certificates openssl iproute python3 diffutils findutils gawk grep kmod shadow-utils procps-ng sed sudo util-linux)
     command -v curl >/dev/null 2>&1 || rhel_packages+=(curl)
     for command_name in "${coreutils_commands[@]}"; do
       command -v "${command_name}" >/dev/null 2>&1 || { rhel_packages+=(coreutils); break; }
@@ -6086,7 +6084,7 @@ fi
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || fail "缺少命令：${command_name}"
 done
-select_python || fail "需要 Python 3.8 或更高版本；请升级系统 Python 后重试"
+select_python || fail "需要完整的 Python 3.8+（包含 SQLite、SSL 和 scrypt）；请检查系统软件源后重试"
 echo "运行环境：$(${PYTHON_BIN} -c 'import platform; print(platform.python_version())') / ${PYTHON_BIN}"
 
 case "$(uname -m)" in
@@ -6322,8 +6320,8 @@ STATS_PORT="${STATS_PORT:-${EXISTING_STATS_PORT}}"
 STATS_443_PORT="${STATS_443_PORT:-${EXISTING_STATS_443_PORT}}"
 
 for port in "${HYSTERIA_PORT}" "${PANEL_PORT}" "${AUTH_PORT}" "${STATS_PORT}" "${STATS_443_PORT}"; do
-  if [[ ! "${port}" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-    fail "端口无效：${port}"
+  if [[ ! "${port}" =~ ^[1-9][0-9]{0,4}$ ]] || (( port > 65535 )); then
+    fail "端口无效：${port}（必须是 1–65535 的十进制整数，不能带前导零）"
   fi
 done
 if [[ "${PANEL_SCHEME}" == "https" ]]; then

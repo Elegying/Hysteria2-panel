@@ -1849,6 +1849,32 @@ class NodeAgentProtocolTests(unittest.TestCase):
         self.assertEqual([("kick", ["alice"])], [call for call in calls if call[0] == "kick"])
         self.assertEqual(2, len([call for call in calls if call[0] == "ack"]))
 
+    def test_protocol_state_survives_a_full_command_history_and_restart(self):
+        path = self.root / "full-command-state.json"
+        state = node_agent.ProtocolState(path)
+        for index in range(260):
+            state.record_command_completed(format(index, "032x"), 2_000_000_000 + index)
+        state.set_traffic_ack(2_000_000_260)
+        state.set_data_plane_stopped(True)
+        self.assertEqual(1, state.next_sequence())
+
+        restarted = node_agent.ProtocolState(path)
+        self.assertEqual(2, restarted.next_sequence())
+        self.assertEqual(2_000_000_260, restarted.traffic_acked_at())
+        self.assertTrue(restarted.data_plane_stopped())
+        self.assertFalse(restarted.command_completed(format(3, "032x")))
+        for index in range(4, 260):
+            self.assertTrue(restarted.command_completed(format(index, "032x")))
+        self.assertEqual(256, len(json.loads(path.read_text())["completedCommands"]))
+        self.assertEqual(0o600, path.stat().st_mode & 0o777)
+
+    def test_protocol_state_still_rejects_oversized_files(self):
+        path = self.root / "oversized-command-state.json"
+        node_agent.ProtocolState(path)
+        path.write_bytes(b" " * (32 * 1024 + 1))
+        with self.assertRaisesRegex(node_agent.ProtocolError, "state is invalid"):
+            node_agent.ProtocolState(path)
+
     def test_control_cycle_defers_uninstall_ack_to_the_root_worker(self):
         calls = []
         command = {

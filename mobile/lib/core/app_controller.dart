@@ -80,18 +80,42 @@ final appControllerProvider = StateNotifierProvider<AppController, AppState>((
 });
 
 class AppController extends StateNotifier<AppState> {
-  AppController() : super(const AppState());
+  AppController({
+    Dio Function(String)? dioFactory,
+    FlutterSecureStorage? storage,
+  }) : _dioFactory = dioFactory ?? _createDio,
+       _storage =
+           storage ?? const FlutterSecureStorage(aOptions: AndroidOptions()),
+       super(const AppState());
 
-  static const _storage = FlutterSecureStorage(aOptions: AndroidOptions());
+  final FlutterSecureStorage _storage;
   static const _refreshKey = 'mobile_refresh_token';
   static const _deviceKey = 'mobile_device_id';
   static const _baseUrlKey = 'panel_base_url';
   static const _usernameKey = 'panel_username';
 
+  final Dio Function(String) _dioFactory;
   Dio? _dio;
   Future<bool>? _refreshFuture;
+  int _sessionGeneration = 0;
+  Future<void> _storageFuture = Future<void>.value();
+
+  bool _isCurrent(int generation) =>
+      mounted && generation == _sessionGeneration;
+
+  Future<void> _persistSession(int generation, Future<void> Function() action) {
+    final work = _storageFuture.then((_) async {
+      if (_isCurrent(generation)) await action();
+    });
+    _storageFuture = work.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace _) {},
+    );
+    return work;
+  }
 
   Future<void> initialize() async {
+    final generation = ++_sessionGeneration;
     try {
       final preferences = await SharedPreferences.getInstance();
       final baseUrl = preferences.getString(_baseUrlKey) ?? '';
@@ -102,8 +126,9 @@ class AppController extends StateNotifier<AppState> {
         await _storage.write(key: _deviceKey, value: deviceId);
       }
       final refreshToken = await _storage.read(key: _refreshKey);
+      if (!_isCurrent(generation)) return;
       if (baseUrl.isNotEmpty && username.isNotEmpty && refreshToken != null) {
-        _dio = _createDio(baseUrl);
+        _dio = _dioFactory(baseUrl);
         state = AppState(
           initializing: false,
           session: AppSession(
@@ -114,11 +139,17 @@ class AppController extends StateNotifier<AppState> {
             deviceId: deviceId,
           ),
         );
-        if (await _refreshTokens()) return;
+        if (await _refreshTokens() || !_isCurrent(generation)) return;
       }
       state = const AppState(initializing: false);
+    } on ApiException catch (error) {
+      if (_isCurrent(generation)) {
+        state = state.copyWith(initializing: false, error: error.message);
+      }
     } catch (_) {
-      state = const AppState(initializing: false, error: '无法读取本机安全存储，请重新登录');
+      if (_isCurrent(generation)) {
+        state = const AppState(initializing: false, error: '无法读取本机安全存储，请重新登录');
+      }
     }
   }
 
@@ -150,11 +181,14 @@ class AppController extends StateNotifier<AppState> {
         (source.path.isNotEmpty && source.path != '/')) {
       throw const ApiException('面板地址不能包含账号、路径、查询参数或片段');
     }
-    if (port < 1 || port > 65535) throw const ApiException('面板端口无效');
+    final effectivePort = source.hasPort ? source.port : port;
+    if (effectivePort < 1 || effectivePort > 65535) {
+      throw const ApiException('面板端口无效');
+    }
     return Uri(
       scheme: 'https',
       host: source.host,
-      port: source.hasPort ? source.port : port,
+      port: effectivePort,
     ).toString().replaceAll(RegExp(r'/$'), '');
   }
 
@@ -167,9 +201,12 @@ class AppController extends StateNotifier<AppState> {
     if (username.trim().isEmpty) throw const ApiException('请输入面板账号');
     if (password.isEmpty) throw const ApiException('请输入面板密码');
     final baseUrl = normalizeBaseUrl(address, port);
-    state = state.copyWith(working: true, clearError: true);
+    final generation = ++_sessionGeneration;
+    _dio = null;
+    _refreshFuture = null;
+    state = state.copyWith(working: true, clearError: true, clearSession: true);
     try {
-      final dio = _createDio(baseUrl);
+      final dio = _dioFactory(baseUrl);
       final capabilities = await dio.get('/api/v1/mobile/capabilities');
       if (capabilities.statusCode == 404) {
         throw const ApiException('面板版本暂不支持 App，请先将面板升级到 v0.38.0 或更高版本');
@@ -211,45 +248,60 @@ class AppController extends StateNotifier<AppState> {
         refreshToken: data['refreshToken'] as String,
         deviceId: deviceId,
       );
+      await _persistSession(generation, () async {
+        final preferences = await SharedPreferences.getInstance();
+        await preferences.setString(_baseUrlKey, baseUrl);
+        await preferences.setString(_usernameKey, username.trim());
+        await _storage.write(key: _refreshKey, value: session.refreshToken);
+      });
+      if (!_isCurrent(generation)) {
+        await _revokeSession(dio, session.accessToken);
+        throw const ApiException('登录操作已结束');
+      }
       _dio = dio;
-      final preferences = await SharedPreferences.getInstance();
-      await preferences.setString(_baseUrlKey, baseUrl);
-      await preferences.setString(_usernameKey, username.trim());
-      await _storage.write(key: _refreshKey, value: session.refreshToken);
       state = AppState(initializing: false, session: session);
     } on DioException catch (error) {
-      state = state.copyWith(working: false);
+      if (_isCurrent(generation)) state = state.copyWith(working: false);
       throw ApiException(_networkMessage(error));
     } on ApiException {
-      state = state.copyWith(working: false);
+      if (_isCurrent(generation)) state = state.copyWith(working: false);
       rethrow;
     } catch (_) {
-      state = state.copyWith(working: false);
+      if (_isCurrent(generation)) state = state.copyWith(working: false);
       throw const ApiException('登录失败，请稍后重试');
     }
   }
 
   Future<void> logout() async {
     final session = state.session;
-    if (session != null && session.accessToken.isNotEmpty) {
+    final dio = _dio;
+    final generation = ++_sessionGeneration;
+    _dio = null;
+    _refreshFuture = null;
+    state = const AppState(initializing: false);
+    await _persistSession(generation, () async {
+      await _storage.delete(key: _refreshKey);
+      final preferences = await SharedPreferences.getInstance();
+      await preferences.remove(_baseUrlKey);
+      await preferences.remove(_usernameKey);
+    });
+    if (session != null && dio != null) {
+      await _revokeSession(dio, session.accessToken);
+    }
+  }
+
+  static Future<void> _revokeSession(Dio dio, String accessToken) async {
+    if (accessToken.isNotEmpty) {
       try {
-        await _dio?.post(
+        await dio.post(
           '/api/v1/mobile/auth/logout',
           data: const <String, Object?>{},
-          options: Options(
-            headers: {'Authorization': 'Bearer ${session.accessToken}'},
-          ),
+          options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
         );
       } catch (_) {
         // Local logout must still complete when the panel is unreachable.
       }
     }
-    await _storage.delete(key: _refreshKey);
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.remove(_baseUrlKey);
-    await preferences.remove(_usernameKey);
-    _dio = null;
-    state = const AppState(initializing: false);
   }
 
   Future<Map<String, dynamic>> getJson(String path) => _request('GET', path);
@@ -277,6 +329,7 @@ class AppController extends StateNotifier<AppState> {
   }) async {
     final session = state.session;
     final dio = _dio;
+    final generation = _sessionGeneration;
     if (session == null || dio == null) throw const ApiException('请重新登录');
     try {
       final response = await dio.request(
@@ -287,8 +340,11 @@ class AppController extends StateNotifier<AppState> {
           headers: {'Authorization': 'Bearer ${session.accessToken}'},
         ),
       );
+      if (!_isCurrent(generation)) throw const ApiException('登录状态已改变，请重试');
       if (response.statusCode == 401 && retryAfterRefresh) {
-        if (await _refreshTokens()) {
+        if (state.session?.accessToken != session.accessToken ||
+            await _refreshTokens()) {
+          if (!_isCurrent(generation)) throw const ApiException('登录状态已改变，请重试');
           return await _request(
             method,
             path,
@@ -306,15 +362,18 @@ class AppController extends StateNotifier<AppState> {
   Future<bool> _refreshTokens() {
     final inFlight = _refreshFuture;
     if (inFlight != null) return inFlight;
-    final future = _performRefresh();
+    late final Future<bool> future;
+    future = _performRefresh().whenComplete(() {
+      if (identical(_refreshFuture, future)) _refreshFuture = null;
+    });
     _refreshFuture = future;
-    future.whenComplete(() => _refreshFuture = null);
     return future;
   }
 
   Future<bool> _performRefresh() async {
     final session = state.session;
     final dio = _dio;
+    final generation = _sessionGeneration;
     if (session == null || dio == null || session.refreshToken.isEmpty) {
       return false;
     }
@@ -329,23 +388,40 @@ class AppController extends StateNotifier<AppState> {
         accessToken: data['accessToken'] as String,
         refreshToken: data['refreshToken'] as String,
       );
-      await _storage.write(key: _refreshKey, value: updated.refreshToken);
+      await _persistSession(
+        generation,
+        () => _storage.write(key: _refreshKey, value: updated.refreshToken),
+      );
+      if (!_isCurrent(generation)) {
+        await _revokeSession(dio, updated.accessToken);
+        return false;
+      }
       state = state.copyWith(
         session: updated,
         initializing: false,
         working: false,
+        clearError: true,
       );
       return true;
-    } catch (_) {
-      await _storage.delete(key: _refreshKey);
-      state = const AppState(initializing: false);
+    } on DioException catch (error) {
+      if (!_isCurrent(generation)) return false;
+      throw ApiException(_networkMessage(error));
+    } on ApiException catch (error) {
+      if (!_isCurrent(generation)) return false;
+      if (error.statusCode != 401) rethrow;
+      await logout();
       return false;
+    } catch (_) {
+      if (!_isCurrent(generation)) return false;
+      throw const ApiException('无法恢复登录状态，请稍后重试');
     }
   }
 
   static Map<String, dynamic> _unwrap(Response<dynamic> response) {
     final body = response.data;
-    if (body is! Map) throw const ApiException('服务器返回了无法识别的数据');
+    if (body is! Map) {
+      throw ApiException('服务器返回了无法识别的数据', statusCode: response.statusCode);
+    }
     final map = Map<String, dynamic>.from(body);
     final error = map['error'];
     if (response.statusCode == null ||
@@ -358,7 +434,10 @@ class AppController extends StateNotifier<AppState> {
           statusCode: response.statusCode,
         );
       }
-      throw ApiException('操作未完成（${response.statusCode ?? '未知状态'}）');
+      throw ApiException(
+        '操作未完成（${response.statusCode ?? '未知状态'}）',
+        statusCode: response.statusCode,
+      );
     }
     final data = map['data'];
     return data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};

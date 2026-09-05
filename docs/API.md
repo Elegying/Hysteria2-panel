@@ -173,7 +173,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/restore` | 上传原始 `application/zip`；CSRF 通过 `X-HY2Panel-CSRF` 请求头提交，预检后排队执行一次性恢复服务 |
 | `POST` | `/logout` | 撤销管理会话 |
 
-面板没有对公网提供通用 JSON 管理 API，避免扩大认证和 CORS 攻击面。
+JSON 管理操作仅通过本文定义的 Mobile API 开放，并使用独立设备会话；网页继续使用同源会话与 CSRF，不提供任意命令或跨域管理入口。
 当前对接 UI 只下发固定空参数 `UNINSTALL_NODE`，节点 Agent 不接收 unit 名、文件路径或 shell。节点先刷出 durable traffic spool、停止数据面、持久化卸载命令，再由 root-only oneshot 撤销本项目拥有的服务和文件、恢复首次部署前网络快照，最后向中央发送签名 ACK。ACK 丢失可以幂等重试；中央撤销后只接受该卸载命令的成功重试回执。
 版本过期的用户变更返回 HTTP 409，避免并发操作覆盖刚生成的认证密钥。编辑用户时设备限制范围为 1 到 100，总流量必须为正值，`allow_udp_443=1` 表示开放 UDP `443`，缺少该字段表示关闭；该操作递增 `generation`，保留名称、认证 token 派生种子和累计流量。审计写入或断开在线连接失败会记录到服务日志，但不会吞掉已经生成的新凭据。
 
@@ -187,7 +187,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 
 root 进程不信任 Web 预检，会以 `O_NOFOLLOW` 和固定所有权/权限合同再次读取归档，并把恢复推进为持久的 `queued → prepared → disk-consistent → services-pending` 事务。启动前的 `restore-recover` oneshot 只验证、完成或回滚数据库/HMAC 环境/TLS 身份并清理 SQLite sidecar；业务服务强依赖该阶段成功。服务启动后的 `restore-resume` oneshot 连续验证 systemd、HTTP、统计和 TCP 健康后才删除标记。普通退出、信号或重启均从标记幂等继续；孤立或失败归档会隔离并释放固定上传路径。
 
-`POST /updates/apply` 只有在当前会话刚检查到新版本时可用，但 root 任务不会信任这份页面状态，而会重新访问固定仓库的 GitHub `releases/latest`。响应 tag 必须是比当前版本新的 `vX.Y.Z`，安装器只能从该 tag 对应的固定 `raw.githubusercontent.com/Elegying/Hysteria2-panel/` 路径下载。执行前还会限制响应大小、验证 UTF-8、bash 解释器头、内嵌版本与 tag 一致并通过 `bash -n`。更新进程使用固定环境变量进入安装器的现有受管安装模式，网页请求无法指定命令、仓库、版本、节点参数或管理员凭据。排队状态以 `0600` 原子文件保存在面板数据目录；`GET /updates/status` 再读取固定 systemd 单元状态，且只有更新单元已成功结束并且当前版本达到目标版本才返回 `success`。浏览器短暂失联时继续轮询，任务失败、退出码非零或任务结束但版本未变化时返回明确失败提示。
+`POST /updates/apply` 只有在当前会话刚检查到新版本时可用，排队时会把目标固定为比当前版本新的 `vX.Y.Z`，以 `0600` 原子文件保存在面板数据目录。root 任务使用 `--queued-target` 读取并重新校验该目标，不在执行时改追另一个 latest 版本。安装器只能从该 tag 对应的固定 `raw.githubusercontent.com/Elegying/Hysteria2-panel/` 路径下载；执行前限制响应大小、验证 UTF-8、bash 解释器头、内嵌版本、精确 workflow/tag 的 Sigstore 发布身份及 `bash -n`。更新进程使用固定环境变量进入现有受管安装模式，网页请求无法指定命令、仓库、版本、节点参数或管理员凭据。`GET /updates/status` 读取固定 systemd 单元状态，只有更新单元成功结束且当前版本达到目标版本才返回 `success`。浏览器短暂失联时继续轮询；任务失败或结束后版本未改变时返回明确失败提示。
 
 `POST /system/reboot` 不接收命令、主机或延时参数。后端只执行固定的 `/usr/bin/sudo -n /bin/systemctl --no-block reboot`，并在排队前尽力落盘最新流量及写入审计记录。接口返回 202 只表示重启已排队，不表示系统已重新上线。
 

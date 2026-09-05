@@ -48,7 +48,7 @@ jobs:
           PYTHONWARNINGS: error::ResourceWarning
         run: python -m unittest tests.test_panel.DatabaseTests.test_database_connections_are_closed_explicitly
       - name: Compile Python services
-        run: python -m py_compile hysteria2_panel.py qrcodegen.py tcp_probe.py node_agent.py hy2panel/*.py
+        run: python -m py_compile hysteria2_panel.py qrcodegen.py tcp_probe.py node_agent.py offsite_backup.py hy2panel/*.py
       - name: Verify release tag matches source version
         if: startsWith(github.ref, 'refs/tags/')
         env:
@@ -171,9 +171,9 @@ jobs:
       - name: Install pinned audit tools
         run: python -m pip install ruff==0.12.11 bandit==1.8.6
       - name: Lint Python
-        run: ruff check hysteria2_panel.py tcp_probe.py node_agent.py hy2panel .github/scripts tests
+        run: ruff check hysteria2_panel.py tcp_probe.py node_agent.py offsite_backup.py hy2panel .github/scripts tests
       - name: Audit Python security
-        run: bandit -q -r hysteria2_panel.py tcp_probe.py node_agent.py hy2panel .github/scripts
+        run: bandit -q -r hysteria2_panel.py tcp_probe.py node_agent.py offsite_backup.py hy2panel .github/scripts
       - name: Check Markdown relative links
         run: python .github/scripts/check_markdown_links.py
       - name: Validate installer syntax
@@ -196,6 +196,32 @@ jobs:
           python-version: '3.13'
       - name: Render authenticated desktop and mobile dashboards in Chrome
         run: python .github/scripts/browser_smoke.py
+
+  mobile-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install exact Flutter SDK revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter_dir="${RUNNER_TEMP}/flutter"
+          git init "${flutter_dir}"
+          git -C "${flutter_dir}" remote add origin https://github.com/flutter/flutter.git
+          git -C "${flutter_dir}" fetch --depth=1 origin \
+            refs/tags/3.47.2:refs/tags/3.47.2
+          git -C "${flutter_dir}" checkout --detach refs/tags/3.47.2
+          test "$(git -C "${flutter_dir}" rev-parse HEAD)" = d3b14c876900e553bc736ca19295fc09e3853e8e
+          printf '%s/bin\n' "${flutter_dir}" >>"${GITHUB_PATH}"
+          "${flutter_dir}/bin/flutter" --version
+      - name: Validate locked mobile client
+        working-directory: mobile
+        run: |
+          flutter pub get
+          git diff --exit-code -- pubspec.lock
+          flutter analyze --no-pub
+          flutter test --no-pub
 
   managed-firewall-integration:
     runs-on: ubuntu-latest
