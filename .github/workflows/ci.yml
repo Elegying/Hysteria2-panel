@@ -196,6 +196,14 @@ jobs:
           python-version: '3.13'
       - name: Render authenticated desktop and mobile dashboards in Chrome
         run: python .github/scripts/browser_smoke.py
+      - name: Install pinned browser test transport
+        run: python -m pip install websockets==17.1
+      - name: Exercise dashboard controls in Chrome
+        run: python tests/browser_controls.py
+      - name: Execute JavaScript failure-path regressions
+        run: |
+          node --version
+          python -m unittest tests.test_web_controls -v
 
   mobile-tests:
     runs-on: ubuntu-24.04

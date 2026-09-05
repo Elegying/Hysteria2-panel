@@ -59,17 +59,20 @@ class ServiceController:
     def action(self, action):
         if action not in self.ACTIONS:
             raise ValueError("unsupported service action")
-        result = self.runner(
-            ["/usr/bin/sudo", "-n", "/bin/systemctl", action, self.SERVICE],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-            env=_systemctl_environment(),
-        )
-        if result.returncode != 0:
-            raise RuntimeError("service control failed")
-        return self.status()
+        try:
+            result = self.runner(
+                ["/usr/bin/sudo", "-n", "/bin/systemctl", action, self.SERVICE],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                env=_systemctl_environment(),
+            )
+            if result.returncode != 0:
+                raise RuntimeError("service control failed")
+            return self.status()
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError("service action result could not be confirmed") from exc
 
 
 def _read_managed_file(path, expected_uid, max_bytes=1024 * 1024):

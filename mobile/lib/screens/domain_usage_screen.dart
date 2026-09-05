@@ -24,17 +24,24 @@ class DomainUsageScreen extends ConsumerStatefulWidget {
 class _DomainUsageScreenState extends ConsumerState<DomainUsageScreen> {
   Map<String, dynamic>? _data;
   String? _error;
+  int _loadGeneration = 0;
 
   Future<void> _load() async {
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
     setState(() => _error = null);
     try {
       final path = widget.userId == null
           ? '/api/v1/mobile/domain-usage'
           : '/api/v1/mobile/users/${widget.userId}/domain-usage';
       final data = await ref.read(appControllerProvider.notifier).getJson(path);
-      if (mounted) setState(() => _data = data);
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _data = data);
+      }
     } on ApiException catch (error) {
-      if (mounted) setState(() => _error = error.message);
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _error = error.message);
+      }
     }
   }
 
