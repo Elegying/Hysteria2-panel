@@ -511,9 +511,12 @@ def render_dashboard(
         update_state = "failed"
     update_status_text = html.escape(str(update_status.get("message", "")))
     update_action = ""
-    if update and update["update_available"]:
-        update_action = """<form method="post" action="/updates/apply" data-update-form data-confirm="在线更新会短暂重启面板与 Hysteria 服务，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button success" type="submit">立即更新</button></form>""".format(
-            csrf=csrf
+    update_active = update_state in {"queued", "running"}
+    if update_active or (update and update["update_available"]):
+        update_action = """<form method="post" action="/updates/apply" data-update-form data-confirm="在线更新会短暂重启面板与 Hysteria 服务，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button success" type="submit"{disabled}>{label}</button></form>""".format(
+            csrf=csrf,
+            disabled=" disabled" if update_active else "",
+            label="正在更新…" if update_active else "立即更新",
         )
     certificate_status = self.app.health_monitor.certificate_status()
     certificate_remaining = certificate_status["seconds_remaining"]

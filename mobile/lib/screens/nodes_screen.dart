@@ -23,6 +23,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   final Map<String, double> _trafficRates = {};
   int? _trafficObservedAt;
   bool _loading = true;
+  bool _refreshing = false;
+  int _loadGeneration = 0;
   String? _error;
   Timer? _timer;
 
@@ -36,7 +38,9 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     Future.microtask(_load);
     _timer = Timer.periodic(
       const Duration(seconds: 5),
-      (_) => _load(silent: true),
+      (_) {
+        if (!_refreshing) _load(silent: true);
+      },
     );
   }
 
@@ -53,11 +57,15 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent && mounted) setState(() => _loading = true);
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
+    _refreshing = true;
+    if (!silent) setState(() => _loading = true);
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
           .getJson('/api/v1/mobile/nodes');
+      if (!mounted || generation != _loadGeneration) return;
       final items = (data['items'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList();
@@ -75,7 +83,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             : (total - previous) / elapsed;
         _trafficTotals[id] = total;
       }
-      if (mounted) {
+      if (mounted && generation == _loadGeneration) {
         setState(() {
           _summary = data;
           _nodes = items;
@@ -88,12 +96,14 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
         });
       }
     } on ApiException catch (error) {
-      if (mounted) {
+      if (mounted && generation == _loadGeneration) {
         setState(() {
           _loading = false;
           _error = error.message;
         });
       }
+    } finally {
+      if (generation == _loadGeneration) _refreshing = false;
     }
   }
 
@@ -380,6 +390,13 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                 ),
               ],
             ),
+            if (_error != null && _nodes.isNotEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  child: RefreshWarning(message: '数据刷新失败：$_error'),
+                ),
+              ),
             if (_loading && _nodes.isEmpty)
               const SliverFillRemaining(
                 child: Center(child: CircularProgressIndicator()),

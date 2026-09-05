@@ -20,6 +20,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Map<String, dynamic>? _data;
   String? _error;
   bool _loading = true;
+  bool _refreshing = false;
+  int _loadGeneration = 0;
   bool _acting = false;
   Timer? _timer;
 
@@ -55,17 +57,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _timer?.cancel();
     _timer = Timer.periodic(
       const Duration(seconds: 10),
-      (_) => _load(silent: true),
+      (_) {
+        if (!_refreshing) _load(silent: true);
+      },
     );
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent && mounted) setState(() => _loading = true);
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
+    _refreshing = true;
+    if (!silent) setState(() => _loading = true);
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
           .getJson('/api/v1/mobile/overview');
-      if (mounted) {
+      if (mounted && generation == _loadGeneration) {
         setState(() {
           _data = data;
           _error = null;
@@ -73,12 +80,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         });
       }
     } on ApiException catch (error) {
-      if (mounted) {
+      if (mounted && generation == _loadGeneration) {
         setState(() {
           _error = error.message;
           _loading = false;
         });
       }
+    } finally {
+      if (generation == _loadGeneration) _refreshing = false;
     }
   }
 
@@ -165,10 +174,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Future<void> _showEnrollment() async {
     final name = TextEditingController();
     final expectedIp = TextEditingController();
-    final result = await showDialog<Map<String, dynamic>>(
+    var submitting = false;
+    String? formError;
+    final result = await showGlassFormDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
-        builder: (context, _) => GlassDialog(
+        builder: (context, setDialogState) => GlassDialog(
           title: const Text('对接新节点'),
           content: SingleChildScrollView(
             child: Column(
@@ -185,6 +196,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   controller: expectedIp,
                   decoration: const InputDecoration(labelText: '目标服务器公网 IP'),
                 ),
+                if (formError != null)
+                  Text(
+                    formError!,
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  ),
               ],
             ),
           ),
@@ -194,14 +210,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () async {
+              onPressed: submitting ? null : () async {
+                if (submitting) return;
                 if (name.text.trim().isEmpty ||
                     expectedIp.text.trim().isEmpty) {
-                  ScaffoldMessenger.of(dialogContext).showSnackBar(
-                    const SnackBar(content: Text('请填写节点名称和目标服务器公网 IP')),
-                  );
+                  setDialogState(() => formError = '请填写节点名称和目标服务器公网 IP');
                   return;
                 }
+                setDialogState(() {
+                  submitting = true;
+                  formError = null;
+                });
                 try {
                   final data = await ref
                       .read(appControllerProvider.notifier)
@@ -211,15 +230,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         'ttlMinutes': 10,
                         'mode': 'join',
                       });
-                  if (dialogContext.mounted) Navigator.pop(dialogContext, data);
+                  if (dialogContext.mounted &&
+                      ModalRoute.of(dialogContext)?.isCurrent == true) {
+                    Navigator.pop(dialogContext, data);
+                  }
                 } on ApiException catch (error) {
-                  if (dialogContext.mounted) {
-                    ScaffoldMessenger.of(dialogContext)
-                        .showSnackBar(SnackBar(content: Text(error.message)));
+                  if (dialogContext.mounted &&
+                      ModalRoute.of(dialogContext)?.isCurrent == true) {
+                    setDialogState(() {
+                      submitting = false;
+                      formError = error.message;
+                    });
                   }
                 }
               },
-              child: const Text('一键对接'),
+              child: Text(submitting ? '生成中…' : '一键对接'),
             ),
           ],
         ),
@@ -297,7 +322,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 sliver: SliverList.list(
                   children: [
                     if (_error != null) ...[
-                      _InlineWarning(message: '数据刷新失败：$_error'),
+                      RefreshWarning(message: '数据刷新失败：$_error'),
                       const SizedBox(height: 12),
                     ],
                     _StatusHeader(data: data),
@@ -711,26 +736,6 @@ class _ResourcesCard extends StatelessWidget {
       ),
     );
   }
-}
-
-class _InlineWarning extends StatelessWidget {
-  const _InlineWarning({required this.message});
-  final String message;
-  @override
-  Widget build(BuildContext context) => Material(
-    color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(12),
-    child: Padding(
-      padding: const EdgeInsets.all(12),
-      child: Row(
-        children: [
-          const Icon(Icons.cloud_off_rounded),
-          const SizedBox(width: 10),
-          Expanded(child: Text(message)),
-        ],
-      ),
-    ),
-  );
 }
 
 class _LoadError extends StatelessWidget {

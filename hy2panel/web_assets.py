@@ -91,26 +91,46 @@ async function copyText(value) {
   buffer.remove();
   return copied;
 }
-async function submitInlineForm(form) {
-  const response = await fetch(form.action, {
-    method: 'POST',
+class UnconfirmedRequestError extends Error {
+  constructor() {
+    super('连接中断或响应异常，操作结果尚未确认；请刷新页面核对状态后再操作');
+  }
+}
+async function postJson(url, options, timeoutMs = 45000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(function() { controller.abort(); }, timeoutMs);
+  try {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: 'POST', credentials: 'same-origin', ...options, signal: controller.signal
+      });
+    } catch (_) {
+      throw new UnconfirmedRequestError();
+    }
+    if (response.status === 401) {
+      window.location.assign('/login');
+      throw new Error('登录已失效，正在返回登录页');
+    }
+    if (response.redirected) throw new Error('登录状态已变化，请重新登录');
+    const contentType = response.headers.get('Content-Type') || '';
+    if (!contentType.toLowerCase().includes('application/json')) {
+      throw new UnconfirmedRequestError();
+    }
+    let payload;
+    try { payload = await response.json(); } catch (_) { throw new UnconfirmedRequestError(); }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new UnconfirmedRequestError();
+    if (!response.ok) throw new Error(payload.error || '操作失败，请刷新页面后重试');
+    return payload;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+function submitInlineForm(form) {
+  return postJson(form.action, {
     headers: {'Accept': 'application/json'},
-    body: new URLSearchParams(new FormData(form)),
-    credentials: 'same-origin'
+    body: new URLSearchParams(new FormData(form))
   });
-  if (response.status === 401) {
-    window.location.assign('/login');
-    throw new Error('登录已失效，正在返回登录页');
-  }
-  if (response.redirected) throw new Error('登录状态已变化，请重新登录');
-  const contentType = response.headers.get('Content-Type') || '';
-  if (!contentType.toLowerCase().includes('application/json')) {
-    throw new Error('服务器响应格式异常，请刷新页面后重试');
-  }
-  let payload;
-  try { payload = await response.json(); } catch (_) { payload = {}; }
-  if (!response.ok) throw new Error(payload.error || '操作失败，请刷新页面后重试');
-  return payload;
 }
 function clearCredentialsQr() {
   const panel = document.querySelector('[data-qr-panel]');
@@ -188,36 +208,58 @@ function renderUpdateStatus(payload) {
   status.dataset.state = payload.state || 'idle';
   status.textContent = payload.message || '正在读取更新状态…';
 }
+function enablePageRefresh(button) {
+  button.disabled = false;
+  button.type = 'button';
+  button.textContent = '刷新状态';
+  button.onclick = function() { window.location.reload(); };
+}
 async function pollUpdateStatus(button, deadline) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(function() { controller.abort(); }, 8000);
   try {
     const response = await fetch('/updates/status', {
       headers: {'Accept': 'application/json'},
       credentials: 'same-origin',
-      cache: 'no-store'
+      cache: 'no-store',
+      signal: controller.signal
     });
+    if (response.status === 401) {
+      window.location.assign('/login');
+      return;
+    }
     if (!response.ok) throw new Error('状态读取失败');
     const payload = await response.json();
     renderUpdateStatus(payload);
+    if (['queued', 'running'].includes(payload.state)) button.textContent = '正在更新…';
     if (payload.state === 'success') {
       window.setTimeout(function() { window.location.reload(); }, 900);
       return;
     }
     if (payload.state === 'failed') {
-      button.disabled = false;
-      button.textContent = '重新更新';
+      enablePageRefresh(button);
       notify(payload.message || '在线更新失败', true);
       return;
     }
   } catch (_) {
-    renderUpdateStatus({state: 'running', message: '面板正在重启，等待恢复连接…'});
+    renderUpdateStatus({state: 'unknown', message: '暂时无法读取更新状态，正在重试…'});
+  } finally {
+    window.clearTimeout(timeout);
   }
   if (Date.now() >= deadline) {
-    button.disabled = false;
-    button.textContent = '检查状态';
-    renderUpdateStatus({state: 'failed', message: '等待更新超时，请刷新页面查看当前版本'});
+    enablePageRefresh(button);
+    renderUpdateStatus({state: 'unknown', message: '暂时无法确认更新结果，请刷新页面查看当前版本'});
     return;
   }
   window.setTimeout(function() { pollUpdateStatus(button, deadline); }, 1500);
+}
+const updateForm = document.querySelector('[data-update-form]');
+const updateStatus = document.querySelector('[data-update-status]');
+if (updateForm && updateStatus && ['queued', 'running'].includes(updateStatus.dataset.state)) {
+  const button = updateForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  button.textContent = '正在更新…';
+  pollUpdateStatus(button, Date.now() + 180000);
 }
 const dialogOpeners = new WeakMap();
 document.addEventListener('click', function(event) {
@@ -361,6 +403,7 @@ document.addEventListener('submit', async function(event) {
   if (!form || event.defaultPrevented) return;
   event.preventDefault();
   const button = form.querySelector('button[type="submit"]');
+  if (!button || button.disabled) return;
   button.disabled = true;
   button.textContent = '正在排队…';
   try {
@@ -369,8 +412,14 @@ document.addEventListener('submit', async function(event) {
     button.textContent = '正在更新…';
     pollUpdateStatus(button, Date.now() + 180000);
   } catch (error) {
-    button.disabled = false;
-    button.textContent = '立即更新';
+    if (error instanceof UnconfirmedRequestError) {
+      button.textContent = '正在确认状态…';
+      renderUpdateStatus({state: 'unknown', message: error.message});
+      pollUpdateStatus(button, Date.now() + 180000);
+    } else {
+      button.disabled = false;
+      button.textContent = '立即更新';
+    }
     notify(error.message || '在线更新任务启动失败', true);
   }
 });
@@ -394,6 +443,7 @@ document.addEventListener('submit', async function(event) {
     button.textContent = '添加用户';
   }
 });
+let nodeEnrollmentGeneration = 0;
 document.addEventListener('submit', async function(event) {
   const form = event.target.closest('[data-node-enrollment-form]');
   if (!form || event.defaultPrevented) return;
@@ -402,10 +452,13 @@ document.addEventListener('submit', async function(event) {
   const result = document.querySelector('[data-node-enrollment-result]');
   const code = document.getElementById('node-deployment-code');
   const expiry = document.querySelector('[data-node-enrollment-expiry]');
+  const generation = ++nodeEnrollmentGeneration;
+  const dialog = form.closest('dialog');
   button.disabled = true;
   button.textContent = '生成中…';
   try {
     const payload = await submitInlineForm(form);
+    if (generation !== nodeEnrollmentGeneration || !dialog.open) return;
     if (!payload || typeof payload.deploymentCommand !== 'string' || !payload.deploymentCommand.startsWith('(\\nset -euo pipefail')) {
       throw new Error('部署代码响应无效');
     }
@@ -433,35 +486,34 @@ document.addEventListener('submit', async function(event) {
   const form = event.target.closest('[data-restore-form]');
   if (!form || event.defaultPrevented) return;
   event.preventDefault();
+  const button = form.querySelector('button[type="submit"]');
+  if (!button || button.disabled) return;
   const file = form.querySelector('input[type="file"]');
   const status = form.querySelector('[data-restore-status]');
   if (!file || !file.files.length) { status.textContent = '请选择 ZIP 备份文件'; return; }
   if (!window.confirm('恢复会替换全部代理用户、签名密钥和证书，并短暂重启服务。确定继续吗？')) return;
+  button.disabled = true;
+  button.textContent = '正在上传…';
   status.textContent = '正在校验并上传备份…';
   try {
-    const response = await fetch('/restore', {
-      method: 'POST',
+    const payload = await postJson('/restore', {
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/zip',
         'X-HY2Panel-CSRF': form.dataset.csrf
       },
-      body: file.files[0],
-      credentials: 'same-origin'
-    });
-    if (response.status === 401) {
-      window.location.assign('/login');
-      throw new Error('登录已失效，正在返回登录页');
-    }
-    const contentType = response.headers.get('Content-Type') || '';
-    let payload = {};
-    if (contentType.toLowerCase().includes('application/json')) {
-      try { payload = await response.json(); } catch (_) { payload = {}; }
-    }
-    if (!response.ok) throw new Error(payload.error || '恢复上传失败，请检查文件后重试');
-    if (payload.status !== 'queued') throw new Error('恢复任务状态响应无效');
+      body: file.files[0]
+    }, 16 * 60 * 1000);
+    if (payload.status !== 'queued') throw new UnconfirmedRequestError();
+    button.textContent = '恢复已启动';
     status.textContent = '恢复任务已启动，服务将在数秒后重启；请稍后重新登录。';
   } catch (error) {
+    if (error instanceof UnconfirmedRequestError) {
+      enablePageRefresh(button);
+    } else {
+      button.disabled = false;
+      button.textContent = '上传并恢复';
+    }
     status.textContent = error.message || '恢复上传失败，请重试';
   }
 });
@@ -474,6 +526,7 @@ if (credentialsDialog) credentialsDialog.addEventListener('close', function() {
 });
 const nodeOnboardingDialog = document.getElementById('node-onboarding-dialog');
 if (nodeOnboardingDialog) nodeOnboardingDialog.addEventListener('close', function() {
+  nodeEnrollmentGeneration += 1;
   const code = document.getElementById('node-deployment-code');
   const result = document.querySelector('[data-node-enrollment-result]');
   const expiry = document.querySelector('[data-node-enrollment-expiry]');

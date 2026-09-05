@@ -65,6 +65,8 @@ from hy2panel.mobile_api import (
     capabilities_payload,
     domain_usage_payload,
     match_mobile_route,
+    json_boolean,
+    json_integer,
     nodes_payload,
     overview_payload,
     users_payload,
@@ -6894,14 +6896,14 @@ class PanelHandler(JsonHandler):
 
     def _handle_mobile_user_create(self, session, payload):
         try:
-            device_limit = int(payload.get("deviceLimit", DEFAULT_DEVICE_LIMIT))
-            traffic_limit_gb = int(payload.get("trafficLimitGb", 250))
+            device_limit = json_integer(payload.get("deviceLimit", DEFAULT_DEVICE_LIMIT))
+            traffic_limit_gb = json_integer(payload.get("trafficLimitGb", 250))
             with self.app.user_action_lock:
                 credentials = self.app.database.create_proxy_user(
                     payload.get("name", ""),
                     device_limit=device_limit,
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
-                    allow_udp_443=bool(payload.get("allowUdp443", False)),
+                    allow_udp_443=json_boolean(payload.get("allowUdp443", False)),
                 )
             self._audit_safely(
                 self._mobile_actor(session), "proxy_user_created", credentials["name"]
@@ -6912,7 +6914,7 @@ class PanelHandler(JsonHandler):
 
     def _handle_mobile_user_action(self, session, user_id, action, payload):
         try:
-            generation = int(payload.get("generation", ""))
+            generation = json_integer(payload.get("generation", ""))
             with self.app.user_action_lock:
                 user = self.app.database.get_proxy_user(user_id)
                 if action in {"enable", "disable"}:
@@ -7142,10 +7144,10 @@ class PanelHandler(JsonHandler):
             with self.app.user_action_lock:
                 user = self.app.database.update_proxy_user_limits(
                     user_id,
-                    device_limit=int(payload.get("deviceLimit", "")),
-                    traffic_limit_bytes=int(payload.get("trafficLimitGb", "")) * 1024**3,
-                    allow_udp_443=bool(payload.get("allowUdp443", False)),
-                    expected_generation=int(payload.get("generation", "")),
+                    device_limit=json_integer(payload.get("deviceLimit", "")),
+                    traffic_limit_bytes=json_integer(payload.get("trafficLimitGb", "")) * 1024**3,
+                    allow_udp_443=json_boolean(payload.get("allowUdp443", False)),
+                    expected_generation=json_integer(payload.get("generation", "")),
                 )
                 if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
                     self._kick_safely(user["name"])
@@ -7184,7 +7186,7 @@ class PanelHandler(JsonHandler):
         try:
             if route == "delete-user":
                 user_id = int(parameters[0])
-                generation = int(payload.get("generation", ""))
+                generation = json_integer(payload.get("generation", ""))
                 with self.app.user_action_lock:
                     user = self.app.database.delete_proxy_user(
                         user_id, expected_generation=generation
@@ -8369,9 +8371,10 @@ class PanelHandler(JsonHandler):
             self._redirect("/")
         except (RuntimeError, ValueError):
             LOGGER.exception("service action failed")
-            self._error_page(500, "服务控制失败，请检查服务日志")
+            self._error_page(500, "服务操作结果未能确认，请刷新状态并检查服务日志")
 
     def _handle_egress_policy(self, session, policy):
+        self.server.begin_maintenance_request(self.connection)
         try:
             state = self.app.usage_manager.run_after_collect(
                 lambda: self.app.egress_policy_controller.switch(policy)

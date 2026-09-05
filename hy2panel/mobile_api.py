@@ -10,6 +10,18 @@ MOBILE_API_VERSION = "1"
 MOBILE_APP_MIN_VERSION = "0.3.0"
 NODE_FRESHNESS_SECONDS = 150
 
+def json_integer(value):
+    if type(value) is not int:
+        raise ValueError("字段必须是 JSON 整数")
+    return value
+
+
+def json_boolean(value):
+    if type(value) is not bool:
+        raise ValueError("字段必须是 JSON 布尔值")
+    return value
+
+
 _MOBILE_EXACT_ROUTES = {
     ("GET", "/api/v1/mobile/capabilities"): "capabilities",
     ("GET", "/api/v1/mobile/auth/session"): "session",

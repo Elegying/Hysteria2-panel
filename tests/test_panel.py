@@ -4375,6 +4375,17 @@ class OperationsTests(unittest.TestCase):
             self.assertNotIn("WATCHDOG_PID", kwargs["env"])
             self.assertNotIn("WATCHDOG_USEC", kwargs["env"])
 
+    def test_service_command_failures_have_a_stable_error_contract(self):
+        for failure in (subprocess.TimeoutExpired("systemctl", 15), OSError("cannot run")):
+            for phase in ("action", "status"):
+                with self.subTest(failure=type(failure).__name__, phase=phase):
+                    responses = [failure] if phase == "action" else [
+                        mock.Mock(returncode=0), failure,
+                    ]
+                    controller = ServiceController(runner=mock.Mock(side_effect=responses))
+                    with self.assertRaises(RuntimeError):
+                        controller.action("restart")
+
     def test_restore_controller_can_only_start_the_fixed_restore_unit(self):
         calls = []
 
@@ -8599,6 +8610,68 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(303, raised.exception.code)
         self.assertEqual(["full"], self.egress_policy_controller.actions)
 
+    def test_mobile_user_mutations_reject_coerced_json_types(self):
+        tokens = self.db.create_mobile_session(self.admin_id, "type-audit", "Test")
+        access = tokens["accessToken"]
+        valid = {"deviceLimit": 3, "trafficLimitGb": 5, "allowUdp443": False}
+        for field, value in (
+            ("allowUdp443", "false"), ("allowUdp443", 1),
+            ("deviceLimit", True), ("deviceLimit", 3.5),
+            ("trafficLimitGb", "5"), ("trafficLimitGb", float("inf")),
+        ):
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    self.mobile_json_request(
+                        "POST", "/api/v1/mobile/users",
+                        {"name": "invalid-type", **valid, field: value}, access_token=access,
+                    )
+                self.assertEqual(400, rejected.exception.code)
+                self.assertIsNone(self.db.get_proxy_user_by_name("invalid-type"))
+
+        user = self.db.create_proxy_user("typed-user")
+        path = "/api/v1/mobile/users/{}".format(user["id"])
+        for changes in ({"allowUdp443": "false"}, {"generation": 0.9}, {"generation": False}):
+            with self.subTest(changes=changes):
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    self.mobile_json_request(
+                        "PATCH", path, {**valid, "generation": 0, **changes}, access_token=access,
+                    )
+                self.assertEqual(400, rejected.exception.code)
+                self.assertEqual(0, self.db.get_proxy_user(user["id"])["generation"])
+                self.assertFalse(self.db.get_proxy_user(user["id"])["allow_udp_443"])
+        for method, action in (("POST", "/disable"), ("DELETE", "")):
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                self.mobile_json_request(
+                    method, path + action, {"generation": False}, access_token=access,
+                )
+            self.assertEqual(400, rejected.exception.code)
+            self.assertTrue(self.db.get_proxy_user(user["id"])["enabled"])
+
+    def test_slow_egress_switch_keeps_the_authenticated_response_open(self):
+        headers, csrf_token = self.authenticated_headers()
+        self.server.request_deadline = 0.2
+        self.server.maintenance_request_deadline = 2
+        switch = self.egress_policy_controller.switch
+
+        def slow_switch(policy):
+            time.sleep(0.6)
+            return switch(policy)
+
+        with mock.patch.object(
+            self.egress_policy_controller, "switch", side_effect=slow_switch
+        ):
+            for policy in ("full", "web"):
+                with self.subTest(policy=policy):
+                    with self.assertRaises(urllib.error.HTTPError) as response:
+                        self.request(
+                            "/egress/" + policy,
+                            {"csrf": csrf_token},
+                            headers=headers,
+                            follow_redirects=False,
+                        )
+                    self.assertEqual(303, response.exception.code)
+                    self.assertEqual(policy, self.egress_policy_controller.state)
+
     def test_online_update_requires_csrf_and_queues_the_fixed_task(self):
         headers, csrf_token = self.authenticated_headers()
 
@@ -8638,6 +8711,26 @@ class PanelHttpTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as unauthenticated:
             self.request("/updates/status", follow_redirects=False)
         self.assertEqual(303, unauthenticated.exception.code)
+
+    def test_service_timeout_returns_an_error_page_instead_of_closing_the_socket(self):
+        headers, csrf = self.authenticated_headers()
+        self.application.service_controller = ServiceController(
+            runner=mock.Mock(side_effect=subprocess.TimeoutExpired("systemctl", 15))
+        )
+        with self.assertRaises(urllib.error.HTTPError) as response:
+            self.request("/service/start", {"csrf": csrf}, headers=headers)
+        self.assertEqual(500, response.exception.code)
+        self.assertIn("请刷新状态", response.exception.read().decode())
+
+    def test_dashboard_resumes_active_update_without_cached_release_metadata(self):
+        self.update_controller.queue("v0.4.0")
+        self.application.update_result = None
+        headers, _ = self.authenticated_headers()
+        with self.request("/", headers=headers) as response:
+            body = response.read().decode()
+        self.assertIn('data-update-form', body)
+        self.assertIn('type="submit" disabled>正在更新…</button>', body)
+        self.assertIn('data-update-status data-state="queued"', body)
 
     def test_update_check_waits_until_an_apply_has_captured_its_target(self):
         apply_started = threading.Event()

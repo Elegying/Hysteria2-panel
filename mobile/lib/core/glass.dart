@@ -2,6 +2,27 @@ import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
+class RefreshWarning extends StatelessWidget {
+  const RefreshWarning({required this.message, super.key});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Theme.of(context).colorScheme.errorContainer,
+    borderRadius: BorderRadius.circular(12),
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          const Icon(Icons.cloud_off_rounded),
+          const SizedBox(width: 10),
+          Expanded(child: Text(message)),
+        ],
+      ),
+    ),
+  );
+}
+
 /// Shared background and surfaces for the app's lightweight liquid-glass UI.
 class LiquidBackdrop extends StatelessWidget {
   const LiquidBackdrop({required this.child, super.key});
@@ -168,6 +189,23 @@ Color glassMenuColor(BuildContext context) {
   final scheme = Theme.of(context).colorScheme;
   final dark = Theme.of(context).brightness == Brightness.dark;
   return scheme.surface.withValues(alpha: dark ? .78 : .90);
+}
+
+// Keep caller-owned input controllers alive until the closing animation ends.
+Future<T?> showGlassFormDialog<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+}) async {
+  ModalRoute<T>? route;
+  final result = await showDialog<T>(
+    context: context,
+    builder: (context) {
+      route = ModalRoute.of<T>(context);
+      return builder(context);
+    },
+  );
+  await route?.completed;
+  return result;
 }
 
 class GlassDialog extends StatelessWidget {

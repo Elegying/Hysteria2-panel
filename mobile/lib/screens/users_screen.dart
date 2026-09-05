@@ -10,6 +10,16 @@ import '../core/formatters.dart';
 import '../core/glass.dart';
 import 'domain_usage_screen.dart';
 
+String? _userLimitsError(int? devices, int? traffic) {
+  if (devices == null || devices < 1 || devices > 100) {
+    return '设备数须为 1–100 的整数';
+  }
+  if (traffic == null || traffic < 1 || traffic > 1048576) {
+    return '流量额度须为 1–1048576 GiB 的整数';
+  }
+  return null;
+}
+
 class UsersScreen extends ConsumerStatefulWidget {
   const UsersScreen({super.key});
 
@@ -25,6 +35,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   String? _sort;
   String? _error;
   bool _loading = true;
+  bool _refreshing = false;
+  int _loadGeneration = 0;
   Timer? _timer;
 
   @override
@@ -78,7 +90,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     Future.microtask(_load);
     _timer = Timer.periodic(
       const Duration(seconds: 15),
-      (_) => _load(silent: true),
+      (_) {
+        if (!_refreshing) _load(silent: true);
+      },
     );
   }
 
@@ -99,7 +113,10 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   }
 
   Future<void> _load({bool silent = false}) async {
-    if (!silent && mounted) setState(() => _loading = true);
+    if (!mounted) return;
+    final generation = ++_loadGeneration;
+    _refreshing = true;
+    if (!silent) setState(() => _loading = true);
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
@@ -107,7 +124,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       final items = (data['items'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList();
-      if (mounted) {
+      if (mounted && generation == _loadGeneration) {
         setState(() {
           _users = items;
           _loading = false;
@@ -115,12 +132,14 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         });
       }
     } on ApiException catch (error) {
-      if (mounted) {
+      if (mounted && generation == _loadGeneration) {
         setState(() {
           _loading = false;
           _error = error.message;
         });
       }
+    } finally {
+      if (generation == _loadGeneration) _refreshing = false;
     }
   }
 
@@ -138,7 +157,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final deviceLimit = TextEditingController(text: '3');
     final trafficLimit = TextEditingController(text: '250');
     var udp443 = false;
-    final result = await showDialog<Map<String, dynamic>>(
+    String? formError;
+    var submitting = false;
+    final result = await showGlassFormDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => GlassDialog(
@@ -170,6 +191,13 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   value: udp443,
                   onChanged: (value) => setDialogState(() => udp443 = value),
                 ),
+                if (formError != null)
+                  Text(
+                    formError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
               ],
             ),
           ),
@@ -179,14 +207,17 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () async {
-                final devices = int.tryParse(deviceLimit.text);
-                final traffic = int.tryParse(trafficLimit.text);
-                if (name.text.trim().isEmpty ||
-                    devices == null ||
-                    traffic == null) {
-                  return;
-                }
+              onPressed: submitting ? null : () async {
+                if (submitting) return;
+                final devices = int.tryParse(deviceLimit.text.trim());
+                final traffic = int.tryParse(trafficLimit.text.trim());
+                setDialogState(
+                  () => formError = name.text.trim().isEmpty
+                      ? '请输入用户名'
+                      : _userLimitsError(devices, traffic),
+                );
+                if (formError != null) return;
+                setDialogState(() => submitting = true);
                 try {
                   final data = await ref
                       .read(appControllerProvider.notifier)
@@ -196,15 +227,21 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         'trafficLimitGb': traffic,
                         'allowUdp443': udp443,
                       });
-                  if (dialogContext.mounted) Navigator.pop(dialogContext, data);
+                  if (dialogContext.mounted &&
+                      ModalRoute.of(dialogContext)?.isCurrent == true) {
+                    Navigator.pop(dialogContext, data);
+                  }
                 } on ApiException catch (error) {
-                  if (dialogContext.mounted) {
-                    ScaffoldMessenger.of(dialogContext)
-                        .showSnackBar(SnackBar(content: Text(error.message)));
+                  if (dialogContext.mounted &&
+                      ModalRoute.of(dialogContext)?.isCurrent == true) {
+                    setDialogState(() {
+                      submitting = false;
+                      formError = error.message;
+                    });
                   }
                 }
               },
-              child: const Text('创建'),
+              child: Text(submitting ? '创建中…' : '创建'),
             ),
           ],
         ),
@@ -435,7 +472,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final gib = ((user['trafficLimitBytes'] as num? ?? 0) / 1073741824).round();
     final traffic = TextEditingController(text: '$gib');
     var udp443 = user['allowUdp443'] == true;
-    final saved = await showDialog<bool>(
+    String? formError;
+    var submitting = false;
+    final saved = await showGlassFormDialog<bool>(
       context: sheetContext,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => GlassDialog(
@@ -460,6 +499,11 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                 value: udp443,
                 onChanged: (value) => setDialogState(() => udp443 = value),
               ),
+              if (formError != null)
+                Text(
+                  formError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
             ],
           ),
           actions: [
@@ -468,26 +512,40 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: () async {
+              onPressed: submitting ? null : () async {
+                if (submitting) return;
+                final deviceValue = int.tryParse(devices.text.trim());
+                final trafficValue = int.tryParse(traffic.text.trim());
+                setDialogState(
+                  () => formError = _userLimitsError(deviceValue, trafficValue),
+                );
+                if (formError != null) return;
+                setDialogState(() => submitting = true);
                 try {
                   await ref.read(appControllerProvider.notifier).patchJson(
                     '/api/v1/mobile/users/${user['id']}',
                     {
                       'generation': user['generation'],
-                      'deviceLimit': int.parse(devices.text),
-                      'trafficLimitGb': int.parse(traffic.text),
+                      'deviceLimit': deviceValue,
+                      'trafficLimitGb': trafficValue,
                       'allowUdp443': udp443,
                     },
                   );
-                  if (dialogContext.mounted) Navigator.pop(dialogContext, true);
+                  if (dialogContext.mounted &&
+                      ModalRoute.of(dialogContext)?.isCurrent == true) {
+                    Navigator.pop(dialogContext, true);
+                  }
                 } on ApiException catch (error) {
-                  if (dialogContext.mounted) {
-                    ScaffoldMessenger.of(dialogContext)
-                        .showSnackBar(SnackBar(content: Text(error.message)));
+                  if (dialogContext.mounted &&
+                      ModalRoute.of(dialogContext)?.isCurrent == true) {
+                    setDialogState(() {
+                      submitting = false;
+                      formError = error.message;
+                    });
                   }
                 }
               },
-              child: const Text('保存'),
+              child: Text(submitting ? '保存中…' : '保存'),
             ),
           ],
         ),
@@ -592,6 +650,13 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   ),
                 ],
               ),
+              if (_error != null && _users.isNotEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    child: RefreshWarning(message: '数据刷新失败：$_error'),
+                  ),
+                ),
               if (_loading && _users.isEmpty)
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
