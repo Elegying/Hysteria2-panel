@@ -67,68 +67,72 @@ class AppBottomDock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final scale = MediaQuery.textScalerOf(context).scale(12) / 12;
     return SafeArea(
       top: false,
-      minimum: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-      child: SizedBox(
-        height: 54,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (var index = 0; index < _items.length; index++) ...[
-              if (index > 0) const SizedBox(width: 8),
-              Expanded(
-                child: GlassSurface(
-                  borderRadius: 16,
-                  blurSigma: 12,
-                  child: InkWell(
-                    onTap: () => onSelected(index),
-                    borderRadius: BorderRadius.circular(16),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      color: selectedIndex == index
-                          ? scheme.primary.withValues(alpha: .18)
-                          : Colors.transparent,
-                      child: Semantics(
-                        button: true,
-                        selected: selectedIndex == index,
-                        label: _items[index].label,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              selectedIndex == index
-                                  ? _items[index].selected
-                                  : _items[index].icon,
-                              size: 22,
-                              color: selectedIndex == index
-                                  ? scheme.primary
-                                  : scheme.onSurfaceVariant,
+      minimum: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: GlassSurface(
+        borderRadius: 28,
+        blurSigma: 20,
+        child: Padding(
+          padding: const EdgeInsets.all(5),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: 56 + (scale - 1) * 16),
+            child: Row(
+              children: [
+                for (var index = 0; index < _items.length; index++)
+                  Expanded(
+                    child: Semantics(
+                      button: true,
+                      selected: selectedIndex == index,
+                      label: _items[index].label,
+                      excludeSemantics: true,
+                      child: Material(
+                        color: selectedIndex == index
+                            ? scheme.primary.withValues(alpha: .12)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(23),
+                        child: InkWell(
+                          onTap: () => onSelected(index),
+                          borderRadius: BorderRadius.circular(23),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 8,
+                              horizontal: 2,
                             ),
-                            const SizedBox(height: 1),
-                            Text(
-                              _items[index].label,
-                              maxLines: 1,
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(
-                                    height: 1,
-                                    fontWeight: selectedIndex == index
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
-                                    color: selectedIndex == index
-                                        ? scheme.onSurface
-                                        : scheme.onSurfaceVariant,
-                                  ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  selectedIndex == index
+                                      ? _items[index].selected
+                                      : _items[index].icon,
+                                  size: 23,
+                                  color: selectedIndex == index
+                                      ? scheme.primary
+                                      : scheme.onSurfaceVariant,
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  _items[index].label,
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        color: selectedIndex == index
+                                            ? scheme.primary
+                                            : scheme.onSurfaceVariant,
+                                      ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              ),
-            ],
-          ],
+              ],
+            ),
+          ),
         ),
       ),
     );

@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/core/glass.dart';
 
 void main() {
-  testWidgets('liquid glass surface renders one shared blur layer', (
+  testWidgets('frosted cards and floating dock both render blur', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -22,7 +22,7 @@ void main() {
     );
 
     expect(find.text('内容'), findsOneWidget);
-    expect(find.byType(BackdropFilter), findsOneWidget);
+    expect(find.byType(BackdropFilter), findsNWidgets(2));
   });
 
   testWidgets('dialogs and secondary sheets share the glass surface', (

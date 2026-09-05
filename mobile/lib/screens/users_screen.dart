@@ -88,12 +88,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     WidgetsBinding.instance.addObserver(this);
     _search.addListener(_redraw);
     Future.microtask(_load);
-    _timer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) {
-        if (!_refreshing) _load(silent: true);
-      },
-    );
+    _timer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!_refreshing) _load(silent: true);
+    });
   }
 
   @override
@@ -207,40 +204,42 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: submitting ? null : () async {
-                if (submitting) return;
-                final devices = int.tryParse(deviceLimit.text.trim());
-                final traffic = int.tryParse(trafficLimit.text.trim());
-                setDialogState(
-                  () => formError = name.text.trim().isEmpty
-                      ? '请输入用户名'
-                      : _userLimitsError(devices, traffic),
-                );
-                if (formError != null) return;
-                setDialogState(() => submitting = true);
-                try {
-                  final data = await ref
-                      .read(appControllerProvider.notifier)
-                      .postJson('/api/v1/mobile/users', {
-                        'name': name.text.trim(),
-                        'deviceLimit': devices,
-                        'trafficLimitGb': traffic,
-                        'allowUdp443': udp443,
-                      });
-                  if (dialogContext.mounted &&
-                      ModalRoute.of(dialogContext)?.isCurrent == true) {
-                    Navigator.pop(dialogContext, data);
-                  }
-                } on ApiException catch (error) {
-                  if (dialogContext.mounted &&
-                      ModalRoute.of(dialogContext)?.isCurrent == true) {
-                    setDialogState(() {
-                      submitting = false;
-                      formError = error.message;
-                    });
-                  }
-                }
-              },
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      if (submitting) return;
+                      final devices = int.tryParse(deviceLimit.text.trim());
+                      final traffic = int.tryParse(trafficLimit.text.trim());
+                      setDialogState(
+                        () => formError = name.text.trim().isEmpty
+                            ? '请输入用户名'
+                            : _userLimitsError(devices, traffic),
+                      );
+                      if (formError != null) return;
+                      setDialogState(() => submitting = true);
+                      try {
+                        final data = await ref
+                            .read(appControllerProvider.notifier)
+                            .postJson('/api/v1/mobile/users', {
+                              'name': name.text.trim(),
+                              'deviceLimit': devices,
+                              'trafficLimitGb': traffic,
+                              'allowUdp443': udp443,
+                            });
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          Navigator.pop(dialogContext, data);
+                        }
+                      } on ApiException catch (error) {
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          setDialogState(() {
+                            submitting = false;
+                            formError = error.message;
+                          });
+                        }
+                      }
+                    },
               child: Text(submitting ? '创建中…' : '创建'),
             ),
           ],
@@ -276,7 +275,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                     child: Text(
                       user['name'].toString(),
                       style: Theme.of(sheetContext).textTheme.headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.w800),
+                          ?.copyWith(fontWeight: FontWeight.w700),
                     ),
                   ),
                   OutlinedButton.icon(
@@ -301,7 +300,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               Text(
                 '用户操作',
                 style: Theme.of(sheetContext).textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w800),
+                    ?.copyWith(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 10),
               Wrap(
@@ -512,39 +511,43 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               child: const Text('取消'),
             ),
             FilledButton(
-              onPressed: submitting ? null : () async {
-                if (submitting) return;
-                final deviceValue = int.tryParse(devices.text.trim());
-                final trafficValue = int.tryParse(traffic.text.trim());
-                setDialogState(
-                  () => formError = _userLimitsError(deviceValue, trafficValue),
-                );
-                if (formError != null) return;
-                setDialogState(() => submitting = true);
-                try {
-                  await ref.read(appControllerProvider.notifier).patchJson(
-                    '/api/v1/mobile/users/${user['id']}',
-                    {
-                      'generation': user['generation'],
-                      'deviceLimit': deviceValue,
-                      'trafficLimitGb': trafficValue,
-                      'allowUdp443': udp443,
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      if (submitting) return;
+                      final deviceValue = int.tryParse(devices.text.trim());
+                      final trafficValue = int.tryParse(traffic.text.trim());
+                      setDialogState(
+                        () => formError = _userLimitsError(
+                          deviceValue,
+                          trafficValue,
+                        ),
+                      );
+                      if (formError != null) return;
+                      setDialogState(() => submitting = true);
+                      try {
+                        await ref
+                            .read(appControllerProvider.notifier)
+                            .patchJson('/api/v1/mobile/users/${user['id']}', {
+                              'generation': user['generation'],
+                              'deviceLimit': deviceValue,
+                              'trafficLimitGb': trafficValue,
+                              'allowUdp443': udp443,
+                            });
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          Navigator.pop(dialogContext, true);
+                        }
+                      } on ApiException catch (error) {
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          setDialogState(() {
+                            submitting = false;
+                            formError = error.message;
+                          });
+                        }
+                      }
                     },
-                  );
-                  if (dialogContext.mounted &&
-                      ModalRoute.of(dialogContext)?.isCurrent == true) {
-                    Navigator.pop(dialogContext, true);
-                  }
-                } on ApiException catch (error) {
-                  if (dialogContext.mounted &&
-                      ModalRoute.of(dialogContext)?.isCurrent == true) {
-                    setDialogState(() {
-                      submitting = false;
-                      formError = error.message;
-                    });
-                  }
-                }
-              },
               child: Text(submitting ? '保存中…' : '保存'),
             ),
           ],
@@ -640,6 +643,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverAppBar(
+                toolbarHeight: 64,
                 pinned: false,
                 title: const Text('用户'),
                 actions: [
@@ -684,7 +688,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                               child: Text(
                                 '高流量用户',
                                 style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.w800),
+                                    ?.copyWith(fontWeight: FontWeight.w700),
                               ),
                             ),
                             TextButton.icon(
@@ -701,7 +705,10 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         ),
                         const SizedBox(height: 9),
                         SizedBox(
-                          height: 100,
+                          height:
+                              120 *
+                              MediaQuery.textScalerOf(context).scale(16) /
+                              16,
                           child: top.isEmpty
                               ? const GlassCard(
                                   child: Center(child: Text('暂无用户')),
@@ -714,7 +721,12 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                   itemBuilder: (context, index) {
                                     final user = top[index];
                                     return SizedBox(
-                                      width: 190,
+                                      width:
+                                          200 +
+                                          (MediaQuery.textScalerOf(context)
+                                                      .scale(16) -
+                                                  16) *
+                                              4,
                                       child: GlassCard(
                                         child: InkWell(
                                           borderRadius: BorderRadius.circular(
@@ -733,7 +745,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                                   overflow:
                                                       TextOverflow.ellipsis,
                                                   style: const TextStyle(
-                                                    fontWeight: FontWeight.w800,
+                                                    fontWeight: FontWeight.w700,
                                                   ),
                                                 ),
                                                 const Spacer(),
@@ -770,6 +782,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                 ? null
                                 : IconButton(
                                     onPressed: _search.clear,
+                                    tooltip: '清除搜索',
                                     icon: const Icon(Icons.clear_rounded),
                                   ),
                           ),
@@ -780,6 +793,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                             Expanded(
                               child: DropdownButtonFormField<String>(
                                 initialValue: _status,
+                                isExpanded: true,
                                 dropdownColor: glassMenuColor(context),
                                 borderRadius: BorderRadius.circular(16),
                                 decoration: const InputDecoration(
@@ -811,6 +825,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                             Expanded(
                               child: DropdownButtonFormField<String>(
                                 initialValue: _sort,
+                                isExpanded: true,
                                 dropdownColor: glassMenuColor(context),
                                 borderRadius: BorderRadius.circular(16),
                                 decoration: const InputDecoration(
@@ -915,7 +930,7 @@ class _CompactUserCard extends StatelessWidget {
                             user['name'].toString(),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontWeight: FontWeight.w800),
+                            style: const TextStyle(fontWeight: FontWeight.w700),
                           ),
                         ),
                         Text(
@@ -965,35 +980,17 @@ class _UserFacts extends StatelessWidget {
     return GridView.builder(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
-        childAspectRatio: 2.25,
+        mainAxisExtent:
+            92 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
         crossAxisSpacing: 8,
         mainAxisSpacing: 8,
       ),
       itemCount: values.length,
       itemBuilder: (context, index) => DecoratedBox(
         decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Colors.white.withValues(
-                alpha: Theme.of(context).brightness == Brightness.dark
-                    ? .08
-                    : .58,
-              ),
-              Theme.of(context).colorScheme.surfaceContainerHighest
-                  .withValues(alpha: .28),
-            ],
-          ),
-          border: Border.all(
-            color: Colors.white.withValues(
-              alpha: Theme.of(context).brightness == Brightness.dark
-                  ? .16
-                  : .76,
-            ),
-          ),
+          color: Theme.of(context).colorScheme.surface,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Padding(
@@ -1010,7 +1007,7 @@ class _UserFacts extends StatelessWidget {
                 values[index].$2,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w800),
+                style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ],
           ),

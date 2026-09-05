@@ -86,7 +86,10 @@ void main() {
                 scrollable: find.byType(Scrollable).first,
               );
             }
+            await tester.pumpAndSettle();
             await tester.ensureVisible(open);
+            await tester.pumpAndSettle();
+            expect(open.hitTestable(), findsOneWidget);
             await tester.tap(open);
           }
           await tester.pumpAndSettle();
