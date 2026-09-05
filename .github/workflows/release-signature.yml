@@ -107,6 +107,7 @@ jobs:
             --required "test (3.12)" \
             --required "test (3.13)" \
             --required "browser-smoke" \
+            --required mobile-tests \
             --required static-analysis \
             --required managed-firewall-integration \
             --required systemd-service-semantics \

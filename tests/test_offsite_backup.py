@@ -103,11 +103,68 @@ class OffsiteBackupTests(unittest.TestCase):
         self.assertTrue(result["name"].startswith("hysteria2-panel-offsite-20330518T000000Z-"))
         self.assertEqual("put", client.calls[0][0])
         self.assertTrue(client.calls[0][1].startswith(".upload-"))
-        self.assertEqual("move", client.calls[1][0])
+        self.assertEqual(("size", client.calls[0][1]), client.calls[1])
+        self.assertEqual("move", client.calls[2][0])
         self.assertIn(("delete", old), client.calls)
         self.assertNotIn(("delete", recent), client.calls)
         self.assertNotIn(("delete", unrelated), client.calls)
         self.assertEqual(b"verified-backup", client.asserted_body)
+
+    def test_incomplete_upload_is_not_published_or_used_to_prune_backups(self):
+        class TruncatedClient(FakeWebDavClient):
+            def put(self, name, handle, size, sha256):
+                super().put(name, handle, size, sha256)
+                self.sizes[name] = size - 1
+
+        archive = self.root / "backup.zip"
+        archive.write_bytes(b"verified-backup")
+        archive.chmod(0o600)
+        client = TruncatedClient()
+
+        with self.assertRaisesRegex(RuntimeError, "size does not match"):
+            WebDavBackupStore(client).upload(archive, expected_uid=os.geteuid())
+
+        temporary = client.calls[0][1]
+        self.assertIn(("delete", temporary), client.calls)
+        self.assertFalse(any(call[0] in {"move", "list"} for call in client.calls))
+        self.assertEqual({}, client.sizes)
+
+    def test_archive_changed_during_upload_is_not_published(self):
+        archive = self.root / "backup.zip"
+        archive.write_bytes(b"verified-backup")
+        archive.chmod(0o600)
+
+        class ChangedClient(FakeWebDavClient):
+            def put(self, name, handle, size, sha256):
+                super().put(name, handle, size, sha256)
+                archive.write_bytes(b"modified-backup")
+
+        client = ChangedClient()
+        with self.assertRaisesRegex(RuntimeError, "changed while uploading"):
+            WebDavBackupStore(client).upload(archive, expected_uid=os.geteuid())
+        self.assertFalse(any(call[0] in {"move", "list"} for call in client.calls))
+        self.assertEqual({}, client.sizes)
+
+    def test_invalid_calendar_names_do_not_break_retention(self):
+        archive = self.root / "backup.zip"
+        archive.write_bytes(b"verified-backup")
+        archive.chmod(0o600)
+        invalid = [".upload-00000000T000000Z-" + "a" * 32,
+                   "hysteria2-panel-offsite-20330230T000000Z-aaaaaaaa.zip"]
+        old = "hysteria2-panel-offsite-20330401T000000Z-bbbbbbbb.zip"
+        client = FakeWebDavClient(invalid + [old])
+        result = WebDavBackupStore(client).upload(
+            archive, now=datetime.datetime(2033, 5, 18, tzinfo=datetime.timezone.utc)
+        )
+        self.assertEqual([old], result["deleted"])
+        self.assertTrue(all(name in client.names for name in invalid))
+
+    def test_webdav_size_accepts_case_insensitive_http_headers(self):
+        client = HttpsWebDavClient.__new__(HttpsWebDavClient)
+        for header in ("Content-Length", "content-length", "CONTENT-LENGTH"):
+            with self.subTest(header=header):
+                client._request = lambda *args, **kwargs: (200, {header: "15"}, b"")
+                self.assertEqual(15, client.size("backup.zip"))
 
     def test_move_failure_cleans_temporary_remote_object(self):
         class MoveFailureClient(FakeWebDavClient):

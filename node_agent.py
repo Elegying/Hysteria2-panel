@@ -28,7 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.4"
+AGENT_VERSION = "0.39.5"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -2587,7 +2587,8 @@ class ProtocolState:
 
     def _read(self):
         data = _read_root_only_file(self.path, "protocol state")
-        if len(data) > 4096:
+        # The retained 256 command acknowledgements alone occupy about 19 KiB.
+        if len(data) > 32 * 1024:
             raise ProtocolError("node protocol state is invalid")
         try:
             state = json.loads(data.decode("utf-8"))

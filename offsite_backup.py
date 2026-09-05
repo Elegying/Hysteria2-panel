@@ -178,8 +178,9 @@ class HttpsWebDavClient:
     def size(self, name):
         status, headers, _body = self._request("HEAD", name)
         self._require_status(status, {200})
+        headers = {key.lower(): value for key, value in headers.items()}
         try:
-            size = int(headers["Content-Length"])
+            size = int(headers["content-length"])
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("WebDAV object size is unavailable") from exc
         if size < 1:
@@ -289,9 +290,12 @@ class WebDavBackupStore:
             match = TEMPORARY_REMOTE_NAME.fullmatch(candidate)
             if match is None:
                 continue
-            created = datetime.datetime.strptime(
-                match.group(1), "%Y%m%dT%H%M%SZ"
-            ).replace(tzinfo=datetime.timezone.utc)
+            try:
+                created = datetime.datetime.strptime(
+                    match.group(1), "%Y%m%dT%H%M%SZ"
+                ).replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                continue
             if created < cutoff:
                 self.client.delete(candidate)
                 deleted.append(candidate)
@@ -316,6 +320,10 @@ class WebDavBackupStore:
             handle.seek(0)
             try:
                 self.client.put(temporary, handle, opened.st_size, digest)
+                if self._file_signature(os.fstat(handle.fileno())) != self._file_signature(opened):
+                    raise RuntimeError("backup archive changed while uploading")
+                if int(self.client.size(temporary)) != opened.st_size:
+                    raise RuntimeError("uploaded WebDAV backup size does not match")
                 self.client.move(temporary, name)
             except Exception as upload_error:
                 try:
@@ -339,9 +347,12 @@ class WebDavBackupStore:
             match = REMOTE_NAME.fullmatch(candidate)
             if match is None or candidate == name:
                 continue
-            created = datetime.datetime.strptime(
-                match.group(1), "%Y%m%dT%H%M%SZ"
-            ).replace(tzinfo=datetime.timezone.utc)
+            try:
+                created = datetime.datetime.strptime(
+                    match.group(1), "%Y%m%dT%H%M%SZ"
+                ).replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                continue
             if created < cutoff:
                 self.client.delete(candidate)
                 deleted.append(candidate)

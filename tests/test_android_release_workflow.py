@@ -10,6 +10,16 @@ GRADLE = (ROOT / "mobile/android/app/build.gradle.kts").read_text(encoding="utf-
 
 
 class AndroidReleaseWorkflowTests(unittest.TestCase):
+    def test_mobile_regressions_run_on_pull_requests_and_gate_publication(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        release = (ROOT / ".github/workflows/release-signature.yml").read_text(encoding="utf-8")
+        self.assertIn("  mobile-tests:", ci)
+        self.assertIn("flutter analyze --no-pub", ci)
+        self.assertIn("flutter test --no-pub", ci)
+        self.assertIn("git diff --exit-code -- pubspec.lock", ci)
+        self.assertIn("d3b14c876900e553bc736ca19295fc09e3853e8e", ci)
+        self.assertIn("--required mobile-tests", release)
+
     def test_online_build_is_bound_to_tag_main_and_exact_flutter_revision(self):
         self.assertIn('test "${GITHUB_REF}" = "refs/tags/${RELEASE_TAG}"', WORKFLOW)
         self.assertIn('test "${tag_commit}" = "${main_commit}"', WORKFLOW)
