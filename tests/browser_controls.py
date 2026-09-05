@@ -2,9 +2,11 @@
 """Exercise real dashboard controls against an isolated local HTTP fixture."""
 
 import base64
+import contextlib
 import json
 import os
 import pathlib
+import signal
 import subprocess  # nosec B404 -- fixed local Chrome executable and argv.
 import sys
 import tempfile
@@ -124,7 +126,7 @@ try:
         '--disable-background-networking','--remote-debugging-port=0',
         '--disable-background-timer-throttling','--disable-renderer-backgrounding',
         '--user-data-dir='+profile.name,'--window-size=1380,1000','about:blank',
-    ], stdout=log, stderr=log)
+    ], stdout=log, stderr=log, start_new_session=True)
     port_file = pathlib.Path(profile.name)/'DevToolsActivePort'
     for attempt in range(200):
         if port_file.exists():
@@ -502,11 +504,13 @@ finally:
     if browser is not None:
         browser.context.__exit__(None,None,None)
     if process is not None:
-        process.terminate()
+        # Stop Chrome's helpers before removing the profile they still write.
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            process.kill()
+            os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
         log.close()
         profile.cleanup()
