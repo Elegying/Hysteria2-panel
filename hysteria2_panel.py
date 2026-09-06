@@ -1728,14 +1728,17 @@ class BackupManager:
         except sqlite3.DatabaseError as exc:
             raise BackupValidationError("恢复后的用户与流量数据库无法读取") from exc
 
-    def _normalize_incoming_usage_ledger(self, database_path, restored_hmac):
+    def _normalize_incoming_usage_ledger(
+        self, database_path, restored_hmac, local_origin_created_at=None
+    ):
         incoming = Database(database_path, restored_hmac)
         incoming.initialize()
         if self.local_origin_id is not None:
             if re.fullmatch(r"local:[0-9a-f]{32}", self.local_origin_id) is None:
                 raise BackupValidationError("本机流量来源标识无效")
             incoming.register_usage_origin(
-                self.local_origin_id, "local", self.node_name
+                self.local_origin_id, "local", self.node_name,
+                created_at=local_origin_created_at,
             )
             incoming.fold_placeholder_local_usage_origin(self.local_origin_id)
         with sqlite_connection(str(database_path)) as connection:
@@ -10660,10 +10663,18 @@ def _validate_applied_transaction(record):
             manifest, payload_paths, require_compatible_endpoint=True
         )
         expected_database = payload_paths["data/panel.db"]
-        with sqlite_connection(str(expected_database)) as connection:
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(proxy_users)")}
-            if "allow_udp_443" not in columns:
-                connection.execute("ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0")
+        # Rebuild the same migrated view used when applying the archive. Only a
+        # newly introduced local origin lacks a timestamp in the source backup;
+        # retain its installed timestamp so recovery is independent of the clock.
+        with sqlite_connection(str(manager.database.path)) as connection:
+            local_origin = connection.execute(
+                "SELECT created_at FROM usage_origins WHERE origin_id = ?",
+                (manager.local_origin_id,),
+            ).fetchone()
+        manager._normalize_incoming_usage_ledger(
+            expected_database, restored_hmac,
+            local_origin_created_at=local_origin[0] if local_origin else None,
+        )
         manager._validate_applied_restore(
             record["envFile"], restored_hmac, manifest, temporary, expected_database
         )
@@ -10925,8 +10936,8 @@ def verify_restore_services(
     health_probe=_default_restore_health_probe,
     stats_probe=_default_restore_stats_probe,
     tcp_probe=_default_restore_tcp_probe,
-    attempts=30,
-    interval=0.2,
+    attempts=120,
+    interval=0.5,
     sleeper=time.sleep,
 ):
     failure = None
@@ -10954,6 +10965,7 @@ def resume_after_restore(
     marker_reader=_read_restore_transaction,
     expected_uid=0,
     strict_paths=True,
+    egress_manager=None,
     **start_options
 ):
     with exclusive_maintenance_lock(lock_path, blocking=True):
@@ -10965,6 +10977,10 @@ def resume_after_restore(
         if record["phase"] != "services-pending":
             raise RuntimeError("restore files have not passed preflight recovery")
         verify_restore_services(settings, runner=runner, **start_options)
+        # Restoring the account HMAC changes panel.env, which is covered by the
+        # egress attestation. Verify unchanged policy/configs before refreshing it.
+        manager = egress_manager or EgressPolicyManager(runner=runner)
+        manager.record_current_state(None, settings.panel_port)
         _remove_restore_marker(marker_path)
 
 

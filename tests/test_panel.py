@@ -2497,6 +2497,28 @@ class OperationsTests(unittest.TestCase):
         load_settings.assert_called_once_with(os.environ)
         resume.assert_called_once_with(settings, strict_paths=False)
 
+    def test_restore_resume_keeps_marker_until_egress_attestation_is_refreshed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            marker.write_text("{}", encoding="utf-8")
+            settings = self.restore_settings(directory)
+            manager = mock.Mock()
+            manager.record_current_state.side_effect = RuntimeError("inconsistent policy")
+            options = dict(
+                lock_path=Path(directory) / "maintenance.lock",
+                marker_path=marker,
+                marker_reader=lambda *_args, **_kwargs: {"phase": "services-pending"},
+                egress_manager=manager,
+            )
+            with mock.patch.object(hysteria2_panel, "verify_restore_services"):
+                with self.assertRaisesRegex(RuntimeError, "inconsistent policy"):
+                    hysteria2_panel.resume_after_restore(settings, **options)
+                self.assertTrue(marker.exists())
+                manager.record_current_state.side_effect = None
+                hysteria2_panel.resume_after_restore(settings, **options)
+            manager.record_current_state.assert_called_with(None, settings.panel_port)
+            self.assertFalse(marker.exists())
+
     def test_restore_and_resume_reject_a_symlink_marker_without_starting_services(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "restore-active"
@@ -2508,6 +2530,7 @@ class OperationsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "marker is invalid"):
                     hysteria2_panel.resume_after_restore(
                         settings,
+                        egress_manager=mock.Mock(),
                         lock_path=Path(directory) / "resume.lock",
                         marker_path=marker,
                     )
@@ -3223,6 +3246,7 @@ class OperationsTests(unittest.TestCase):
 
             hysteria2_panel.resume_after_restore(
                 settings,
+                egress_manager=mock.Mock(),
                 lock_path=root / "maintenance.lock",
                 marker_path=marker,
                 runner=runner,
@@ -3364,6 +3388,7 @@ class OperationsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "not healthy"):
                     hysteria2_panel.resume_after_restore(
                         settings,
+                        egress_manager=mock.Mock(),
                         lock_path=Path(directory) / "maintenance.lock",
                         marker_path=marker,
                         runner=runner,
@@ -3520,6 +3545,7 @@ class OperationsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "healthy"):
                     hysteria2_panel.resume_after_restore(
                         settings,
+                        egress_manager=mock.Mock(),
                         lock_path=Path(directory) / "maintenance.lock",
                         marker_path=marker,
                         runner=runner,
@@ -5926,7 +5952,33 @@ class BackupManagerTests(unittest.TestCase):
         )
 
     def test_explicit_restore_advances_to_health_phase_and_resume_clears_marker(self):
+        self._exercise_explicit_restore()
+
+    def test_legacy_restore_migrates_before_recovery_and_preserves_business_state(self):
+        self._exercise_explicit_restore(legacy=True)
+
+    def _exercise_explicit_restore(self, legacy=False):
         archive = self.manager.create_archive()
+        if legacy:
+            with zipfile.ZipFile(archive) as package:
+                payloads = {name: package.read(name) for name in package.namelist()}
+            legacy_database = self.root / "legacy-recovery.db"
+            legacy_database.write_bytes(payloads["data/panel.db"])
+            with sqlite_connection(legacy_database) as connection:
+                connection.execute("DROP TABLE retired_proxy_names")
+                connection.execute("DROP TABLE node_usage_checkpoints")
+            payloads["data/panel.db"] = legacy_database.read_bytes()
+            manifest = json.loads(payloads["manifest.json"])
+            manifest["panelVersion"] = "0.39.7"
+            manifest["files"]["data/panel.db"] = {
+                "sha256": hashlib.sha256(payloads["data/panel.db"]).hexdigest(),
+                "size": len(payloads["data/panel.db"]),
+            }
+            payloads["manifest.json"] = json.dumps(manifest).encode()
+            archive = self.root / "legacy-recovery.zip"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as package:
+                for name, value in payloads.items():
+                    package.writestr(name, value)
         destination_root = self.root / "explicit-transaction"
         destination_root.mkdir()
         database_path = destination_root / "panel.db"
@@ -5949,6 +6001,7 @@ class BackupManagerTests(unittest.TestCase):
             public_host="vpn.example.test",
             hysteria_port=19999,
             node_name="test-node",
+            local_origin_id="local:" + "e" * 32,
             work_dir=destination_root / "backup-restore",
             maintenance_lock_path=destination_root / "maintenance.lock",
             maintenance_lock_owner=os.geteuid(),
@@ -5976,6 +6029,7 @@ class BackupManagerTests(unittest.TestCase):
             public_host="vpn.example.test",
             hysteria_port=19999,
             node_name="test-node",
+            local_origin_id="local:" + "e" * 32,
             panel_scheme="http",
             panel_port=19998,
             auth_port=19996,
@@ -6006,6 +6060,29 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual("applied", transaction["outcome"])
         restored = Database(database_path, self.hmac_key)
         self.assertEqual("alice", restored.authenticate_token(self.user["token"]))
+        # Repeat the applied/disk-consistent recovery after time has advanced.
+        transaction["phase"] = "disk-consistent"
+        hysteria2_panel._atomic_write_json(marker, transaction)
+        with mock.patch.object(hysteria2_panel.time, "time", return_value=time.time() + 120):
+            hysteria2_panel.recover_restore_files(
+                lock_path=destination_root / "maintenance.lock", marker_path=marker,
+                pending_path=staging.pending_archive, work_dir=staging.work_dir,
+                expected_uid=os.geteuid(), strict_paths=False,
+            )
+        recovered = json.loads(marker.read_text())
+        self.assertEqual("services-pending", recovered["phase"])
+        self.assertEqual("applied", recovered["outcome"])
+        with sqlite_connection(database_path) as connection:
+            before = connection.execute("SELECT tx_bytes,rx_bytes FROM proxy_users").fetchall()
+        self.assertEqual([(123, 456)], before)
+        with sqlite_connection(database_path) as connection:
+            connection.execute("UPDATE proxy_users SET tx_bytes=tx_bytes+1")
+        try:
+            with self.assertRaisesRegex(BackupValidationError, "不一致"):
+                hysteria2_panel._validate_applied_transaction(recovered)
+        finally:
+            with sqlite_connection(database_path) as connection:
+                connection.execute("UPDATE proxy_users SET tx_bytes=tx_bytes-1")
 
         def runner(command, **_kwargs):
             self.assertEqual("show", command[1])
@@ -6017,6 +6094,7 @@ class BackupManagerTests(unittest.TestCase):
 
         hysteria2_panel.resume_after_restore(
             settings,
+            egress_manager=mock.Mock(),
             lock_path=destination_root / "maintenance.lock",
             marker_path=marker,
             runner=runner,
