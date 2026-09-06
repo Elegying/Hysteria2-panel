@@ -427,7 +427,7 @@ def render_dashboard(
     machine_stats_section = "" if not machine_origins else (
         """<section class="card machine-stats"><div class="section-head machine-section-head"><div><h2>节点统计与流量预算</h2><p class="muted">按面板节点与远程节点统计当前周期用量。</p></div><span class="machine-count">{count} 台机器</span></div>{warning}<div class="machine-budget-list">{rows}</div>{dialogs}</section>""".format(
             warning=machine_warning,
-            count=len(machine_origins),
+            count=sum(origin.get("kind") in {"local", "remote"} for origin in machine_origins),
             rows="".join(machine_rows),
             dialogs="".join(machine_budget_dialogs),
         )
