@@ -7662,6 +7662,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("节点统计与流量预算", body)
         self.assertIn('class="machine-budget-list"', body)
         self.assertEqual(3, body.count('class="machine-budget-row"'))
+        self.assertIn('<span class="machine-count">2 台机器</span>', body)
         self.assertEqual(
             2, body.count('class="compact-button secondary machine-budget-edit"')
         )
