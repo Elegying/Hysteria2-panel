@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.8"
+PANEL_VERSION="0.39.9"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -25,12 +25,12 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="9420f46f91acbf74dbb47acf210e73ce7e76b37be5472094a0d6570d0dbe5fef"
+PANEL_SHA256="ab821d636d08739ce289daf0e88858909eeaa73d2ffb56135af12fc106e7dbee"
 OFFSITE_BACKUP_SHA256="ee60a3ccadc007f92559721ebf5afe0fbd49ec7131def208d903a4787c1b7782"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="d819ca7b86349c775b12bad2ff5b101e36666717ea227ccbdcf7e44f371431b1"
+HY2PANEL_VERSION_SHA256="5b0180f400c33e1bc992e05efa63686d5993f642f97d299a036db252967bab72"
 HY2PANEL_BUDGETS_SHA256="dc4fcb976ee2ad906ba84865f6d3d685a82177a4cca9af35f341d60bf1a83206"
 HY2PANEL_WEB_ASSETS_SHA256="f675165040b4a3da2317fec341af5c5f6bc75dfb859b5b447b24fddfda8b6b0b"
 HY2PANEL_OPERATIONS_SHA256="52a6e440ce1ce7c6f0051152538be9bd84bcbea06bd33eaccd1f7defdd4e9a74"
@@ -940,17 +940,17 @@ verify_backed_up_runtime_units_active() {
 }
 
 verify_rollback_recovery() {
-  local health_tls_mode=strict
+  local health_host=127.0.0.1
   set -a
   # The backup was created from the root-owned managed configuration.
   # shellcheck disable=SC1091
   source "${BACKUP_DIR}/etc/panel.env" || return 1
   set +a
   verify_backed_up_runtime_units_active || return 1
-  [[ "${HY2PANEL_PANEL_SCHEME}" != "https" ]] || health_tls_mode=insecure
+  [[ "${HY2PANEL_PANEL_SCHEME}" != "https" ]] || health_host="${HY2PANEL_PANEL_PUBLIC_HOST}"
   wait_for_health \
-    "${HY2PANEL_PANEL_SCHEME}://127.0.0.1:${HY2PANEL_PANEL_PORT}/healthz" \
-    "${health_tls_mode}" \
+    "${HY2PANEL_PANEL_SCHEME}://${health_host}:${HY2PANEL_PANEL_PORT}/healthz" \
+    strict \
     || return 1
   wait_for_health "http://127.0.0.1:${HY2PANEL_AUTH_PORT}/healthz" strict || return 1
   wait_for_listener udp "${HY2PANEL_HYSTERIA_PORT}" || return 1
@@ -4157,9 +4157,12 @@ wait_for_listener() {
 wait_for_health() {
   local url="$1"
   local tls_mode="$2"
-  local curl_options=(-fsS --connect-timeout 2 --max-time 3)
-  if [[ "${tls_mode}" == "insecure" ]]; then
-    curl_options+=(-k)
+  local curl_options=(-fsS --connect-timeout 2 --max-time 3 --noproxy '*')
+  [[ "${tls_mode}" == strict ]] || return 1
+  if [[ "${url}" == https://* ]]; then
+    local authority="${url#https://}"
+    authority="${authority%%/*}"
+    curl_options+=(--resolve "${authority}:127.0.0.1")
   fi
   for _attempt in {1..30}; do
     if curl "${curl_options[@]}" "${url}" >/dev/null 2>&1; then
@@ -4168,6 +4171,30 @@ wait_for_health() {
     sleep 1
   done
   return 1
+}
+
+verify_user_usage_endpoint() {
+  local expected=403
+  local endpoint="http://127.0.0.1:${PANEL_PORT}/api/v1/user/usage"
+  local options=(--silent --show-error --connect-timeout 2 --max-time 3 --noproxy '*')
+  if [[ "${PANEL_SCHEME}" == https ]]; then
+    endpoint="https://${PANEL_PUBLIC_HOST}:${PANEL_PORT}/api/v1/user/usage"
+    options+=(--resolve "${PANEL_PUBLIC_HOST}:${PANEL_PORT}:127.0.0.1")
+    expected=401
+  fi
+  local status
+  status="$(curl "${options[@]}" --output "${TMP_DIR}/usage-probe.json" \
+    --write-out '%{http_code}' "${endpoint}")" || return 1
+  [[ "${status}" == "${expected}" ]] || return 1
+  "${PYTHON_BIN}" - "${TMP_DIR}/usage-probe.json" "${expected}" <<'PY_USAGE'
+import json
+import pathlib
+import sys
+expected = "INVALID_CREDENTIALS" if sys.argv[2] == "401" else "HTTPS_REQUIRED"
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text())
+if payload != {"apiVersion": 1, "error": {"code": expected}}:
+    raise SystemExit("本人查询接口未通过无凭据安全检查")
+PY_USAGE
 }
 
 checkpoint_database() {
@@ -7495,14 +7522,15 @@ if (( UDP_443_ENABLED == 1 )); then
   systemctl is-active --quiet hysteria2-panel-tcp-probe-443.service || fail "TCP 443 连通性探测服务启动失败"
 fi
 
-PANEL_HEALTH_TLS_MODE=strict
-[[ "${PANEL_SCHEME}" != "https" ]] || PANEL_HEALTH_TLS_MODE=insecure
-wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz" "${PANEL_HEALTH_TLS_MODE}" \
+PANEL_HEALTH_HOST=127.0.0.1
+[[ "${PANEL_SCHEME}" != https ]] || PANEL_HEALTH_HOST="${PANEL_PUBLIC_HOST}"
+wait_for_health "${PANEL_SCHEME}://${PANEL_HEALTH_HOST}:${PANEL_PORT}/healthz" strict \
   || fail "面板存活检查失败"
-wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz" "${PANEL_HEALTH_TLS_MODE}" \
+wait_for_health "${PANEL_SCHEME}://${PANEL_HEALTH_HOST}:${PANEL_PORT}/readyz" strict \
   || fail "面板就绪检查失败"
 wait_for_health "http://127.0.0.1:${AUTH_PORT}/healthz" strict \
   || fail "认证服务健康检查失败"
+verify_user_usage_endpoint || fail "本人查询接口安全检查失败"
 systemctl start hysteria2-panel-offsite-backup.timer \
   || fail "异地备份 timer 启动失败"
 ss -H -lun "sport = :${HYSTERIA_PORT}" | grep -q . || fail "Hysteria UDP 端口未监听"

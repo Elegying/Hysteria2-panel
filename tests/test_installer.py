@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.8"', source)
+        self.assertIn('PANEL_VERSION="0.39.9"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -2850,7 +2850,7 @@ rollback_firewall_changes
             )
         ]
         self.assertIn(
-            '"${HY2PANEL_PANEL_SCHEME}://127.0.0.1:${HY2PANEL_PANEL_PORT}/healthz"',
+            '"${HY2PANEL_PANEL_SCHEME}://${health_host}:${HY2PANEL_PANEL_PORT}/healthz"',
             recovery_health,
         )
         self.assertNotIn("/readyz", recovery_health)
@@ -3741,8 +3741,18 @@ fi
 
         self.assertIn("wait_for_health", source)
         self.assertIn("for _attempt in {1..30}", source)
-        self.assertIn('wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/healthz"', source)
-        self.assertIn('wait_for_health "${PANEL_SCHEME}://127.0.0.1:${PANEL_PORT}/readyz"', source)
+        self.assertIn('wait_for_health "${PANEL_SCHEME}://${PANEL_HEALTH_HOST}:${PANEL_PORT}/healthz"', source)
+        self.assertIn('wait_for_health "${PANEL_SCHEME}://${PANEL_HEALTH_HOST}:${PANEL_PORT}/readyz"', source)
+
+    def test_health_and_usage_probes_require_strict_tls(self):
+        source = INSTALLER.read_text()
+        helpers = source.split("wait_for_health() {", 1)[1].split("checkpoint_database() {", 1)[0]
+        self.assertNotIn("-k", helpers)
+        self.assertIn('--resolve "${authority}:127.0.0.1"', helpers)
+        self.assertIn('[[ "${tls_mode}" == strict ]] || return 1', helpers)
+        self.assertIn('verify_user_usage_endpoint || fail', source)
+        self.assertIn('INVALID_CREDENTIALS', helpers)
+        self.assertIn('HTTPS_REQUIRED', helpers)
 
     def test_panel_service_uses_native_systemd_readiness_and_watchdog_contract(self):
         source = INSTALLER.read_text()

@@ -312,3 +312,5 @@ find /var/backups/hysteria2-panel -mindepth 2 -maxdepth 2 \
   -name backup-manifest.json -type f -print -quit | grep -q .
 
 echo "fresh-install/upgrade SIGKILL recovery, watchdog restart and health verification: PASS"
+
+python3 /workspace/tests/installer_https_usage.py
