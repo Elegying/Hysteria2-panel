@@ -28,7 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.13"
+AGENT_VERSION = "0.39.14"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -2289,7 +2289,12 @@ class LocalStatsClient:
             isinstance(user, str) and 1 <= len(user) <= 64 for user in users
         ):
             raise ProtocolError("kick user list is invalid")
-        self._request("/kick", users)
+        # Match each entrypoint independently: an offline ID must not retain a
+        # one-shot kick that would disconnect its next authenticated session.
+        online = self.online()
+        users = [user for user in users if online.get(user, 0) > 0]
+        if users:
+            self._request("/kick", users)
 
 
 class DomainStreamAccumulator:

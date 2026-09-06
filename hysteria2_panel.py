@@ -9129,7 +9129,12 @@ class HysteriaStatsClient:
     def kick_many(self, names):
         names = list(names)
         if names:
-            self._request("/kick", names)
+            # Hysteria retains a one-shot kick until the ID next sends traffic.
+            # Marking an offline ID would kill its next legitimate connection.
+            online = self.online()
+            names = [name for name in names if online.get(name, 0) > 0]
+            if names:
+                self._request("/kick", names)
 
 
 class PartialTrafficCollectionError(RuntimeError):
