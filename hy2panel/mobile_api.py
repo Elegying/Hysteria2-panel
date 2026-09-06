@@ -1,5 +1,7 @@
 """Stable JSON projections for the Hysteria2 Manager Android client."""
 
+from .budgets import provider_traffic_bytes
+
 import base64
 import hashlib
 import re
@@ -226,8 +228,8 @@ def _machine_origin_map(snapshot):
 
 def _traffic_fields(origin):
     origin = origin if isinstance(origin, dict) else {}
-    tx_bytes = _non_negative_int(origin.get("tx_bytes"))
-    rx_bytes = _non_negative_int(origin.get("rx_bytes"))
+    tx_bytes = provider_traffic_bytes(origin.get("tx_bytes"))
+    rx_bytes = provider_traffic_bytes(origin.get("rx_bytes"))
     return {
         "txBytes": tx_bytes,
         "rxBytes": rx_bytes,
@@ -407,8 +409,8 @@ def _traffic_budgets(application, snapshot):
                 "lastKnownOnlineDevices": _non_negative_int(
                     origin.get("last_known_online_devices")
                 ),
-                "txBytes": _non_negative_int(origin.get("tx_bytes")),
-                "rxBytes": _non_negative_int(origin.get("rx_bytes")),
+                "txBytes": provider_traffic_bytes(origin.get("tx_bytes")) if origin.get("kind") in {"local", "remote"} else _non_negative_int(origin.get("tx_bytes")),
+                "rxBytes": provider_traffic_bytes(origin.get("rx_bytes")) if origin.get("kind") in {"local", "remote"} else _non_negative_int(origin.get("rx_bytes")),
                 "observedAt": _non_negative_int(origin.get("observed_at")),
                 "budget": (
                     {

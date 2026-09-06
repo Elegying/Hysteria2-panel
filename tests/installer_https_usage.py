@@ -129,12 +129,45 @@ def main():
             archive = manager._create_archive_locked()
             with zipfile.ZipFile(archive) as package:
                 payloads = {name: package.read(name) for name in package.namelist()}
+            manifest = json.loads(payloads['manifest.json'])
+            assert manifest['dataScope'] == 'users'
+            compact_db = Path(work) / 'portable.db'
+            compact_db.write_bytes(payloads['data/panel.db'])
+            with sqlite3.connect(compact_db) as connection:
+                for table in manager.RUNTIME_TABLES | frozenset(manager.MACHINE_TABLES):
+                    assert connection.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0] == 0
+            original_origin = 'local:' + values['HY2PANEL_USAGE_ORIGIN_ID']
+            database.set_origin_budget(original_origin, 10**12, 80, 'fixture',
+                                       manual_used_bytes=456789, reset_day=11)
+            with database._connect() as connection:
+                budget_before = [tuple(row) for row in connection.execute('SELECT * FROM origin_traffic_budgets')]
+            pending = Path('/var/lib/hysteria2-panel/backup-restore/pending-restore.zip')
+
+            def restore_fixture(fixture_payloads):
+                assert not pending.exists()
+                with zipfile.ZipFile(pending, 'w', compression=zipfile.ZIP_DEFLATED) as package:
+                    for name, value in fixture_payloads.items():
+                        package.writestr(name, value)
+                pending.chmod(0o600)
+                owner = database.path.stat()
+                os.chown(pending, owner.st_uid, owner.st_gid)
+                run('systemctl', 'start', 'hysteria2-panel-restore.service')
+                assert expect(user['token'], 200)['data']['usedBytes'] == 30
+                deadline = time.monotonic() + 90
+                while Path('/etc/hysteria2-panel/.restore-active').exists():
+                    assert time.monotonic() < deadline, 'Restore did not finish health verification'
+                    time.sleep(1)
+                with database._connect() as connection:
+                    assert budget_before == [tuple(row) for row in connection.execute('SELECT * FROM origin_traffic_budgets')]
+
+            restore_fixture(payloads)
             source_db = Path(work) / 'legacy.db'
-            source_db.write_bytes(payloads['data/panel.db'])
+            manager._copy_database(database.path, source_db)
             with sqlite3.connect(source_db) as connection:
+                for table in manager.RUNTIME_TABLES:
+                    connection.execute('DELETE FROM ' + table)
                 connection.execute('DROP TABLE retired_proxy_names')
                 connection.execute('DROP TABLE node_usage_checkpoints')
-                original_origin = 'local:' + values['HY2PANEL_USAGE_ORIGIN_ID']
                 source_origin = 'local:' + secrets.token_hex(16)
                 for table in ('usage_origins', 'usage_origin_users', 'origin_traffic_daily',
                               'origin_traffic_budgets'):
@@ -143,30 +176,20 @@ def main():
             payloads['data/panel.db'] = source_db.read_bytes()
             manifest = json.loads(payloads['manifest.json'])
             manifest['panelVersion'] = '0.39.7'
+            manifest.pop('dataScope', None)
             manifest['files']['data/panel.db'] = {
                 'sha256': hashlib.sha256(payloads['data/panel.db']).hexdigest(),
                 'size': len(payloads['data/panel.db']),
             }
             payloads['manifest.json'] = json.dumps(manifest).encode()
-            pending = Path('/var/lib/hysteria2-panel/backup-restore/pending-restore.zip')
-            assert not pending.exists()
-            with zipfile.ZipFile(pending, 'w', compression=zipfile.ZIP_DEFLATED) as package:
-                for name, value in payloads.items():
-                    package.writestr(name, value)
-            pending.chmod(0o600)
-            owner = database.path.stat()
-            os.chown(pending, owner.st_uid, owner.st_gid)
-            run('systemctl', 'start', 'hysteria2-panel-restore.service')
-            assert expect(user['token'], 200)['data']['usedBytes'] == 30
-            deadline = time.monotonic() + 90
-            while Path('/etc/hysteria2-panel/.restore-active').exists():
-                assert time.monotonic() < deadline, 'Restore did not finish health verification'
-                time.sleep(1)
+            restore_fixture(payloads)
+            with database._connect() as connection:
+                assert connection.execute('SELECT 1 FROM usage_origins WHERE origin_id=?', (source_origin,)).fetchone() is None
             from hy2panel.operations import EgressPolicyController
             assert EgressPolicyController().status() == values['HY2PANEL_EGRESS_POLICY']
             run('systemctl', 'is-active', '--quiet', 'hysteria2-panel-server.service')
             run('systemctl', 'is-active', '--quiet', 'hysteria2-panel-server-443.service')
-        print('Installed legacy backup restore, service recovery and authenticated HTTPS usage: PASS')
+        print('Installed user-only and legacy backup restore, preserved target billing, service recovery and authenticated HTTPS usage: PASS')
         print('Installed strict HTTPS query, synthetic ledger, restart, rotation and deletion: PASS')
     finally:
         if user is not None:
