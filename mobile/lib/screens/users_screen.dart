@@ -314,8 +314,13 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   ),
                   _ActionChipButton(
                     icon: Icons.qr_code_rounded,
-                    label: '二维码',
+                    label: '扫码',
                     onTap: () => _userAction(sheetContext, user, 'qr'),
+                  ),
+                  _ActionChipButton(
+                    icon: Icons.data_usage_rounded,
+                    label: '流量',
+                    onTap: () => _setUsedTraffic(sheetContext, user),
                   ),
                   _ActionChipButton(
                     icon: user['enabled'] == true
@@ -460,6 +465,108 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       }
     } on ApiException catch (error) {
       if (mounted) _message(error.message, error: true);
+    }
+  }
+
+  Future<void> _setUsedTraffic(
+    BuildContext sheetContext,
+    Map<String, dynamic> user,
+  ) async {
+    final initial = ((user['usedBytes'] as num? ?? 0) / 1073741824)
+        .toStringAsFixed(9)
+        .replaceFirst(RegExp(r'\.?0+$'), '');
+    final traffic = TextEditingController(
+      text: initial.isEmpty ? '0' : initial,
+    );
+    String? formError;
+    var submitting = false;
+    final saved = await showGlassFormDialog<bool>(
+      context: sheetContext,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => GlassDialog(
+          title: Text('设置 ${user['name']} 的已用流量'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: traffic,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                decoration: const InputDecoration(labelText: '已用流量（GiB）'),
+              ),
+              const SizedBox(height: 12),
+              const Text('设置当前已用总量，支持小数；设为 0 即清零。达到流量额度后将停止该账号的连接。'),
+              if (formError != null)
+                Text(
+                  formError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: submitting
+                  ? null
+                  : () async {
+                      if (submitting) return;
+                      final value = traffic.text.trim();
+                      final number = double.tryParse(value);
+                      if (!RegExp(r'^[0-9]{1,7}(?:\.[0-9]{1,9})?$')
+                              .hasMatch(value) ||
+                          number == null ||
+                          !number.isFinite ||
+                          number > 1048576) {
+                        setDialogState(
+                          () => formError = '请输入 0～1048576 GiB，最多 9 位小数',
+                        );
+                        return;
+                      }
+                      if (value == initial) {
+                        Navigator.pop(dialogContext, false);
+                        return;
+                      }
+                      setDialogState(() {
+                        submitting = true;
+                        formError = null;
+                      });
+                      try {
+                        await ref
+                            .read(appControllerProvider.notifier)
+                            .patchJson('/api/v1/mobile/users/${user['id']}', {
+                              'generation': user['generation'],
+                              'usedTrafficGiB': value,
+                            });
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          Navigator.pop(dialogContext, true);
+                        }
+                      } on ApiException catch (error) {
+                        if (dialogContext.mounted &&
+                            ModalRoute.of(dialogContext)?.isCurrent == true) {
+                          setDialogState(() {
+                            submitting = false;
+                            formError = error.message;
+                          });
+                        }
+                      }
+                    },
+              child: Text(submitting ? '保存中…' : '保存'),
+            ),
+          ],
+        ),
+      ),
+    );
+    traffic.dispose();
+    if (saved == true) {
+      if (sheetContext.mounted) Navigator.pop(sheetContext);
+      await _load(silent: true);
+      if (mounted) _message('已用流量已保存');
     }
   }
 

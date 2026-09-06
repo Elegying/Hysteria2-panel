@@ -200,6 +200,9 @@ function syncEditUserForm() {
   form.querySelector('[name="generation"]').value = option.dataset.generation;
   form.querySelector('[name="device_limit"]').value = option.dataset.deviceLimit;
   form.querySelector('[name="traffic_limit_gb"]').value = option.dataset.trafficLimitGb;
+  const used = form.querySelector('[name="used_traffic_gib"]');
+  used.value = option.dataset.usedTrafficGib;
+  used.dataset.initialValue = used.value;
   form.querySelector('[name="allow_udp_443"]').checked = option.dataset.allowUdp443 === '1';
 }
 function renderUpdateStatus(payload) {
@@ -385,6 +388,8 @@ document.addEventListener('submit', async function(event) {
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   button.textContent = '保存中…';
+  const used = form.querySelector('[name="used_traffic_gib"]');
+  used.disabled = used.value === used.dataset.initialValue;
   try {
     const payload = await submitInlineForm(form);
     notify(payload.name + ' 的用户设置已更新', false);
@@ -394,6 +399,7 @@ document.addEventListener('submit', async function(event) {
   } catch (error) {
     notify(error.message || '用户设置更新失败，请重试', true);
   } finally {
+    used.disabled = false;
     button.disabled = false;
     button.textContent = '保存修改';
   }

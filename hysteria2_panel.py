@@ -5,6 +5,7 @@ import argparse
 import base64
 import contextlib
 import datetime
+from decimal import Decimal
 import errno
 import fcntl
 import functools
@@ -2279,6 +2280,16 @@ def _usage_month_cutoff(timestamp, retention_months=DOMAIN_USAGE_RETENTION_MONTH
     return "{:04d}-{:02d}".format(month_index // 12, month_index % 12 + 1)
 
 
+def parse_used_traffic_gib(value):
+    """Accept bounded decimal GiB text without float rounding or exponents."""
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9]{1,7}(?:\.[0-9]{1,9})?", value.strip()):
+        raise ValueError("已用流量必须是非负数，最多 9 位小数（GiB）")
+    gib = Decimal(value.strip())
+    if gib > 1048576:
+        raise ValueError("已用流量不能超过 1048576 GiB")
+    return int(gib * 1024**3)
+
+
 class Database:
     # The agent loop is clamped to no less than one batch per second. This keeps
     # the complete eight-day idempotency window for a healthy node, while a
@@ -3178,6 +3189,7 @@ class Database:
         traffic_limit_bytes,
         allow_udp_443=None,
         expected_generation=None,
+        used_traffic_bytes=None,
     ):
         device_limit = int(device_limit)
         traffic_limit_bytes = int(traffic_limit_bytes)
@@ -3187,8 +3199,14 @@ class Database:
             raise ValueError("device limit must be between 1 and 100")
         if not 1 <= traffic_limit_bytes <= MAX_TRAFFIC_LIMIT_BYTES:
             raise ValueError("traffic limit is out of range")
+        if used_traffic_bytes is not None and (
+            type(used_traffic_bytes) is not int
+            or not 0 <= used_traffic_bytes <= MAX_TRAFFIC_LIMIT_BYTES
+        ):
+            raise ValueError("已用流量超出允许范围")
         now = int(time.time())
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = self._get_proxy_user(user_id, connection)
             generation = row["generation"] if expected_generation is None else int(expected_generation)
             if generation != row["generation"]:
@@ -3212,7 +3230,40 @@ class Database:
             )
             if cursor.rowcount != 1:
                 raise ConflictError("proxy user changed; refresh and try again")
-            return self._get_proxy_user(row["id"], connection)
+            if used_traffic_bytes is not None:
+                self._set_user_used_traffic(connection, row, used_traffic_bytes, now)
+            updated = self._get_proxy_user(row["id"], connection)
+            if updated["tx_bytes"] + updated["rx_bytes"] >= updated["traffic_limit_bytes"]:
+                self._queue_kick_users_on_ready_nodes(connection, [row["name"]], now)
+            return updated
+
+    @staticmethod
+    def _set_user_used_traffic(connection, user, used_bytes, now):
+        old_total = user["tx_bytes"] + user["rx_bytes"]
+        if old_total == used_bytes:
+            return
+        # Preserve the existing direction ratio; an empty account uses download.
+        tx = user["tx_bytes"] * used_bytes // old_total if old_total else 0
+        rx = used_bytes - tx
+        if used_bytes < old_total:
+            # Account attribution follows a reduction. Physical machine and
+            # domain traffic remain historical observations, never manual usage.
+            origins = connection.execute(
+                "SELECT origin_id, tx_bytes, rx_bytes FROM usage_origin_users "
+                "WHERE user_name = ? COLLATE NOCASE", (user["name"],)
+            ).fetchall()
+            for origin in origins:
+                connection.execute(
+                    "UPDATE usage_origin_users SET tx_bytes = ?, rx_bytes = ?, updated_at = ? "
+                    "WHERE origin_id = ? AND user_name = ? COLLATE NOCASE",
+                    (origin["tx_bytes"] * tx // max(1, user["tx_bytes"]),
+                     origin["rx_bytes"] * rx // max(1, user["rx_bytes"]),
+                     now, origin["origin_id"], user["name"]),
+                )
+        connection.execute(
+            "UPDATE proxy_users SET tx_bytes = ?, rx_bytes = ? WHERE id = ?",
+            (tx, rx, user["id"]),
+        )
 
     def rotate_proxy_token(self, user_id, token=None, expected_generation=None):
         token_seed = None
@@ -7480,17 +7531,28 @@ class PanelHandler(JsonHandler):
         try:
             user_id = int(parameters[0])
             with self.app.user_action_lock:
+                traffic_only = set(payload) == {"generation", "usedTrafficGiB"}
+                if traffic_only:
+                    current = self.app.database.get_proxy_user(user_id)
+                    payload = dict(payload, deviceLimit=current["device_limit"],
+                                   trafficLimitGb=current["traffic_limit_bytes"] // 1024**3,
+                                   allowUdp443=bool(current["allow_udp_443"]))
                 user = self.app.database.update_proxy_user_limits(
                     user_id,
                     device_limit=json_integer(payload.get("deviceLimit", "")),
-                    traffic_limit_bytes=json_integer(payload.get("trafficLimitGb", "")) * 1024**3,
+                    traffic_limit_bytes=(current["traffic_limit_bytes"] if traffic_only else
+                                         json_integer(payload.get("trafficLimitGb", "")) * 1024**3),
                     allow_udp_443=json_boolean(payload.get("allowUdp443", False)),
                     expected_generation=json_integer(payload.get("generation", "")),
+                    used_traffic_bytes=(parse_used_traffic_gib(payload["usedTrafficGiB"])
+                                        if "usedTrafficGiB" in payload else None),
                 )
                 if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
                     self._kick_safely(user["name"])
             self._audit_safely(
-                self._mobile_actor(session), "proxy_user_limits_updated", user["name"]
+                self._mobile_actor(session),
+                "proxy_user_traffic_set" if "usedTrafficGiB" in payload else "proxy_user_limits_updated",
+                user["name"]
             )
             self._mobile_response(
                 200,
@@ -7500,6 +7562,7 @@ class PanelHandler(JsonHandler):
                     "deviceLimit": user["device_limit"],
                     "trafficLimitBytes": user["traffic_limit_bytes"],
                     "allowUdp443": bool(user["allow_udp_443"]),
+                    "usedBytes": user["tx_bytes"] + user["rx_bytes"],
                 },
             )
         except (TypeError, ValueError):
@@ -8628,6 +8691,8 @@ class PanelHandler(JsonHandler):
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
                     allow_udp_443=allow_udp_443,
                     expected_generation=generation,
+                    used_traffic_bytes=(parse_used_traffic_gib(form["used_traffic_gib"])
+                                        if "used_traffic_gib" in form else None),
                 )
                 if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
                     self._kick_safely(user["name"])
@@ -8649,7 +8714,11 @@ class PanelHandler(JsonHandler):
                 return
             self._error_page(404, "用户不存在")
             return
-        self._audit_safely(session["username"], "proxy_user_limits_updated", user["name"])
+        self._audit_safely(
+            session["username"],
+            "proxy_user_traffic_set" if "used_traffic_gib" in form else "proxy_user_limits_updated",
+            user["name"],
+        )
         payload = {
             "id": user["id"],
             "name": user["name"],

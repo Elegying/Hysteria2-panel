@@ -227,11 +227,12 @@ def render_dashboard(
             )
         )
     edit_options = "".join(
-        """<option value="{id}" data-generation="{generation}" data-device-limit="{device_limit}" data-traffic-limit-gb="{traffic_limit_gb}" data-allow-udp443="{allow_udp_443}">{name}</option>""".format(
+        """<option value="{id}" data-generation="{generation}" data-device-limit="{device_limit}" data-traffic-limit-gb="{traffic_limit_gb}" data-used-traffic-gib="{used_traffic_gib}" data-allow-udp443="{allow_udp_443}">{name}</option>""".format(
             id=user["id"],
             generation=user["generation"],
             device_limit=user["device_limit"],
             traffic_limit_gb=max(1, user["traffic_limit_bytes"] // 1024**3),
+            used_traffic_gib=format((user["tx_bytes"] + user["rx_bytes"]) / 1024**3, ".9f").rstrip("0").rstrip("."),
             allow_udp_443="1" if user["allow_udp_443"] else "0",
             name=html.escape(user["name"]),
         )
@@ -715,7 +716,7 @@ def render_dashboard(
 <form class="create-grid" method="post" action="/users/{first_edit_id}/edit" data-edit-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><input type="hidden" name="generation" value="{first_edit_generation}"><div class="wide"><label for="edit-user-select">选择用户</label><select id="edit-user-select" data-edit-user-select required>{edit_options}</select></div>
 <div><label for="edit-device-limit">限制设备数</label><input id="edit-device-limit" name="device_limit" type="number" min="1" max="100" value="{first_edit_device_limit}" required></div>
 <div><label for="edit-traffic-limit-gb">总流量（GiB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div>
-<label class="checkbox-field wide" for="edit-allow-udp-443"><input id="edit-allow-udp-443" name="allow_udp_443" type="checkbox" value="1"{first_edit_udp_443_checked}{udp_443_disabled}><span>允许该账号使用 UDP 443<small class="muted">开启后，客户端把服务器端口从 {port} 改为 443 即可；原 {port} 仍可继续使用。</small></span></label><button type="submit"{edit_disabled}>保存修改</button></form>
+<label class="checkbox-field" for="edit-allow-udp-443"><input id="edit-allow-udp-443" name="allow_udp_443" type="checkbox" value="1"{first_edit_udp_443_checked}{udp_443_disabled}><span>允许该账号使用 UDP 443<small class="muted">开启后，客户端把服务器端口从 {port} 改为 443 即可；原 {port} 仍可继续使用。</small></span></label><div><label for="edit-used-traffic-gib">已用流量（GiB）</label><input id="edit-used-traffic-gib" name="used_traffic_gib" type="number" min="0" max="1048576" step="any" value="{first_edit_used_traffic_gib}" required><small class="muted">设置用户当前已用总量，支持小数；设为 0 即清零。</small></div><button class="wide" type="submit"{edit_disabled}>保存修改</button></form>
 <p class="notice">设备数按在线 Hysteria 客户端实例估算；标准通用节点链接不包含硬件设备指纹。</p></div></dialog>
 <p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
 <section class="card"><div class="section-head user-section-head"><div class="user-heading"><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。</p></div>
@@ -808,6 +809,10 @@ def render_dashboard(
             max(1, first_edit_user["traffic_limit_bytes"] // 1024**3)
             if first_edit_user
             else DEFAULT_TRAFFIC_LIMIT_BYTES // 1024**3
+        ),
+        first_edit_used_traffic_gib=(
+            format((first_edit_user["tx_bytes"] + first_edit_user["rx_bytes"]) / 1024**3, ".9f").rstrip("0").rstrip(".")
+            if first_edit_user else "0"
         ),
         first_edit_udp_443_checked=(
             " checked"
