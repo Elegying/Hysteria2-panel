@@ -25,6 +25,7 @@ report_error() {
     hysteria2-panel-install-recover.service \
     hysteria2-panel-upgrade-recover.service \
     hysteria2-panel-upgrade-verify.service \
+    hysteria2-panel-restore-resume.service \
     hysteria2-panel.service \
     hysteria2-panel-server.service \
     hysteria2-panel-tcp-probe.service \
@@ -34,6 +35,7 @@ report_error() {
     -u hysteria2-panel-install-recover.service \
     -u hysteria2-panel-upgrade-recover.service \
     -u hysteria2-panel-upgrade-verify.service \
+    -u hysteria2-panel-restore-resume.service \
     -u hysteria2-panel.service \
     -u hysteria2-panel-server.service \
     -u hysteria2-panel-tcp-probe.service \

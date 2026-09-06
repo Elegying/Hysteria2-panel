@@ -158,10 +158,12 @@ def main():
             os.chown(pending, owner.st_uid, owner.st_gid)
             run('systemctl', 'start', 'hysteria2-panel-restore.service')
             assert expect(user['token'], 200)['data']['usedBytes'] == 30
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + 90
             while Path('/etc/hysteria2-panel/.restore-active').exists():
                 assert time.monotonic() < deadline, 'Restore did not finish health verification'
                 time.sleep(1)
+            from hy2panel.operations import EgressPolicyController
+            assert EgressPolicyController().status() == values['HY2PANEL_EGRESS_POLICY']
             run('systemctl', 'is-active', '--quiet', 'hysteria2-panel-server.service')
             run('systemctl', 'is-active', '--quiet', 'hysteria2-panel-server-443.service')
         print('Installed legacy backup restore, service recovery and authenticated HTTPS usage: PASS')

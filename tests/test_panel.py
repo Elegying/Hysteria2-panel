@@ -2497,6 +2497,28 @@ class OperationsTests(unittest.TestCase):
         load_settings.assert_called_once_with(os.environ)
         resume.assert_called_once_with(settings, strict_paths=False)
 
+    def test_restore_resume_keeps_marker_until_egress_attestation_is_refreshed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-active"
+            marker.write_text("{}", encoding="utf-8")
+            settings = self.restore_settings(directory)
+            manager = mock.Mock()
+            manager.record_current_state.side_effect = RuntimeError("inconsistent policy")
+            options = dict(
+                lock_path=Path(directory) / "maintenance.lock",
+                marker_path=marker,
+                marker_reader=lambda *_args, **_kwargs: {"phase": "services-pending"},
+                egress_manager=manager,
+            )
+            with mock.patch.object(hysteria2_panel, "verify_restore_services"):
+                with self.assertRaisesRegex(RuntimeError, "inconsistent policy"):
+                    hysteria2_panel.resume_after_restore(settings, **options)
+                self.assertTrue(marker.exists())
+                manager.record_current_state.side_effect = None
+                hysteria2_panel.resume_after_restore(settings, **options)
+            manager.record_current_state.assert_called_with(None, settings.panel_port)
+            self.assertFalse(marker.exists())
+
     def test_restore_and_resume_reject_a_symlink_marker_without_starting_services(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / "restore-active"
@@ -2508,6 +2530,7 @@ class OperationsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "marker is invalid"):
                     hysteria2_panel.resume_after_restore(
                         settings,
+                        egress_manager=mock.Mock(),
                         lock_path=Path(directory) / "resume.lock",
                         marker_path=marker,
                     )
@@ -3223,6 +3246,7 @@ class OperationsTests(unittest.TestCase):
 
             hysteria2_panel.resume_after_restore(
                 settings,
+                egress_manager=mock.Mock(),
                 lock_path=root / "maintenance.lock",
                 marker_path=marker,
                 runner=runner,
@@ -3364,6 +3388,7 @@ class OperationsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "not healthy"):
                     hysteria2_panel.resume_after_restore(
                         settings,
+                        egress_manager=mock.Mock(),
                         lock_path=Path(directory) / "maintenance.lock",
                         marker_path=marker,
                         runner=runner,
@@ -3520,6 +3545,7 @@ class OperationsTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "healthy"):
                     hysteria2_panel.resume_after_restore(
                         settings,
+                        egress_manager=mock.Mock(),
                         lock_path=Path(directory) / "maintenance.lock",
                         marker_path=marker,
                         runner=runner,
@@ -6068,6 +6094,7 @@ class BackupManagerTests(unittest.TestCase):
 
         hysteria2_panel.resume_after_restore(
             settings,
+            egress_manager=mock.Mock(),
             lock_path=destination_root / "maintenance.lock",
             marker_path=marker,
             runner=runner,

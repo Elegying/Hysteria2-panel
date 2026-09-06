@@ -10936,8 +10936,8 @@ def verify_restore_services(
     health_probe=_default_restore_health_probe,
     stats_probe=_default_restore_stats_probe,
     tcp_probe=_default_restore_tcp_probe,
-    attempts=30,
-    interval=0.2,
+    attempts=120,
+    interval=0.5,
     sleeper=time.sleep,
 ):
     failure = None
@@ -10965,6 +10965,7 @@ def resume_after_restore(
     marker_reader=_read_restore_transaction,
     expected_uid=0,
     strict_paths=True,
+    egress_manager=None,
     **start_options
 ):
     with exclusive_maintenance_lock(lock_path, blocking=True):
@@ -10976,6 +10977,10 @@ def resume_after_restore(
         if record["phase"] != "services-pending":
             raise RuntimeError("restore files have not passed preflight recovery")
         verify_restore_services(settings, runner=runner, **start_options)
+        # Restoring the account HMAC changes panel.env, which is covered by the
+        # egress attestation. Verify unchanged policy/configs before refreshing it.
+        manager = egress_manager or EgressPolicyManager(runner=runner)
+        manager.record_current_state(None, settings.panel_port)
         _remove_restore_marker(marker_path)
 
 

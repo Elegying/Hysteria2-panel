@@ -728,6 +728,11 @@ class EgressPolicyManager:
         return "rolled-back"
 
     def record_current_state(self, policy, panel_port):
+        if policy is None:
+            payload, _metadata = _read_managed_file(
+                self.env_path, self.expected_uid, max_bytes=65536
+            )
+            policy = EgressPolicyController._policy_from_bytes(payload)
         if policy not in EgressPolicyController.POLICIES:
             raise ValueError("unsupported egress policy")
         env_payload, _metadata = _read_managed_file(
