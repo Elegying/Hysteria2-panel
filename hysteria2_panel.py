@@ -174,6 +174,42 @@ RESTORE_STOP_UNITS = (
 )
 
 
+USER_USAGE_TTL_SECONDS = 30
+
+
+class UserUsageError(Exception):
+    def __init__(self, status, code):
+        super().__init__(code)
+        self.status = status
+        self.code = code
+
+
+class UserUsageRateLimiter:
+    """Bounded fixed windows, independent of proxy/admin authentication limits."""
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.windows = {}
+
+    def consume(self, key, limit):
+        now = self.clock()
+        with self.lock:
+            # ponytail: at most 4096 keys; reject new keys when full, never evict
+            # a live limit. Shard only if measured request throughput needs it.
+            if len(self.windows) >= 4096:
+                self.windows = {
+                    k: v for k, v in self.windows.items() if v[0] > now
+                }
+            expiry, count = self.windows.get(key, (now + 60, 0))
+            if expiry <= now:
+                expiry, count = now + 60, 0
+            if count >= limit or (key not in self.windows and len(self.windows) >= 4096):
+                return max(1, int(expiry - now) + 1)
+            self.windows[key] = (expiry, count + 1)
+            return 0
+
+
 class ConflictError(Exception):
     """Raised when an administrator submits a stale user mutation."""
 
@@ -628,6 +664,7 @@ class BackupManager:
         ("applied_traffic_batches", "DELETE FROM applied_traffic_batches"),
         ("node_online_counts", "DELETE FROM node_online_counts"),
         ("node_online_snapshots", "DELETE FROM node_online_snapshots"),
+        ("node_usage_checkpoints", "DELETE FROM node_usage_checkpoints"),
         ("node_heartbeat_nonces", "DELETE FROM node_heartbeat_nonces"),
         ("node_request_nonces", "DELETE FROM node_request_nonces"),
         ("node_auth_decisions", "DELETE FROM node_auth_decisions"),
@@ -2347,6 +2384,11 @@ class Database:
                     traffic_acked_at INTEGER NOT NULL,
                     accepted_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS node_usage_checkpoints (
+                    node_id TEXT PRIMARY KEY REFERENCES nodes(node_id) ON DELETE CASCADE,
+                    traffic_observed_at INTEGER NOT NULL,
+                    online_sequence INTEGER
+                );
                 CREATE TABLE IF NOT EXISTS node_online_counts (
                     node_id TEXT NOT NULL REFERENCES nodes(node_id) ON DELETE CASCADE,
                     user_name TEXT NOT NULL,
@@ -2574,6 +2616,7 @@ class Database:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute("DELETE FROM node_online_counts")
             connection.execute("DELETE FROM node_online_snapshots")
+            connection.execute("DELETE FROM node_usage_checkpoints")
             connection.execute("DELETE FROM node_auth_decisions")
             connection.execute("DELETE FROM local_auth_leases")
             connection.execute(
@@ -2869,6 +2912,89 @@ class Database:
                 query += " AND allow_udp_443 = 1"
             row = connection.execute(query, (self._fingerprint(token),)).fetchone()
         return row["name"] if row else None
+
+    def user_usage(self, fingerprint, local_checkpoint, now):
+        """Identity-only lookup and account ledger read in one bounded RO snapshot.
+
+        Never call proxy authorization: disabled/exhausted accounts retain read
+        access; deleted/rotated credentials are checked anew on every request.
+        """
+        deadline = time.monotonic() + 0.2
+        uri = self.path.resolve().as_uri() + "?mode=ro"
+        with sqlite_connection(uri, uri=True, timeout=0.1) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only = ON")
+            connection.set_progress_handler(
+                lambda: int(time.monotonic() >= deadline), 1000
+            )
+            connection.execute("BEGIN")
+            user = connection.execute(
+                """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes, device_limit
+                FROM proxy_users WHERE token_fingerprint = ?""",
+                (fingerprint,),
+            ).fetchone()
+            if user is None:
+                raise UserUsageError(401, "INVALID_CREDENTIALS")
+            if local_checkpoint is None:
+                raise UserUsageError(503, "STATS_UNAVAILABLE")
+            traffic_at, online_at, local_online = local_checkpoint
+            online = local_online.get(user["name"], 0)
+            observations = [traffic_at, online_at]
+            nodes = connection.execute(
+                """SELECT n.status, n.policy_state, s.sequence, s.observed_at,
+                    s.traffic_acked_at, s.accepted_at, c.traffic_observed_at,
+                    c.online_sequence, COALESCE(o.count, 0) AS count
+                FROM nodes AS n
+                LEFT JOIN node_online_snapshots AS s ON s.node_id = n.node_id
+                LEFT JOIN node_usage_checkpoints AS c ON c.node_id = n.node_id
+                LEFT JOIN node_online_counts AS o
+                    ON o.node_id = n.node_id AND o.user_name = ?
+                WHERE n.status != 'revoked'
+                    AND COALESCE(n.lifecycle_state, 'active')
+                        NOT IN ('stopped', 'archived')""",
+                (user["name"],),
+            )
+            for node in nodes:
+                if (node["status"] != "pending_verification"
+                        or node["policy_state"] != "protocol_ready"
+                        or node["online_sequence"] is None
+                        or node["online_sequence"] != node["sequence"]):
+                    raise UserUsageError(503, "STATS_INCOMPLETE")
+                times = [node[key] for key in (
+                    "traffic_observed_at", "observed_at", "traffic_acked_at", "accepted_at"
+                )]
+                if any(type(value) is not int or value < 0 for value in times):
+                    raise UserUsageError(503, "STATS_INCOMPLETE")
+                if node["traffic_observed_at"] > node["observed_at"]:
+                    raise UserUsageError(503, "STATS_INCOMPLETE")
+                observations.extend(times)
+                traffic_at = min(traffic_at, node["traffic_observed_at"])
+                online_at = min(online_at, node["observed_at"])
+                online += node["count"]
+            if any(type(value) is not int or value < 0 or value > now
+                   for value in observations):
+                raise UserUsageError(503, "STATS_UNAVAILABLE")
+            expires_at = min(observations) + USER_USAGE_TTL_SECONDS
+            if now >= expires_at:
+                raise UserUsageError(503, "STATS_STALE")
+            data = {
+                "scope": "account",
+                "usedBytes": user["tx_bytes"] + user["rx_bytes"],
+                "trafficLimitBytes": user["traffic_limit_bytes"],
+                "onlineDevices": online,
+                "deviceLimit": user["device_limit"],
+            }
+            if any(type(value) is not int or value < 0
+                   for key, value in data.items() if key != "scope"):
+                raise UserUsageError(503, "STATS_UNAVAILABLE")
+            return {
+                "apiVersion": 1, "data": data,
+                "meta": {
+                    "serverTime": now, "trafficObservedAt": traffic_at,
+                    "onlineObservedAt": online_at, "expiresAt": expires_at,
+                    "complete": True,
+                },
+            }
 
     def _get_proxy_user(self, user_id, connection):
         row = connection.execute(
@@ -4794,6 +4920,10 @@ class Database:
                             (int(accepted_at), node_id, name, increase),
                         )
                 connection.execute(
+                    "UPDATE node_usage_checkpoints SET online_sequence = ? WHERE node_id = ?",
+                    (int(sequence), node_id),
+                )
+                connection.execute(
                     """UPDATE nodes SET last_snapshot_at = ?, last_traffic_ack_at = ?
                     WHERE node_id = ?""",
                     (int(accepted_at), int(traffic_acked_at), node_id),
@@ -5116,6 +5246,13 @@ class Database:
                         "duplicate": True,
                         "unknownUsers": existing["unknown_users"],
                     }
+                connection.execute(
+                    """INSERT INTO node_usage_checkpoints(node_id, traffic_observed_at)
+                    VALUES (?, ?) ON CONFLICT(node_id) DO UPDATE SET
+                        traffic_observed_at = excluded.traffic_observed_at,
+                        online_sequence = NULL""",
+                    (node_id, observed_at),
+                )
                 if not traffic and not domain_usage:
                     connection.execute(
                         "UPDATE nodes SET last_traffic_ack_at = ? WHERE node_id = ?",
@@ -6034,6 +6171,9 @@ class JsonHandler(BaseHTTPRequestHandler):
         path = str(getattr(self, "path", "")).split("?", 1)[0]
         path = path.replace("\r\n", "").replace("\n", "").replace("\r", "")
         message = (message_format % args).replace("\r\n", "").replace("\n", "").replace("\r", "")
+        if path.startswith("/api/v1/user/") or getattr(self, "_is_user_usage_request", False):
+            path = "/api/v1/user/usage"
+            message = "user usage request"
         LOGGER.info(
             "%s",
             json.dumps(
@@ -6377,6 +6517,9 @@ class PanelApplication:
         self.node_name = node_name
         self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
+        self.user_usage_limiter = UserUsageRateLimiter()
+        self.user_usage_slots = threading.BoundedSemaphore(4)
+        self.user_usage_http_slots = threading.BoundedSemaphore(8)
         self._mutation_gate_condition = threading.Condition()
         self._active_mutations = 0
         self._maintenance_active = False
@@ -6528,6 +6671,53 @@ def dashboard_online_payload(user_names, snapshot):
 
 
 class PanelHandler(JsonHandler):
+    def parse_request(self):
+        target = self.raw_requestline.split(None, 2)
+        raw_path = target[1].decode("iso-8859-1") if len(target) > 1 else ""
+        if "://" in raw_path:
+            try:
+                raw_path = urllib.parse.urlsplit(raw_path).path
+            except ValueError:
+                raw_path = ""
+        self._is_user_usage_request = raw_path.lstrip("/").startswith("api/v1/user/")
+        if self._is_user_usage_request:
+            self.connection.settimeout(2)
+            self.server._arm_request_deadline(self.connection, 3)
+            self._user_usage_http_acquired = self.app.user_usage_http_slots.acquire(
+                blocking=False
+            )
+            if not self._user_usage_http_acquired:
+                self.requestline = "GET /api/v1/user/usage HTTP/1.0"
+                self.request_version = "HTTP/1.0"
+                self.command = "GET"
+                self.path = "/api/v1/user/usage"
+                self.close_connection = True
+                self._send_user_usage(429, {
+                    "apiVersion": 1, "error": {"code": "RATE_LIMITED"}
+                }, retry_after=1)
+                return False
+        return super().parse_request()
+
+    def handle_one_request(self):
+        try:
+            super().handle_one_request()
+        finally:
+            if getattr(self, "_user_usage_http_acquired", False):
+                self._user_usage_http_acquired = False
+                self.app.user_usage_http_slots.release()
+
+    def send_error(self, code, message=None, explain=None):
+        if getattr(self, "_is_user_usage_request", False):
+            status = 405 if code == 501 else code
+            self.close_connection = True
+            self._send_user_usage(status, {
+                "apiVersion": 1, "error": {
+                    "code": "METHOD_NOT_ALLOWED" if status == 405 else "INVALID_REQUEST"
+                }
+            })
+            return
+        super().send_error(code, message, explain)
+
     @property
     def cookie_name(self):
         if self.app.secure_cookies:
@@ -7771,8 +7961,81 @@ class PanelHandler(JsonHandler):
         else:
             self._redirect("/")
 
+    def _handle_user_usage(self):
+        self.close_connection = True
+        acquired = False
+        retry_after = None
+        try:
+            if not isinstance(self.connection, ssl.SSLSocket):
+                raise UserUsageError(403, "HTTPS_REQUIRED")
+            if len(self.path) > 1024 or sum(
+                len(key) + len(value) for key, value in self.headers.items()
+            ) > 8192:
+                raise UserUsageError(413, "REQUEST_TOO_LARGE")
+            if (self.path != "/api/v1/user/usage"
+                    or self.headers.get("Transfer-Encoding") is not None
+                    or self.headers.get_all("Content-Length", []) not in ([], ["0"])):
+                raise UserUsageError(400, "INVALID_REQUEST")
+            if self.command != "GET":
+                raise UserUsageError(405, "METHOD_NOT_ALLOWED")
+            limiter = self.app.user_usage_limiter
+            for key, limit in (("global", 600), (
+                "ip:" + LoginRateLimiter._address_key(self.client_address[0]), 120
+            )):
+                retry_after = limiter.consume(key, limit)
+                if retry_after:
+                    raise UserUsageError(429, "RATE_LIMITED")
+            authorization = self.headers.get_all("Authorization", [])
+            if len(authorization) != 1:
+                raise UserUsageError(401, "INVALID_CREDENTIALS")
+            scheme, separator, token = authorization[0].partition(" ")
+            if scheme.lower() != "bearer" or not separator or not 8 <= len(token) <= 512:
+                raise UserUsageError(401, "INVALID_CREDENTIALS")
+            fingerprint = self.app.database._fingerprint(token)
+            retry_after = limiter.consume("token:" + fingerprint, 12)
+            if retry_after:
+                raise UserUsageError(429, "RATE_LIMITED")
+            acquired = self.app.user_usage_slots.acquire(blocking=False)
+            if not acquired:
+                retry_after = 1
+                raise UserUsageError(429, "RATE_LIMITED")
+            payload = self.app.database.user_usage(
+                fingerprint, self.app.usage_manager.user_usage_checkpoint(), int(time.time())
+            )
+            status = 200
+        except UserUsageError as exc:
+            status, payload = exc.status, {
+                "apiVersion": 1, "error": {"code": exc.code}
+            }
+        except (OSError, sqlite3.Error, ValueError, TypeError, OverflowError):
+            # Never log exceptions here: credentials must not reach diagnostics.
+            status, payload = 503, {
+                "apiVersion": 1, "error": {"code": "STATS_UNAVAILABLE"}
+            }
+        finally:
+            if acquired:
+                self.app.user_usage_slots.release()
+        self._send_user_usage(status, payload, retry_after)
+
+    def _send_user_usage(self, status, payload, retry_after=None):
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        if status == 429:
+            self.send_header("Retry-After", str(retry_after or 1))
+        if status == 401:
+            self.send_header("WWW-Authenticate", "Bearer")
+        if status == 405:
+            self.send_header("Allow", "GET")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         path = self._path()
+        if path.startswith("/api/v1/user/"):
+            self._handle_user_usage()
+            return
         if path.startswith("/api/v1/mobile/"):
             self._handle_mobile_get(path)
             return
@@ -7856,6 +8119,9 @@ class PanelHandler(JsonHandler):
 
     def do_POST(self):
         path = self._path()
+        if path.startswith("/api/v1/user/"):
+            self._handle_user_usage()
+            return
         if path.startswith("/api/v1/mobile/"):
             self._handle_mobile_post(path)
             return
@@ -7923,6 +8189,9 @@ class PanelHandler(JsonHandler):
 
     def do_PATCH(self):
         path = self._path()
+        if path.startswith("/api/v1/user/"):
+            self._handle_user_usage()
+            return
         if path.startswith("/api/v1/mobile/"):
             self._handle_mobile_patch(path)
             return
@@ -7930,6 +8199,9 @@ class PanelHandler(JsonHandler):
 
     def do_DELETE(self):
         path = self._path()
+        if path.startswith("/api/v1/user/"):
+            self._handle_user_usage()
+            return
         if path.startswith("/api/v1/mobile/"):
             self._handle_mobile_delete(path)
             return
@@ -8687,6 +8959,10 @@ class UsageManager:
         )
         self.database.fold_placeholder_local_usage_origin(self.local_origin_id)
         self.lock = threading.Lock()
+        self._user_usage_lock = threading.Lock()
+        self._user_usage_checkpoint = None
+        self._user_usage_traffic_at = None
+        self._user_usage_online = None
         self._live_snapshot_lock = threading.Lock()
         self._live_snapshot_cached_at = None
         self._live_snapshot_cache = None
@@ -8709,7 +8985,14 @@ class UsageManager:
     def set_health_monitor(self, health_monitor):
         self.health_monitor = health_monitor
 
+    def user_usage_checkpoint(self):
+        with self._user_usage_lock:
+            return self._user_usage_checkpoint
+
     def _record_health(self, success):
+        if not success:
+            with self._user_usage_lock:
+                self._user_usage_checkpoint = None
         if self.health_monitor is None:
             return
         self.health_monitor.refresh_database()
@@ -8895,6 +9178,7 @@ class UsageManager:
         except Exception:
             self._record_health(False)
             raise
+        self._user_usage_traffic_at = observed_at
         self._record_health(True)
         return traffic
 
@@ -8902,7 +9186,9 @@ class UsageManager:
         users = {
             user["name"]: user for user in self.database.list_proxy_users_for_usage()
         }
+        observed_at = int(self.wall_clock())
         online = self.stats_client.online()
+        self._user_usage_online = (observed_at, dict(online))
         blocked = []
         for name, count in online.items():
             user = users.get(name)
@@ -8928,6 +9214,14 @@ class UsageManager:
             except Exception:
                 self._record_health(False)
                 raise
+            online_at, online = self._user_usage_online
+            if all(type(count) is int and count >= 0 for count in online.values()):
+                with self._user_usage_lock:
+                    self._user_usage_checkpoint = (
+                        self._user_usage_traffic_at, online_at, online
+                    )
+            else:
+                self._record_health(False)
             return traffic
 
     def run_after_collect(self, action):

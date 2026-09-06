@@ -1,0 +1,110 @@
+[
+  {
+    "name": "zero",
+    "status": 200,
+    "body": {
+      "apiVersion": 1,
+      "data": {
+        "scope": "account",
+        "usedBytes": 0,
+        "trafficLimitBytes": 268435456000,
+        "onlineDevices": 0,
+        "deviceLimit": 3
+      },
+      "meta": {
+        "serverTime": 1788652800,
+        "trafficObservedAt": 1788652795,
+        "onlineObservedAt": 1788652798,
+        "expiresAt": 1788652825,
+        "complete": true
+      }
+    }
+  },
+  {
+    "name": "over_limit",
+    "status": 200,
+    "body": {
+      "apiVersion": 1,
+      "data": {
+        "scope": "account",
+        "usedBytes": 300000000009,
+        "trafficLimitBytes": 268435456000,
+        "onlineDevices": 8,
+        "deviceLimit": 3
+      },
+      "meta": {
+        "serverTime": 1788652800,
+        "trafficObservedAt": 1788652795,
+        "onlineObservedAt": 1788652798,
+        "expiresAt": 1788652825,
+        "complete": true
+      }
+    }
+  },
+  {
+    "name": "invalid_credentials",
+    "status": 401,
+    "headers": {
+      "Cache-Control": "no-store"
+    },
+    "body": {
+      "apiVersion": 1,
+      "error": {
+        "code": "INVALID_CREDENTIALS"
+      }
+    }
+  },
+  {
+    "name": "rate_limited",
+    "status": 429,
+    "headers": {
+      "Cache-Control": "no-store",
+      "Retry-After": "10"
+    },
+    "body": {
+      "apiVersion": 1,
+      "error": {
+        "code": "RATE_LIMITED"
+      }
+    }
+  },
+  {
+    "name": "stats_unavailable",
+    "status": 503,
+    "headers": {
+      "Cache-Control": "no-store"
+    },
+    "body": {
+      "apiVersion": 1,
+      "error": {
+        "code": "STATS_UNAVAILABLE"
+      }
+    }
+  },
+  {
+    "name": "stats_incomplete",
+    "status": 503,
+    "headers": {
+      "Cache-Control": "no-store"
+    },
+    "body": {
+      "apiVersion": 1,
+      "error": {
+        "code": "STATS_INCOMPLETE"
+      }
+    }
+  },
+  {
+    "name": "stats_stale",
+    "status": 503,
+    "headers": {
+      "Cache-Control": "no-store"
+    },
+    "body": {
+      "apiVersion": 1,
+      "error": {
+        "code": "STATS_STALE"
+      }
+    }
+  }
+]
