@@ -1698,6 +1698,18 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             self.assertIn("type: bbr", config)
             self.assertIn("bbrProfile: standard", config)
 
+    def test_ipv4_only_outbound_overrides_acl_direct_for_both_entrypoints(self):
+        identity = validate_data_plane_identity(self.response, architecture="amd64")
+        for policy in ("web", "full"):
+            identity["egress_policy"] = policy
+            for config in render_data_plane_configs(identity, "S" * 48, "4").values():
+                self.assertIn('  - name: direct\n    type: direct\n    direct:\n      mode: "4"', config)
+                self.assertLess(config.index("outbounds:"), config.index("acl:"))
+                self.assertIn('"reject(10.0.0.0/8)"', config)
+        for invalid in ("6", "46", None, [], '4"\nacl:'):
+            with self.subTest(mode=invalid), self.assertRaises(ProtocolError):
+                render_data_plane_configs(identity, "S" * 48, invalid)
+
     def test_config_renderer_rejects_short_secret_and_invalid_identity(self):
         identity = validate_data_plane_identity(self.response, architecture="amd64")
         for secret in ("short", "bad\nsecret", "x" * 129):

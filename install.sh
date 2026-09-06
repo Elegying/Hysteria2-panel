@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.15"
+PANEL_VERSION="0.39.16"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,7 +30,7 @@ OFFSITE_BACKUP_SHA256="d7c57c6d414b15a643f690032acc07f9b74dba2a3ab0acfc3f0b31510
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="248c7f11a78b77710994a84d1fd879131b7ac02ad5dfaa1f10a15a66ae82f844"
+HY2PANEL_VERSION_SHA256="bef81965a84ddb32c8135ffbc069536b08a4f01bcb3e4bf337359676e7fa87af"
 HY2PANEL_BUDGETS_SHA256="9f465224cf32495bcecd547620babee1cd94a1ee904c6678b0bd83d691667547"
 HY2PANEL_WEB_ASSETS_SHA256="3a43f37a18adebf8a21c2e3046ea10f20a8a448515057ec04f2070ebfc289957"
 HY2PANEL_OPERATIONS_SHA256="9fff087c8e6b9fc356285db80395becc5b414b3ef93c0b099329c9c87a006949"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="ce1c659cc27bc85d0cbe1e7a65df18178502579d330f337f8b69dc39186a7fc2"
 HY2PANEL_MOBILE_API_SHA256="dad622d742dd3b53099211eabd4df74156ca6dabcc0f17e1bb59e06f01e3191d"
-NODE_AGENT_SHA256="33ecee14d85543ffd5f2e2b4dcb1a7768d200edc7b1040cd24a6b9af01d94f2d"
+NODE_AGENT_SHA256="e74e5233bafb4a402b4ca09ed6e743494dde6b99814594c420101263e62c4706"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -2776,6 +2776,7 @@ activate_data_plane() {
       --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
       --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
       --output-dir "${TMP_DIR}/data-plane" \
+      --outbound-mode "$(detect_direct_outbound_mode)" \
     || fail "数据面身份取件或本地摘要验证失败；未修改系统"
   DATA_PLANE_MAIN_PORT="$(read_data_plane_main_port \
     "${TMP_DIR}/data-plane/bootstrap.json")" \
@@ -5897,6 +5898,40 @@ ensure_sysctl_directory() {
     || fail "无法持久创建系统 sysctl 配置目录；安装已停止"
 }
 
+detect_direct_outbound_mode() {
+  # UDP connect only asks the kernel for a route; it sends no probe packets.
+  # Keep Happy Eyeballs on uncertain / dual-stack hosts. Never change host IPv6.
+  "${PYTHON_BIN}" - <<'PY'
+import errno
+import socket
+import sys
+
+def route_available(family, address):
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM) as connection:
+            connection.connect((address, 9))
+        return True
+    except OSError as error:
+        if error.errno in {
+            errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL,
+            errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT,
+        }:
+            return False
+        return None
+
+ipv6 = [route_available(socket.AF_INET6, address) for address in (
+    "2606:4700:4700::1111", "2001:4860:4860::8888",
+)]
+mode = "auto"
+if ipv6 == [False, False] and route_available(socket.AF_INET, "1.1.1.1") is True:
+    mode = "4"
+    print("未检测到 IPv6 出站路由：使用 IPv4 出站。IPv6 字面地址仍需双栈出口或客户端 IPv4 回退。", file=sys.stderr)
+else:
+    print("保留自动双栈出站；本地路由检测不代表 IPv6 互联网连通性已验证。", file=sys.stderr)
+print(mode)
+PY
+}
+
 optimize_network_stack() {
   local current_rmem current_wmem target_rmem target_wmem available_cc
   local original_qdisc original_cc sysctl_stage
@@ -6807,6 +6842,7 @@ else
   rm -f -- /opt/hysteria2-panel/acme-deploy.sh /opt/hysteria2-panel/acme-renew.sh
 fi
 
+DIRECT_OUTBOUND_MODE="$(detect_direct_outbound_mode)"
 cat > /etc/hysteria2-panel/hysteria.yaml <<EOF
 listen: :${HYSTERIA_PORT}
 tls:
@@ -6821,6 +6857,11 @@ congestion:
   type: bbr
   bbrProfile: standard
 ignoreClientBandwidth: true
+outbounds:
+  - name: direct
+    type: direct
+    direct:
+      mode: "${DIRECT_OUTBOUND_MODE}"
 trafficStats:
   listen: 127.0.0.1:${STATS_PORT}
   secret: ${STATS_SECRET}
