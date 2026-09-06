@@ -361,7 +361,9 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn("--ref", deployment)
         self.assertIn("full-installer-e2e", deployment)
         self.assertIn("Protect main", deployment)
-        self.assertIn("九项 required status checks", deployment)
+        self.assertIn("required status checks", deployment)
+        self.assertIn("mobile-tests", deployment)
+        self.assertIn("每次发布通过 GitHub API 回读规则集", deployment)
         self.assertIn("ruleset", deployment.lower())
 
 

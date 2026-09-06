@@ -2,7 +2,7 @@
 
 本文面向有仓库发布权限的维护者和多节点生产管理员。普通安装或在线升级请阅读[安装与升级](INSTALLATION.md)。
 
-正式发布只从 GitHub Release 获取 `install.sh`、对应 Sigstore bundle、SPDX SBOM 与 SBOM 的 Sigstore bundle，并按 README 的固定 Cosign SHA-256、OIDC issuer 和精确 workflow/tag identity 完成验签。不要从 `main` 直接以 root 执行脚本。
+正式发布只从 GitHub Release 获取 `install.sh`、对应 Sigstore bundle、SPDX SBOM 与 SBOM 的 Sigstore bundle，并按 README 的固定 Cosign SHA-256、OIDC issuer 和精确 workflow/tag identity 完成验签。README 的短命令以 GitHub HTTPS 和受保护 main 作为首次信任入口；本文的正式发布验收使用固定 Release 验签入口。
 
 ## 发布前总检查
 
@@ -39,7 +39,7 @@ gh workflow run release-signature.yml --ref "${tag}" -f tag="${tag}"
 
 不要从 `main` 引用调度签名：更新器固定的 Sigstore identity 以 `@refs/tags/<版本>` 结尾，工作流也会拒绝 `GITHUB_REF` 与输入标签不一致。若同名 Release 已公开或被标为 prerelease，工作流安全停止，不会覆盖后再签名。
 
-本地契约测试会确认 `full-installer-e2e` 和六平台矩阵都是发布工作流的硬门禁，但本地文件不能伪造 GitHub 远端分支规则。`Protect main` ruleset 已于 2026-08-30 通过 GitHub API 回读确认九项 required status checks，其中包含 Python 3.13、Chrome 双视口渲染和 `full-installer-e2e`；每次发布仍应重新回读远端规则。发布门禁通过 Actions workflow-run 与 jobs API 绑定精确标签、提交、触发事件和任务集合，因此不会复用同一提交上更早的 PR 或 main 检查结果。
+本地契约测试确认 `full-installer-e2e` 和六平台矩阵是发布硬门禁；`Protect main` 的 required status checks 应包括三版本 Python、browser-smoke、mobile-tests、static-analysis、防火墙、systemd、完整安装和 CodeQL。每次发布通过 GitHub API 回读规则集，不以历史检查数量代替当前规则。发布门禁通过 Actions workflow-run 与 jobs API 绑定精确标签、提交、触发事件和任务集合，因此不会复用同一提交上更早的 PR 或 main 检查结果。
 
 `Anonymous release distribution synthetic` 每日以无凭据请求 latest API、四个 Release 资产和标签 raw 文件，比较安装器并复核安装器与 SBOM 的 Sigstore 身份；它只拥有 `contents: read`，失败会留下 Actions error 并令 job 变红。仓库可见性发生变化后，必须手工运行一次该 workflow 并取得绿灯，再把匿名分发恢复判定为闭环；同时应为该 workflow 开启 GitHub Actions 失败通知。
 
@@ -49,7 +49,7 @@ Hysteria 节点使用自签名证书并把 SHA-256 指纹固定在已发放链�
 
 面板启动时会读取证书的生效和到期时间，`/metrics` 输出生效倒计时、剩余秒数和有效状态；仪表盘按 180 / 90 / 30 天显示剩余天数。尚未生效、已过期或无法解析的证书都会使 `/readyz` 失败，恢复包中的证书还必须至少剩余 15 分钟有效期。进入提醒窗口后应先下载并离线验证完整备份，再在维护窗口生成新证书、发布包含新指纹的节点链接，并保留旧入口完成客户端迁移；不要只替换证书文件后立即重启。
 
-备份 ZIP 只有在完整自校验通过后才会原子提供下载。恢复过程采用流式校验和替换、预检工作目录与回滚目录空间，并保留最近 30 天且最多 10 份自动回滚目录；失败恢复包保留 7 天且最多 10 份。一键安装始终交付每日 `hysteria2-panel-offsite-backup.timer`；运营方在 root-only `/etc/hysteria2-panel/offsite-backup.json` 配置 HTTPS WebDAV 后，任务以临时名上传、自验证尺寸、原子 MOVE，并仅删除超过 30 天且精确匹配项目命名的远端备份。目标未配置时只记录 `not_configured`，项目不会猜测外部存储凭据或目的地。
+备份 ZIP 只有在完整自校验通过后才会原子提供下载。恢复过程采用流式校验和替换、预检工作目录与回滚目录空间，并保留最近 30 天且最多 10 份自动回滚目录；失败恢复包保留 7 天且最多 10 份。一键安装始终交付每日 `hysteria2-panel-offsite-backup.timer`；运营方在 root-only `/etc/hysteria2-panel/offsite-backup.json` 配置 HTTPS WebDAV 后，任务以临时名上传、回读校验 SHA-256、原子 MOVE 并再次回读校验，并仅删除超过 30 天且精确匹配项目命名的远端备份。目标未配置时只记录 `not_configured`，项目不会猜测外部存储凭据或目的地。
 
 自动升级/恢复前的完整服务器快照保留机器来源、手工计费基线和重置日，用于原机回滚。v0.39.11 的一键下载用户备份不携带这些机器数据：迁移时用户累计进入“未归属历史”，目标机器来源和预算保持原状。面板本机来源 ID 由安装器创建并在升级时保留；机器累计与预算按两倍实际流量显示，用户重置或恢复不会回退机器账本。
 

@@ -131,3 +131,5 @@ systemctl status hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-
 5. 数据库、来源流量和节点控制测试，以及完整单元测试、安全静态检查和 `git diff --check`。
 
 测试只使用临时数据库、测试证书和保留地址，不读取真实备份，也不得输出 HMAC、TLS 私钥、用户 token 种子或节点凭据。
+
+异地上传先验证临时对象内容，MOVE 后再回读验证正式对象；内容验证失败不会记录成功或清理旧备份。节点人工用量调整的秒级批次边界见[完整教程](QUICKSTART.md#修改已用流量的时间边界)。

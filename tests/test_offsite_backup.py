@@ -1,8 +1,11 @@
 import datetime
+import hashlib
+import io
 import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from offsite_backup import (
@@ -18,21 +21,30 @@ class FakeWebDavClient:
         self.names = list(names or [])
         self.calls = []
         self.sizes = {}
+        self.bodies = {}
 
     def put(self, name, handle, size, sha256):
         self.calls.append(("put", name, sha256))
         self.sizes[name] = size
         self.asserted_body = handle.read()
+        self.bodies[name] = self.asserted_body
         handle.seek(0)
 
     def move(self, source, destination):
         self.calls.append(("move", source, destination))
         self.sizes[destination] = self.sizes.pop(source)
+        self.bodies[destination] = self.bodies.pop(source)
         self.names.append(destination)
 
     def size(self, name):
         self.calls.append(("size", name))
         return self.sizes[name]
+
+    def verify(self, name, size, sha256):
+        self.calls.append(("verify", name))
+        body = self.bodies[name]
+        if len(body) != size or hashlib.sha256(body).hexdigest() != sha256:
+            raise RuntimeError("WebDAV backup content does not match")
 
     def list_names(self):
         self.calls.append(("list",))
@@ -104,7 +116,8 @@ class OffsiteBackupTests(unittest.TestCase):
         self.assertEqual("put", client.calls[0][0])
         self.assertTrue(client.calls[0][1].startswith(".upload-"))
         self.assertEqual(("size", client.calls[0][1]), client.calls[1])
-        self.assertEqual("move", client.calls[2][0])
+        self.assertEqual("verify", client.calls[2][0])
+        self.assertEqual("move", client.calls[3][0])
         self.assertIn(("delete", old), client.calls)
         self.assertNotIn(("delete", recent), client.calls)
         self.assertNotIn(("delete", unrelated), client.calls)
@@ -128,6 +141,46 @@ class OffsiteBackupTests(unittest.TestCase):
         self.assertIn(("delete", temporary), client.calls)
         self.assertFalse(any(call[0] in {"move", "list"} for call in client.calls))
         self.assertEqual({}, client.sizes)
+
+    def test_same_size_corruption_before_or_after_move_never_prunes(self):
+        archive = self.root / "backup.zip"
+        archive.write_bytes(b"verified-backup")
+        archive.chmod(0o600)
+        old = "hysteria2-panel-offsite-20000101T000000Z-aaaaaaaa.zip"
+        for after_move in (False, True):
+            class CorruptClient(FakeWebDavClient):
+                def verify(self, name, size, sha256):
+                    if name.startswith("hysteria2-") == after_move:
+                        self.bodies[name] = b"x" * size
+                    super().verify(name, size, sha256)
+            client = CorruptClient([old])
+            with self.subTest(after_move=after_move), self.assertRaisesRegex(
+                RuntimeError, "content does not match"
+            ):
+                WebDavBackupStore(client).upload(archive)
+            self.assertNotIn(("delete", old), client.calls)
+            self.assertFalse(any(call[0] == "list" for call in client.calls))
+
+    def test_https_readback_checks_actual_bytes_and_rejects_redirects(self):
+        config = OffsiteBackupConfig("https://backup.example.test/files/", "u", "p")
+        client = HttpsWebDavClient(config)
+        original = b"good-backup"
+        digest = hashlib.sha256(original).hexdigest()
+        for body, status in ((original, 200), (b"x" * len(original), 200),
+                             (original[:-1], 200), (original + b"x", 200), (b"", 302)):
+            response = io.BytesIO(body)
+            response.status = status
+            connection = mock.Mock()
+            connection.getresponse.return_value = response
+            with self.subTest(body=body, status=status), mock.patch(
+                "offsite_backup.http.client.HTTPSConnection", return_value=connection
+            ):
+                if body == original and status == 200:
+                    client.verify("backup.zip", len(original), digest)
+                else:
+                    with self.assertRaises(RuntimeError):
+                        client.verify("backup.zip", len(original), digest)
+            connection.close.assert_called_once()
 
     def test_archive_changed_during_upload_is_not_published(self):
         archive = self.root / "backup.zip"

@@ -8,11 +8,13 @@ import 'package:hysteria2_manager/screens/users_screen.dart';
 import 'package:hysteria2_manager/screens/home_screen.dart';
 
 class UserFormController extends AppController {
+  bool supportsTrafficEdit = true;
   final requests = <Map<String, dynamic>>[];
   Completer<Map<String, dynamic>>? pendingRequest;
 
   @override
   Future<Map<String, dynamic>> getJson(String path) async => {
+    'features': supportsTrafficEdit ? ['user-used-traffic-edit'] : [],
     'items': [
       {
         'id': 1,
@@ -48,6 +50,26 @@ class UserFormController extends AppController {
 }
 
 void main() {
+  testWidgets(
+    'old panel explains unsupported traffic editing without a write',
+    (tester) async {
+      final controller = UserFormController()..supportsTrafficEdit = false;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((ref) => controller)],
+          child: const MaterialApp(home: Scaffold(body: UsersScreen())),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('form-test-user').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ActionChip, '流量'));
+      await tester.pumpAndSettle();
+      expect(find.text('当前面板不支持设置已用流量，请先升级面板'), findsOneWidget);
+      expect(find.text('已用流量（GiB）'), findsNothing);
+      expect(controller.requests, isEmpty);
+    },
+  );
   for (final kind in ['create', 'edit', 'traffic', 'enroll']) {
     for (final lateSuccess in [true, false]) {
       testWidgets(

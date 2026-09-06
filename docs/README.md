@@ -6,6 +6,8 @@
 
 | 文档 | 适合什么时候看 |
 |---|---|
+| [三机部署与备份恢复教程](QUICKSTART.md) | 空白服务器一键安装、两节点对接、真实连接与还原演练 |
+| [功能验收基线](FUNCTION_ACCEPTANCE_BASELINE.md) | 按稳定编号核对当前能力、失败与未测边界 |
 | [安装与升级](INSTALLATION.md) | 准备服务器、配置 DNS/端口、安装、重复运行或在线升级 |
 | [使用指南](USER_GUIDE.md) | 管理用户、流量、节点、UDP `443` 与出站策略 |
 | [备份与迁移](BACKUP_AND_MIGRATION.md) | 下载备份、恢复、迁移面板或配置 WebDAV |

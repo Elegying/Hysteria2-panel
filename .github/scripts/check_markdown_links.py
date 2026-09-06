@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -15,12 +17,14 @@ EXTERNAL_SCHEMES = {"data", "ftp", "http", "https", "mailto", "tel"}
 
 
 def markdown_files() -> list[Path]:
-    ignored_parts = {".git", ".ruff_cache", ".venv-audit", "__pycache__"}
-    return sorted(
-        path
-        for path in ROOT.rglob("*.md")
-        if path.is_file() and not ignored_parts.intersection(path.relative_to(ROOT).parts)
-    )
+    git = shutil.which("git")
+    if git is None:
+        raise RuntimeError("git is required")
+    names = subprocess.check_output(  # nosec B603 -- fixed Git inventory, no shell.
+        [git, "ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "*.md"],
+        cwd=str(ROOT),
+    ).decode("utf-8").split("\0")
+    return sorted(ROOT / name for name in set(names) if name and (ROOT / name).is_file())
 
 
 def relative_target(raw_target: str) -> str | None:

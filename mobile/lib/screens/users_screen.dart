@@ -472,6 +472,23 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     BuildContext sheetContext,
     Map<String, dynamic> user,
   ) async {
+    try {
+      final capabilities = await ref
+          .read(appControllerProvider.notifier)
+          .getJson('/api/v1/mobile/capabilities');
+      if (!sheetContext.mounted) return;
+      if (!(capabilities['features'] as List? ?? const []).contains(
+        'user-used-traffic-edit',
+      )) {
+        throw const ApiException('当前面板不支持设置已用流量，请先升级面板');
+      }
+    } on ApiException catch (error) {
+      if (sheetContext.mounted) {
+        ScaffoldMessenger.of(sheetContext)
+            .showSnackBar(SnackBar(content: Text(error.message)));
+      }
+      return;
+    }
     final initial = ((user['usedBytes'] as num? ?? 0) / 1073741824)
         .toStringAsFixed(9)
         .replaceFirst(RegExp(r'\.?0+$'), '');
