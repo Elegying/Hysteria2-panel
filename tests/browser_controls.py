@@ -200,8 +200,16 @@ try:
     browser.value('#edit-user-select',str(user_id),'change')
     browser.value('#edit-device-limit','7')
     browser.value('#edit-traffic-limit-gb','20')
+    browser.value('#edit-used-traffic-gib','1.5')
+    browser.screenshot('edit-used-traffic-desktop.png')
+    browser.call('Emulation.setDeviceMetricsOverride', {'width':375,'height':812,'deviceScaleFactor':1,'mobile':True})
+    assert browser.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    browser.screenshot('edit-used-traffic-mobile.png')
+    browser.call('Emulation.clearDeviceMetricsOverride')
     browser.click('[data-edit-user-form] button',navigation=True)
     assert fixture.db.get_proxy_user(user_id)['device_limit'] == 7
+    edited = fixture.db.get_proxy_user(user_id)
+    assert edited['tx_bytes'] + edited['rx_bytes'] == int(1.5 * 1024**3)
     passed('编辑用户选择、保存与列表刷新')
 
     row = '[data-user-name="web-created"] '

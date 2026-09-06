@@ -48,7 +48,7 @@ class UserFormController extends AppController {
 }
 
 void main() {
-  for (final kind in ['create', 'edit', 'enroll']) {
+  for (final kind in ['create', 'edit', 'traffic', 'enroll']) {
     for (final lateSuccess in [true, false]) {
       testWidgets(
         '$kind blocks duplicates and ignores late ${lateSuccess ? 'success' : 'failure'} after cancellation',
@@ -71,10 +71,14 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
-          if (kind == 'edit') {
+          if (kind == 'edit' || kind == 'traffic') {
             await tester.tap(find.text('form-test-user').first);
             await tester.pumpAndSettle();
-            final edit = find.widgetWithText(ActionChip, '编辑');
+            expect(find.widgetWithText(ActionChip, '扫码'), findsOneWidget);
+            final edit = find.widgetWithText(
+              ActionChip,
+              kind == 'traffic' ? '流量' : '编辑',
+            );
             await tester.ensureVisible(edit);
             await tester.tap(edit);
           } else {
@@ -99,13 +103,21 @@ void main() {
           );
           if (kind == 'create') {
             await tester.enterText(field('用户名'), 'pending-user');
+          } else if (kind == 'traffic') {
+            for (final invalid in ['-1', 'NaN', '1e3', '1048577', '']) {
+              await tester.enterText(field('已用流量（GiB）'), invalid);
+              await tester.tap(find.widgetWithText(FilledButton, '保存'));
+              await tester.pumpAndSettle();
+              expect(controller.requests, isEmpty);
+            }
+            await tester.enterText(field('已用流量（GiB）'), '1.25');
           } else if (kind == 'enroll') {
             await tester.enterText(field('节点名称'), 'pending-node');
             await tester.enterText(field('目标服务器公网 IP'), '192.0.2.1');
           }
           final label = kind == 'create'
               ? '创建'
-              : kind == 'edit'
+              : (kind == 'edit' || kind == 'traffic')
               ? '保存'
               : '一键对接';
           final submit = find.descendant(
@@ -125,6 +137,12 @@ void main() {
           );
           await tester.pump();
           expect(controller.requests, hasLength(1));
+          if (kind == 'traffic') {
+            expect(controller.requests.single, {
+              'generation': 0,
+              'usedTrafficGiB': '1.25',
+            });
+          }
           controller.pendingRequest!.completeError(
             const ApiException('测试请求失败'),
           );

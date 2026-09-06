@@ -126,6 +126,34 @@ class DatabaseTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_set_used_traffic_preserves_identity_machine_billing_and_future_usage(self):
+        created = self.db.create_proxy_user("manual", traffic_limit_bytes=5 * 1024**3)
+        token = self.db.recover_proxy_token(created["id"])
+        self.db.add_traffic({"manual": {"tx": 3 * 1024**3, "rx": 6 * 1024**3}})
+        with self.db._connect() as connection:
+            machines = list(connection.execute("SELECT * FROM origin_traffic_daily"))
+        for generation, value in enumerate((2 * 1024**3, 10 * 1024**3, 0)):
+            updated = self.db.update_proxy_user_limits(
+                created["id"], 3, 5 * 1024**3,
+                expected_generation=generation, used_traffic_bytes=value,
+            )
+            self.assertEqual(value, updated["tx_bytes"] + updated["rx_bytes"])
+            self.assertEqual(generation + 1, updated["generation"])
+            self.assertEqual(token, self.db.recover_proxy_token(created["id"]))
+            with self.db._connect() as connection:
+                BackupManager._validate_usage_ledger(connection)
+                self.assertEqual(machines, list(connection.execute("SELECT * FROM origin_traffic_daily")))
+        with self.assertRaises(ConflictError):
+            self.db.update_proxy_user_limits(created["id"], 3, 5 * 1024**3,
+                                             expected_generation=0, used_traffic_bytes=999)
+        self.db.add_traffic({"manual": {"tx": 12, "rx": 34}})
+        user = self.db.get_proxy_user(created["id"])
+        self.assertEqual(46, user["tx_bytes"] + user["rx_bytes"])
+        for value in (-1, True, 1.5, hysteria2_panel.MAX_TRAFFIC_LIMIT_BYTES + 1):
+            with self.assertRaises(ValueError):
+                self.db.update_proxy_user_limits(created["id"], 3, 5 * 1024**3,
+                                                 used_traffic_bytes=value)
+
     def test_database_connections_are_closed_explicitly(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "closed.db", b"c" * 32)
@@ -7862,6 +7890,49 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('class="over-limit-name">alice</strong>', body)
         self.assertIn('客户端实例超限', body)
         self.assertIn('data-over-device-limit="1"', body)
+
+    def test_set_used_traffic_web_and_mobile_validate_and_enforce_quota(self):
+        created = self.db.create_proxy_user("manual-http", traffic_limit_bytes=5 * 1024**3 + 123)
+        path = "/api/v1/mobile/users/{}".format(created["id"])
+        tokens = self.db.create_mobile_session(self.admin_id, "used-traffic-test", "Test")
+        access = tokens["accessToken"]
+        for value in ("-1", "NaN", "Infinity", "1e3", "1048576.1", "", "0.1234567890", True, 1.5):
+            with self.subTest(value=value):
+                with self.assertRaises(urllib.error.HTTPError) as rejected:
+                    self.mobile_json_request("PATCH", path,
+                        {"generation": 0, "usedTrafficGiB": value}, access_token=access)
+                self.assertEqual(400, rejected.exception.code)
+        with self.assertRaises(urllib.error.HTTPError) as anonymous:
+            self.mobile_json_request("PATCH", path, {"generation": 0, "usedTrafficGiB": "6"})
+        self.assertEqual(401, anonymous.exception.code)
+        status, result = self.mobile_json_request("PATCH", path,
+            {"generation": 0, "usedTrafficGiB": "6.25"}, access_token=access)
+        self.assertEqual(200, status)
+        self.assertEqual(int(6.25 * 1024**3), result["data"]["usedBytes"])
+        self.assertEqual(5 * 1024**3 + 123, result["data"]["trafficLimitBytes"])
+        self.assertIn("manual-http", self.stats.kicked)
+        with self.assertRaises(urllib.error.HTTPError) as stale:
+            self.mobile_json_request("PATCH", path,
+                {"generation": 0, "usedTrafficGiB": "0"}, access_token=access)
+        self.assertEqual(409, stale.exception.code)
+        headers, csrf = self.authenticated_headers()
+        form = {"generation": "1", "device_limit": "3", "traffic_limit_gb": "5",
+                "used_traffic_gib": "1.5", "inline": "1"}
+        with self.assertRaises(urllib.error.HTTPError) as no_csrf:
+            self.request("/users/{}/edit".format(created["id"]), form, headers=headers)
+        self.assertEqual(403, no_csrf.exception.code)
+        with self.request("/users/{}/edit".format(created["id"]),
+                          dict(form, csrf=csrf), headers=headers) as response:
+            self.assertEqual(200, response.status)
+        record = self.db.get_proxy_user(created["id"])
+        self.assertEqual(int(1.5 * 1024**3), record["tx_bytes"] + record["rx_bytes"])
+        # Old clients omitting the new field keep every byte intact.
+        with self.request("/users/{}/edit".format(created["id"]),
+                          {"csrf": csrf, "generation": "2", "device_limit": "4",
+                           "traffic_limit_gb": "5", "inline": "1"}, headers=headers) as response:
+            self.assertEqual(200, response.status)
+        record = self.db.get_proxy_user(created["id"])
+        self.assertEqual(int(1.5 * 1024**3), record["tx_bytes"] + record["rx_bytes"])
 
     def test_user_limits_can_be_edited_without_changing_the_issued_link(self):
         created = self.db.create_proxy_user("editable")
