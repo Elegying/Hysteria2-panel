@@ -210,6 +210,14 @@ try:
     assert fixture.db.get_proxy_user(user_id)['device_limit'] == 7
     edited = fixture.db.get_proxy_user(user_id)
     assert edited['tx_bytes'] + edited['rx_bytes'] == int(1.5 * 1024**3)
+    browser.click('[data-dialog-open="edit-user-dialog"]')
+    browser.value('#edit-user-select',str(user_id),'change')
+    fixture.db.add_traffic({'web-created': {'tx':17, 'rx':23}})
+    browser.value('#edit-device-limit','8')
+    browser.click('[data-edit-user-form] button',navigation=True)
+    edited = fixture.db.get_proxy_user(user_id)
+    assert edited['tx_bytes'] + edited['rx_bytes'] == int(1.5 * 1024**3) + 40
+    assert edited['device_limit'] == 8
     passed('编辑用户选择、保存与列表刷新')
 
     row = '[data-user-name="web-created"] '
