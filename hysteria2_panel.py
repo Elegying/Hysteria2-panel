@@ -193,20 +193,25 @@ class UserUsageRateLimiter:
         self.windows = {}
 
     def consume(self, key, limit):
+        return self.consume_many(((key, limit),))
+
+    def consume_many(self, limits):
+        """Admit all budgets atomically; rejected requests spend none of them."""
         now = self.clock()
         with self.lock:
-            # ponytail: at most 4096 keys; reject new keys when full, never evict
-            # a live limit. Shard only if measured request throughput needs it.
             if len(self.windows) >= 4096:
-                self.windows = {
-                    k: v for k, v in self.windows.items() if v[0] > now
-                }
-            expiry, count = self.windows.get(key, (now + 60, 0))
-            if expiry <= now:
-                expiry, count = now + 60, 0
-            if count >= limit or (key not in self.windows and len(self.windows) >= 4096):
-                return max(1, int(expiry - now) + 1)
-            self.windows[key] = (expiry, count + 1)
+                self.windows = {k: v for k, v in self.windows.items() if v[0] > now}
+            pending = {}
+            for key, limit in limits:
+                expiry, count = self.windows.get(key, (now + 60, 0))
+                if expiry <= now:
+                    expiry, count = now + 60, 0
+                if count >= limit:
+                    return max(1, int(expiry - now) + 1)
+                pending[key] = (expiry, count + 1)
+            if len(self.windows) + sum(key not in self.windows for key in pending) > 4096:
+                return 1
+            self.windows.update(pending)
             return 0
 
 
@@ -612,6 +617,7 @@ class BackupManager:
     )
     RESTORED_TABLE_COLUMNS = {
         "proxy_users": PROXY_COLUMNS,
+        "retired_proxy_names": ("name_fingerprint", "retired_at"),
         "usage_origins": (
             "origin_id",
             "kind",
@@ -648,6 +654,7 @@ class BackupManager:
     }
     RESTORED_TABLE_ORDER = {
         "proxy_users": "id",
+        "retired_proxy_names": "name_fingerprint",
         "usage_origins": "origin_id",
         "usage_origin_users": "origin_id, user_name COLLATE NOCASE, user_name",
         "origin_traffic_daily": "origin_id, usage_date",
@@ -1986,6 +1993,7 @@ class BackupManager:
                         "usage_origin_users",
                         "usage_origins",
                         "proxy_users",
+                        "retired_proxy_names",
                     ):
                         destination.execute("DELETE FROM {}".format(table))  # nosec B608
                     for table, columns in self.RESTORED_TABLE_COLUMNS.items():
@@ -2212,6 +2220,10 @@ class Database:
                     password_hash TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS retired_proxy_names (
+                    name_fingerprint TEXT PRIMARY KEY,
+                    retired_at INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS proxy_users (
                     id INTEGER PRIMARY KEY,
@@ -2628,6 +2640,11 @@ class Database:
     def _fingerprint(self, token):
         return hmac.new(self.hmac_key, token.encode("utf-8"), hashlib.sha256).hexdigest()
 
+    def _retired_name_fingerprint(self, name):
+        # Match SQLite NOCASE (ASCII only), without retaining deleted names.
+        canonical = name.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
+        return self._fingerprint("retired-proxy-name\0" + canonical)
+
     def _token_from_seed(self, seed):
         digest = hmac.new(self.hmac_key, b"proxy-token\0" + seed, hashlib.sha256).digest()
         return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
@@ -2882,6 +2899,12 @@ class Database:
         now = int(time.time())
         try:
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                if connection.execute(
+                    "SELECT 1 FROM retired_proxy_names WHERE name_fingerprint = ?",
+                    (self._retired_name_fingerprint(name),),
+                ).fetchone() is not None:
+                    raise ValueError("该用户名已删除并保留隔离记录，请使用新的用户名")
                 cursor = connection.execute(
                     """INSERT INTO proxy_users(
                     name, token_fingerprint, token_seed, enabled, device_limit,
@@ -2913,7 +2936,7 @@ class Database:
             row = connection.execute(query, (self._fingerprint(token),)).fetchone()
         return row["name"] if row else None
 
-    def user_usage(self, fingerprint, local_checkpoint, now):
+    def user_usage(self, fingerprint, local_checkpoint, now, admit=None):
         """Identity-only lookup and account ledger read in one bounded RO snapshot.
 
         Never call proxy authorization: disabled/exhausted accounts retain read
@@ -2933,6 +2956,8 @@ class Database:
                 FROM proxy_users WHERE token_fingerprint = ?""",
                 (fingerprint,),
             ).fetchone()
+            if admit is not None:
+                admit(None if user is None else user["device_limit"])
             if user is None:
                 raise UserUsageError(401, "INVALID_CREDENTIALS")
             if local_checkpoint is None:
@@ -3117,10 +3142,20 @@ class Database:
 
     def delete_proxy_user(self, user_id, expected_generation=None):
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = self._get_proxy_user(user_id, connection)
             generation = row["generation"] if expected_generation is None else int(expected_generation)
             if generation != row["generation"]:
                 raise ConflictError("proxy user changed; refresh and try again")
+            connection.execute(
+                "INSERT OR IGNORE INTO retired_proxy_names VALUES (?, ?)",
+                (self._retired_name_fingerprint(row["name"]), int(time.time())),
+            )
+            for table in ("node_online_counts", "node_auth_decisions", "local_auth_leases"):
+                connection.execute(
+                    "DELETE FROM {} WHERE user_name = ? COLLATE NOCASE".format(table),  # nosec B608
+                    (row["name"],),
+                )
             connection.execute(
                 "DELETE FROM usage_origin_users WHERE user_name = ? COLLATE NOCASE",
                 (row["name"],),
@@ -7979,28 +8014,37 @@ class PanelHandler(JsonHandler):
             if self.command != "GET":
                 raise UserUsageError(405, "METHOD_NOT_ALLOWED")
             limiter = self.app.user_usage_limiter
-            for key, limit in (("global", 600), (
-                "ip:" + LoginRateLimiter._address_key(self.client_address[0]), 120
-            )):
-                retry_after = limiter.consume(key, limit)
+            address = LoginRateLimiter._address_key(self.client_address[0])
+            fingerprint = None
+
+            def admit(device_limit):
+                nonlocal retry_after
+                if device_limit is None:
+                    limits = (("invalid:ip:" + address, 120), ("invalid:global", 600))
+                else:
+                    limits = (
+                        ("account:" + fingerprint, 12 * max(1, min(100, device_limit))),
+                        ("valid:ip:" + address, 6000), ("valid:global", 12000),
+                    )
+                retry_after = limiter.consume_many(limits)
                 if retry_after:
                     raise UserUsageError(429, "RATE_LIMITED")
+
             authorization = self.headers.get_all("Authorization", [])
             if len(authorization) != 1:
+                admit(None)
                 raise UserUsageError(401, "INVALID_CREDENTIALS")
             scheme, separator, token = authorization[0].partition(" ")
             if scheme.lower() != "bearer" or not separator or not 8 <= len(token) <= 512:
+                admit(None)
                 raise UserUsageError(401, "INVALID_CREDENTIALS")
             fingerprint = self.app.database._fingerprint(token)
-            retry_after = limiter.consume("token:" + fingerprint, 12)
-            if retry_after:
-                raise UserUsageError(429, "RATE_LIMITED")
             acquired = self.app.user_usage_slots.acquire(blocking=False)
             if not acquired:
                 retry_after = 1
                 raise UserUsageError(429, "RATE_LIMITED")
             payload = self.app.database.user_usage(
-                fingerprint, self.app.usage_manager.user_usage_checkpoint(), int(time.time())
+                fingerprint, self.app.usage_manager.user_usage_checkpoint(), int(time.time()), admit=admit
             )
             status = 200
         except UserUsageError as exc:
@@ -9230,6 +9274,8 @@ class UsageManager:
             return action()
 
     def forget_user(self, name):
+        with self._user_usage_lock:
+            self._user_usage_checkpoint = None
         with self._authorization_lock:
             self.pending.pop(name, None)
             self.last_online.pop(name, None)

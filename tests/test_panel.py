@@ -436,7 +436,9 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual((0, 0), (origins[origin_id]["tx_bytes"], origins[origin_id]["rx_bytes"]))
 
         self.db.delete_proxy_user(bob["id"])
-        recreated = self.db.create_proxy_user("bob")
+        with self.assertRaisesRegex(ValueError, "隔离记录"):
+            self.db.create_proxy_user("bob")
+        recreated = self.db.create_proxy_user("bob-new")
         self.assertEqual((0, 0), tuple(
             self.db.get_proxy_user(recreated["id"])[key]
             for key in ("tx_bytes", "rx_bytes")
@@ -5367,6 +5369,8 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(0o600, quarantined[0].stat().st_mode & 0o777)
 
     def test_restore_preserves_destination_admin_and_restores_old_node_credentials(self):
+        retired = self.database.create_proxy_user("retired-account")
+        self.database.delete_proxy_user(retired["id"])
         archive = self.manager.create_archive()
         destination_root = self.root / "destination"
         destination_root.mkdir()
@@ -5405,6 +5409,8 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(destination_admin, restored.verify_admin("destination-admin", "destination-password"))
         self.assertIsNone(restored.verify_admin("source-admin", "source-password"))
         self.assertEqual("alice", restored.authenticate_token(self.user["token"]))
+        with self.assertRaisesRegex(ValueError, "隔离记录"):
+            restored.create_proxy_user("RETIRED-account")
         self.assertEqual(["alice"], [row["name"] for row in restored.list_proxy_users()["users"]])
         with sqlite_connection(destination_db.path) as connection:
             self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])

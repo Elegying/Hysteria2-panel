@@ -36,6 +36,23 @@ class UserUsageRateLimiterTests(unittest.TestCase):
         self.assertEqual(1, len(limiter.windows))
 
 
+    def test_rejected_account_or_source_does_not_spend_shared_budget(self):
+        limiter = panel.UserUsageRateLimiter(clock=lambda: 1)
+        self.assertEqual(0, limiter.consume_many((("account", 1), ("ip", 4), ("global", 10))))
+        before = dict(limiter.windows)
+        self.assertGreater(limiter.consume_many((("account", 1), ("ip", 4), ("global", 10))), 0)
+        self.assertEqual(before, limiter.windows)
+        self.assertEqual(0, limiter.consume_many((("other-account", 1), ("ip", 4), ("global", 10))))
+
+    def test_shared_exit_supports_thousand_normal_clients_with_bounded_state(self):
+        limiter = panel.UserUsageRateLimiter(clock=lambda: 1)
+        for _ in range(6):
+            for client in range(1000):
+                self.assertEqual(0, limiter.consume_many((("account:" + str(client), 12),
+                    ("valid:ip:shared", 6000), ("valid:global", 12000))))
+        self.assertLessEqual(len(limiter.windows), 4096)
+
+
 class UserUsageApiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -58,7 +75,6 @@ class UserUsageApiTests(unittest.TestCase):
         self.server.tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         self.server.tls_context.load_cert_chain(cert, key)
         self.context = ssl.create_default_context(cafile=str(cert))
-        self.context.check_hostname = False  # fixture CN differs from loopback IP
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.addCleanup(self.close_server)
@@ -72,8 +88,10 @@ class UserUsageApiTests(unittest.TestCase):
         request_headers = {'Authorization': 'Bearer ' + (self.token if token is None else token)}
         request_headers.update(headers or {})
         connection = http.client.HTTPSConnection(
-            '127.0.0.1', self.server.server_port, context=self.context, timeout=4
+            'vpn.example.test', self.server.server_port, context=self.context, timeout=4
         )
+        connection._create_connection = lambda address, timeout, source_address=None: socket.create_connection(
+            ('127.0.0.1', address[1]), timeout, source_address)
         try:
             connection.request(method, path, headers=request_headers)
             response = connection.getresponse()
@@ -129,6 +147,36 @@ class UserUsageApiTests(unittest.TestCase):
         self.assertEqual(before, self.state_digest())
         self.assertIsNone(self.db.authenticate_token(self.token))
         self.assertFalse(self.manager.authorize('alice'))
+
+    def test_deleted_name_cannot_reuse_old_samples_or_inflight_node_identity(self):
+        self.stats.online_values = {"alice": 2}
+        self.manager.collect_once()
+        self.db.delete_proxy_user(self.user['id'])
+        self.manager.forget_user('alice')
+        self.assertIsNone(self.manager.user_usage_checkpoint())
+        for name in ('alice', 'ALICE'):
+            with self.assertRaisesRegex(ValueError, '新的用户名'):
+                self.db.create_proxy_user(name)
+        self.db.initialize()
+        with self.assertRaisesRegex(ValueError, '新的用户名'):
+            self.db.create_proxy_user('Alice')
+        with self.db._connect() as connection:
+            row = connection.execute('SELECT name_fingerprint FROM retired_proxy_names').fetchone()
+            self.assertEqual(64, len(row[0]))
+            self.assertNotIn('alice', row[0])
+        replacement = self.db.create_proxy_user('replacement')
+        self.assert_error(self.request(replacement['token']), 503, 'STATS_UNAVAILABLE')
+        self.manager.collect_once()
+        self.assertEqual(0, self.request(replacement['token'])[2]['data']['onlineDevices'])
+
+    def test_invalid_clients_do_not_spend_valid_account_budget(self):
+        for _ in range(120):
+            self.app.user_usage_limiter.consume_many((("invalid:ip:127.0.0.1", 120), ("invalid:global", 600)))
+        self.assert_error(self.request(secrets.token_urlsafe(24)), 429, 'RATE_LIMITED')
+        self.assertEqual(200, self.request()[0])
+        self.db.update_proxy_user_limits(self.user['id'], 3, 268435456000)
+        for _ in range(17):
+            self.assertEqual(200, self.request()[0])
 
     def test_wrong_deleted_and_rotated_passwords_fail_immediately(self):
         self.assert_error(self.request(secrets.token_urlsafe(24)), 401, 'INVALID_CREDENTIALS')
@@ -200,7 +248,7 @@ class UserUsageApiTests(unittest.TestCase):
         successful = [r for r in results if r[0] == 200]
         limited = [r for r in results if r[0] == 429]
         self.assertTrue(successful)
-        self.assertLessEqual(len(successful), 12)
+        self.assertLessEqual(len(successful), 36)
         self.assertEqual(40, len(successful) + len(limited))
         for result in limited:
             self.assertGreaterEqual(int(result[1]['Retry-After']), 1)
