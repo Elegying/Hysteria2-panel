@@ -9297,7 +9297,7 @@ class StatsApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.headers.get("Authorization") != "stats-secret":
+        if self.headers.get("Authorization") not in {"stats-secret", "s" * 32}:
             self.send_error(401)
             return
         if self.path == "/traffic":
@@ -9313,7 +9313,7 @@ class StatsApiHandler(BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
-        if self.headers.get("Authorization") != "stats-secret" or self.path != "/kick":
+        if self.headers.get("Authorization") not in {"stats-secret", "s" * 32} or self.path != "/kick":
             self.send_error(401)
             return
         body = self.rfile.read(int(self.headers["Content-Length"]))
@@ -9349,11 +9349,26 @@ class StatsClientTests(unittest.TestCase):
         self.client.kick("alice")
         self.assertEqual(["alice"], StatsApiHandler.kicked)
         self.client.kick_many(["bob", "carol"])
-        self.assertEqual(["alice", "bob", "carol"], StatsApiHandler.kicked)
+        self.assertEqual(["alice"], StatsApiHandler.kicked)
         self.assertEqual(
             {"alice": {"tx": 100, "rx": 200}}, self.client.collect_and_clear()
         )
         self.assertEqual(1, StatsApiHandler.cleared)
+
+    def test_panel_and_node_kick_only_users_online_on_this_entrypoint(self):
+        from node_agent import LocalStatsClient
+
+        node = LocalStatsClient(
+            "http://127.0.0.1:{}".format(self.server.server_address[1]), "s" * 32
+        )
+        for client in (self.client, node):
+            with self.subTest(client=type(client).__name__):
+                StatsApiHandler.kicked = []
+                kick = client.kick_many if client is self.client else client.kick
+                kick(["offline-user"])
+                self.assertEqual([], StatsApiHandler.kicked)
+                kick(["alice", "offline-user"])
+                self.assertEqual(["alice"], StatsApiHandler.kicked)
 
     def test_stats_response_body_is_bounded(self):
         response = mock.MagicMock()
