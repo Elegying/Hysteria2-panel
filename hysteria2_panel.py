@@ -221,6 +221,10 @@ class ConflictError(Exception):
     """Raised when an administrator submits a stale user mutation."""
 
 
+class TrafficSyncError(RuntimeError):
+    """An accounting edit cannot proceed without settling local counters."""
+
+
 class BackupValidationError(ValueError):
     """Raised when a backup cannot be restored safely."""
 
@@ -611,11 +615,13 @@ class BackupManager:
         "tx_bytes",
         "rx_bytes",
         "allow_udp_443",
+        "traffic_adjusted_at",
         "created_at",
         "updated_at",
     )
     REQUIRED_PROXY_COLUMNS = tuple(
-        column for column in PROXY_COLUMNS if column != "allow_udp_443"
+        column for column in PROXY_COLUMNS
+        if column not in {"allow_udp_443", "traffic_adjusted_at"}
     )
     RESTORED_TABLE_COLUMNS = {
         "proxy_users": PROXY_COLUMNS,
@@ -2347,6 +2353,7 @@ class Database:
                     tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (tx_bytes >= 0),
                     rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (rx_bytes >= 0),
                     allow_udp_443 INTEGER NOT NULL DEFAULT 0 CHECK (allow_udp_443 IN (0, 1)),
+                    traffic_adjusted_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -2599,6 +2606,7 @@ class Database:
                 "tx_bytes": "ALTER TABLE proxy_users ADD COLUMN tx_bytes INTEGER NOT NULL DEFAULT 0",
                 "rx_bytes": "ALTER TABLE proxy_users ADD COLUMN rx_bytes INTEGER NOT NULL DEFAULT 0",
                 "allow_udp_443": "ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0",
+                "traffic_adjusted_at": "ALTER TABLE proxy_users ADD COLUMN traffic_adjusted_at INTEGER",
             }
             for column, statement in migrations.items():
                 if column not in columns:
@@ -3239,6 +3247,10 @@ class Database:
 
     @staticmethod
     def _set_user_used_traffic(connection, user, used_bytes, now):
+        connection.execute(
+            "UPDATE proxy_users SET traffic_adjusted_at = ? WHERE id = ?",
+            (now, user["id"]),
+        )
         old_total = user["tx_bytes"] + user["rx_bytes"]
         if old_total == used_bytes:
             return
@@ -3369,6 +3381,7 @@ class Database:
         tx,
         rx,
         now,
+        account_traffic=True,
     ):
         connection.execute(
             """INSERT INTO usage_origins(
@@ -3391,7 +3404,8 @@ class Database:
                 tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
                 rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
                 updated_at = excluded.updated_at""",
-            (origin_id, user_name, tx, rx, now),
+            (origin_id, user_name, tx if account_traffic else 0,
+             rx if account_traffic else 0, now),
         )
         usage_date = time.strftime("%Y-%m-%d", time.gmtime(int(now)))
         connection.execute(
@@ -5488,7 +5502,7 @@ class Database:
                 users = {
                     row["name"]: row
                     for row in connection.execute(
-                        """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes
+                        """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes, traffic_adjusted_at
                         FROM proxy_users"""
                     )
                 }
@@ -5522,6 +5536,18 @@ class Database:
                         continue
                     tx = int(counters["tx"])
                     rx = int(counters["rx"])
+                    # Agent batch timestamps have second precision. Batches
+                    # sampled in/before the adjustment second belong to history.
+                    account_traffic = (
+                        user["traffic_adjusted_at"] is None
+                        or observed_at > user["traffic_adjusted_at"]
+                    )
+                    if not account_traffic:
+                        self._record_usage_origin_traffic(
+                            connection, origin_id, "remote", node["name"], node_id,
+                            user["name"], tx, rx, int(accepted_at), account_traffic=False,
+                        )
+                        continue
                     if user["tx_bytes"] > 2**63 - 1 - tx or user["rx_bytes"] > 2**63 - 1 - rx:
                         raise OverflowError("traffic counter overflow")
                     if (
@@ -7537,7 +7563,7 @@ class PanelHandler(JsonHandler):
                     payload = dict(payload, deviceLimit=current["device_limit"],
                                    trafficLimitGb=current["traffic_limit_bytes"] // 1024**3,
                                    allowUdp443=bool(current["allow_udp_443"]))
-                user = self.app.database.update_proxy_user_limits(
+                user = self.app.usage_manager.update_user_limits(
                     user_id,
                     device_limit=json_integer(payload.get("deviceLimit", "")),
                     traffic_limit_bytes=(current["traffic_limit_bytes"] if traffic_only else
@@ -7567,6 +7593,9 @@ class PanelHandler(JsonHandler):
             )
         except (TypeError, ValueError):
             self._mobile_response(400, error_code="USER_INVALID", message="用户配置无效")
+        except TrafficSyncError:
+            self._mobile_response(503, error_code="STATS_UNAVAILABLE",
+                                  message="流量结算暂不可用，未修改已用流量，请稍后重试")
         except ConflictError:
             self._mobile_response(409, error_code="USER_CHANGED", message="用户状态已经发生变化")
         except KeyError:
@@ -8685,7 +8714,7 @@ class PanelHandler(JsonHandler):
             traffic_limit_gb = int(form.get("traffic_limit_gb", ""))
             allow_udp_443 = form.get("allow_udp_443") == "1"
             with self.app.user_action_lock:
-                user = self.app.database.update_proxy_user_limits(
+                user = self.app.usage_manager.update_user_limits(
                     user_id,
                     device_limit=device_limit,
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
@@ -8696,6 +8725,13 @@ class PanelHandler(JsonHandler):
                 )
                 if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
                     self._kick_safely(user["name"])
+        except TrafficSyncError:
+            message = "流量结算暂不可用，未修改已用流量，请稍后重试"
+            if inline:
+                self.send_json(503, {"error": message})
+            else:
+                self._error_page(503, message)
+            return
         except (TypeError, ValueError) as exc:
             if inline:
                 self.send_json(400, {"error": str(exc)})
@@ -9724,6 +9760,16 @@ class UsageManager:
                     self._live_snapshot_cached_at = self.clock()
                 self._live_snapshot_refreshing = False
         return snapshot
+
+    def update_user_limits(self, user_id, **values):
+        if values.get("used_traffic_bytes") is None:
+            return self.database.update_proxy_user_limits(user_id, **values)
+        with self.lock:
+            try:
+                self._collect_locked()
+            except Exception as exc:
+                raise TrafficSyncError("local accounting settlement failed") from exc
+            return self.database.update_proxy_user_limits(user_id, **values)
 
     def reset_user(self, user_id, expected_generation=None):
         with self.lock:

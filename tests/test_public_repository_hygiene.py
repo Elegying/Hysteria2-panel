@@ -14,7 +14,8 @@ SCANNER_SPEC.loader.exec_module(scanner)
 class PublicRepositoryHygieneTests(unittest.TestCase):
     def test_retired_production_identifiers_are_not_in_public_sources(self):
         findings = []
-        for path in ROOT.rglob("*"):
+        for name, source in scanner.tracked_sources(ROOT):
+            path = ROOT / name
             if (
                 not path.is_file()
                 or path == Path(__file__).resolve()
@@ -22,7 +23,6 @@ class PublicRepositoryHygieneTests(unittest.TestCase):
                 or any(part in {".git", ".venv", "__pycache__"} for part in path.parts)
             ):
                 continue
-            source = path.read_text(encoding="utf-8", errors="replace")
             if any(label == "retired-identifier" for _line, label in scanner.scan_text(source)):
                 findings.append(str(path.relative_to(ROOT)))
         self.assertEqual([], findings)

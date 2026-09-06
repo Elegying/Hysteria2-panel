@@ -496,6 +496,7 @@ def capabilities_payload(panel_version):
         "features": [
             "overview",
             "users",
+            "user-used-traffic-edit",
             "nodes",
             "node-enrollment",
             "one-click-node-pairing",

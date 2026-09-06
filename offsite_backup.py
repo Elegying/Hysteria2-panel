@@ -14,6 +14,7 @@ import secrets
 import ssl
 import stat
 import tempfile
+import time
 import urllib.parse
 
 
@@ -187,6 +188,40 @@ class HttpsWebDavClient:
             raise RuntimeError("WebDAV object size is invalid")
         return size
 
+    def verify(self, name, size, sha256):
+        """Read the stored object back without buffering it or trusting metadata."""
+        connection = http.client.HTTPSConnection(
+            self.parsed.hostname, self.parsed.port or 443,
+            timeout=self.timeout, context=ssl.create_default_context(),
+        )
+        deadline = time.monotonic() + self.timeout
+        try:
+            connection.request(
+                "GET", self.parsed.path + urllib.parse.quote(name, safe=""),
+                headers={"Authorization": self.authorization, "Accept-Encoding": "identity"},
+            )
+            response = connection.getresponse()
+            self._require_status(response.status, {200})
+            digest = hashlib.sha256()
+            received = 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("WebDAV backup verification timed out")
+                if connection.sock is not None:
+                    connection.sock.settimeout(remaining)
+                chunk = response.read1(min(1024 * 1024, size - received + 1))
+                if not chunk:
+                    break
+                received += len(chunk)
+                if received > size:
+                    raise RuntimeError("WebDAV backup content does not match")
+                digest.update(chunk)
+            if received != size or digest.hexdigest() != sha256:
+                raise RuntimeError("WebDAV backup content does not match")
+        finally:
+            connection.close()
+
     def list_names(self):
         status, _headers, body = self._request(
             "PROPFIND", headers={"Depth": "1", "Content-Type": "application/xml"}
@@ -324,6 +359,7 @@ class WebDavBackupStore:
                     raise RuntimeError("backup archive changed while uploading")
                 if int(self.client.size(temporary)) != opened.st_size:
                     raise RuntimeError("uploaded WebDAV backup size does not match")
+                self.client.verify(temporary, opened.st_size, digest)
                 self.client.move(temporary, name)
             except Exception as upload_error:
                 try:
@@ -339,6 +375,7 @@ class WebDavBackupStore:
             handle.close()
         if int(self.client.size(name)) != opened.st_size:
             raise RuntimeError("uploaded WebDAV backup size does not match")
+        self.client.verify(name, opened.st_size, digest)
         cutoff = now - datetime.timedelta(days=self.retention_days)
         deleted = []
         names = self.client.list_names()

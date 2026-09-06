@@ -7934,6 +7934,54 @@ class PanelHttpTests(unittest.TestCase):
         record = self.db.get_proxy_user(created["id"])
         self.assertEqual(int(1.5 * 1024**3), record["tx_bytes"] + record["rx_bytes"])
 
+    def test_setting_used_traffic_settles_old_local_bytes_for_both_interfaces(self):
+        for mobile in (False, True):
+            with self.subTest(mobile=mobile):
+                name = "settlement-{}".format(int(mobile))
+                created = self.db.create_proxy_user(name)
+                self.db.add_traffic({name: {"tx": 0, "rx": 10 * 1024**3}})
+                stats = PolicyStatsClient(traffic={name: {"tx": 0, "rx": 2 * 1024**3}})
+                manager = UsageManager(self.db, stats)
+                self.application.usage_manager = manager
+                if mobile:
+                    token = self.db.create_mobile_session(self.admin_id, name, "Test")["accessToken"]
+                    self.mobile_json_request("PATCH", "/api/v1/mobile/users/{}".format(created["id"]),
+                        {"generation": 0, "usedTrafficGiB": "0"}, access_token=token)
+                else:
+                    headers, csrf = self.authenticated_headers()
+                    with self.request("/users/{}/edit".format(created["id"]),
+                        {"csrf": csrf, "generation": "0", "device_limit": "3",
+                         "traffic_limit_gb": "250", "used_traffic_gib": "0", "inline": "1"},
+                        headers=headers) as response:
+                        self.assertEqual(200, response.status)
+                manager.collect_once()
+                user = self.db.get_proxy_user(created["id"])
+                self.assertEqual(0, user["tx_bytes"] + user["rx_bytes"])
+                stats.traffic_values = {name: {"tx": 7, "rx": 11}}
+                manager.collect_once()
+                user = self.db.get_proxy_user(created["id"])
+                self.assertEqual(18, user["tx_bytes"] + user["rx_bytes"])
+
+    def test_failed_settlement_returns_retryable_error_without_manual_change(self):
+        created = self.db.create_proxy_user("settlement-failure")
+        self.db.add_traffic({"settlement-failure": {"tx": 7, "rx": 11}})
+        before = self.db.get_proxy_user(created["id"])
+        tokens = self.db.create_mobile_session(self.admin_id, "settlement-failure", "Test")
+        headers, csrf = self.authenticated_headers()
+        with mock.patch.object(self.application.usage_manager, "_collect_locked",
+                               side_effect=OSError("stats unavailable")):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.mobile_json_request("PATCH", "/api/v1/mobile/users/{}".format(created["id"]),
+                    {"generation": 0, "usedTrafficGiB": "0"}, access_token=tokens["accessToken"])
+            self.assertEqual(503, error.exception.code)
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request("/users/{}/edit".format(created["id"]),
+                    {"csrf": csrf, "generation": "0", "device_limit": "3",
+                     "traffic_limit_gb": "250", "used_traffic_gib": "0", "inline": "1"},
+                    headers=headers)
+            self.assertEqual(503, error.exception.code)
+        self.assertEqual(before, self.db.get_proxy_user(created["id"]))
+
     def test_user_limits_can_be_edited_without_changing_the_issued_link(self):
         created = self.db.create_proxy_user("editable")
         original_token = self.db.recover_proxy_token(created["id"])

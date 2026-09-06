@@ -589,6 +589,37 @@ class DistributedTrafficTests(DistributedControlCase):
         )
         return payload
 
+    def test_delayed_batches_before_manual_adjustment_only_change_machine_ledger(self):
+        user = self.db.get_proxy_user_by_name("alice")
+        old = self.traffic_payload(self.nodes[0], 201)
+        with mock.patch("hysteria2_panel.time.time", return_value=self.now[0]):
+            self.db.update_proxy_user_limits(user["id"], 3, 250 * 1024**3,
+                                            expected_generation=0, used_traffic_bytes=100)
+        # A new Database instance proves the boundary survives process restart.
+        self.db = Database(self.db_path, b"d" * 32)
+        self.service.database = self.db
+        self.now[0] += 1
+        result = self.service.apply_traffic_batch(old, remote_ip="203.0.113.1")
+        self.assertTrue(result["committed"])
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual(100, record["tx_bytes"] + record["rx_bytes"])
+        current = self.traffic_payload(self.nodes[0], 202)
+        self.service.apply_traffic_batch(current, remote_ip="203.0.113.1")
+        duplicate = self.traffic_payload(self.nodes[0], 203, batch_id=old["batchId"])
+        duplicate["observedAt"] = old["observedAt"]
+        self.assertTrue(self.service.apply_traffic_batch(
+            duplicate, remote_ip="203.0.113.1")["duplicate"])
+        record = self.db.get_proxy_user(user["id"])
+        self.assertEqual(130, record["tx_bytes"] + record["rx_bytes"])
+        with self.db._connect() as connection:
+            self.assertEqual(60, connection.execute(
+                "SELECT SUM(tx_bytes + rx_bytes) FROM origin_traffic_daily"
+            ).fetchone()[0])
+            self.assertEqual(30, connection.execute(
+                "SELECT SUM(tx_bytes + rx_bytes) FROM usage_origin_users WHERE origin_id = ?",
+                ("node:" + self.nodes[0],),
+            ).fetchone()[0])
+
     def test_two_nodes_sum_and_retry_of_one_batch_has_effect_once(self):
         batch_id = "a" * 32
         first = self.service.apply_traffic_batch(

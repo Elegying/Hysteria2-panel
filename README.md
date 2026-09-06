@@ -29,6 +29,8 @@
 | 备份迁移 | 只导出用户、用户流量和连接身份；保留目标机器配置，支持 WebDAV 异地备份 |
 | 可信更新 | 固定正式版本，使用 SHA-256、GitHub Actions OIDC 和 Sigstore 验证发布身份 |
 
+新用户可按[三机部署与备份恢复教程](docs/QUICKSTART.md)完成从空白服务器到恢复验收的完整流程。
+
 ## 一分钟开始
 
 ### 1. 准备服务器
@@ -66,11 +68,11 @@
 
 ## 更严格的固定版本验签安装
 
-生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.7`；安装其他版本时，请同时修改 `version`：
+生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.13`；安装其他版本时，请同时修改 `version`：
 
 ```bash
 set -euo pipefail
-version=0.39.7
+version=0.39.13
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
