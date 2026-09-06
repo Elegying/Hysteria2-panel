@@ -6,6 +6,8 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 
+from .budgets import provider_traffic_bytes
+
 
 def select_dashboard_users(
     all_users,
@@ -366,7 +368,7 @@ def render_dashboard(
                 dialog_id=html.escape(dialog_id, quote=True)
             )
             machine_budget_dialogs.append(
-                """<dialog id="{dialog_id}" class="migration-dialog budget-dialog" aria-labelledby="{dialog_id}-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="{dialog_id}-title">编辑 {name} 的流量预算</h2><p class="muted">调整本周期基线、月预算和告警阈值。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭预算编辑弹窗">关闭</button></div><form class="budget-form budget-dialog-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button type="submit">保存预算与基线</button></form></div></dialog>""".format(
+                """<dialog id="{dialog_id}" class="migration-dialog budget-dialog" aria-labelledby="{dialog_id}-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="{dialog_id}-title">编辑 {name} 的流量预算</h2><p class="muted">按用户上传＋下载的两倍计费；当前已用填写服务商计费值。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭预算编辑弹窗">关闭</button></div><form class="budget-form budget-dialog-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button type="submit">保存预算与基线</button></form></div></dialog>""".format(
                     dialog_id=html.escape(dialog_id, quote=True),
                     name=html.escape(
                         str(origin.get("display_name") or "未命名节点")
@@ -399,7 +401,7 @@ def render_dashboard(
                 csrf=csrf
             )
         machine_rows.append(
-            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong><small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">上传 {tx} · 下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail} · 最后上报 <span data-live-machine-observed>{observed}</span></small>{budget_action}</div></article>""".format(
+            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong><small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail} · 最后上报 <span data-live-machine-observed>{observed}</span></small>{budget_action}</div></article>""".format(
                 origin_id=html.escape(origin["origin_id"], quote=True),
                 name=html.escape(str(origin.get("display_name") or "未命名节点")),
                 kind=kind_label,
@@ -409,8 +411,8 @@ def render_dashboard(
                 progress=progress_value,
                 budget_class=budget_status[1],
                 budget_line=budget_line,
-                tx=_human_bytes(int(origin.get("tx_bytes") or 0)),
-                rx=_human_bytes(int(origin.get("rx_bytes") or 0)),
+                tx=_human_bytes(provider_traffic_bytes(origin.get("tx_bytes")) if budget is not None else int(origin.get("tx_bytes") or 0)),
+                rx=_human_bytes(provider_traffic_bytes(origin.get("rx_bytes")) if budget is not None else int(origin.get("rx_bytes") or 0)),
                 budget_detail=budget_detail,
                 observed=observed_text,
                 budget_action=budget_action,
@@ -698,9 +700,9 @@ def render_dashboard(
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="例如：203.0.113.10"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">在目标服务器粘贴运行</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <div class="node-list-head"><h3>节点状态</h3><span class="muted">刷新页面可获取最新注册状态</span></div><div class="node-list">{node_rows}</div></div></dialog>
-<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">完整备份或恢复节点身份与全部用户数据。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
-<p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS。当前面板管理员账号不会被替换。</p>
-<div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载完整备份</button></form></article>
+<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">备份用户、连接密钥与累计流量，恢复后沿用原客户端配置。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
+<p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先通过服务器 IP 登录新面板完成恢复并验证，再切换 DNS。不备份服务器、对接节点与机器预算；恢复保留目标面板的管理员、节点设置和机器计费记录。</p>
+<div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载用户备份</button></form></article>
 <article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article><article class="detail wide-detail"><h3>每日异地备份</h3><p><strong class="{offsite_backup_class}">{offsite_backup_label}</strong></p><p class="muted">{offsite_backup_detail}。凭据只允许保存在服务器的 <code>/etc/hysteria2-panel/offsite-backup.json</code>（root:root 0600），不会进入网页、数据库或备份。</p></article></div></div></dialog>
 <dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>节点信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点信息弹窗">关闭</button></div>
 <div class="qr-panel" data-qr-panel hidden><canvas id="credentials-qr" class="qr-canvas" role="img" aria-label="Hysteria 2 节点配置二维码"></canvas><p class="muted">可直接扫描导入，或保存 PNG 到受信任的设备。</p></div>

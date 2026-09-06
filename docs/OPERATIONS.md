@@ -24,10 +24,12 @@ curl http://127.0.0.1:19998/metrics
 ```
 
 ```bash
-curl --insecure https://127.0.0.1:19998/healthz
-curl --insecure https://127.0.0.1:19998/readyz
-curl --insecure https://127.0.0.1:19998/metrics
+curl --resolve panel.example.com:19998:127.0.0.1 https://panel.example.com:19998/healthz
+curl --resolve panel.example.com:19998:127.0.0.1 https://panel.example.com:19998/readyz
+curl --resolve panel.example.com:19998:127.0.0.1 https://panel.example.com:19998/metrics
 ```
+
+HTTPS 示例中的域名和端口必须替换为实际面板设置。自签证书另加 `--cacert /etc/hysteria2-panel/panel.crt`，不要关闭证书校验。
 
 `/healthz` 只表示 HTTP 进程存活；`/readyz` 还会检查数据库、内部认证、流量采集线程和最近一次统计同步。生产可用性应以 `/readyz`、真实端口和客户端握手共同判断。
 
@@ -141,3 +143,11 @@ TCP 探测只接受连接后立即关闭，不验证 UDP/QUIC。继续检查：
 6. 重新验证面板、认证、统计、主端口、UDP `443`、TCP 探测和旧 URI 握手。
 
 无法确认服务全部停止、数据库完整且身份文件一致时，不要覆盖生产文件。
+
+## 用户流量与机器计费
+
+用户额度、用户列表及 `/api/v1/user/usage` 都使用实际 `上传 + 下载`。面板本机和远端节点的累计展示与预算使用 `2 × (上传 + 下载)`，Web 与管理 App 使用相同口径。
+
+原始入库计数不翻倍，重复批次仍只结算一次。机器累计和预算来自独立每日机器账本，不受用户重置、删除或恢复影响。人工“当前已用”填服务商控制台的计费值，保存后只将新增实际用量翻倍加到这个基线上；改重置日会重新建立基线，进入新周期按新周期账本计费。
+
+升级不会更改原始用户用量或机器基线。没有人工基线的现有周期统计会按两倍重新展示，可能达到原先未达到的预算告警阈值；预算告警本身不自动断开节点。

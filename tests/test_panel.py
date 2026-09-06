@@ -5160,7 +5160,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(1, manifest["formatVersion"])
         self.assertEqual("vpn.example.test", manifest["source"]["publicHost"])
         self.assertEqual(19999, manifest["source"]["hysteriaPort"])
-        self.assertEqual("edge-fixture-02", manifest["source"]["nodeName"])
+        self.assertEqual("", manifest["source"]["nodeName"])
         self.assertEqual(1, manifest["proxyUserCount"])
         with sqlite_connection(packaged_database) as connection:
             for table in ("admins", "sessions", "audit_log"):
@@ -5446,7 +5446,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertIn("HY2PANEL_CERT_PIN={}".format(result["certificate"]["pinSHA256"]), env_file.read_text())
         self.assertTrue((Path(result["automaticBackup"]) / "panel.db").is_file())
 
-    def test_restore_replaces_complete_usage_ledger_and_keeps_new_local_identity(self):
+    def test_restore_imports_user_totals_without_source_machine_state(self):
         source_origin = "local:" + "1" * 32
         destination_origin = "local:" + "2" * 32
         self.database.apply_traffic_batch(
@@ -5480,6 +5480,10 @@ class BackupManagerTests(unittest.TestCase):
             origin_kind="local",
             origin_name="新服务器",
         )
+        destination_db.set_origin_budget(
+            destination_origin, 20_000, 70, "target-admin", manual_used_bytes=400, reset_day=11
+        )
+        before_budget = destination_db.get_origin_budget(destination_origin)
         destination_cert, destination_key = create_test_certificate(
             destination_root, "vpn.example.test"
         )
@@ -5520,7 +5524,7 @@ class BackupManagerTests(unittest.TestCase):
                 for row in connection.execute("SELECT * FROM usage_origins")
             }
             self.assertIn(hysteria2_panel.LEGACY_USAGE_ORIGIN_ID, origins)
-            self.assertIn(source_origin, origins)
+            self.assertNotIn(source_origin, origins)
             self.assertIn(destination_origin, origins)
             self.assertEqual("新服务器", origins[destination_origin]["display_name"])
             self.assertEqual(
@@ -5531,24 +5535,21 @@ class BackupManagerTests(unittest.TestCase):
                 ).fetchall(),
             )
             restored_source = connection.execute(
-                """SELECT tx_bytes, rx_bytes FROM usage_origin_users
-                WHERE origin_id = ? AND user_name = 'alice'""",
-                (source_origin,),
+                "SELECT SUM(tx_bytes), SUM(rx_bytes) FROM usage_origin_users WHERE user_name='alice'"
             ).fetchone()
-            self.assertEqual((77, 88), tuple(restored_source))
+            user_totals = connection.execute(
+                "SELECT tx_bytes, rx_bytes FROM proxy_users WHERE name='alice'"
+            ).fetchone()
+            self.assertEqual(tuple(user_totals), tuple(restored_source))
             daily = connection.execute(
-                """SELECT tx_bytes, rx_bytes FROM origin_traffic_daily
-                WHERE origin_id = ?""",
-                (source_origin,),
+                "SELECT tx_bytes, rx_bytes FROM origin_traffic_daily WHERE origin_id=?",
+                (destination_origin,),
             ).fetchone()
-            self.assertEqual((77, 88), tuple(daily))
-            budget = connection.execute(
-                """SELECT limit_bytes, warning_percent, reset_day,
-                    manual_used_bytes FROM origin_traffic_budgets
-                WHERE origin_id = ?""",
-                (source_origin,),
-            ).fetchone()
-            self.assertEqual((10_000, 85, 9, 321), tuple(budget))
+            self.assertEqual((999, 888), tuple(daily))
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM origin_traffic_budgets WHERE origin_id=?", (source_origin,)
+            ).fetchone()[0])
+        self.assertEqual(before_budget, destination_db.get_origin_budget(destination_origin))
 
     def test_restore_normalization_repairs_orphaned_placeholder_ledger(self):
         placeholder_origin = "local:" + "0" * 32

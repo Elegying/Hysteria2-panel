@@ -58,6 +58,7 @@ from hy2panel.budgets import (
     budget_result,
     bytes_to_gib_input,
     gib_input_to_bytes,
+    provider_traffic_bytes,
 )
 from hy2panel.health import RuntimeHealth, is_loopback_address
 from hy2panel.mobile_api import (
@@ -687,6 +688,11 @@ class BackupManager:
         ("admins", "DELETE FROM admins"),
     )
     RUNTIME_TABLES = frozenset(name for name, _statement in RUNTIME_TABLE_CLEANUP)
+    USER_TABLES = ("proxy_users", "retired_proxy_names")
+    MACHINE_TABLES = (
+        "origin_traffic_budgets", "origin_traffic_daily",
+        "usage_origin_users", "usage_origins",
+    )
 
     def __init__(
         self,
@@ -917,6 +923,11 @@ class BackupManager:
                     ).fetchone()[0]
                     if count != 0:
                         raise BackupValidationError("精简数据库仍包含运行时数据")
+                for table in self.MACHINE_TABLES:
+                    if connection.execute(
+                        "SELECT 1 FROM {} LIMIT 1".format(table)  # nosec B608
+                    ).fetchone() is not None:
+                        raise BackupValidationError("用户备份仍包含服务器流量归属或预算")
                 self._validate_usage_ledger(connection)
         except sqlite3.DatabaseError as exc:
             raise BackupValidationError("精简数据库无效") from exc
@@ -931,6 +942,8 @@ class BackupManager:
                 connection.execute("BEGIN IMMEDIATE")
                 for _table, statement in self.RUNTIME_TABLE_CLEANUP:
                     connection.execute(statement)
+                for table in self.MACHINE_TABLES:
+                    connection.execute("DELETE FROM {}".format(table))  # nosec B608
                 if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise BackupValidationError("精简数据库外键一致性检查失败")
         except sqlite3.DatabaseError as exc:
@@ -1217,6 +1230,7 @@ class BackupManager:
                 )
                 manifest = {
                     "formatVersion": BACKUP_FORMAT_VERSION,
+                    "dataScope": "users",
                     "createdAt": datetime.datetime.now(datetime.timezone.utc)
                     .isoformat()
                     .replace("+00:00", "Z"),
@@ -1225,7 +1239,7 @@ class BackupManager:
                     "source": {
                         "publicHost": self.public_host,
                         "hysteriaPort": self.hysteria_port,
-                        "nodeName": self.node_name,
+                        "nodeName": "",
                     },
                     "certificate": {
                         "pinSHA256": self._certificate_pin(certificate),
@@ -1397,6 +1411,40 @@ class BackupManager:
         database_path.write_bytes(database_bytes)
         return self._validate_database_path(database_path, hmac_key)
 
+    def _check_connected_restore_identity(self, incoming_path, restored_hmac, pin):
+        with self.database._connect() as current:
+            active = current.execute(
+                """SELECT 1 FROM nodes WHERE status='pending_verification'
+                AND verified_at IS NOT NULL AND policy_state='protocol_ready'
+                AND lifecycle_state != 'archived' LIMIT 1"""
+            ).fetchone()
+            if active is None:
+                return
+            current_pin = self._certificate_pin(self._read_bounded(
+                self.tls_cert, self.FILE_LIMITS["tls/server.crt"]
+            ))
+            if current_pin != pin or not hmac.compare_digest(self.hmac_key, restored_hmac):
+                raise BackupValidationError(
+                    "当前已有对接节点，备份连接身份与其不一致；请先在新面板恢复，再对接节点"
+                )
+            retired = {row[0] for row in current.execute(
+                "SELECT name_fingerprint FROM retired_proxy_names"
+            )}
+            users = dict(current.execute("SELECT name, token_fingerprint FROM proxy_users"))
+            ascii_lower = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+            users = {name.translate(ascii_lower): value for name, value in users.items()}
+            with sqlite_connection(str(incoming_path)) as source:
+                for name, fingerprint in source.execute(
+                    "SELECT name, token_fingerprint FROM proxy_users"
+                ):
+                    if self.database._retired_name_fingerprint(name) in retired:
+                        raise BackupValidationError("当前对接节点仍保留此用户名的隔离身份；请在新面板恢复后重新对接")
+                    old = users.get(name.translate(ascii_lower))
+                    if old is not None and old != fingerprint:
+                        raise BackupValidationError(
+                            "当前对接节点仍使用不同的同名账号身份；请在新面板恢复后重新对接"
+                        )
+
     def _validate_extracted_archive(
         self, manifest, payload_paths, require_compatible_endpoint=False
     ):
@@ -1451,11 +1499,16 @@ class BackupManager:
         self.work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with tempfile.TemporaryDirectory(dir=str(self.work_dir)) as temporary:
             manifest, payload_paths = self._extract_archive(archive_path, temporary)
-            self._validate_extracted_archive(
+            restored_hmac = self._validate_extracted_archive(
                 manifest,
                 payload_paths,
                 require_compatible_endpoint=require_compatible_endpoint,
             )
+            if require_compatible_endpoint:
+                self._check_connected_restore_identity(
+                    payload_paths["data/panel.db"], restored_hmac,
+                    manifest["certificate"]["pinSHA256"],
+                )
         return manifest
 
     def stage_archive(self, source, content_length):
@@ -1827,6 +1880,84 @@ class BackupManager:
                     ),
                 )
 
+    def _stage_user_restore(self, incoming_path, destination_path, restored_hmac):
+        incoming = Database(incoming_path, restored_hmac)
+        incoming.initialize()
+        with sqlite_connection(str(incoming_path)) as source:
+            for table in self.MACHINE_TABLES:
+                source.execute("DELETE FROM {}".format(table))  # nosec B608
+        with sqlite_connection(str(incoming_path)) as source:
+            stable_created_at = source.execute(
+                "SELECT COALESCE(MIN(created_at), 0) FROM proxy_users"
+            ).fetchone()[0]
+        self._normalize_incoming_usage_ledger(
+            incoming_path, restored_hmac, local_origin_created_at=stable_created_at
+        )
+        with sqlite_connection(str(incoming_path)) as source, sqlite_connection(
+            str(destination_path)
+        ) as destination:
+            destination.row_factory = sqlite3.Row
+            destination.execute("PRAGMA journal_mode = DELETE")
+            destination.execute("PRAGMA foreign_keys = ON")
+            destination.execute("BEGIN IMMEDIATE")
+            previous_names = [row[0] for row in destination.execute(
+                "SELECT name FROM proxy_users ORDER BY id"
+            )]
+            retired_rows = destination.execute(
+                "SELECT name_fingerprint, retired_at FROM retired_proxy_names"
+            ).fetchall()
+            # Keep the destination's machine identity, daily provider ledger and
+            # budgets. Invalidate old user/session views of the replaced accounts.
+            for table in (
+                "sessions", "mobile_sessions", "domain_usage_monthly",
+                "node_online_counts", "node_online_snapshots", "node_usage_checkpoints",
+                "node_auth_decisions", "local_auth_leases", "usage_origin_users",
+                "proxy_users", "retired_proxy_names",
+            ):
+                destination.execute("DELETE FROM {}".format(table))  # nosec B608
+            for table in self.USER_TABLES:
+                columns = self.RESTORED_TABLE_COLUMNS[table]
+                rows = source.execute(
+                    "SELECT {} FROM {} ORDER BY {}".format(  # nosec B608
+                        ",".join(columns), table, self.RESTORED_TABLE_ORDER[table]
+                    )
+                )
+                destination.executemany(
+                    "INSERT INTO {} ({}) VALUES ({})".format(  # nosec B608
+                        table, ",".join(columns), ",".join("?" for _ in columns)
+                    ), rows,
+                )
+            destination.executemany(
+                "INSERT OR IGNORE INTO retired_proxy_names VALUES (?, ?)", retired_rows
+            )
+            current_names = {incoming._retired_name_fingerprint(row[0])
+                             for row in destination.execute("SELECT name FROM proxy_users")}
+            for name in previous_names:
+                fingerprint = incoming._retired_name_fingerprint(name)
+                if fingerprint not in current_names:
+                    destination.execute(
+                        "INSERT OR IGNORE INTO retired_proxy_names VALUES (?, ?)",
+                        (fingerprint, stable_created_at),
+                    )
+            for table in ("usage_origins", "usage_origin_users"):
+                columns = self.RESTORED_TABLE_COLUMNS[table]
+                rows = source.execute(
+                    "SELECT {} FROM {} ORDER BY {}".format(  # nosec B608
+                        ",".join(columns), table, self.RESTORED_TABLE_ORDER[table]
+                    )
+                )
+                destination.executemany(
+                    "INSERT OR IGNORE INTO {} ({}) VALUES ({})".format(  # nosec B608
+                        table, ",".join(columns), ",".join("?" for _ in columns)
+                    ), rows,
+                )
+            for offset in range(0, len(previous_names), 1000):
+                self.database._queue_kick_users_on_ready_nodes(
+                    destination, previous_names[offset:offset + 1000], int(time.time())
+                )
+            if destination.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise BackupValidationError("恢复后的数据库外键一致性检查失败")
+
     def _validate_applied_restore(
         self, env_file, restored_hmac, manifest, directory, expected_database
     ):
@@ -1875,6 +2006,10 @@ class BackupManager:
             )
             restored_hmac = self._validate_extracted_archive(
                 manifest, payload_paths, require_compatible_endpoint=True
+            )
+            self._check_connected_restore_identity(
+                payload_paths["data/panel.db"], restored_hmac,
+                manifest["certificate"]["pinSHA256"],
             )
             self._prune_entries(
                 backup_root,
@@ -1957,6 +2092,7 @@ class BackupManager:
                 record.update(
                     {
                         "phase": "prepared",
+                        "restoreScope": "users",
                         "backupDir": str(backup_dir),
                         "incomingArchive": str(incoming_archive),
                         "oldFiles": {
@@ -1974,47 +2110,7 @@ class BackupManager:
             staged_database = Path(temporary) / "panel.db"
             self._copy_database(self.database.path, staged_database)
             incoming_database = payload_paths["data/panel.db"]
-            self._normalize_incoming_usage_ledger(
-                incoming_database, restored_hmac
-            )
-            with sqlite_connection(str(incoming_database)) as source:
-                source.row_factory = sqlite3.Row
-                incoming_columns = {
-                    row[1] for row in source.execute("PRAGMA table_info(proxy_users)")
-                }
-                if "allow_udp_443" not in incoming_columns:
-                    source.execute(
-                        "ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0"
-                    )
-                with sqlite_connection(str(staged_database)) as destination:
-                    destination.execute("PRAGMA journal_mode = DELETE")
-                    destination.execute("PRAGMA foreign_keys = ON")
-                    destination.execute("DELETE FROM sessions")
-                    for table in (
-                        "origin_traffic_budgets",
-                        "origin_traffic_daily",
-                        "usage_origin_users",
-                        "usage_origins",
-                        "proxy_users",
-                        "retired_proxy_names",
-                    ):
-                        destination.execute("DELETE FROM {}".format(table))  # nosec B608
-                    for table, columns in self.RESTORED_TABLE_COLUMNS.items():
-                        rows = source.execute(
-                            "SELECT {} FROM {} ORDER BY {}".format(  # nosec B608
-                                ",".join(columns),
-                                table,
-                                self.RESTORED_TABLE_ORDER[table],
-                            )
-                        )
-                        destination.executemany(
-                            "INSERT INTO {} ({}) VALUES ({})".format(  # nosec B608
-                                table,
-                                ",".join(columns),
-                                ",".join("?" for _ in columns),
-                            ),
-                            (tuple(row[column] for column in columns) for row in rows),
-                        )
+            self._stage_user_restore(incoming_database, staged_database, restored_hmac)
             self._validate_database_path(staged_database, restored_hmac)
             try:
                 self._replace_file(self.database.path, staged_database)
@@ -2029,7 +2125,7 @@ class BackupManager:
                     restored_hmac,
                     manifest,
                     temporary,
-                    incoming_database,
+                    staged_database,
                 )
             except Exception:
                 self._replace_file(self.database.path, backup_dir / "panel.db")
@@ -3258,9 +3354,9 @@ class Database:
             (origin_id, usage_date, tx, rx, int(now)),
         )
 
-    def list_usage_origins(self):
+    def list_usage_origins(self, machine_totals=False):
         with self._connect() as connection:
-            return [
+            rows = [
                 dict(row)
                 for row in connection.execute(
                     """SELECT o.origin_id, o.kind, o.node_id, o.display_name,
@@ -3273,6 +3369,21 @@ class Database:
                     ORDER BY o.created_at, o.origin_id"""
                 )
             ]
+
+            if machine_totals:
+                totals = {
+                    row["origin_id"]: row
+                    for row in connection.execute(
+                        """SELECT origin_id, SUM(tx_bytes) AS tx, SUM(rx_bytes) AS rx
+                        FROM origin_traffic_daily GROUP BY origin_id"""
+                    )
+                }
+                for row in rows:
+                    if row["kind"] in {"local", "remote"}:
+                        total = totals.get(row["origin_id"])
+                        row["tx_bytes"] = int(total["tx"]) if total else 0
+                        row["rx_bytes"] = int(total["rx"]) if total else 0
+            return rows
 
     @staticmethod
     def _validate_budget_origin_id(origin_id):
@@ -3453,15 +3564,14 @@ class Database:
         for origin_id in origin_ids:
             budget = budgets.get(origin_id)
             period_start, period_end = periods[origin_id]
-            used = cycle_usage[origin_id]
+            used = provider_traffic_bytes(cycle_usage[origin_id])
             if budget is not None and budget["baseline_at"] is not None:
                 baseline_at = int(budget["baseline_at"])
                 if int(period_start.timestamp()) <= baseline_at < int(
                     period_end.timestamp()
                 ):
-                    used = int(budget["manual_used_bytes"]) + max(
-                        0,
-                        totals[origin_id] - int(budget["baseline_total_bytes"]),
+                    used = int(budget["manual_used_bytes"]) + provider_traffic_bytes(
+                        totals[origin_id] - int(budget["baseline_total_bytes"])
                     )
             results.append(
                 budget_result(
@@ -9351,7 +9461,7 @@ class UsageManager:
             node_states = self.database.list_node_online_states(
                 now, MAX_STATE_AGE_SECONDS
             )
-            origin_rows = self.database.list_usage_origins()
+            origin_rows = self.database.list_usage_origins(machine_totals=True)
         global_online = dict(online)
         for node in node_states:
             if node["online_state"] != "fresh":
@@ -10282,22 +10392,32 @@ def stop_restore_services(runner=subprocess.run):
 
 def _default_restore_health_probe(url, settings):
     allowed_urls = {
-        "{}://127.0.0.1:{}/readyz".format(
-            settings.panel_scheme, settings.panel_port
-        ),
+        "{}://127.0.0.1:{}/readyz".format(settings.panel_scheme, settings.panel_port),
         "http://127.0.0.1:{}/healthz".format(settings.auth_port),
     }
     if url not in allowed_urls:
         raise RuntimeError("restore health probe URL is not a fixed loopback endpoint")
-    context = None
-    if url.startswith("https://"):
-        # The exact loopback URL above uses the panel's restored self-signed cert.
-        context = ssl._create_unverified_context()  # nosec B323
-    request = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(request, timeout=2, context=context) as response:  # nosec B310
-        expected_status = "ready" if url.endswith("/readyz") else "ok"
-        if response.status != 200 or json.load(response) != {"status": expected_status}:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme == "https":
+        context = ssl.create_default_context()
+        context.load_verify_locations(cafile=str(settings.panel_tls_cert))
+        connection = http.client.HTTPSConnection(
+            settings.panel_public_host, parsed.port, context=context, timeout=2
+        )
+        # Connect to the fixed local service while verifying its real TLS name.
+        connection._create_connection = lambda address, timeout, source_address=None: (
+            socket.create_connection(("127.0.0.1", address[1]), timeout, source_address)
+        )
+    else:
+        connection = http.client.HTTPConnection("127.0.0.1", parsed.port, timeout=2)
+    try:
+        connection.request("GET", parsed.path)
+        response = connection.getresponse()
+        expected_status = "ready" if parsed.path == "/readyz" else "ok"
+        if response.status != 200 or json.loads(response.read(1025)) != {"status": expected_status}:
             raise RuntimeError("restored HTTP health endpoint is unavailable")
+    finally:
+        connection.close()
 
 
 def _default_restore_stats_probe(url, secret):
@@ -10512,6 +10632,7 @@ def _read_restore_transaction(
         not isinstance(record, dict)
         or not required.issubset(record)
         or record["version"] != RESTORE_TRANSACTION_VERSION
+        or record.get("restoreScope") not in {None, "users"}
         or record["phase"]
         not in {"queued", "prepared", "disk-consistent", "services-pending"}
         or not re.fullmatch(r"[0-9a-f]{64}", record["pendingSha256"] or "")
@@ -10662,19 +10783,27 @@ def _validate_applied_transaction(record):
         restored_hmac = manager._validate_extracted_archive(
             manifest, payload_paths, require_compatible_endpoint=True
         )
-        expected_database = payload_paths["data/panel.db"]
-        # Rebuild the same migrated view used when applying the archive. Only a
-        # newly introduced local origin lacks a timestamp in the source backup;
-        # retain its installed timestamp so recovery is independent of the clock.
-        with sqlite_connection(str(manager.database.path)) as connection:
-            local_origin = connection.execute(
-                "SELECT created_at FROM usage_origins WHERE origin_id = ?",
-                (manager.local_origin_id,),
-            ).fetchone()
-        manager._normalize_incoming_usage_ledger(
-            expected_database, restored_hmac,
-            local_origin_created_at=local_origin[0] if local_origin else None,
-        )
+        if record.get("restoreScope") == "users":
+            _validate_backup_directory(record, root_uid=os.geteuid())
+            expected_database = Path(temporary) / "expected.db"
+            manager._copy_database(Path(record["backupDir"]) / "panel.db", expected_database)
+            manager._stage_user_restore(
+                payload_paths["data/panel.db"], expected_database, restored_hmac
+            )
+        else:
+            expected_database = payload_paths["data/panel.db"]
+            # Rebuild the same migrated view used when applying the archive. Only a
+            # newly introduced local origin lacks a timestamp in the source backup;
+            # retain its installed timestamp so recovery is independent of the clock.
+            with sqlite_connection(str(manager.database.path)) as connection:
+                local_origin = connection.execute(
+                    "SELECT created_at FROM usage_origins WHERE origin_id = ?",
+                    (manager.local_origin_id,),
+                ).fetchone()
+            manager._normalize_incoming_usage_ledger(
+                expected_database, restored_hmac,
+                local_origin_created_at=local_origin[0] if local_origin else None,
+            )
         manager._validate_applied_restore(
             record["envFile"], restored_hmac, manifest, temporary, expected_database
         )

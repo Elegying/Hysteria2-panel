@@ -198,6 +198,19 @@ class PortableBackupCompactionTests(unittest.TestCase):
                 "\n".join(connection.iterdump()).encode("utf-8")
             ).hexdigest()
 
+    @staticmethod
+    def _user_rows(database_path):
+        with sqlite_connection(database_path) as connection:
+            return {
+                table: connection.execute(
+                    "SELECT {} FROM {} ORDER BY {}".format(
+                        ",".join(BackupManager.RESTORED_TABLE_COLUMNS[table]),
+                        table, BackupManager.RESTORED_TABLE_ORDER[table],
+                    )
+                ).fetchall()
+                for table in BackupManager.USER_TABLES
+            }
+
     def test_all_application_tables_have_an_explicit_portable_classification(self):
         with sqlite_connection(self.database.path) as connection:
             actual = BackupManager._application_tables(connection)
@@ -206,6 +219,58 @@ class PortableBackupCompactionTests(unittest.TestCase):
 
         self.assertFalse(restored & runtime)
         self.assertEqual(actual, restored | runtime)
+
+    def test_connected_restore_rejects_changed_identity_before_any_live_write(self):
+        archive = self.manager.create_archive()
+        self._populate_node_runtime(0)
+        with sqlite_connection(self.database.path) as connection:
+            connection.execute("UPDATE nodes SET verified_at=2000000000")
+        before = self._logical_digest(self.database.path)
+        with mock.patch.object(self.manager, "hmac_key", b"different-identity-key-value"):
+            with self.assertRaisesRegex(BackupValidationError, "连接身份"):
+                self.manager.validate_archive(archive, require_compatible_endpoint=True)
+        self.assertEqual(before, self._logical_digest(self.database.path))
+        with sqlite_connection(self.database.path) as connection:
+            connection.execute("UPDATE proxy_users SET token_fingerprint=?", ("a" * 64,))
+        before = self._logical_digest(self.database.path)
+        with self.assertRaisesRegex(BackupValidationError, "同名账号"):
+            self.manager.validate_archive(archive, require_compatible_endpoint=True)
+        self.assertEqual(before, self._logical_digest(self.database.path))
+
+    def test_connected_restore_does_not_resurrect_a_retired_name(self):
+        archive = self.manager.create_archive()
+        self._populate_node_runtime(0)
+        with sqlite_connection(self.database.path) as connection:
+            connection.execute("UPDATE nodes SET verified_at=2000000000, lifecycle_state='stopped'")
+        self.database.delete_proxy_user(self.user['id'])
+        before = self._logical_digest(self.database.path)
+        with self.assertRaisesRegex(BackupValidationError, "隔离身份"):
+            self.manager.validate_archive(archive, require_compatible_endpoint=True)
+        self.assertEqual(before, self._logical_digest(self.database.path))
+
+    def test_same_identity_restore_keeps_destination_nodes_and_billing(self):
+        archive = self.manager.create_archive()
+        self._populate_node_runtime(1)
+        with sqlite_connection(self.database.path) as connection:
+            connection.execute("UPDATE nodes SET verified_at=2000000000")
+            nodes_before = connection.execute("SELECT * FROM nodes").fetchall()
+            budgets_before = connection.execute("SELECT * FROM origin_traffic_budgets").fetchall()
+            daily_before = connection.execute("SELECT * FROM origin_traffic_daily").fetchall()
+        env_file = self.root / "panel.env"
+        env_file.write_text("HY2PANEL_HMAC_KEY={}\n".format(self.hmac_key.hex()))
+        env_file.chmod(0o600)
+        self.manager.apply_archive(archive, env_file, self.root / "rollback")
+        self.assertEqual(self.user['token'], self.database.recover_proxy_token(self.user['id']))
+        with sqlite_connection(self.database.path) as connection:
+            self.assertEqual(nodes_before, connection.execute("SELECT * FROM nodes").fetchall())
+            self.assertEqual(budgets_before, connection.execute("SELECT * FROM origin_traffic_budgets").fetchall())
+            self.assertEqual(daily_before, connection.execute("SELECT * FROM origin_traffic_daily").fetchall())
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM mobile_sessions").fetchone()[0])
+            self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM node_commands WHERE kind='KICK_USERS'").fetchone()[0])
+            self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM node_traffic_batches").fetchone()[0])
+        machine = {row['origin_id']: row for row in self.database.list_usage_origins(machine_totals=True)}
+        self.assertEqual((123456, 654321), (machine[self.origin_id]['tx_bytes'], machine[self.origin_id]['rx_bytes']))
 
     def test_unknown_table_stops_backup_instead_of_copying_or_deleting_it(self):
         with sqlite_connection(self.database.path) as connection:
@@ -264,12 +329,14 @@ class PortableBackupCompactionTests(unittest.TestCase):
             )
             manifest = json.loads(package.read("manifest.json"))
             self.assertEqual(1, manifest["formatVersion"])
+            self.assertEqual("users", manifest["dataScope"])
+            self.assertEqual("", manifest["source"]["nodeName"])
 
         with sqlite_connection(portable_database) as connection:
             self.assertEqual([("ok",)], connection.execute("PRAGMA quick_check").fetchall())
             self.assertEqual([], connection.execute("PRAGMA foreign_key_check").fetchall())
             BackupManager._assert_portable_table_contract(connection)
-            for table in BackupManager.RUNTIME_TABLES:
+            for table in BackupManager.RUNTIME_TABLES | frozenset(BackupManager.MACHINE_TABLES):
                 self.assertEqual(
                     0,
                     connection.execute(
@@ -278,9 +345,7 @@ class PortableBackupCompactionTests(unittest.TestCase):
                     table,
                 )
 
-        self.assertTrue(
-            self.manager._restored_rows_equal(self.database.path, portable_database)
-        )
+        self.assertEqual(self._user_rows(self.database.path), self._user_rows(portable_database))
         self.assertEqual(source_inode, self.database.path.stat().st_ino)
         self.assertEqual(source_digest, self._logical_digest(self.database.path))
         with sqlite_connection(self.database.path) as connection:
@@ -375,9 +440,19 @@ class PortableBackupCompactionTests(unittest.TestCase):
                     "SELECT id, username FROM admins ORDER BY id"
                 ).fetchall(),
             )
-        self.assertTrue(
-            target_manager._restored_rows_equal(target_database.path, portable_database)
-        )
+        self.assertEqual(self._user_rows(target_database.path)['proxy_users'], self._user_rows(portable_database)['proxy_users'])
+        with sqlite_connection(target_database.path) as connection:
+            self.assertIsNotNone(connection.execute(
+                "SELECT 1 FROM retired_proxy_names WHERE name_fingerprint=?",
+                (restored._retired_name_fingerprint('old-target-user'),),
+            ).fetchone())
+        with sqlite_connection(target_database.path) as connection:
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM usage_origins WHERE origin_id=?", (self.origin_id,)
+            ).fetchone()[0])
+            self.assertEqual(0, connection.execute(
+                "SELECT COUNT(*) FROM origin_traffic_budgets"
+            ).fetchone()[0])
         self.assertEqual(self.certificate.read_bytes(), target_certificate.read_bytes())
         self.assertEqual(self.private_key.read_bytes(), target_key.read_bytes())
 

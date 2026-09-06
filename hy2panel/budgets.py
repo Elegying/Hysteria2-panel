@@ -10,6 +10,11 @@ MAX_SQLITE_INTEGER = 2**63 - 1
 GIB_INPUT_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,9})(?:\.[0-9]{1,12})?")
 
 
+def provider_traffic_bytes(value):
+    """Both provider directions are billed; stored user counters stay unchanged."""
+    return 2 * max(0, int(value or 0))
+
+
 def gib_input_to_bytes(value):
     raw = str(value or "").strip()
     if GIB_INPUT_PATTERN.fullmatch(raw) is None:
