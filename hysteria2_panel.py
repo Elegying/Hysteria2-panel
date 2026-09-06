@@ -1728,14 +1728,17 @@ class BackupManager:
         except sqlite3.DatabaseError as exc:
             raise BackupValidationError("恢复后的用户与流量数据库无法读取") from exc
 
-    def _normalize_incoming_usage_ledger(self, database_path, restored_hmac):
+    def _normalize_incoming_usage_ledger(
+        self, database_path, restored_hmac, local_origin_created_at=None
+    ):
         incoming = Database(database_path, restored_hmac)
         incoming.initialize()
         if self.local_origin_id is not None:
             if re.fullmatch(r"local:[0-9a-f]{32}", self.local_origin_id) is None:
                 raise BackupValidationError("本机流量来源标识无效")
             incoming.register_usage_origin(
-                self.local_origin_id, "local", self.node_name
+                self.local_origin_id, "local", self.node_name,
+                created_at=local_origin_created_at,
             )
             incoming.fold_placeholder_local_usage_origin(self.local_origin_id)
         with sqlite_connection(str(database_path)) as connection:
@@ -10660,10 +10663,18 @@ def _validate_applied_transaction(record):
             manifest, payload_paths, require_compatible_endpoint=True
         )
         expected_database = payload_paths["data/panel.db"]
-        with sqlite_connection(str(expected_database)) as connection:
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(proxy_users)")}
-            if "allow_udp_443" not in columns:
-                connection.execute("ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0")
+        # Rebuild the same migrated view used when applying the archive. Only a
+        # newly introduced local origin lacks a timestamp in the source backup;
+        # retain its installed timestamp so recovery is independent of the clock.
+        with sqlite_connection(str(manager.database.path)) as connection:
+            local_origin = connection.execute(
+                "SELECT created_at FROM usage_origins WHERE origin_id = ?",
+                (manager.local_origin_id,),
+            ).fetchone()
+        manager._normalize_incoming_usage_ledger(
+            expected_database, restored_hmac,
+            local_origin_created_at=local_origin[0] if local_origin else None,
+        )
         manager._validate_applied_restore(
             record["envFile"], restored_hmac, manifest, temporary, expected_database
         )

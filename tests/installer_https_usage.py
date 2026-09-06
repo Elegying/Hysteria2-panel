@@ -1,5 +1,6 @@
 """Disposable systemd installer host only: strict TLS and synthetic account lifecycle."""
 import grp
+import hashlib
 import http.client
 import json
 import os
@@ -8,10 +9,12 @@ import secrets
 import shlex
 import socket
 import ssl
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 
 
 def run(*args, **kwargs):
@@ -114,6 +117,54 @@ def main():
             run('bash', '-euc', helpers + '\nwait_for_health https://panel.installer.test:31998/healthz strict\n'
                 'verify_user_usage_endpoint\n! wait_for_health https://panel.installer.test:31998/healthz insecure',
                 env=script_env)
+        user = database.create_proxy_user('restore-' + secrets.token_hex(8))
+        database.add_traffic({user['name']: {'tx': 13, 'rx': 17}})
+        with tempfile.TemporaryDirectory() as work:
+            manager = panel.BackupManager(
+                database, bytes.fromhex(values['HY2PANEL_HMAC_KEY']),
+                Path(values['HY2PANEL_TLS_CERT']), Path(values['HY2PANEL_TLS_KEY']),
+                values['HY2PANEL_PUBLIC_HOST'], int(values['HY2PANEL_HYSTERIA_PORT']),
+                work_dir=Path(work),
+            )
+            archive = manager._create_archive_locked()
+            with zipfile.ZipFile(archive) as package:
+                payloads = {name: package.read(name) for name in package.namelist()}
+            source_db = Path(work) / 'legacy.db'
+            source_db.write_bytes(payloads['data/panel.db'])
+            with sqlite3.connect(source_db) as connection:
+                connection.execute('DROP TABLE retired_proxy_names')
+                connection.execute('DROP TABLE node_usage_checkpoints')
+                original_origin = 'local:' + values['HY2PANEL_USAGE_ORIGIN_ID']
+                source_origin = 'local:' + secrets.token_hex(16)
+                for table in ('usage_origins', 'usage_origin_users', 'origin_traffic_daily',
+                              'origin_traffic_budgets'):
+                    connection.execute('UPDATE ' + table + ' SET origin_id=? WHERE origin_id=?',
+                                       (source_origin, original_origin))
+            payloads['data/panel.db'] = source_db.read_bytes()
+            manifest = json.loads(payloads['manifest.json'])
+            manifest['panelVersion'] = '0.39.7'
+            manifest['files']['data/panel.db'] = {
+                'sha256': hashlib.sha256(payloads['data/panel.db']).hexdigest(),
+                'size': len(payloads['data/panel.db']),
+            }
+            payloads['manifest.json'] = json.dumps(manifest).encode()
+            pending = Path('/var/lib/hysteria2-panel/backup-restore/pending-restore.zip')
+            assert not pending.exists()
+            with zipfile.ZipFile(pending, 'w', compression=zipfile.ZIP_DEFLATED) as package:
+                for name, value in payloads.items():
+                    package.writestr(name, value)
+            pending.chmod(0o600)
+            owner = database.path.stat()
+            os.chown(pending, owner.st_uid, owner.st_gid)
+            run('systemctl', 'start', 'hysteria2-panel-restore.service')
+            assert expect(user['token'], 200)['data']['usedBytes'] == 30
+            deadline = time.monotonic() + 30
+            while Path('/etc/hysteria2-panel/.restore-active').exists():
+                assert time.monotonic() < deadline, 'Restore did not finish health verification'
+                time.sleep(1)
+            run('systemctl', 'is-active', '--quiet', 'hysteria2-panel-server.service')
+            run('systemctl', 'is-active', '--quiet', 'hysteria2-panel-server-443.service')
+        print('Installed legacy backup restore, service recovery and authenticated HTTPS usage: PASS')
         print('Installed strict HTTPS query, synthetic ledger, restart, rotation and deletion: PASS')
     finally:
         if user is not None:
