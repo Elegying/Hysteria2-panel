@@ -28,7 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.15"
+AGENT_VERSION = "0.39.16"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -1236,7 +1236,7 @@ def validate_data_plane_identity(response, architecture):
     }
 
 
-def render_data_plane_configs(identity, stats_secret):
+def render_data_plane_configs(identity, stats_secret, outbound_mode="auto"):
     expected_identity = {
         "certificate",
         "private_key",
@@ -1252,6 +1252,7 @@ def render_data_plane_configs(identity, stats_secret):
         not isinstance(identity, dict)
         or set(identity) != expected_identity
         or identity.get("egress_policy") not in {"web", "full"}
+        or outbound_mode not in ("auto", "4")
         or not isinstance(stats_secret, str)
         or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", stats_secret) is None
     ):
@@ -1305,6 +1306,11 @@ congestion:
   type: bbr
   bbrProfile: standard
 ignoreClientBandwidth: true
+outbounds:
+  - name: direct
+    type: direct
+    direct:
+      mode: "{outbound_mode}"
 trafficStats:
   listen: 127.0.0.1:{stats_port}
   secret: __HY2PANEL_STATS_SECRET__
@@ -1318,6 +1324,7 @@ masquerade:
     statusCode: 404
 """.format(
             port=port,
+            outbound_mode=outbound_mode,
             auth_path=auth_path,
             stats_port=stats_port,
             acl="\n".join(acl),
@@ -1536,6 +1543,7 @@ def prepare_data_plane_bundle(
     destination,
     architecture=None,
     secret_factory=secrets.token_urlsafe,
+    outbound_mode="auto",
 ):
     """Atomically prepare a root-only bundle without persisting the grant token."""
 
@@ -1556,7 +1564,7 @@ def prepare_data_plane_bundle(
         response = client.fetch(token)
         identity = validate_data_plane_identity(response, architecture)
         stats_secret = str(secret_factory(36))
-        configs = render_data_plane_configs(identity, stats_secret)
+        configs = render_data_plane_configs(identity, stats_secret, outbound_mode)
         metadata = {
             "certificateFileSha256": identity["certificate_file_sha256"],
             "certificateDerSha256": identity["certificate_der_sha256"],
@@ -3079,6 +3087,7 @@ def _parser():
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
     command.add_argument("--output-dir", required=True)
+    command.add_argument("--outbound-mode", choices=("auto", "4"), default="auto")
     command = subcommands.add_parser("claim-data-plane")
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
@@ -3159,7 +3168,10 @@ def main(arguments=None):
             client = DataPlaneBootstrapClient(
                 pathlib.Path(options.state_file), pathlib.Path(options.private_key)
             )
-            prepare_data_plane_bundle(client, token, pathlib.Path(options.output_dir))
+            prepare_data_plane_bundle(
+                client, token, pathlib.Path(options.output_dir),
+                outbound_mode=options.outbound_mode,
+            )
         except (OSError, ProtocolError, ValueError) as exc:
             print("错误：{}".format(exc), file=sys.stderr)
             return 1
