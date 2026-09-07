@@ -1285,6 +1285,7 @@ class UsageManagerTests(unittest.TestCase):
 
         self.assertEqual(
             [
+                ("sleep", 10.0),
                 ("kick", ["alice", "bob"]),
                 ("sleep", 0.01),
                 ("sleep", 0.01),
@@ -1314,16 +1315,17 @@ class UsageManagerTests(unittest.TestCase):
         stats.kick_many.assert_called_once_with(["late-auth"])
         self.assertEqual(5, stats.online.call_count)
 
-    def test_maintenance_quiesce_allows_idle_sessions_that_remain_online_after_kick(self):
+    def test_maintenance_quiesce_rejects_idle_sessions_that_remain_online_after_kick(self):
         stats = mock.Mock()
         stats.online.return_value = {"alice": 1}
 
-        hysteria2_panel.quiesce_stats_client(
-            stats,
-            attempts=2,
-            interval=0,
-            sleeper=lambda _delay: None,
-        )
+        with self.assertRaisesRegex(RuntimeError, "did not drain"):
+            hysteria2_panel.quiesce_stats_client(
+                stats,
+                attempts=2,
+                interval=0,
+                sleeper=lambda _delay: None,
+            )
 
         self.assertEqual(
             [mock.call(["alice"]), mock.call(["alice"])],

@@ -535,7 +535,7 @@ assert_reopenable_installer_entrypoint
 
         self.assertIn("UPGRADE_RUNTIME_SYSCTL_STATE=runtime-sysctl.state", source)
         backup = source[source.index('timestamp="$(date') : source.index(
-            "\n\nif (( EXISTING_INSTALL == 1 )); then\n  arm_upgrade_transaction"
+            "\n\nif (( EXISTING_INSTALL == 1 )); then\n  ROLLBACK_REQUIRED=1"
         )]
         self.assertLess(
             backup.index("capture_upgrade_runtime_state"),
@@ -564,7 +564,7 @@ assert_reopenable_installer_entrypoint
             source.index("rollback_existing_install()") : source.index("\n\nfail()")
         ]
         self.assertIn("sync_traffic_before_upgrade_rollback", rollback)
-        self.assertIn('${BACKUP_DIR}/opt/hysteria2_panel.py', source)
+        self.assertIn('${BACKUP_DIR}/maintenance/hysteria2_panel.py', source)
         self.assertLess(
             rollback.index("sync_traffic_before_upgrade_rollback"),
             rollback.index("stop_loaded_units"),
@@ -692,7 +692,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.16"', source)
+        self.assertIn('PANEL_VERSION="0.39.17"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -834,7 +834,7 @@ restore_upgrade_runtime_state
         self.assertNotIn('vpn.example.com', join_function)
 
         dispatch = source.index('if (( JOIN_NODE == 1 )); then')
-        full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
+        full_install = source.index('AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"', dispatch)
         self.assertLess(dispatch, full_install)
 
     def test_existing_data_node_rebind_is_durable_and_preserves_identity_and_spool(self):
@@ -964,7 +964,7 @@ printf '%s:%s:%s:%s\n' \
         self.assertNotIn("vpn.example.com", activation)
 
         dispatch = source.index('if (( ACTIVATE_NODE_AGENT == 1 )); then')
-        full_install = source.index('\nacquire_maintenance_lock\n', dispatch)
+        full_install = source.index('AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"', dispatch)
         self.assertLess(dispatch, full_install)
 
     def test_ci_static_analysis_covers_the_standalone_services(self):
@@ -4459,8 +4459,11 @@ class StreamlinedOnboardingInstallerTests(unittest.TestCase):
             "systemctl start --no-block hysteria2-panel-node-onboarding.service",
             join,
         )
-        self.assertIn('sleep 5', join)
-        self.assertIn('节点一键对接已完成', join)
+        waiter_start = self.source.index('wait_for_node_onboarding()')
+        waiter = self.source[waiter_start:self.source.index('\n}\n', waiter_start) + 2]
+        self.assertIn('sleep 5', waiter)
+        self.assertNotIn('sleep 5', join)
+        self.assertIn('节点一键对接已完成', waiter)
         self.assertNotIn('sha256sum "${NODE_AGENT_CONFIG_DIR}/node-public.der"', join)
         self.assertNotIn("指纹", join)
         self.assertNotIn("HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN", join)

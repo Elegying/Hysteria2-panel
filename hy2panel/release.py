@@ -13,6 +13,7 @@ from .version import PANEL_VERSION
 class UpdateChecker:
     URL = "https://api.github.com/repos/Elegying/Hysteria2-panel/releases/latest"
     TIMEOUT_SECONDS = 10
+    MAX_RESPONSE_BYTES = 512 * 1024
 
     def __init__(self, current_version=PANEL_VERSION, opener=urllib.request.urlopen):
         self.current_version = current_version
@@ -31,8 +32,8 @@ class UpdateChecker:
             headers={"Accept": "application/vnd.github+json", "User-Agent": "Hysteria2-panel"},
         )
         with self.opener(request, timeout=self.TIMEOUT_SECONDS) as response:
-            raw_body = response.read(16385)
-        if len(raw_body) > 16384:
+            raw_body = response.read(self.MAX_RESPONSE_BYTES + 1)
+        if len(raw_body) > self.MAX_RESPONSE_BYTES:
             raise ValueError("release response is too large")
         payload = json.loads(raw_body.decode("utf-8"))
         if not isinstance(payload, dict):
@@ -62,7 +63,7 @@ class UpdateInstaller:
         "https://github.com/Elegying/Hysteria2-panel/releases/download/"
         "{tag}/install.sh.sigstore.json"
     )
-    MAX_INSTALLER_BYTES = 512 * 1024
+    MAX_INSTALLER_BYTES = 1024 * 1024
     MAX_BUNDLE_BYTES = 512 * 1024
     SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     COSIGN_PATH = Path("/opt/hysteria2-panel/bin/cosign")

@@ -3382,7 +3382,9 @@ class Database:
         rx,
         now,
         account_traffic=True,
+        observed_at=None,
     ):
+        observed_at = int(now) if observed_at is None else int(observed_at)
         connection.execute(
             """INSERT INTO usage_origins(
                 origin_id, kind, node_id, display_name, created_at, last_traffic_at
@@ -3396,18 +3398,18 @@ class Database:
                 )""",
             (origin_id, origin_kind, node_id, origin_name, now, now),
         )
-        connection.execute(
-            """INSERT INTO usage_origin_users(
+        if account_traffic:
+            connection.execute(
+                """INSERT INTO usage_origin_users(
                 origin_id, user_name, tx_bytes, rx_bytes, updated_at
             ) VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(origin_id, user_name) DO UPDATE SET
                 tx_bytes = usage_origin_users.tx_bytes + excluded.tx_bytes,
                 rx_bytes = usage_origin_users.rx_bytes + excluded.rx_bytes,
                 updated_at = excluded.updated_at""",
-            (origin_id, user_name, tx if account_traffic else 0,
-             rx if account_traffic else 0, now),
-        )
-        usage_date = time.strftime("%Y-%m-%d", time.gmtime(int(now)))
+                (origin_id, user_name, tx, rx, now),
+            )
+        usage_date = time.strftime("%Y-%m-%d", time.gmtime(observed_at))
         connection.execute(
             """INSERT INTO origin_traffic_daily(
                 origin_id, usage_date, tx_bytes, rx_bytes, updated_at
@@ -3417,6 +3419,14 @@ class Database:
                 rx_bytes = origin_traffic_daily.rx_bytes + excluded.rx_bytes,
                 updated_at = MAX(origin_traffic_daily.updated_at, excluded.updated_at)""",
             (origin_id, usage_date, tx, rx, int(now)),
+        )
+        # Manual provider usage already includes traffic sampled at its boundary.
+        # Keep late settlement in physical history without charging it twice.
+        connection.execute(
+            """UPDATE origin_traffic_budgets
+            SET baseline_total_bytes = baseline_total_bytes + ?
+            WHERE origin_id = ? AND baseline_at >= ?""",
+            (tx + rx, origin_id, observed_at),
         )
 
     def list_usage_origins(self, machine_totals=False):
@@ -4137,6 +4147,8 @@ class Database:
             raise ValueError("traffic origin is invalid")
         domain_usage = [] if domain_usage is None else validate_domain_records(domain_usage)
         now = int(time.time())
+        # Legacy adapters/journals have no sampling boundary to compare against.
+        has_observation_time = observed_at is not None
         observed_at = now if observed_at is None else int(observed_at)
         with self._connect() as connection:
             if connection.execute(
@@ -4152,33 +4164,33 @@ class Database:
                 if not isinstance(tx, int) or not isinstance(rx, int) or tx < 0 or rx < 0:
                     raise ValueError("traffic counters must be non-negative integers")
                 user = connection.execute(
-                    """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes
+                    """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes,
+                        traffic_adjusted_at
                     FROM proxy_users WHERE name = ? COLLATE NOCASE""",
                     (name,),
                 ).fetchone()
-                if user is not None and (
+                account_traffic = user is not None and (
+                    not has_observation_time
+                    or user["traffic_adjusted_at"] is None
+                    or observed_at > user["traffic_adjusted_at"]
+                )
+                if account_traffic and (
                     int(user["tx_bytes"]) + int(user["rx_bytes"])
                     < int(user["traffic_limit_bytes"])
                     <= int(user["tx_bytes"]) + int(user["rx_bytes"]) + tx + rx
                 ):
                     exhausted_users.add(user["name"])
-                connection.execute(
-                    """UPDATE proxy_users SET tx_bytes = tx_bytes + ?, rx_bytes = rx_bytes + ?,
+                if account_traffic:
+                    connection.execute(
+                        """UPDATE proxy_users SET tx_bytes = tx_bytes + ?, rx_bytes = rx_bytes + ?,
                     updated_at = ? WHERE name = ? COLLATE NOCASE""",
-                    (tx, rx, now, name),
-                )
-                if user is not None:
-                    self._record_usage_origin_traffic(
-                        connection,
-                        origin_id,
-                        origin_kind,
-                        origin_name,
-                        None,
-                        user["name"],
-                        tx,
-                        rx,
-                        now,
+                        (tx, rx, now, name),
                     )
+                self._record_usage_origin_traffic(
+                    connection, origin_id, origin_kind, origin_name, None,
+                    user["name"] if user is not None else None, tx, rx, now,
+                    account_traffic=account_traffic, observed_at=observed_at,
+                )
             self._queue_kick_users_on_ready_nodes(
                 connection, exhausted_users, now
             )
@@ -4224,9 +4236,9 @@ class Database:
                 raise ConflictError("proxy user changed; refresh and try again")
             cursor = connection.execute(
                 """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
-                generation = generation + 1, updated_at = ?
+                generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?
                 WHERE id = ? AND generation = ?""",
-                (now, row["id"], generation),
+                (now, now, row["id"], generation),
             )
             if cursor.rowcount != 1:
                 raise ConflictError("proxy user changed; refresh and try again")
@@ -4245,8 +4257,8 @@ class Database:
             now = int(time.time())
             connection.execute(
                 """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
-                generation = generation + 1, updated_at = ?""",
-                (now,),
+                generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?""",
+                (now, now),
             )
             connection.execute(
                 "UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0, updated_at = ?",
@@ -5069,7 +5081,7 @@ class Database:
                 if (
                     node is None
                     or node["policy_state"] != "protocol_ready"
-                    or node["lifecycle_state"] not in {"active", "draining"}
+                    or node["lifecycle_state"] not in {"active", "draining", "stopping", "disconnecting"}
                 ):
                     raise sqlite3.IntegrityError("node is not protocol ready")
                 previous_snapshot = connection.execute(
@@ -5215,12 +5227,14 @@ class Database:
                     "__hy2panel_bootstrap_canary__" if allowed else None
                 )
                 if canary_grant is None:
+                    # A queued stop has not stopped old QUIC sessions. Keep its
+                    # snapshots in the existing fail-closed capacity contract.
                     ready_count = connection.execute(
                         """SELECT COUNT(*) FROM nodes
                         WHERE policy_state = 'protocol_ready'
                             AND status = 'pending_verification'
                             AND verified_at IS NOT NULL
-                            AND lifecycle_state IN ('active', 'draining')"""
+                            AND lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')"""
                     ).fetchone()[0]
                     fresh_count = connection.execute(
                         """SELECT COUNT(*) FROM nodes AS n
@@ -5228,7 +5242,7 @@ class Database:
                         WHERE n.policy_state = 'protocol_ready'
                             AND n.status = 'pending_verification'
                             AND n.verified_at IS NOT NULL
-                            AND n.lifecycle_state IN ('active', 'draining')
+                            AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')
                             AND s.accepted_at >= ? AND s.observed_at >= ?
                             AND s.traffic_acked_at >= ?""",
                         (
@@ -5256,7 +5270,7 @@ class Database:
                             WHERE c.user_name = ? COLLATE NOCASE
                                 AND n.policy_state = 'protocol_ready'
                                 AND n.status = 'pending_verification'
-                                AND n.lifecycle_state IN ('active', 'draining')""",
+                                AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')""",
                             (user_name,),
                         ).fetchone()[0]
                         pending = connection.execute(
@@ -5337,14 +5351,14 @@ class Database:
                     """SELECT COUNT(*) FROM nodes
                     WHERE policy_state = 'protocol_ready'
                         AND status = 'pending_verification' AND verified_at IS NOT NULL
-                        AND lifecycle_state IN ('active', 'draining')"""
+                        AND lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')"""
                 ).fetchone()[0]
                 fresh_count = connection.execute(
                     """SELECT COUNT(*) FROM nodes AS n
                     JOIN node_online_snapshots AS s ON s.node_id = n.node_id
                     WHERE n.policy_state = 'protocol_ready'
                         AND n.status = 'pending_verification' AND n.verified_at IS NOT NULL
-                        AND n.lifecycle_state IN ('active', 'draining')
+                        AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')
                         AND s.accepted_at >= ? AND s.observed_at >= ?
                         AND s.traffic_acked_at >= ?""",
                     (
@@ -5370,7 +5384,7 @@ class Database:
                     WHERE c.user_name = ? COLLATE NOCASE
                         AND n.policy_state = 'protocol_ready'
                         AND n.status = 'pending_verification'
-                        AND n.lifecycle_state IN ('active', 'draining')""",
+                        AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')""",
                     (user["name"],),
                 ).fetchone()[0]
                 remote_pending = connection.execute(
@@ -5533,45 +5547,34 @@ class Database:
                     user = users.get(name)
                     if user is None:
                         unknown_users += 1
-                        continue
                     tx = int(counters["tx"])
                     rx = int(counters["rx"])
                     # Agent batch timestamps have second precision. Batches
                     # sampled in/before the adjustment second belong to history.
-                    account_traffic = (
+                    account_traffic = user is not None and (
                         user["traffic_adjusted_at"] is None
                         or observed_at > user["traffic_adjusted_at"]
                     )
-                    if not account_traffic:
-                        self._record_usage_origin_traffic(
-                            connection, origin_id, "remote", node["name"], node_id,
-                            user["name"], tx, rx, int(accepted_at), account_traffic=False,
+                    if account_traffic:
+                        if user["tx_bytes"] > 2**63 - 1 - tx or user["rx_bytes"] > 2**63 - 1 - rx:
+                            raise OverflowError("traffic counter overflow")
+                        if (
+                            int(user["tx_bytes"]) + int(user["rx_bytes"])
+                            < int(user["traffic_limit_bytes"])
+                            <= int(user["tx_bytes"]) + int(user["rx_bytes"]) + tx + rx
+                        ):
+                            exhausted_users.add(user["name"])
+                        connection.execute(
+                            """UPDATE proxy_users SET tx_bytes = tx_bytes + ?,
+                                rx_bytes = rx_bytes + ?, updated_at = ?
+                            WHERE name = ? COLLATE NOCASE""",
+                            (tx, rx, int(accepted_at), name),
                         )
-                        continue
-                    if user["tx_bytes"] > 2**63 - 1 - tx or user["rx_bytes"] > 2**63 - 1 - rx:
-                        raise OverflowError("traffic counter overflow")
-                    if (
-                        int(user["tx_bytes"]) + int(user["rx_bytes"])
-                        < int(user["traffic_limit_bytes"])
-                        <= int(user["tx_bytes"]) + int(user["rx_bytes"]) + tx + rx
-                    ):
-                        exhausted_users.add(user["name"])
-                    connection.execute(
-                        """UPDATE proxy_users SET tx_bytes = tx_bytes + ?,
-                            rx_bytes = rx_bytes + ?, updated_at = ?
-                        WHERE name = ? COLLATE NOCASE""",
-                        (tx, rx, int(accepted_at), name),
-                    )
                     self._record_usage_origin_traffic(
-                        connection,
-                        origin_id,
-                        "remote",
-                        node["name"],
-                        node_id,
-                        user["name"],
-                        tx,
-                        rx,
-                        int(accepted_at),
+                        connection, origin_id, "remote", node["name"], node_id,
+                        user["name"] if user is not None else None,
+                        tx, rx, int(accepted_at),
+                        account_traffic=account_traffic, observed_at=observed_at,
                     )
                 self._queue_kick_users_on_ready_nodes(
                     connection, exhausted_users, int(accepted_at)
@@ -9963,13 +9966,16 @@ def make_stats_client(settings, primary_only=False, secondary_only=False):
 def quiesce_stats_client(
     stats_client,
     attempts=30,
-    interval=0.1,
+    interval=1,
     stable_empty_snapshots=3,
     sleeper=time.sleep,
 ):
     attempts = max(1, int(attempts))
     interval = max(0, float(interval))
     stable_empty_snapshots = max(2, int(stable_empty_snapshots))
+    # The caller has stopped auth; allow already accepted HTTP auth responses
+    # to reach Hysteria before treating an empty /online snapshot as final.
+    sleeper(10.0)
     empty_snapshots = 0
     for _attempt in range(attempts):
         online = {
@@ -9985,8 +9991,9 @@ def quiesce_stats_client(
             if empty_snapshots >= stable_empty_snapshots:
                 return
         sleeper(interval)
-    # Hysteria's /kick marks an ID for its next traffic event; an idle session
-    # can therefore remain in /online until the server is stopped.
+    # /kick consumes one traffic event per ID; other idle sessions can survive.
+    # Stopping now would discard counters recorded after the final collection.
+    raise RuntimeError("Hysteria sessions did not drain; traffic and services retained")
 
 
 @contextlib.contextmanager
@@ -10106,8 +10113,6 @@ def sync_traffic(
     secondary_only=False,
     quiesce=False,
 ):
-    database = Database(settings.database_path, settings.hmac_key)
-    database.initialize()
     stats_client = make_stats_client(
         settings,
         primary_only=primary_only,
@@ -10115,6 +10120,8 @@ def sync_traffic(
     )
     if quiesce:
         quiesce_stats_client(stats_client)
+    database = Database(settings.database_path, settings.hmac_key)
+    database.initialize()
     UsageManager(
         database,
         stats_client,

@@ -1305,7 +1305,8 @@ class NodeAgentProtocolTests(unittest.TestCase):
             "https://panel.example.com:19998/api/v1/node-auth-decisions",
             captured["url"],
         )
-        self.assertEqual(8, captured["timeout"])
+        self.assertGreater(captured["timeout"], 0)
+        self.assertLessEqual(captured["timeout"], 8)
         self.assertTrue(captured["message"].startswith(b"hy2panel-node-auth-v1\n"))
         self.assertNotIn(b"signature", captured["message"])
         self.assertEqual(base64.b64encode(b"s" * 64).decode(), captured["body"]["signature"])

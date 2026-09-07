@@ -79,6 +79,7 @@ ADR 记录“为什么这样设计”，不是操作教程。编号重复的两�
 - [v0.14.1 生产验证](reviews/2026-08-12-v0.14.1-production-validation.md)
 - [v0.21.1 最终生产审计](reviews/2026-08-22-v0.21.1-final-production-audit.md)
 - [v0.35.0 稳定化审计](reviews/2026-08-30-v0.35.0-stabilization-audit.md)
+- [v0.39.17 可靠性修复复审](reviews/2026-09-08-reliability-repair.md)
 - [全站界面专业化审查](UI_AUDIT_2026-08-30.md)
 - [界面设计验收记录](../design-qa.md)
 - [当前界面截图](screenshots/)
