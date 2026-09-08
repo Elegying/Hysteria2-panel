@@ -28,10 +28,44 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.16"
+AGENT_VERSION = "0.39.17"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
+# Hysteria's HTTP authenticator has a 10-second total timeout. Leave time for
+# the local response after the bounded central request (including signing).
+NODE_AUTH_REQUEST_TIMEOUT_SECONDS = NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS + 1
+# Bound complete auth requests, including signers, inside the 192 MiB service.
+_AUTH_TRANSPORT_SLOTS = threading.BoundedSemaphore(4)
+_AUTH_TRANSPORT_WORKER = r'''
+import http.client
+import json
+import ssl
+import sys
+import urllib.parse
+
+request = json.load(sys.stdin)
+url = urllib.parse.urlsplit(request["url"])
+if (url.scheme != "https" or not url.hostname or url.username is not None
+        or url.password is not None or url.query or url.fragment):
+    raise ValueError("invalid authentication endpoint")
+connection = http.client.HTTPSConnection(
+    url.hostname, url.port or 443, timeout=request["timeout"],
+    context=ssl.create_default_context(),
+)
+try:
+    connection.request("POST", url.path or "/", request["body"].encode("utf-8"),
+                       headers=request["headers"])
+    response = connection.getresponse()
+    if response.status != 200:
+        raise ValueError("authentication request rejected")
+    body = response.read(request["maximum"] + 1)
+    if len(body) > request["maximum"]:
+        raise ValueError("authentication response too large")
+    sys.stdout.buffer.write(body)
+finally:
+    connection.close()
+'''
 CONTROL_LOOP_INTERVAL_SECONDS = 2
 CONTROL_LOOP_MAX_INTERVAL_SECONDS = 5
 CONTROL_LOOP_MAX_BACKOFF_SECONDS = 30
@@ -349,7 +383,7 @@ class NodeAuthProxyServer(ThreadingHTTPServer):
         server_address,
         handler_class,
         max_workers=32,
-        request_timeout=5.0,
+        request_timeout=NODE_AUTH_REQUEST_TIMEOUT_SECONDS,
     ):
         self.max_workers = max(1, min(128, int(max_workers)))
         self.request_timeout = max(0.1, min(30.0, float(request_timeout)))
@@ -403,7 +437,7 @@ def make_node_auth_proxy_server(
     address,
     protocol_client,
     max_workers=32,
-    request_timeout=5.0,
+    request_timeout=NODE_AUTH_REQUEST_TIMEOUT_SECONDS,
     metrics_file=None,
 ):
     host, port = address
@@ -878,10 +912,18 @@ def _canonical_heartbeat(payload):
 
 def _openssl_message_input(message):
     creator = getattr(os, "memfd_create", None)
+    temporary_path = None
     if creator is None or not os.path.isdir("/proc/self/fd"):
-        return "/dev/stdin", {"input": message}, None
-    descriptor = creator("hy2panel-openssl-message", getattr(os, "MFD_CLOEXEC", 0))
+        descriptor, temporary_path = tempfile.mkstemp(prefix="hy2panel-openssl-message-")
+        descriptor_path = "/dev/fd/{}".format(descriptor)
+    else:
+        descriptor = creator("hy2panel-openssl-message", getattr(os, "MFD_CLOEXEC", 0))
+        descriptor_path = "/proc/self/fd/{}".format(descriptor)
     try:
+        if temporary_path is not None:
+            # Unlink before writing secrets. Ed25519 needs a seekable input:
+            # a pipe's apparent length can be zero before its writer runs.
+            os.unlink(temporary_path)
         remaining = memoryview(message)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -890,7 +932,7 @@ def _openssl_message_input(message):
             remaining = remaining[written:]
         os.lseek(descriptor, 0, os.SEEK_SET)
         return (
-            "/proc/self/fd/{}".format(descriptor),
+            descriptor_path,
             {"pass_fds": (descriptor,)},
             descriptor,
         )
@@ -1933,6 +1975,41 @@ def collect_data_plane_attestation(
     return attestation
 
 
+def _post_auth_with_deadline(request, maximum, deadline):
+    """Cancel DNS, TLS and response I/O together without stranded worker threads."""
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProtocolError("local authentication request deadline exceeded")
+        payload = json.dumps({
+            "url": request.full_url,
+            "body": request.data.decode("utf-8"),
+            "headers": dict(request.header_items()),
+            "maximum": maximum,
+            "timeout": remaining,
+        }).encode("utf-8")
+        # Blocking system DNS cannot be cancelled safely in a Python thread.
+        # A bounded child owns all outbound sockets; secrets only cross stdin.
+        with subprocess.Popen(  # nosec B603 -- fixed isolated interpreter, no shell.
+            [sys.executable, "-I", "-S", "-c", _AUTH_TRANSPORT_WORKER],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        ) as process:
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("authentication process start exceeded deadline")
+                body, _stderr = process.communicate(payload, timeout=remaining)
+            except BaseException:
+                process.kill()
+                process.communicate()
+                raise
+            if process.returncode != 0 or len(body) > maximum:
+                raise ProtocolError("the panel rejected or could not receive the node request")
+            return body
+    except (subprocess.TimeoutExpired, TimeoutError) as exc:
+        raise ProtocolError("local authentication request deadline exceeded") from exc
+
+
 class NodeProtocolClient:
     """Sign bounded node protocol requests using the enrolled Ed25519 key."""
 
@@ -1949,19 +2026,21 @@ class NodeProtocolClient:
         self,
         state_path,
         private_key_path,
-        opener=urllib.request.urlopen,
+        opener=None,
         signer=_openssl_sign,
         clock=time.time,
         nonce_factory=None,
     ):
         self.state_path = pathlib.Path(state_path)
         self.private_key_path = pathlib.Path(private_key_path)
-        self.opener = opener
+        self.opener = urllib.request.urlopen if opener is None else opener
+        self._default_auth_transport = opener is None
         self.signer = signer
         self.clock = clock
         self.nonce_factory = nonce_factory or secrets.token_urlsafe
 
     def _post(self, purpose, fields):
+        started = time.monotonic()
         state = _registration_state(self.state_path)
         nonce = str(self.nonce_factory(32))
         if not re.fullmatch(r"[A-Za-z0-9_-]{43}", nonce):
@@ -1987,16 +2066,25 @@ class NodeProtocolClient:
             headers={"Accept": "application/json", "Content-Type": "application/json"},
             method="POST",
         )
+        timeout = NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS
+        if purpose == "auth":
+            timeout -= time.monotonic() - started
+            if timeout <= 0:
+                raise ProtocolError("local authentication request deadline exceeded")
         try:
-            with self.opener(
-                request, timeout=NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS
-            ) as response:
-                status = getattr(
-                    response,
-                    "status",
-                    response.getcode() if hasattr(response, "getcode") else 0,
+            if purpose == "auth" and self._default_auth_transport:
+                body = _post_auth_with_deadline(
+                    request, maximum, started + NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS,
                 )
-                body = response.read(maximum + 1)
+                status = 200
+            else:
+                with self.opener(request, timeout=timeout) as response:
+                    status = getattr(
+                        response,
+                        "status",
+                        response.getcode() if hasattr(response, "getcode") else 0,
+                    )
+                    body = response.read(maximum + 1)
         except urllib.error.HTTPError as exc:
             if purpose == "control-cycle" and exc.code == 404:
                 raise ProtocolNotSupported(
@@ -2016,27 +2104,33 @@ class NodeProtocolClient:
         return result
 
     def authorize(self, request):
-        if not isinstance(request, dict) or set(request) != {"entrypoint", "auth", "tx"}:
-            raise ProtocolError("local authentication request is invalid")
-        result = self._post(
-            "auth",
-            {
-                "requestId": uuid.uuid4().hex,
-                "entrypoint": request["entrypoint"],
-                "auth": request["auth"],
-                "tx": request["tx"],
-            },
-        )
-        if (
-            set(result) != {"ok", "id", "decisionId", "expiresAt"}
-            or not isinstance(result.get("ok"), bool)
-            or not isinstance(result.get("id"), str)
-            or not NODE_ID_PATTERN.fullmatch(str(result.get("decisionId", "")))
-            or isinstance(result.get("expiresAt"), bool)
-            or not isinstance(result.get("expiresAt"), int)
-        ):
-            raise ProtocolError("the panel returned an invalid authorization decision")
-        return result
+        if self._default_auth_transport and not _AUTH_TRANSPORT_SLOTS.acquire(blocking=False):
+            raise ProtocolError("local authentication transport capacity exhausted")
+        try:
+            if not isinstance(request, dict) or set(request) != {"entrypoint", "auth", "tx"}:
+                raise ProtocolError("local authentication request is invalid")
+            result = self._post(
+                "auth",
+                {
+                    "requestId": uuid.uuid4().hex,
+                    "entrypoint": request["entrypoint"],
+                    "auth": request["auth"],
+                    "tx": request["tx"],
+                },
+            )
+            if (
+                set(result) != {"ok", "id", "decisionId", "expiresAt"}
+                or not isinstance(result.get("ok"), bool)
+                or not isinstance(result.get("id"), str)
+                or not NODE_ID_PATTERN.fullmatch(str(result.get("decisionId", "")))
+                or isinstance(result.get("expiresAt"), bool)
+                or not isinstance(result.get("expiresAt"), int)
+            ):
+                raise ProtocolError("the panel returned an invalid authorization decision")
+            return result
+        finally:
+            if self._default_auth_transport:
+                _AUTH_TRANSPORT_SLOTS.release()
 
     def send_online(self, sequence, online, traffic_acked_at):
         return self._post(
@@ -2444,6 +2538,7 @@ def execute_control_command(
     stop_data_plane=None,
     start_data_plane=None,
     queue_uninstall=None,
+    quiesce_traffic=None,
 ):
     """Execute one fixed command without exposing a generic execution surface."""
     if not isinstance(command, dict) or set(command) != {"commandId", "kind", "payload"}:
@@ -2469,9 +2564,13 @@ def execute_control_command(
         if protocol_state is None or flush_traffic is None or stop_data_plane is None:
             raise ProtocolError("data-plane stop callbacks are unavailable")
         if not protocol_state.data_plane_stopped():
+            if quiesce_traffic is not None:
+                quiesce_traffic()
             flush_traffic()
+            stop_data_plane()
             protocol_state.set_data_plane_stopped(True)
-        stop_data_plane()
+        else:
+            stop_data_plane()
         return
     if kind == "START_DATA_PLANE" and payload == {}:
         if protocol_state is None or start_data_plane is None:
@@ -2488,9 +2587,13 @@ def execute_control_command(
         ):
             raise ProtocolError("node uninstall callbacks are unavailable")
         if not protocol_state.data_plane_stopped():
+            if quiesce_traffic is not None:
+                quiesce_traffic()
             flush_traffic()
+            stop_data_plane()
             protocol_state.set_data_plane_stopped(True)
-        stop_data_plane()
+        else:
+            stop_data_plane()
         queue_uninstall(command["commandId"])
         return "deferred-ack"
     raise ProtocolError("node command is invalid")
@@ -2798,6 +2901,42 @@ class NodeControlCycle:
         self.spool.enqueue_collections(
             batches, observed_at=observed_at, domains=domains
         )
+        return sum(
+            counters["tx"] + counters["rx"]
+            for batch in batches
+            for counters in batch.values()
+        )
+
+    def quiesce_traffic(self, attempts=30, interval=1.0, sleeper=time.sleep):
+        """Drain kicked sessions to disk after new authentication is blocked.
+
+        Hysteria's per-user kick is consumed by only one connection's next
+        traffic event. Several idle connections can survive repeated zero
+        counters; do not stop until the online list is empty as well. Every
+        cleared response is persisted before the next observation.
+        """
+        # A successful auth response issued just before admission closed can
+        # still be in flight. Hysteria bounds its HTTP auth request at 10s;
+        # allow that existing budget to expire before trusting an empty list.
+        # This runs only for maintenance, never for the ordinary control cycle.
+        sleeper(10.0)
+        quiet = 0
+        for _attempt in range(max(3, int(attempts))):
+            online = sorted(
+                name for name, count in self.stats_client.online().items() if count > 0
+            )
+            if online:
+                self.stats_client.kick(online)
+            if not self._can_collect():
+                self._upload_pending()
+                if not self._can_collect():
+                    raise ProtocolError("traffic spool has insufficient capacity")
+            traffic_bytes = self._collect_to_spool()
+            quiet = quiet + 1 if not online and traffic_bytes == 0 else 0
+            if quiet >= 3:
+                return
+            sleeper(max(0, float(interval)))
+        raise ProtocolError("data-plane sessions did not drain; traffic and services retained")
 
     def flush_traffic(self):
         if not self._can_collect():
@@ -2931,6 +3070,7 @@ class NodeControlCycle:
                     stop_data_plane=self.stop_data_plane,
                     start_data_plane=self.start_data_plane,
                     queue_uninstall=self.queue_uninstall,
+                    quiesce_traffic=self.quiesce_traffic,
                 )
             except Exception:
                 self.protocol_client.ack_command(
@@ -3105,7 +3245,7 @@ def _parser():
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
     command.add_argument("--command-file", required=True)
-    for name in ("control-once", "control-loop"):
+    for name in ("control-once", "control-loop", "quiesce-traffic"):
         command = subcommands.add_parser(name)
         command.add_argument("--private-key", required=True)
         command.add_argument("--state-file", required=True)
@@ -3113,6 +3253,9 @@ def _parser():
         command.add_argument("--spool-dir", required=True)
         command.add_argument("--stats-url", required=True, action="append")
         command.add_argument("--metrics-file")
+        if name == "quiesce-traffic":
+            command.add_argument("--require-ack", action="store_true")
+            command.add_argument("--upload-only", action="store_true")
     return parser
 
 
@@ -3279,9 +3422,16 @@ def main(arguments=None):
         finally:
             server.server_close()
         return 0
-    if options.command in {"control-once", "control-loop"}:
+    if options.command in {"control-once", "control-loop", "quiesce-traffic"}:
         try:
             cycle = _make_control_cycle(options)
+            if options.command == "quiesce-traffic":
+                if not options.upload_only:
+                    cycle.quiesce_traffic()
+                if options.require_ack:
+                    cycle._upload_pending()
+                print("节点在途流量已静默结算并持久化；未确认批次由控制循环继续重放")
+                return 0
             if options.command == "control-once":
                 cycle.run_once()
                 return 0

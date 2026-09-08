@@ -1305,7 +1305,8 @@ class NodeAgentProtocolTests(unittest.TestCase):
             "https://panel.example.com:19998/api/v1/node-auth-decisions",
             captured["url"],
         )
-        self.assertEqual(8, captured["timeout"])
+        self.assertGreater(captured["timeout"], 0)
+        self.assertLessEqual(captured["timeout"], 8)
         self.assertTrue(captured["message"].startswith(b"hy2panel-node-auth-v1\n"))
         self.assertNotIn(b"signature", captured["message"])
         self.assertEqual(base64.b64encode(b"s" * 64).decode(), captured["body"]["signature"])
@@ -1384,7 +1385,7 @@ class NodeAgentProtocolTests(unittest.TestCase):
         self.assertTrue(messages[0].startswith(b"hy2panel-node-control-cycle-v1\n"))
         self.assertEqual("a" * 32, result["traffic"][0]["batchId"])
 
-    def test_signer_streams_secret_bearing_requests_without_a_temp_file(self):
+    def test_signer_stages_secret_bearing_requests_without_a_named_message_file(self):
         message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
         private_key = Path(self.temp_dir.name) / "node.key"
         private_key.write_bytes(b"private")
@@ -1400,8 +1401,10 @@ class NodeAgentProtocolTests(unittest.TestCase):
                 node_agent._openssl_sign(private_key, message, executable="/usr/bin/openssl"),
             )
         arguments = run.call_args.args[0]
-        self.assertEqual("/dev/stdin", arguments[arguments.index("-in") + 1])
-        self.assertEqual(message, run.call_args.kwargs["input"])
+        descriptor_path = arguments[arguments.index("-in") + 1]
+        self.assertTrue(descriptor_path.startswith("/dev/fd/"))
+        self.assertEqual((int(descriptor_path.rsplit("/", 1)[1]),), run.call_args.kwargs["pass_fds"])
+        self.assertNotIn("input", run.call_args.kwargs)
         self.assertNotIn("stdin", run.call_args.kwargs)
 
     def test_signer_uses_anonymous_memory_on_openssl_3_linux(self):
@@ -1436,7 +1439,7 @@ class NodeAgentProtocolTests(unittest.TestCase):
         self.assertEqual((41,), run.call_args.kwargs["pass_fds"])
         self.assertNotIn("input", run.call_args.kwargs)
 
-    def test_verifier_streams_secret_bearing_requests_without_a_message_file(self):
+    def test_verifier_stages_secret_bearing_requests_without_a_named_message_file(self):
         public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
         message = b'hy2panel-node-auth-v1\n{"auth":"secret"}'
         completed = mock.Mock(returncode=0)
@@ -1451,8 +1454,10 @@ class NodeAgentProtocolTests(unittest.TestCase):
                 )
             )
         arguments = run.call_args.args[0]
-        self.assertEqual("/dev/stdin", arguments[arguments.index("-in") + 1])
-        self.assertEqual(message, run.call_args.kwargs["input"])
+        descriptor_path = arguments[arguments.index("-in") + 1]
+        self.assertTrue(descriptor_path.startswith("/dev/fd/"))
+        self.assertEqual((int(descriptor_path.rsplit("/", 1)[1]),), run.call_args.kwargs["pass_fds"])
+        self.assertNotIn("input", run.call_args.kwargs)
 
     def test_verifier_uses_anonymous_memory_on_openssl_3_linux(self):
         public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32

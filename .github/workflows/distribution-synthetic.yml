@@ -89,7 +89,7 @@ jobs:
           test "$(wc -c <"${asset_dir}/install.sh")" -gt 0
           test "$(wc -c <"${asset_dir}/install.sh")" -le 1048576
           test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -gt 0
-          test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -le 5242880
+          test "$(wc -c <"${asset_dir}/install.sh.sigstore.json")" -le 524288
           test "$(wc -c <"${asset_dir}/sbom.spdx.json")" -gt 0
           test "$(wc -c <"${asset_dir}/sbom.spdx.json")" -le 5242880
           test "$(wc -c <"${asset_dir}/sbom.spdx.json.sigstore.json")" -gt 0

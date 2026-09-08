@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.16"
+PANEL_VERSION="0.39.17"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -25,25 +25,25 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="9f42f99fd542a2cf77c0679f8930c42e4225fc436ad53b93de919720e6665184"
+PANEL_SHA256="dd1e1ce89eac470554ac47be7054562ade4c7e1f67fd193787b4ff8cd9a39072"
 OFFSITE_BACKUP_SHA256="d7c57c6d414b15a643f690032acc07f9b74dba2a3ab0acfc3f0b315101d08a94"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="bef81965a84ddb32c8135ffbc069536b08a4f01bcb3e4bf337359676e7fa87af"
+HY2PANEL_VERSION_SHA256="84ccbf22d9e14a67202b2af7bd10bf1f2710ec1b8101438549abe92f69d7ba5a"
 HY2PANEL_BUDGETS_SHA256="9f465224cf32495bcecd547620babee1cd94a1ee904c6678b0bd83d691667547"
 HY2PANEL_WEB_ASSETS_SHA256="3a43f37a18adebf8a21c2e3046ea10f20a8a448515057ec04f2070ebfc289957"
 HY2PANEL_OPERATIONS_SHA256="9fff087c8e6b9fc356285db80395becc5b414b3ef93c0b099329c9c87a006949"
-HY2PANEL_RELEASE_SHA256="0214c1aad4d8ae9d60f76c540bc71ba9e39f51c1f2caf30c2dee90b13895deb7"
+HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="85cb21fdabb5859c5261c9be79580578840c64390c6fdf76160d9d47e7ee9a4f"
-HY2PANEL_DISTRIBUTED_SHA256="559adf36f3878a649a37cb8ecfbaa501f44ad647d268f29a24d0fc163548e9cb"
+HY2PANEL_NODES_SHA256="e31e03965e8f1ebf88d5a823af9094c8cd4f46fe2080afaf0830071ed1760cba"
+HY2PANEL_DISTRIBUTED_SHA256="f3d2efbb64ed9f6e271ddac6a3b98ee2d2c115bc82650c8281b18a821ce60787"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="ce1c659cc27bc85d0cbe1e7a65df18178502579d330f337f8b69dc39186a7fc2"
 HY2PANEL_MOBILE_API_SHA256="dad622d742dd3b53099211eabd4df74156ca6dabcc0f17e1bb59e06f01e3191d"
-NODE_AGENT_SHA256="e74e5233bafb4a402b4ca09ed6e743494dde6b99814594c420101263e62c4706"
+NODE_AGENT_SHA256="0cc414d0748f257985e13016e781a4b55b19f1c1e340a301a80468ddbab35d08"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -117,6 +117,8 @@ MANAGED_FIREWALL_STATE_FILE=/etc/hysteria2-panel/managed-firewall.rules
 FIREWALL_TRANSACTION_FILE=/etc/hysteria2-panel/.firewall-transaction
 FIREWALL_TRANSACTION_MAGIC=HYSTERIA2_PANEL_FIREWALL_TRANSACTION_V1
 ROLLBACK_REQUIRED=0
+UPGRADE_PREFLIGHT_ACTIVE=0
+UPGRADE_PREFLIGHT_SERVICES=()
 FRESH_INSTALL_MUTATED=0
 BACKUP_DIR=""
 FIREWALL_MANAGER="unprepared"
@@ -348,16 +350,52 @@ select_traffic_sync_options() {
   return 1
 }
 
+begin_upgrade_preflight() {
+  local unit active_state
+  UPGRADE_PREFLIGHT_SERVICES=()
+  for unit in hysteria2-panel.service hysteria2-panel-node-dns-admission.timer \
+    hysteria2-panel-offsite-backup.timer; do
+    active_state="$(systemctl show --no-pager --property=ActiveState --value "${unit}" 2>/dev/null)" \
+      || return 1
+    case "${active_state}" in
+      active) UPGRADE_PREFLIGHT_SERVICES+=("${unit}") ;;
+      inactive|failed) ;;
+      *) return 1 ;;
+    esac
+  done
+  UPGRADE_PREFLIGHT_ACTIVE=1
+}
+
+restore_upgrade_preflight() {
+  local path unit
+  release_legacy_restore_guard || return 1
+  # A candidate settlement runs as root and can leave a WAL or traffic journal.
+  # Restore the old panel's access without replacing its database or identity.
+  for path in /var/lib/hysteria2-panel/panel.db \
+    /var/lib/hysteria2-panel/panel.db-wal /var/lib/hysteria2-panel/panel.db-shm \
+    /var/lib/hysteria2-panel/pending-traffic.json; do
+    [[ -e "${path}" ]] || continue
+    [[ ! -L "${path}" && -f "${path}" ]] || return 1
+    chown hy2panel:hy2panel "${path}" && chmod 0600 "${path}" || return 1
+  done
+  for unit in "${UPGRADE_PREFLIGHT_SERVICES[@]}"; do
+    systemctl start "${unit}" && systemctl is-active --quiet "${unit}" || return 1
+  done
+  UPGRADE_PREFLIGHT_ACTIVE=0
+}
+
 select_upgrade_traffic_sync_script() {
   TRAFFIC_SYNC_SCRIPT=""
   if [[ -n "${TMP_DIR:-}" && ! -L "${TMP_DIR}/hysteria2_panel.py" && \
     -f "${TMP_DIR}/hysteria2_panel.py" && \
     "$(stat -c '%u:%h' "${TMP_DIR}/hysteria2_panel.py")" == "0:1" ]]; then
     TRAFFIC_SYNC_SCRIPT="${TMP_DIR}/hysteria2_panel.py"
-  elif [[ ! -L "${BACKUP_DIR}/opt/hysteria2_panel.py" && \
-    -f "${BACKUP_DIR}/opt/hysteria2_panel.py" && \
-    "$(stat -c '%u:%h' "${BACKUP_DIR}/opt/hysteria2_panel.py")" == "0:1" ]]; then
-    TRAFFIC_SYNC_SCRIPT="${BACKUP_DIR}/opt/hysteria2_panel.py"
+  elif [[ ! -L "${BACKUP_DIR}/maintenance/hysteria2_panel.py" && \
+    -f "${BACKUP_DIR}/maintenance/hysteria2_panel.py" && \
+    "$(stat -c '%u:%h' "${BACKUP_DIR}/maintenance/hysteria2_panel.py")" == "0:1" ]]; then
+    # The backup manifest covers this verified candidate and its dependencies.
+    # Old installed versions may silently permit nonempty sessions to stop.
+    TRAFFIC_SYNC_SCRIPT="${BACKUP_DIR}/maintenance/hysteria2_panel.py"
   fi
   [[ -n "${TRAFFIC_SYNC_SCRIPT}" ]]
 }
@@ -384,24 +422,22 @@ sync_traffic_before_upgrade_rollback() {
     # shellcheck disable=SC1091
     source "${BACKUP_DIR}/etc/panel.env"
     set +a
-    "${PYTHON_BIN}" "${TRAFFIC_SYNC_SCRIPT}" \
+    "${PYTHON_BIN}" -B "${TRAFFIC_SYNC_SCRIPT}" \
       sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}"
-  ); then
-    return 0
-  fi
-  echo "警告：回滚前无法完全清退在线连接，正在执行最后一次非清退流量结算。" >&2
-  if (
-    set -a
-    # shellcheck disable=SC1091
-    source "${BACKUP_DIR}/etc/panel.env"
-    set +a
-    "${PYTHON_BIN}" "${TRAFFIC_SYNC_SCRIPT}" \
-      sync-traffic "${TRAFFIC_SYNC_OPTIONS[@]}"
   ); then
     return 0
   fi
   echo "警告：回滚前流量同步失败；Hysteria 与事务标记均已保留，拒绝覆盖运行中文件。" >&2
   return 1
+}
+
+stage_upgrade_maintenance() {
+  # Keep the verified candidate usable after /tmp disappears on a reboot.
+  # Copy only source and never write bytecode into the manifest-covered tree.
+  install -d -m 0700 "${BACKUP_DIR}/maintenance/hy2panel" || return 1
+  install -m 0600 "${TMP_DIR}/hysteria2_panel.py" "${TMP_DIR}/qrcodegen.py" \
+    "${TMP_DIR}/offsite_backup.py" "${BACKUP_DIR}/maintenance/" || return 1
+  install -m 0600 "${TMP_DIR}/hy2panel/"*.py "${BACKUP_DIR}/maintenance/hy2panel/"
 }
 
 write_backup_manifest() {
@@ -1201,6 +1237,9 @@ finalize_install() {
     if (( join_node_mutated == 1 )); then
       rollback_join_node_install || status=1
     fi
+  elif (( status != 0 && ${UPGRADE_PREFLIGHT_ACTIVE:-0} == 1 )); then
+    restore_upgrade_preflight \
+      || { echo "警告：升级预检失败且旧面板恢复未完成；Hysteria 与原文件均已保留。" >&2; status=1; }
   elif (( status != 0 && INSTALL_COMMITTED == 0 )); then
     rollback_existing_install "${status}"
   fi
@@ -1550,6 +1589,11 @@ EOF
   JOIN_NODE_MUTATED=0
   systemctl start --no-block hysteria2-panel-node-onboarding.service \
     || fail "无法启动节点自动收尾；后台 timer 会继续重试"
+}
+
+wait_for_node_onboarding() {
+  # The supervising process waits only after flock released the registration
+  # transaction. The independent systemd worker must acquire the same lock.
   for _attempt in {1..120}; do
     [[ -e "${NODE_ONBOARDING_MARKER}" || -L "${NODE_ONBOARDING_MARKER}" ]] \
       || break
@@ -1644,9 +1688,23 @@ complete_node_onboarding() {
   echo "节点自动对接已完成；未检查或修改 DNS。"
 }
 
+prepare_node_maintenance_agent() {
+  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  if ! stage_verified_installed_binary \
+    "${NODE_AGENT_OPT_DIR}/node_agent.py" "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py"; then
+    download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py" \
+      || fail "无法准备当前正式版本的节点维护工具；未停止节点服务"
+    printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
+      | sha256sum --check --status || fail "节点 Agent SHA-256 校验失败"
+  fi
+  "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/node_agent.py" \
+    || fail "节点 Agent 语法检查失败"
+  chmod 0755 "${TMP_DIR}/node_agent.py"
+}
+
 uninstall_node() {
   local backup command_name directory path unit
-  local -a uninstall_commands=(cat find install rm sha256sum sort stat sync systemctl sysctl)
+  local -a uninstall_commands=(cat chmod curl find install mktemp rm sha256sum sort stat sync systemctl sysctl)
   local -a uninstall_directories=(
     "${NODE_AGENT_STATE_DIR}"
     "${NODE_AGENT_CONFIG_DIR}"
@@ -1671,6 +1729,7 @@ uninstall_node() {
   require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/registration.json" 600
   require_node_agent_file "${NODE_UNINSTALL_COMMAND}" 600
   require_node_agent_file "${NODE_UNINSTALL_SERVICE}" 644
+  prepare_node_maintenance_agent
   for directory in "${uninstall_directories[@]}"; do
     [[ -d "${directory}" && ! -L "${directory}" ]] \
       || fail "节点卸载目录缺失或不安全：${directory}"
@@ -1706,6 +1765,8 @@ uninstall_node() {
   [[ -n "${DATA_PLANE_BACKUP_DIR}" ]] \
     || fail "找不到完整的首次部署网络快照；为避免破坏服务器网络参数，拒绝卸载"
 
+  stop_existing_data_plane require-ack \
+    || fail "节点最终流量尚未安全结算；保留服务、身份与统计队列并稍后重试"
   systemctl disable --now \
     hysteria2-panel-node-heartbeat.timer \
     hysteria2-panel-node-onboarding.timer \
@@ -2174,6 +2235,10 @@ write_data_plane_backup_manifest() {
   DATA_PLANE_NODE_AGENT_BACKUP_FILE="${DATA_PLANE_BACKUP_DIR}/node_agent.py"
   install -o root -g root -m 0755 "${NODE_AGENT_OPT_DIR}/node_agent.py" \
     "${DATA_PLANE_NODE_AGENT_BACKUP_FILE}"
+  # Recovery must be able to settle traffic even when the installed old agent
+  # predates the maintenance command, or a new payload is only partly written.
+  install -o root -g root -m 0755 "${TMP_DIR}/node_agent.py" \
+    "${DATA_PLANE_BACKUP_DIR}/maintenance-node-agent.py"
   install -o root -g root -m 0644 "${NODE_AGENT_HEARTBEAT_SERVICE}" \
     "${DATA_PLANE_BACKUP_DIR}/agent-units/${NODE_AGENT_HEARTBEAT_SERVICE##*/}"
   install -o root -g root -m 0644 "${NODE_AGENT_HEARTBEAT_TIMER}" \
@@ -2214,8 +2279,8 @@ write_data_plane_backup_manifest() {
       install -o root -g root -m 0644 "${NODE_UNINSTALL_SERVICE}" \
         "${DATA_PLANE_BACKUP_DIR}/units/${NODE_UNINSTALL_SERVICE##*/}"
     fi
-    cp -a -- /var/lib/hysteria2-panel-node \
-      "${DATA_PLANE_BACKUP_DIR}/state"
+    # /var/lib/hysteria2-panel-node is a forward-only ledger. A rollback keeps
+    # its latest spool, ACKs, sequence and completed commands, never a snapshot.
     printf '%s\n' existing > "${DATA_PLANE_BACKUP_DIR}/deployment-kind"
   else
     printf '%s\n' fresh > "${DATA_PLANE_BACKUP_DIR}/deployment-kind"
@@ -2587,8 +2652,83 @@ rollback_new_data_plane_firewall_rules() {
   (( failed == 0 ))
 }
 
+settle_existing_node_traffic() {
+  local active_state helper mode="${1:-preserve}" unit port
+  local -a stats_options=()
+  # With authentication and the periodic collector stopped, only this process
+  # can clear the counters. Existing QUIC sessions are kicked by the helper.
+  stop_loaded_units hysteria2-panel-node-auth.service \
+    hysteria2-panel-node-control.service || return 1
+  for unit in main udp443; do
+    active_state="$(systemctl show --no-pager --property=ActiveState --value \
+      "hysteria2-panel-node-hysteria-${unit}.service" 2>/dev/null)" || return 1
+    case "${active_state}" in
+      active)
+        port=19997
+        [[ "${unit}" != udp443 ]] || port=19995
+        stats_options+=(--stats-url "http://127.0.0.1:${port}")
+        ;;
+      inactive|failed) ;;
+      *) return 1 ;;
+    esac
+  done
+  if (( ${#stats_options[@]} == 0 )); then
+    [[ "${mode}" == require-ack \
+      && -f "${NODE_AGENT_STATE_DIR}/state/protocol.json" ]] || return 0
+    stats_options=(--stats-url http://127.0.0.1:19997 --upload-only)
+  fi
+  [[ "${mode}" != require-ack ]] || stats_options+=(--require-ack)
+  helper="${TMP_DIR}/node_agent.py"
+  if [[ ! -f "${helper}" && ! -L "${helper}" ]]; then
+    helper="${DATA_PLANE_BACKUP_DIR}/maintenance-node-agent.py"
+  fi
+  if [[ ! -f "${helper}" && ! -L "${helper}" ]]; then
+    helper="${NODE_AGENT_OPT_DIR}/node_agent.py"
+  fi
+  require_node_agent_file "${helper}" 755
+  require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/stats.env" 600
+  (
+    set -a
+    # shellcheck disable=SC1090,SC1091
+    source "${NODE_AGENT_CONFIG_DIR}/stats.env"
+    set +a
+    "${PYTHON_BIN}" "${helper}" quiesce-traffic \
+      --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
+      --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
+      --protocol-state "${NODE_AGENT_STATE_DIR}/state/protocol.json" \
+      --spool-dir "${NODE_AGENT_STATE_DIR}/spool" "${stats_options[@]}"
+  )
+}
+
+quiesce_existing_data_plane() {
+  local state unit
+  local -a restore_units=()
+  for unit in hysteria2-panel-node-auth.service hysteria2-panel-node-control.service; do
+    state="$(systemctl show --no-pager --property=ActiveState --value "${unit}" 2>/dev/null)" \
+      || return 1
+    case "${state}" in
+      active) restore_units+=("${unit}") ;;
+      inactive|failed) ;;
+      *) return 1 ;;
+    esac
+  done
+  # File validation helpers can exit. Isolate that exit so a rejected or timed
+  # out drain still restores the admission/collector services it paused.
+  if (trap - EXIT ERR; settle_existing_node_traffic "${1:-preserve}"); then
+    return 0
+  fi
+  if (( ${#restore_units[@]} > 0 )); then
+    systemctl start "${restore_units[@]}" || return 1
+    for unit in "${restore_units[@]}"; do
+      systemctl is-active --quiet "${unit}" || return 1
+    done
+  fi
+  return 1
+}
+
 stop_existing_data_plane() {
-  systemctl stop \
+  quiesce_existing_data_plane "${1:-preserve}" || return 1
+  stop_loaded_units \
     hysteria2-panel-node-tcp-probe-udp443.service \
     hysteria2-panel-node-tcp-probe-main.service \
     hysteria2-panel-node-hysteria-udp443.service \
@@ -2604,6 +2744,7 @@ restore_existing_data_plane() {
     cd "${DATA_PLANE_BACKUP_DIR}"
     sha256sum --check --status manifest.sha256
   ) || return 1
+  stop_existing_data_plane || return 1
   rollback_new_data_plane_firewall_rules || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
@@ -2632,9 +2773,8 @@ restore_existing_data_plane() {
         "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}" "${path}" || return 1
     fi
   done
-  rm -r -- /var/lib/hysteria2-panel-node || return 1
-  cp -a -- "${DATA_PLANE_BACKUP_DIR}/state" \
-    /var/lib/hysteria2-panel-node || return 1
+  # Runtime accounting is never rolled back with application/configuration.
+  require_node_agent_directory "${NODE_AGENT_STATE_DIR}" 700
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     install -o root -g root -m 0644 \
       "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}" "${path}" || return 1
@@ -2668,6 +2808,9 @@ rollback_data_plane_activation() {
     restore_existing_data_plane
     return $?
   fi
+  # Fresh activation can have accepted traffic after the central ACK. Do not
+  # delete any spool until all final batches have been acknowledged centrally.
+  stop_existing_data_plane require-ack || return 1
   rollback_data_plane_firewall || return 1
   restore_data_plane_network_snapshot || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
@@ -2733,6 +2876,7 @@ activate_data_plane() {
     || fail "节点签名心跳 timer 未运行；未修改系统"
   systemctl start hysteria2-panel-node-heartbeat.service \
     || fail "节点签名心跳未被中央面板接受；未修改系统"
+  prepare_node_maintenance_agent
   recover_interrupted_data_plane
   assert_data_plane_network_stack_claimable
   inspect_existing_data_plane
@@ -2757,8 +2901,6 @@ activate_data_plane() {
   esac
   hysteria_url="${HYSTERIA_DATA_PLANE_URL}-${hysteria_arch}"
 
-  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
-  download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
   download_file "${TCP_PROBE_SOURCE_URL}" "${TMP_DIR}/tcp_probe.py"
   download_file "${hysteria_url}" "${TMP_DIR}/hysteria"
   printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
@@ -3300,15 +3442,16 @@ acquire_maintenance_lock() {
     install -d -o root -g root -m 0700 "${MAINTENANCE_RUNTIME_DIR}"
   fi
   [[ ! -L "${MAINTENANCE_LOCK_FILE}" ]] || fail "维护锁文件不能是符号链接；安装已停止"
-  if [[ -e "${MAINTENANCE_LOCK_FILE}" ]]; then
-    [[ -f "${MAINTENANCE_LOCK_FILE}" ]] || fail "维护锁路径不是普通文件；安装已停止"
-    lock_metadata="$(stat -c '%u:%g:%a' "${MAINTENANCE_LOCK_FILE}")" \
-      || fail "无法核验维护锁文件；安装已停止"
-    [[ "${lock_metadata}" == "0:0:600" || "${lock_metadata}" == "0:${hy2panel_gid}:640" ]] \
-      || fail "维护锁文件的所有者或权限无效；安装已停止"
-  else
-    install -o root -g root -m 0600 /dev/null "${MAINTENANCE_LOCK_FILE}"
+  if [[ ! -e "${MAINTENANCE_LOCK_FILE}" ]]; then
+    # Never replace another installer's just-created, possibly locked inode.
+    (umask 077; set -o noclobber; : > "${MAINTENANCE_LOCK_FILE}") 2>/dev/null || true
   fi
+  [[ ! -L "${MAINTENANCE_LOCK_FILE}" && -f "${MAINTENANCE_LOCK_FILE}" ]] \
+    || fail "维护锁路径不是普通文件；安装已停止"
+  lock_metadata="$(stat -c '%u:%g:%a' "${MAINTENANCE_LOCK_FILE}")" \
+    || fail "无法核验维护锁文件；安装已停止"
+  [[ "${lock_metadata}" == "0:0:600" || "${lock_metadata}" == "0:${hy2panel_gid}:640" ]] \
+    || fail "维护锁文件的所有者或权限无效；安装已停止"
   if (( MAINTENANCE_LOCK_HELD == 1 )); then
     return 0
   fi
@@ -3326,6 +3469,9 @@ acquire_maintenance_lock() {
   fi
   if (( lock_status == 75 )); then
     fail "另一个安装、更新或恢复任务正在运行；本次操作未执行"
+  fi
+  if (( lock_status == 0 && JOIN_NODE == 1 )); then
+    wait_for_node_onboarding
   fi
   exit "${lock_status}"
 }
@@ -6045,6 +6191,14 @@ if (( WATCH_UPGRADE == 1 )); then
     || fail "升级 watchdog 无法启动恢复服务；事务标记已保留"
   exit 0
 fi
+# Package installation is itself a host mutation. Require the tiny set of
+# baseline tools needed to serialize maintenance before installing anything.
+for command_name in awk flock id install mkdir mktemp mv rm rmdir stat sync systemctl; do
+  command -v "${command_name}" >/dev/null 2>&1 \
+    || fail "缺少基础维护锁命令 ${command_name}；未修改系统，请先安装 util-linux 和 coreutils"
+done
+acquire_maintenance_lock
+
 if (( UNINSTALL_NODE == 1 )); then
   INSTALL_COMMITTED=1
   uninstall_node
@@ -6085,13 +6239,6 @@ AUTO_UPDATE="${HY2PANEL_AUTO_UPDATE:-0}"
 [[ "${AUTO_UPDATE}" == "0" || "${AUTO_UPDATE}" == "1" ]] \
   || fail "HY2PANEL_AUTO_UPDATE 只能是 0 或 1"
 
-# Package installation is itself a host mutation. Require the tiny set of
-# baseline tools needed to serialize maintenance before installing anything.
-for command_name in awk flock id install mkdir mktemp mv rm rmdir stat sync systemctl; do
-  command -v "${command_name}" >/dev/null 2>&1 \
-    || fail "缺少基础维护锁命令 ${command_name}；未修改系统，请先安装 util-linux 和 coreutils"
-done
-acquire_maintenance_lock
 if (( RECOVER_FRESH == 1 )); then
   for command_name in cat chmod chown getent groupdel rm stat sync sysctl systemctl userdel; do
     command -v "${command_name}" >/dev/null 2>&1 \
@@ -6565,11 +6712,12 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
   [[ ! -f /etc/sudoers.d/hysteria2-panel ]] || cp -a /etc/sudoers.d/hysteria2-panel "${BACKUP_DIR}/hysteria2-panel.sudoers"
   [[ ! -f "${TMPFILES_FILE}" ]] || cp -a "${TMPFILES_FILE}" "${BACKUP_DIR}/hysteria2-panel.tmpfiles"
   if (( EXISTING_INSTALL == 1 )); then
-    ROLLBACK_REQUIRED=1
     systemctl is-active --quiet hysteria2-panel.service \
       || fail "升级前面板服务未运行；为避免不完整的流量快照，安装已停止"
     systemctl is-active --quiet hysteria2-panel-server.service \
       || fail "升级前 Hysteria 服务未运行；为避免不完整的流量快照，安装已停止"
+    begin_upgrade_preflight \
+      || fail "无法记录升级预检前服务状态；安装已停止"
     stop_panel_preserving_hysteria \
       || fail "无法暂停面板写入并保持 Hysteria 统计端点运行；安装已停止"
     systemctl is-active --quiet hysteria2-panel.service \
@@ -6589,7 +6737,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
       source "${BACKUP_DIR}/etc/panel.env"
       set +a
       "${PYTHON_BIN}" "${TMP_DIR}/hysteria2_panel.py" \
-        sync-traffic "${TRAFFIC_SYNC_OPTIONS[@]}"
+        sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}"
     ) || fail "升级前流量结算失败；安装已停止且旧版本将自动恢复"
     [[ ! -e /var/lib/hysteria2-panel/pending-traffic.json ]] \
       || fail "升级前仍有未结算流量；安装已停止且旧版本将自动恢复"
@@ -6599,6 +6747,8 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
       || fail "无法创建一致的用户数据库快照；安装已停止"
     capture_upgrade_runtime_state "${BACKUP_DIR}" \
       || fail "无法保存升级前运行时内核网络参数；安装已停止"
+    stage_upgrade_maintenance \
+      || fail "无法保存经过验证的升级恢复结算程序；安装已停止"
   fi
   write_backup_manifest "${BACKUP_DIR}" \
     || fail "无法生成升级备份完整性清单；安装已停止"
@@ -6607,6 +6757,8 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
 fi
 
 if (( EXISTING_INSTALL == 1 )); then
+  ROLLBACK_REQUIRED=1
+  UPGRADE_PREFLIGHT_ACTIVE=0
   arm_upgrade_transaction
 fi
 

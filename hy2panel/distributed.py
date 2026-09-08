@@ -154,7 +154,12 @@ class DistributedControlService:
         self.clock = clock
         self.signature_verifier = signature_verifier or OpenSSLSignatureVerifier()
         self.local_state_provider = local_state_provider
-        self._verification_gate = threading.BoundedSemaphore(verification_slots)
+        # Authentication bursts must not consume the capacity that keeps node
+        # accounting, snapshots and fixed commands fresh. Both classes stay bounded.
+        self._verification_gates = {
+            kind: threading.BoundedSemaphore(verification_slots)
+            for kind in ("auth", "control")
+        }
         self.requests_per_minute = max(1, int(requests_per_minute))
         self._rate_lock = threading.Lock()
         self._request_times = {}
@@ -163,9 +168,11 @@ class DistributedControlService:
     def _reject():
         raise NodeRequestRejected("node request was rejected")
 
-    def _allow_rate(self, node_id, now):
+    def _allow_rate(self, node_id, now, request_class):
         with self._rate_lock:
-            recent = self._request_times.setdefault(node_id, collections.deque())
+            recent = self._request_times.setdefault(
+                (node_id, request_class), collections.deque()
+            )
             while recent and now - recent[0] >= 60:
                 recent.popleft()
             if len(recent) >= self.requests_per_minute:
@@ -219,10 +226,12 @@ class DistributedControlService:
         bound_ip = node.get("expected_ip") or node.get("observed_ip")
         if not bound_ip or not secrets.compare_digest(bound_ip, remote_ip):
             self._reject()
-        if not self._allow_rate(node_id, now):
+        request_class = "auth" if purpose == "auth" else "control"
+        if not self._allow_rate(node_id, now, request_class):
             self._reject()
         message = canonical_node_request(purpose, payload)
-        if not self._verification_gate.acquire(blocking=False):
+        verification_gate = self._verification_gates[request_class]
+        if not verification_gate.acquire(blocking=False):
             self._reject()
         try:
             try:
@@ -232,7 +241,7 @@ class DistributedControlService:
             except Exception:
                 verified = False
         finally:
-            self._verification_gate.release()
+            verification_gate.release()
         if not verified:
             self._reject()
         return node, hashlib.sha256(nonce_bytes).hexdigest(), now, remote_ip
