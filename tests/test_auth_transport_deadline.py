@@ -77,6 +77,7 @@ class AuthTransportDeadlineTests(unittest.TestCase):
         server = ThreadingHTTPServer(('127.0.0.1', 0), AuthResponseHandler)
         server.daemon_threads = True
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(str(self.certificate), str(self.key))
         server.socket = context.wrap_socket(server.socket, server_side=True)
         server.mode = mode
