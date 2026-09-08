@@ -912,10 +912,18 @@ def _canonical_heartbeat(payload):
 
 def _openssl_message_input(message):
     creator = getattr(os, "memfd_create", None)
+    temporary_path = None
     if creator is None or not os.path.isdir("/proc/self/fd"):
-        return "/dev/stdin", {"input": message}, None
-    descriptor = creator("hy2panel-openssl-message", getattr(os, "MFD_CLOEXEC", 0))
+        descriptor, temporary_path = tempfile.mkstemp(prefix="hy2panel-openssl-message-")
+        descriptor_path = "/dev/fd/{}".format(descriptor)
+    else:
+        descriptor = creator("hy2panel-openssl-message", getattr(os, "MFD_CLOEXEC", 0))
+        descriptor_path = "/proc/self/fd/{}".format(descriptor)
     try:
+        if temporary_path is not None:
+            # Unlink before writing secrets. Ed25519 needs a seekable input:
+            # a pipe's apparent length can be zero before its writer runs.
+            os.unlink(temporary_path)
         remaining = memoryview(message)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -924,7 +932,7 @@ def _openssl_message_input(message):
             remaining = remaining[written:]
         os.lseek(descriptor, 0, os.SEEK_SET)
         return (
-            "/proc/self/fd/{}".format(descriptor),
+            descriptor_path,
             {"pass_fds": (descriptor,)},
             descriptor,
         )

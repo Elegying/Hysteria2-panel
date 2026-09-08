@@ -4117,6 +4117,7 @@ class Database:
         origin_name=LEGACY_USAGE_ORIGIN_NAME,
         domain_usage=None,
         observed_at=None,
+        fresh_local_collection=False,
     ):
         if not isinstance(batch_id, str) or not re.fullmatch(r"[0-9a-f]{32}", batch_id):
             raise ValueError("traffic batch id is invalid")
@@ -4170,7 +4171,8 @@ class Database:
                     (name,),
                 ).fetchone()
                 account_traffic = user is not None and (
-                    not has_observation_time
+                    (origin_kind == "local" and fresh_local_collection)
+                    or not has_observation_time
                     or user["traffic_adjusted_at"] is None
                     or observed_at > user["traffic_adjusted_at"]
                 )
@@ -9247,6 +9249,7 @@ class UsageManager:
         self.pending_traffic = {}
         self.pending_domain_usage = []
         self.pending_observed_at = None
+        self.pending_fresh_local_collection = False
         self.domain_usage_collector = DomainStreamAccumulator()
         self._load_pending_traffic()
         self.last_online = {}
@@ -9269,7 +9272,8 @@ class UsageManager:
         self.health_monitor.record_stats_sync(success)
 
     def _apply_local_traffic_batch(
-        self, batch_id, traffic, domain_usage=None, observed_at=None
+        self, batch_id, traffic, domain_usage=None, observed_at=None,
+        fresh_local_collection=False,
     ):
         try:
             return self.database.apply_traffic_batch(
@@ -9280,6 +9284,7 @@ class UsageManager:
                 origin_name=self.local_origin_name,
                 domain_usage=[] if domain_usage is None else domain_usage,
                 observed_at=observed_at,
+                fresh_local_collection=fresh_local_collection,
             )
         except TypeError as exc:
             if "unexpected keyword argument" not in str(exc):
@@ -9314,9 +9319,11 @@ class UsageManager:
         self.pending_traffic = traffic
         self.pending_domain_usage = domains
         self.pending_observed_at = observed_at
+        # A journal has no proof of which same-second adjustment it preceded.
+        self.pending_fresh_local_collection = False
 
     def _persist_pending_traffic_locked(
-        self, traffic, domain_usage=None, observed_at=None
+        self, traffic, domain_usage=None, observed_at=None, fresh_local_collection=False
     ):
         domain_usage = [] if domain_usage is None else validate_domain_records(domain_usage)
         if not traffic and not domain_usage:
@@ -9326,6 +9333,9 @@ class UsageManager:
         self.pending_traffic = traffic
         self.pending_domain_usage = domain_usage
         self.pending_observed_at = observed_at
+        # Retain ordering only in this live manager. Every user adjustment must
+        # flush this batch under the same lock before changing user counters.
+        self.pending_fresh_local_collection = fresh_local_collection
         descriptor = None
         temporary = None
         try:
@@ -9376,7 +9386,8 @@ class UsageManager:
             for _attempt in range(3):
                 try:
                     self._apply_local_traffic_batch(
-                        batch_id, traffic, domain_usage, observed_at
+                        batch_id, traffic, domain_usage, observed_at,
+                        fresh_local_collection=fresh_local_collection,
                     )
                     database_error = None
                     break
@@ -9394,6 +9405,7 @@ class UsageManager:
             self.pending_traffic = {}
             self.pending_domain_usage = []
             self.pending_observed_at = None
+            self.pending_fresh_local_collection = False
 
     def _remove_pending_traffic_locked(self):
         try:
@@ -9420,12 +9432,14 @@ class UsageManager:
             self.pending_traffic,
             self.pending_domain_usage,
             self.pending_observed_at,
+            fresh_local_collection=self.pending_fresh_local_collection,
         )
         self._remove_pending_traffic_locked()
         self.pending_traffic_batch_id = None
         self.pending_traffic = {}
         self.pending_domain_usage = []
         self.pending_observed_at = None
+        self.pending_fresh_local_collection = False
 
     def _collect_locked(self):
         self._auth_stats_at = None
@@ -9437,12 +9451,15 @@ class UsageManager:
                 traffic = self.stats_client.collect_and_clear()
             except PartialTrafficCollectionError as exc:
                 self._persist_pending_traffic_locked(
-                    exc.traffic, domain_usage, observed_at
+                    exc.traffic, domain_usage, observed_at, fresh_local_collection=True
                 )
                 self._flush_pending_traffic_locked()
                 raise
+            # User adjustments settle earlier samples under this same lock.
+            # This new sample follows that adjustment even within its second;
+            # only a loaded journal lacks that ordering proof after a restart.
             self._persist_pending_traffic_locked(
-                traffic, domain_usage, observed_at
+                traffic, domain_usage, observed_at, fresh_local_collection=True
             )
             self._flush_pending_traffic_locked()
         except Exception:

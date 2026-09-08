@@ -4,7 +4,8 @@ import json
 from unittest import mock
 
 from tests import test_distributed_control as distributed_tests
-from hysteria2_panel import Database, UsageManager
+from hysteria2_panel import Database, PartialTrafficCollectionError, UsageManager
+from tests.test_panel import PolicyStatsClient
 
 
 class LedgerBoundaryTests(distributed_tests.DistributedControlCase):
@@ -168,6 +169,17 @@ class LedgerBoundaryTests(distributed_tests.DistributedControlCase):
         self.assertFalse(journal.exists())
         self.assertEqual(0, self.db.get_proxy_user(user['id'])['rx_bytes'])
         self.assertEqual(30, self.machine_total('local'))
+        # Timestamp equality is also historical when no live lock ordering is
+        # available, including after a process restart in the adjustment second.
+        journal.write_text(json.dumps({
+            'batch_id': 'e' * 32, 'traffic': {'alice': {'tx': 4, 'rx': 9}},
+            'domains': [], 'observed_at': self.now[0],
+        }))
+        manager = UsageManager(self.db, object(), wall_clock=lambda: self.now[0],
+                               local_origin_id=self.local_origin)
+        manager._flush_pending_traffic_locked()
+        self.assertEqual(0, self.db.get_proxy_user(user['id'])['rx_bytes'])
+        self.assertEqual(43, self.machine_total('local'))
         # Legacy journals without a timestamp remain readable; settlement time
         # is the only available observation, rather than inventing old dates.
         self.now[0] += 1
@@ -179,4 +191,80 @@ class LedgerBoundaryTests(distributed_tests.DistributedControlCase):
         with mock.patch('hysteria2_panel.time.time', return_value=self.now[0]):
             manager._flush_pending_traffic_locked()
         self.assertEqual(2, self.db.get_proxy_user(user['id'])['rx_bytes'])
-        self.assertEqual(33, self.machine_total('local'))
+        self.assertEqual(46, self.machine_total('local'))
+
+    def test_locked_local_collection_after_reset_counts_in_the_same_second(self):
+        for all_users in (False, True):
+            with self.subTest(all_users=all_users):
+                name = 'reset-{}'.format(int(all_users))
+                user = self.db.create_proxy_user(name)
+                stats = PolicyStatsClient(traffic={name: {'tx': 0, 'rx': 10}})
+                manager = UsageManager(self.db, stats, wall_clock=lambda: self.now[0],
+                                       local_origin_id=self.local_origin)
+                with mock.patch('hysteria2_panel.time.time', return_value=self.now[0]):
+                    if all_users:
+                        manager.reset_all()
+                    else:
+                        manager.reset_user(user['id'])
+                    stats.traffic_values = {name: {'tx': 7, 'rx': 11}}
+                    manager.collect_once()
+                record = self.db.get_proxy_user(user['id'])
+                self.assertEqual((7, 11), (record['tx_bytes'], record['rx_bytes']))
+
+    def test_same_second_local_collection_survives_journal_or_partial_stats_failure(self):
+        for failure in ('journal', 'partial-stats'):
+            with self.subTest(failure=failure):
+                user = self.db.create_proxy_user(failure)
+                stats = PolicyStatsClient()
+                manager = UsageManager(self.db, stats, wall_clock=lambda: self.now[0],
+                                       local_origin_id=self.local_origin)
+                traffic = {failure: {'tx': 7, 'rx': 11}}
+                with mock.patch('hysteria2_panel.time.time', return_value=self.now[0]):
+                    manager.reset_user(user['id'])
+                    if failure == 'journal':
+                        stats.traffic_values = traffic
+                        with mock.patch('hysteria2_panel.tempfile.mkstemp',
+                                        side_effect=OSError('disk unavailable')):
+                            manager.collect_once()
+                    else:
+                        with mock.patch.object(stats, 'collect_and_clear',
+                                               side_effect=PartialTrafficCollectionError(traffic)):
+                            with self.assertRaises(PartialTrafficCollectionError):
+                                manager.collect_once()
+                record = self.db.get_proxy_user(user['id'])
+                self.assertEqual((7, 11), (record['tx_bytes'], record['rx_bytes']))
+                self.assertFalse(manager.pending_traffic_path.exists())
+
+    def test_same_second_pending_retry_retains_only_live_collection_order(self):
+        for restart in (False, True):
+            with self.subTest(restart=restart):
+                name = 'pending-{}'.format(int(restart))
+                user = self.db.create_proxy_user(name)
+                stats = PolicyStatsClient()
+                manager = UsageManager(self.db, stats, wall_clock=lambda: self.now[0],
+                                       local_origin_id=self.local_origin)
+                physical_before = self.machine_total('local')
+                with mock.patch('hysteria2_panel.time.time', return_value=self.now[0]):
+                    manager.reset_user(user['id'])
+                    stats.traffic_values = {name: {'tx': 7, 'rx': 11}}
+                    with mock.patch.object(self.db, 'apply_traffic_batch',
+                                           side_effect=OSError('database unavailable')):
+                        with self.assertRaises(OSError):
+                            manager.collect_once()
+                        # An adjustment cannot overtake this unsettled sample.
+                        with self.assertRaises(OSError):
+                            manager.reset_user(user['id'])
+                    self.assertEqual(1, self.db.get_proxy_user(user['id'])['generation'])
+                    journal = json.loads(manager.pending_traffic_path.read_text())
+                    self.assertEqual({'batch_id', 'traffic', 'domains', 'observed_at'},
+                                     set(journal))
+                    if restart:
+                        manager = UsageManager(self.db, stats, wall_clock=lambda: self.now[0],
+                                               local_origin_id=self.local_origin)
+                    manager.collect_once()
+                record = self.db.get_proxy_user(user['id'])
+                self.assertEqual(0 if restart else 18,
+                                 record['tx_bytes'] + record['rx_bytes'])
+                self.assertEqual(physical_before + 18, self.machine_total('local'))
+                self.assertFalse(manager.pending_fresh_local_collection)
+                self.assertFalse(manager.pending_traffic_path.exists())

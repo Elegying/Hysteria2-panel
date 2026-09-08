@@ -7939,12 +7939,15 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_setting_used_traffic_settles_old_local_bytes_for_both_interfaces(self):
         for mobile in (False, True):
-            with self.subTest(mobile=mobile):
+            adjusted_at = int(time.time())
+            with self.subTest(mobile=mobile), mock.patch(
+                "hysteria2_panel.time.time", return_value=adjusted_at
+            ):
                 name = "settlement-{}".format(int(mobile))
                 created = self.db.create_proxy_user(name)
                 self.db.add_traffic({name: {"tx": 0, "rx": 10 * 1024**3}})
                 stats = PolicyStatsClient(traffic={name: {"tx": 0, "rx": 2 * 1024**3}})
-                manager = UsageManager(self.db, stats)
+                manager = UsageManager(self.db, stats, wall_clock=lambda: adjusted_at)
                 self.application.usage_manager = manager
                 if mobile:
                     token = self.db.create_mobile_session(self.admin_id, name, "Test")["accessToken"]
@@ -7960,6 +7963,8 @@ class PanelHttpTests(unittest.TestCase):
                 manager.collect_once()
                 user = self.db.get_proxy_user(created["id"])
                 self.assertEqual(0, user["tx_bytes"] + user["rx_bytes"])
+                # A new collection can follow the edit within the same second.
+                # Its lock ordering must distinguish it from historical replay.
                 stats.traffic_values = {name: {"tx": 7, "rx": 11}}
                 manager.collect_once()
                 user = self.db.get_proxy_user(created["id"])
