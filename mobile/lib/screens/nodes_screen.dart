@@ -167,7 +167,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
         content: Text(
           disconnect
               ? '远端服务器会立即停止对接业务，并卸载本项目安装的服务、身份、配置、状态、防火墙规则和网络参数。'
-              : '仅在服务器已失联时使用。此操作只吊销面板中的对接，不会清理失联服务器上的文件。',
+              : '立即撤销此节点的面板授权并移出当前列表，无需远端确认。不会卸载服务器文件，也不保证已有连接立即断开；历史流量保留。',
         ),
         actions: [
           TextButton(

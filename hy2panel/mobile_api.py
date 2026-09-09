@@ -363,11 +363,7 @@ def nodes_payload(application, snapshot=None):
                     >= now - NODE_FRESHNESS_SECONDS
                     and _non_negative_int(node.get("pending_commands")) == 0
                 ),
-                "canDeletePairing": bool(
-                    _non_negative_int(node.get("last_heartbeat_at"))
-                    < now - NODE_FRESHNESS_SECONDS
-                    and (node.get("lifecycle_state") or "active") != "disconnecting"
-                ),
+                "canDeletePairing": True,
             }
         item.update(_traffic_fields(origin))
         items.append(item)

@@ -595,6 +595,10 @@ function dashboardOnlinePayload(value) {
       isOnlineCount(machine.lastKnownOnlineDevices) && states.has(machine.onlineState) &&
       (machine.observedAt === null || isOnlineCount(machine.observedAt));
   })) return null;
+  if (value.activeNodeIds !== undefined &&
+      (!Array.isArray(value.activeNodeIds) || !value.activeNodeIds.every(function(id) {
+        return typeof id === 'string' && /^[0-9a-f]{32}$/.test(id);
+      }))) return null;
   return value;
 }
 function liveTime(timestamp, dateOnly) {
@@ -616,6 +620,12 @@ function sortOnlineUserRows() {
   rows.forEach(function(row) { body.appendChild(row); });
 }
 function applyOnlineStatus(payload) {
+  if (Array.isArray(payload.activeNodeIds)) {
+    const activeNodes = new Set(payload.activeNodeIds);
+    document.querySelectorAll('[data-pairing-node-id]').forEach(function(row) {
+      if (!activeNodes.has(row.dataset.pairingNodeId)) row.remove();
+    });
+  }
   const pageParams = new URL(window.location.href).searchParams;
   if (pageParams.get('sort') === 'online' || pageParams.has('online')) {
     const renderedNames = new Set(

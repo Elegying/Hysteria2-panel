@@ -52,7 +52,7 @@ journalctl -u hysteria2-panel-node-onboarding.service -n 80 --no-pager
 systemctl is-active hysteria2-panel-node-auth hysteria2-panel-node-control
 ```
 
-排障记录可能包含敏感命令或地址，应先脱敏。在线节点需要完整移除时使用“一键断连”；失联机器才使用“删除对接”，后者只撤销面板授权，不代表远端已卸载。重新接入已断连节点应使用新的对接命令。
+排障记录可能包含敏感命令或地址，应先脱敏。在线节点需要完整移除时使用“一键断连”；管理员也可随时使用“删除对接”，后者无需远端确认，立即撤销面板授权，不代表远端已卸载。重新接入已断连节点应使用新的对接命令。
 
 ## 4. 创建一个用户并逐节点验收
 
