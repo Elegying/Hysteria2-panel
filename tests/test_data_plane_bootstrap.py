@@ -1569,7 +1569,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
         self.assertIn("一键断连", body)
         self.assertIn("删除对接", body)
         self.assertNotIn('/nodes/{}/disconnect'.format(self.node_id), body)
-        self.assertNotIn('/nodes/{}/delete'.format(self.node_id), body)
+        self.assertIn('/nodes/{}/delete'.format(self.node_id), body)
         self.assertNotIn("data-plane/bootstrap", body)
         self.assertNotIn("data-plane/canary/pass", body)
         self.assertNotIn("data-plane/dns/admit", body)
@@ -1583,7 +1583,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             )
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
         self.assertIn('/nodes/{}/disconnect'.format(self.node_id), body)
-        self.assertNotIn('/nodes/{}/delete'.format(self.node_id), body)
+        self.assertIn('/nodes/{}/delete'.format(self.node_id), body)
 
         with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(

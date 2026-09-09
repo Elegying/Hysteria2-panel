@@ -337,7 +337,18 @@ try:
     browser.click(delete_selector,navigation=True)
     assert next(n for n in fixture.db.list_nodes() if n['node_id']==stale['nodeId'])['status'] == 'revoked'
     assert browser.evaluate('document.body.innerText.includes("web-lost-node")') is False
-    passed('在线节点一键断连、离线删除对接的取消与确认（隔离节点）')
+    browser.click('[data-dialog-open="node-onboarding-dialog"]')
+    pending_delete = 'form[action="/nodes/'+issued['nodeId']+'/delete"] button'
+    browser.accept = False
+    browser.click(pending_delete)
+    assert fixture.db.get_node_for_heartbeat(issued['nodeId'])['lifecycle_state'] == 'disconnecting'
+    with fixture.db._connect() as connection:
+        pending_command = connection.execute("SELECT command_id FROM node_commands WHERE node_id = ? AND kind = 'UNINSTALL_NODE' AND acked_at IS NULL",(issued['nodeId'],)).fetchone()[0]
+    fixture.db.ack_node_command(issued['nodeId'],pending_command,True,'','8'*64,int(time.time()))
+    browser.wait('document.querySelector('+json.dumps('[data-pairing-node-id="'+issued['nodeId']+'"]')+') === null')
+    passed('断连中仍可删除，取消保留状态；卸载回执后无需刷新自动移除（隔离节点）')
+    browser.screenshot('node-after-uninstall.png')
+    browser.click('#node-onboarding-dialog [data-dialog-close]')
     browser.click('[data-dialog-open="budget-dialog-'+fixture.application.usage_manager.local_origin_id.split(':',1)[1]+'"]')
     for name, value in (('limit_gib','200'),('used_gib','2.5'),('warning_percent','88'),('reset_day','28')):
         browser.value('.budget-dialog[open] [name="'+name+'"]',value)

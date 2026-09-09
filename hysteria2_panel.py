@@ -5738,26 +5738,22 @@ class Database:
         changed_at=None,
         freshness_seconds=NODE_HEARTBEAT_FRESHNESS_SECONDS,
     ):
-        """Revoke an unreachable node centrally while retaining its audit history."""
+        """Revoke any node centrally without waiting for remote cleanup."""
         node_id = str(node_id or "")
         actor = str(actor or "")
         if not re.fullmatch(r"[0-9a-f]{32}", node_id) or not NAME_PATTERN.fullmatch(actor):
             raise ValueError("node delete request is invalid")
         changed_at = int(time.time()) if changed_at is None else int(changed_at)
-        freshness_seconds = max(1, int(freshness_seconds))
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             node = connection.execute(
-                """SELECT status, last_heartbeat_at FROM nodes WHERE node_id = ?""",
+                """SELECT status FROM nodes WHERE node_id = ?""",
                 (node_id,),
             ).fetchone()
-            if node is None or node["status"] == "revoked":
+            if node is None:
                 raise ValueError("node pairing does not exist")
-            if (
-                node["last_heartbeat_at"] is not None
-                and int(node["last_heartbeat_at"]) >= changed_at - freshness_seconds
-            ):
-                raise ValueError("node is online; use one-click disconnect instead")
+            if node["status"] == "revoked":
+                return False
             connection.execute(
                 """UPDATE nodes SET status = 'revoked', policy_state = 'standby',
                     lifecycle_state = 'archived', lifecycle_changed_at = ?,
@@ -8345,6 +8341,10 @@ class PanelHandler(JsonHandler):
                 payload = dashboard_online_payload(
                     [user["name"] for user in selected["users"]], snapshot
                 )
+                payload["activeNodeIds"] = [
+                    node["node_id"] for node in self.app.database.list_nodes()
+                    if node["status"] != "revoked"
+                ]
             except Exception:
                 LOGGER.debug("live dashboard online snapshot unavailable", exc_info=True)
                 self.send_json(503, {"error": "online device status unavailable"})

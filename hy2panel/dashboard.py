@@ -594,7 +594,7 @@ def render_dashboard(
                 )
             )
         if lifecycle_state == "disconnecting":
-            details.append("远端正在卸载；收到签名回执后自动从当前列表隐藏")
+            details.append("正在等待远端卸载回执；也可直接删除对接，单方面撤销授权")
         elif status == "pending_registration":
             details.append("请在目标服务器以 root 粘贴运行生成的代码")
         else:
@@ -618,22 +618,19 @@ def render_dashboard(
             and heartbeat_fresh
             and int(node.get("pending_commands") or 0) == 0
         )
-        can_delete = bool(not heartbeat_fresh and lifecycle_state != "disconnecting")
         if can_disconnect:
             disconnect_action = """<form method="post" action="/nodes/{node_id}/disconnect" data-confirm="一键断连会立即停止该服务器上的对接业务，并卸载本项目安装的服务、身份、配置、状态、防火墙规则和网络参数。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">一键断连</button></form>""".format(
                 node_id=node["node_id"], csrf=csrf
             )
         else:
             disconnect_action = '<button class="danger compact-button" type="button" disabled aria-disabled="true" title="仅已完成对接、在线且无待处理命令的节点可一键断连">一键断连</button>'
-        if can_delete:
-            delete_action = """<form method="post" action="/nodes/{node_id}/delete" data-confirm="仅当服务器失联、无法执行一键断连时使用。此操作只会吊销并删除面板中的当前对接，不会清理失联服务器上的文件。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">删除对接</button></form>""".format(
-                node_id=node["node_id"], csrf=csrf
-            )
-        else:
-            delete_action = '<button class="secondary compact-button" type="button" disabled aria-disabled="true" title="节点在线时请使用一键断连；删除对接只用于失联节点">删除对接</button>'
+        delete_action = """<form method="post" action="/nodes/{node_id}/delete" data-confirm="立即撤销此节点的面板授权并移出当前列表，无需远端确认。此操作不会卸载服务器文件，也不保证已有连接立即断开；历史流量保留。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">删除对接</button></form>""".format(
+            node_id=node["node_id"], csrf=csrf
+        )
         node_actions = disconnect_action + delete_action
         node_rows.append(
-            """<article class="node-row"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
+            """<article class="node-row" data-pairing-node-id="{node_id}"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
+                node_id=node["node_id"],
                 name=html.escape(node["name"]),
                 detail=html.escape(" · ".join(details)),
                 status_class=status_class,
@@ -700,7 +697,7 @@ def render_dashboard(
 <p class="notice"><strong>生成前请先完成 DNS 设置：</strong>请自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS，也不会把 DNS 作为对接成功条件。</p>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="例如：203.0.113.10"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">在目标服务器粘贴运行</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><p class="muted" data-node-enrollment-expiry role="status"></p></section>
-<div class="node-list-head"><h3>节点状态</h3><span class="muted">刷新页面可获取最新注册状态</span></div><div class="node-list">{node_rows}</div></div></dialog>
+<div class="node-list-head"><h3>节点状态</h3><span class="muted">卸载完成后自动移出列表；刷新可查看新注册节点</span></div><div class="node-list">{node_rows}</div></div></dialog>
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">备份用户、连接密钥与累计流量，恢复后沿用原客户端配置。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
 <p class="notice"><strong>重要：</strong>备份包含代理用户、累计流量、签名密钥、证书和私钥，请离线妥善保存。恢复时必须保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用；更换服务器时先为独立面板域名配置 HTTPS，登录新面板完成恢复并验证，再切换节点域名 DNS。不备份服务器、对接节点与机器预算；恢复保留目标面板的管理员、节点设置和机器计费记录。</p>
 <div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载用户备份</button></form></article>

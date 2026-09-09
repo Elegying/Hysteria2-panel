@@ -6341,6 +6341,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(
             {
                 "observedAt": 1_700_000_200,
+                "activeNodeIds": [],
                 "onlineComplete": True,
                 "onlineDevices": 1,
                 "users": [{"name": "ceshi", "onlineDevices": 1}],
@@ -6554,7 +6555,7 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertTrue(remote["canEmergencyControl"])
         self.assertTrue(remote["canDisconnect"])
-        self.assertFalse(remote["canDeletePairing"])
+        self.assertTrue(remote["canDeletePairing"])
         self.assertIn("totalBytes", remote)
 
         status, stopped = self.mobile_json_request(
@@ -6565,6 +6566,17 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertEqual(202, status)
         self.assertTrue(stopped["data"]["disconnecting"])
+        status, pending = self.mobile_json_request(
+            "GET", "/api/v1/mobile/nodes", access_token=access_token
+        )
+        remote = next(item for item in pending["data"]["items"] if item["kind"] == "remote")
+        self.assertTrue(remote["canDeletePairing"])
+        status, deleted = self.mobile_json_request(
+            "POST", "/api/v1/mobile/nodes/{}/delete".format(issued["nodeId"]),
+            {}, access_token=access_token,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual({"deleted": True, "remoteCleanup": False}, deleted["data"])
         self.assertTrue(
             self.db.ack_node_command(
                 issued["nodeId"],
@@ -6804,7 +6816,7 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertEqual({"verified": True}, json.loads(response.read()))
 
-    def test_web_pairing_actions_disconnect_online_and_delete_only_offline_nodes(self):
+    def test_web_pairing_actions_delete_even_while_disconnect_is_pending(self):
         service = self.application.node_enrollment_service
         issued = service.create("edge-disconnect", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
@@ -6852,6 +6864,19 @@ class PanelHttpTests(unittest.TestCase):
         )
         self.assertEqual(202, disconnect.status)
         self.assertTrue(json.loads(disconnect.read())["disconnecting"])
+
+        path = "/nodes/{}/delete".format(issued["nodeId"])
+        with self.assertRaises(urllib.error.HTTPError) as no_csrf:
+            self.request(path, data={}, headers=headers)
+        self.assertEqual(403, no_csrf.exception.code)
+        with self.request("/", headers=headers) as response:
+            self.assertIn('action="{}"'.format(path), response.read().decode())
+        with self.request("/api/v1/dashboard-online", headers=headers) as response:
+            self.assertIn(issued["nodeId"], json.load(response)["activeNodeIds"])
+        with self.request(path, data={"csrf": csrf}, headers={**headers, "Accept": "application/json"}) as response:
+            self.assertEqual({"deleted": True, "remoteCleanup": False}, json.load(response))
+        with self.request("/api/v1/dashboard-online", headers=headers) as response:
+            self.assertNotIn(issued["nodeId"], json.load(response)["activeNodeIds"])
 
         stale = service.create("edge-lost", "203.0.113.77", 10, "Elegy")
         deleted = self.request(

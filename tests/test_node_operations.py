@@ -509,6 +509,9 @@ class NodeLifecycleTests(NodeOperationsCase):
         self.assertEqual("standby", retired["policy_state"])
         self.assertEqual("not_issued", retired["data_plane_state"])
         self.assertEqual(public_key(1), retired["public_key"])
+        self.assertFalse(
+            self.db.delete_node_pairing(self.node_id, "admin", self.now + 2)
+        )
 
     def test_one_click_disconnect_rejects_legacy_agents(self):
         with sqlite_connection(str(self.db_path)) as connection:
@@ -524,17 +527,7 @@ class NodeLifecycleTests(NodeOperationsCase):
 
         self.assertEqual("active", self.db.list_nodes()[0]["lifecycle_state"])
 
-    def test_delete_pairing_is_only_for_an_unreachable_node_and_retains_history(self):
-        with self.assertRaisesRegex(ValueError, "online"):
-            self.db.delete_node_pairing(
-                self.node_id, "admin", self.now, freshness_seconds=150
-            )
-        with sqlite_connection(str(self.db_path)) as connection:
-            connection.execute(
-                "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
-                (self.now - 151, self.node_id),
-            )
-
+    def test_delete_pairing_allows_online_nodes_and_retains_history(self):
         self.assertTrue(
             self.db.delete_node_pairing(
                 self.node_id, "admin", self.now, freshness_seconds=150
@@ -548,12 +541,6 @@ class NodeLifecycleTests(NodeOperationsCase):
         command = self.db.request_node_disconnect(
             self.node_id, "admin", changed_at=self.now
         )
-        with sqlite_connection(str(self.db_path)) as connection:
-            connection.execute(
-                "UPDATE nodes SET last_heartbeat_at = ? WHERE node_id = ?",
-                (self.now - 1_000, self.node_id),
-            )
-
         self.assertTrue(
             self.db.delete_node_pairing(
                 self.node_id, "admin", changed_at=self.now
