@@ -509,6 +509,9 @@ class NodeLifecycleTests(NodeOperationsCase):
         self.assertEqual("standby", retired["policy_state"])
         self.assertEqual("not_issued", retired["data_plane_state"])
         self.assertEqual(public_key(1), retired["public_key"])
+        self.assertFalse(
+            self.db.delete_node_pairing(self.node_id, "admin", self.now + 2)
+        )
 
     def test_one_click_disconnect_rejects_legacy_agents(self):
         with sqlite_connection(str(self.db_path)) as connection:

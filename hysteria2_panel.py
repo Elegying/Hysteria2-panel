@@ -5750,8 +5750,10 @@ class Database:
                 """SELECT status FROM nodes WHERE node_id = ?""",
                 (node_id,),
             ).fetchone()
-            if node is None or node["status"] == "revoked":
+            if node is None:
                 raise ValueError("node pairing does not exist")
+            if node["status"] == "revoked":
+                return False
             connection.execute(
                 """UPDATE nodes SET status = 'revoked', policy_state = 'standby',
                     lifecycle_state = 'archived', lifecycle_changed_at = ?,
