@@ -674,3 +674,92 @@ class NodeLifecycleTests(NodeOperationsCase):
         )
 
         self.assertIsNone(decision)
+
+
+class RemoteBudgetRetirementTests(NodeOperationsCase):
+    def setUp(self):
+        super().setUp()
+        self.local = 'local:' + 'a' * 32
+        self.origin = 'node:' + self.node_id
+        self.db.register_usage_origin(self.origin, 'remote', 'remote', self.node_id, self.now)
+        self.db.register_usage_origin(self.local, 'local', 'panel', created_at=self.now)
+        self.db.set_origin_budget(self.origin, 10000, 80, 'admin', self.now, manual_used_bytes=9500)
+        self.db.set_origin_budget(self.local, 10000, 80, 'admin', self.now, manual_used_bytes=20000)
+
+    def tick(self, now, count=0, version='0.39.19'):
+        with sqlite_connection(str(self.db_path)) as c:
+            c.execute('UPDATE nodes SET last_heartbeat_at = ?, agent_version = ?', (now, version))
+            c.execute('INSERT OR REPLACE INTO node_online_snapshots VALUES (?, ?, 1, ?, ?, ?)',
+                      (self.node_id, '2' * 32, now, now, now))
+            c.execute('DELETE FROM node_online_counts')
+            if count:
+                c.execute('INSERT INTO node_online_counts VALUES (?, ?, ?)', (self.node_id, 'alice', count))
+        return self.db.reconcile_node_budgets(self.local, now)
+
+    def test_confirmation_grace_and_continuous_idle_are_required(self):
+        self.assertEqual(1, self.tick(self.now)['draining'])
+        self.assertEqual(0, self.tick(self.now + 86400)['stopping'])
+        self.db.confirm_node_budget_dns_removed(self.node_id, 'admin', self.now + 86400)
+        with self.assertRaises(ValueError):
+            self.db.confirm_node_budget_dns_removed(self.node_id, 'admin', self.now + 86401)
+        start = self.now + 2 * 86400
+        for t in range(start, start + 900, 30):
+            self.assertEqual(0, self.tick(t)['stopping'])
+        self.assertEqual(1, self.tick(start + 900)['stopping'])
+        self.assertEqual(0, self.tick(start + 930)['stopping'])
+        with sqlite_connection(str(self.db_path)) as c:
+            rows = c.execute('SELECT node_id,kind FROM node_commands').fetchall()
+        self.assertEqual([(self.node_id, 'STOP_DATA_PLANE_IF_IDLE')], rows)
+        self.assertEqual('stopping', self.db.list_nodes()[0]['lifecycle_state'])
+
+    def test_online_devices_and_observer_gaps_reset_idle(self):
+        self.tick(self.now)
+        self.db.confirm_node_budget_dns_removed(self.node_id, 'admin', self.now)
+        start = self.now + 86400
+        for t in range(start, start + 900, 30):
+            self.tick(t)
+        self.assertEqual(0, self.tick(start + 900, count=1)['stopping'])
+        self.assertIsNone(self.db.list_nodes()[0]['budget_idle_since'])
+        self.tick(start + 930)
+        self.assertEqual(0, self.tick(start + 1900)['stopping'])
+        self.assertEqual(start + 1900, self.db.list_nodes()[0]['budget_idle_since'])
+
+    def test_below_threshold_and_local_origins_never_stop(self):
+        self.db.set_origin_budget(self.origin, 10000, 80, 'admin', self.now, manual_used_bytes=9499)
+        self.assertEqual(0, self.tick(self.now)['draining'])
+        with sqlite_connection(str(self.db_path)) as c:
+            c.execute("UPDATE usage_origins SET kind = 'local' WHERE origin_id = ?", (self.origin,))
+        self.db.set_origin_budget(self.origin, 10000, 80, 'admin', self.now, manual_used_bytes=20000)
+        self.assertEqual({'draining': 0, 'stopping': 0}, self.tick(self.now))
+        self.assertEqual('active', self.db.list_nodes()[0]['lifecycle_state'])
+
+    def test_budget_increase_cancels_unfinished_retirement(self):
+        self.tick(self.now)
+        self.db.confirm_node_budget_dns_removed(self.node_id, 'admin', self.now)
+        self.db.set_origin_budget(self.origin, 20000, 80, 'admin', self.now + 1)
+        self.tick(self.now + 2)
+        node = self.db.list_nodes()[0]
+        self.assertEqual('active', node['lifecycle_state'])
+        self.assertIsNone(node['budget_dns_confirmed_at'])
+
+    def test_old_agent_is_not_sent_idle_stop(self):
+        self.tick(self.now)
+        self.db.confirm_node_budget_dns_removed(self.node_id, 'admin', self.now)
+        for t in range(self.now + 86400, self.now + 88000, 30):
+            self.assertEqual(0, self.tick(t, version='0.39.18')['stopping'])
+
+    def test_idle_stop_does_not_kick_a_racing_connection(self):
+        stats = mock.Mock()
+        stats.online.return_value = {'alice': 1}
+        cycle = node_agent.NodeControlCycle(mock.Mock(), stats, mock.Mock(), mock.Mock())
+        stop = mock.Mock()
+        state = mock.Mock()
+        state.data_plane_stopped.return_value = False
+        with self.assertRaises(node_agent.ProtocolError):
+            node_agent.execute_control_command(
+                {'commandId': 'a' * 32, 'kind': 'STOP_DATA_PLANE_IF_IDLE', 'payload': {}},
+                stats, protocol_state=state, flush_traffic=mock.Mock(), stop_data_plane=stop,
+                quiesce_traffic=lambda **kwargs: cycle.quiesce_traffic(sleeper=lambda _: None, **kwargs))
+        stop.assert_not_called()
+        stats.kick.assert_not_called()
+        state.set_data_plane_stopped.assert_not_called()

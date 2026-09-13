@@ -598,7 +598,7 @@ def render_dashboard(
         elif status == "pending_registration":
             details.append("请在目标服务器以 root 粘贴运行生成的代码")
         else:
-            details.append("DNS 由你自行维护；面板不会检查或修改")
+            details.append("DNS 由你自行维护；面板不会修改")
         agent_version_parts = str(node.get("agent_version") or "").split(".")
         agent_supports_disconnect = bool(
             len(agent_version_parts) == 3
@@ -627,7 +627,24 @@ def render_dashboard(
         delete_action = """<form method="post" action="/nodes/{node_id}/delete" data-confirm="立即撤销此节点的面板授权并移出当前列表，无需远端确认。此操作不会卸载服务器文件，也不保证已有连接立即断开；历史流量保留。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">删除对接</button></form>""".format(
             node_id=node["node_id"], csrf=csrf
         )
-        node_actions = disconnect_action + delete_action
+        budget_action = ""
+        if node.get("lifecycle_changed_by") == "system:budget95":
+            if lifecycle_state == "draining":
+                status_label, status_class = "95% 预算退出中", "warning"
+                if node.get("budget_dns_confirmed_at") is None:
+                    details.append("请手动删除此节点的全部 DNS 记录；确认前继续服务")
+                    budget_action = """<form method="post" action="/nodes/{node_id}/lifecycle/budget-dns-removed" data-confirm="确认已手动删除所有指向此节点的 DNS 记录？确认后至少等待 24 小时，并持续空闲 15 分钟才会自动停用；请勿重新添加解析。"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">已删除 DNS</button></form>""".format(node_id=node["node_id"], csrf=csrf)
+                else:
+                    details.append("DNS 已手动确认撤出；等待至少 24 小时及连续空闲 15 分钟，不强踢用户")
+                if not (len(agent_version_parts) == 3 and all(p.isdigit() for p in agent_version_parts)
+                        and tuple(map(int, agent_version_parts)) >= (0, 39, 19)):
+                    details.append("自动停用需先升级节点 Agent 至 0.39.19 或更新版本")
+            elif lifecycle_state == "stopping":
+                status_label, status_class = "等待节点空闲停用回执", "warning"
+            elif lifecycle_state == "stopped":
+                status_label, status_class = "预算保护已停用", "warning"
+                budget_action = """<form method="post" action="/nodes/{node_id}/lifecycle/resume" data-confirm="请先增加预算或等待新计费周期；恢复后自行添加 DNS。确定恢复节点服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">恢复服务</button></form>""".format(node_id=node["node_id"], csrf=csrf)
+        node_actions = budget_action + disconnect_action + delete_action
         node_rows.append(
             """<article class="node-row" data-pairing-node-id="{node_id}"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                 node_id=node["node_id"],

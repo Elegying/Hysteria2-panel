@@ -28,7 +28,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.18"
+AGENT_VERSION = "0.39.19"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -2560,11 +2560,15 @@ def execute_control_command(
             raise ProtocolError("durable traffic flush callback is unavailable")
         flush_traffic()
         return
-    if kind == "STOP_DATA_PLANE" and payload == {}:
+    if kind in {"STOP_DATA_PLANE", "STOP_DATA_PLANE_IF_IDLE"} and payload == {}:
         if protocol_state is None or flush_traffic is None or stop_data_plane is None:
             raise ProtocolError("data-plane stop callbacks are unavailable")
         if not protocol_state.data_plane_stopped():
-            if quiesce_traffic is not None:
+            if kind == "STOP_DATA_PLANE_IF_IDLE":
+                if quiesce_traffic is None:
+                    raise ProtocolError("idle stop callback is unavailable")
+                quiesce_traffic(kick_users=False)
+            elif quiesce_traffic is not None:
                 quiesce_traffic()
             flush_traffic()
             stop_data_plane()
@@ -2907,7 +2911,7 @@ class NodeControlCycle:
             for counters in batch.values()
         )
 
-    def quiesce_traffic(self, attempts=30, interval=1.0, sleeper=time.sleep):
+    def quiesce_traffic(self, attempts=30, interval=1.0, sleeper=time.sleep, kick_users=True):
         """Drain kicked sessions to disk after new authentication is blocked.
 
         Hysteria's per-user kick is consumed by only one connection's next
@@ -2926,6 +2930,8 @@ class NodeControlCycle:
                 name for name, count in self.stats_client.online().items() if count > 0
             )
             if online:
+                if not kick_users:
+                    raise ProtocolError("node still has online devices; retaining service")
                 self.stats_client.kick(online)
             if not self._can_collect():
                 self._upload_pending()
