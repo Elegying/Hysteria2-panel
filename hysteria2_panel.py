@@ -2673,6 +2673,9 @@ class Database:
                 "lifecycle_changed_at": (
                     "ALTER TABLE nodes ADD COLUMN lifecycle_changed_at INTEGER"
                 ),
+                "budget_dns_confirmed_at": "ALTER TABLE nodes ADD COLUMN budget_dns_confirmed_at INTEGER",
+                "budget_idle_since": "ALTER TABLE nodes ADD COLUMN budget_idle_since INTEGER",
+                "budget_checked_at": "ALTER TABLE nodes ADD COLUMN budget_checked_at INTEGER",
                 "lifecycle_changed_by": (
                     "ALTER TABLE nodes ADD COLUMN lifecycle_changed_by TEXT"
                 ),
@@ -5622,6 +5625,7 @@ class Database:
             "REFRESH_SNAPSHOT",
             "FLUSH_TRAFFIC",
             "STOP_DATA_PLANE",
+            "STOP_DATA_PLANE_IF_IDLE",
             "START_DATA_PLANE",
             "UNINSTALL_NODE",
         } and payload == {}
@@ -5637,6 +5641,116 @@ class Database:
             (command_id, node_id, kind, payload, int(created_at), int(created_at)),
         )
         return {"commandId": command_id, "kind": kind, "payload": {}}
+
+    def confirm_node_budget_dns_removed(self, node_id, actor, now=None):
+        """An administrator confirms all DNS entries were removed manually."""
+        now = int(time.time()) if now is None else int(now)
+        with self._connect() as connection:
+            updated = connection.execute(
+                """UPDATE nodes SET budget_dns_confirmed_at = ?,
+                    budget_idle_since = NULL, budget_checked_at = NULL
+                WHERE node_id = ? AND status = 'pending_verification'
+                    AND lifecycle_state = 'draining'
+                    AND lifecycle_changed_by = 'system:budget95'
+                    AND budget_dns_confirmed_at IS NULL
+                    AND EXISTS (SELECT 1 FROM usage_origins o
+                        WHERE o.node_id = nodes.node_id AND o.kind = 'remote'
+                            AND o.origin_id = 'node:' || nodes.node_id)""",
+                (now, node_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("节点未在等待预算 DNS 撤出确认，或已确认")
+        return True
+
+    def reconcile_node_budgets(self, local_origin_id, now=None):
+        """Remote budgets only; never stop local services or force off users."""
+        now = int(time.time()) if now is None else int(now)
+        result = {"draining": 0, "stopping": 0}
+        events = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            nodes = connection.execute(
+                """SELECT n.* FROM nodes n JOIN usage_origins o
+                    ON o.node_id = n.node_id AND o.origin_id = 'node:' || n.node_id
+                WHERE o.kind = 'remote' AND o.origin_id != ?
+                    AND n.status = 'pending_verification'
+                    AND n.policy_state = 'protocol_ready'
+                    AND n.lifecycle_state IN ('active', 'draining')
+                    AND n.data_plane_state IN ('dns_admitted', 'direct_canary_passed')""",
+                (local_origin_id,),
+            ).fetchall()
+            budgets = self.list_origin_budgets(
+                ['node:' + node['node_id'] for node in nodes], now
+            )
+            for node, budget in zip(nodes, budgets):
+                node_id = node['node_id']
+                automatic = node['lifecycle_changed_by'] == 'system:budget95'
+                over = (budget['limit_bytes'] > 0
+                        and budget['used_bytes'] * 100 >= budget['limit_bytes'] * 95)
+                if not over:
+                    if automatic and node['lifecycle_state'] == 'draining':
+                        connection.execute(
+                            """UPDATE nodes SET lifecycle_state = 'active',
+                                lifecycle_changed_at = ?, lifecycle_changed_by = NULL,
+                                budget_dns_confirmed_at = NULL, budget_idle_since = NULL,
+                                budget_checked_at = NULL WHERE node_id = ?""", (now, node_id))
+                        events.append((now, "system:budget95", "node_budget_drain_cancelled", node_id, ""))
+                    continue
+                if node['lifecycle_state'] == 'active':
+                    connection.execute(
+                        """UPDATE nodes SET lifecycle_state = 'draining',
+                            lifecycle_changed_at = ?, lifecycle_changed_by = 'system:budget95',
+                            budget_dns_confirmed_at = NULL, budget_idle_since = NULL,
+                            budget_checked_at = NULL WHERE node_id = ?""", (now, node_id))
+                    events.append((now, 'system:budget95', 'node_budget_drain_started', node_id, ''))
+                    result['draining'] += 1
+                    continue
+                if not automatic or node['budget_dns_confirmed_at'] is None:
+                    continue
+                snapshot = connection.execute(
+                    """SELECT accepted_at, observed_at, traffic_acked_at FROM
+                        node_online_snapshots WHERE node_id = ?""", (node_id,)).fetchone()
+                count = connection.execute(
+                    'SELECT COALESCE(SUM(count), 0) FROM node_online_counts WHERE node_id = ?',
+                    (node_id,)).fetchone()[0]
+                fresh = snapshot is not None and all(
+                    now - MAX_STATE_AGE_SECONDS <= int(value) <= now for value in snapshot)
+                idle_since = node['budget_idle_since']
+                if not fresh or count or not node['last_heartbeat_at'] or not (
+                    now - NODE_HEARTBEAT_FRESHNESS_SECONDS <= node['last_heartbeat_at'] <= now
+                ):
+                    idle_since = None
+                elif (idle_since is None or node['budget_checked_at'] is None
+                      or not 0 <= now - node['budget_checked_at'] <= 60):
+                    idle_since = now
+                connection.execute(
+                    'UPDATE nodes SET budget_idle_since = ?, budget_checked_at = ? WHERE node_id = ?',
+                    (idle_since, now, node_id))
+                version = str(node['agent_version']).split('.')
+                supported = (len(version) == 3 and all(p.isdigit() for p in version)
+                             and tuple(map(int, version)) >= (0, 39, 19))
+                if (idle_since is None or now - idle_since < 900
+                        or now - node['budget_dns_confirmed_at'] < 86400 or not supported):
+                    continue
+                if connection.execute(
+                    'SELECT 1 FROM node_commands WHERE node_id = ? AND acked_at IS NULL LIMIT 1',
+                    (node_id,)).fetchone():
+                    continue
+                self._insert_fixed_node_command(connection, node_id, 'STOP_DATA_PLANE_IF_IDLE', now)
+                connection.execute(
+                    """UPDATE nodes SET lifecycle_state = 'stopping', lifecycle_changed_at = ?
+                        WHERE node_id = ?""", (now, node_id))
+                events.append((now, 'system:budget95', 'node_budget_idle_stop_requested', node_id, ''))
+                result['stopping'] += 1
+            if events:
+                connection.executemany(
+                    'INSERT INTO audit_log(created_at,actor,action,target,remote_ip) VALUES (?,?,?,?,?)', events)
+                connection.execute('DELETE FROM audit_log WHERE created_at < ?',
+                                   (now - AUDIT_RETENTION_SECONDS,))
+                connection.execute(
+                    'DELETE FROM audit_log WHERE id IN (SELECT id FROM audit_log ORDER BY id DESC LIMIT -1 OFFSET ?)',
+                    (AUDIT_MAX_ROWS,))
+        return result
 
     def begin_node_drain(self, node_id, actor, changed_at=None):
         node_id = str(node_id or "")
@@ -6110,7 +6224,7 @@ class Database:
                         WHERE command_id = ? AND node_id = ?""",
                         (int(accepted_at), command_id, node_id),
                     )
-                    if row["kind"] == "STOP_DATA_PLANE":
+                    if row["kind"] in {"STOP_DATA_PLANE", "STOP_DATA_PLANE_IF_IDLE"}:
                         connection.execute(
                             """UPDATE nodes SET lifecycle_state = 'stopped',
                                 lifecycle_changed_at = ?, data_plane_state = 'direct_canary_passed',
@@ -7999,7 +8113,10 @@ class PanelHandler(JsonHandler):
         now = int(time.time())
         actor = session["username"]
         try:
-            if action == "drain":
+            if action == "budget-dns-removed":
+                self.app.database.confirm_node_budget_dns_removed(node_id, actor, now)
+                audit_action = "node_budget_dns_confirmed"
+            elif action == "drain":
                 self.app.database.begin_node_drain(node_id, actor, now)
                 audit_action = "node_drain_started"
             elif action in {"stop", "emergency-stop"}:
@@ -8500,7 +8617,7 @@ class PanelHandler(JsonHandler):
             return
         lifecycle_match = re.fullmatch(
             r"/nodes/([0-9a-f]{32})/lifecycle/"
-            r"(drain|stop|emergency-stop|resume|archive)",
+            r"(drain|stop|emergency-stop|resume|archive|budget-dns-removed)",
             path,
         )
         if lifecycle_match:
@@ -9826,6 +9943,10 @@ class UsageManager:
                 self.collect_once()
             except Exception:
                 LOGGER.exception("background traffic sync failed")
+            try:
+                self.database.reconcile_node_budgets(self.local_origin_id, int(self.wall_clock()))
+            except Exception:
+                LOGGER.exception("remote budget retirement check failed")
             if heartbeat is not None:
                 heartbeat()
             if stop_event.wait(interval):

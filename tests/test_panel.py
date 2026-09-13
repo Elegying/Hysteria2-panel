@@ -6888,6 +6888,36 @@ class PanelHttpTests(unittest.TestCase):
             {"deleted": True, "remoteCleanup": False}, json.loads(deleted.read())
         )
 
+    def test_budget_dns_confirmation_is_authenticated_csrf_protected_and_remote_only(self):
+        now = int(time.time())
+        issued = self.application.node_enrollment_service.create("budget-edge", "127.0.0.1", 10, "Elegy")
+        node_id = issued["nodeId"]
+        with self.db._connect() as connection:
+            connection.execute(
+                """UPDATE nodes SET status = 'pending_verification', policy_state = 'protocol_ready',
+                    data_plane_state = 'direct_canary_passed', verified_at = ?,
+                    last_heartbeat_at = ?, agent_version = '0.39.19' WHERE node_id = ?""",
+                (now, now, node_id))
+        self.db.register_usage_origin("node:" + node_id, "remote", "budget-edge", node_id, now)
+        self.db.set_origin_budget("node:" + node_id, 10000, 80, "Elegy", now, manual_used_bytes=9500)
+        self.db.reconcile_node_budgets(self.application.usage_manager.local_origin_id, now)
+        path = "/nodes/{}/lifecycle/budget-dns-removed".format(node_id)
+        headers, csrf = self.authenticated_headers()
+        with self.request("/", headers=headers) as response:
+            page = response.read().decode()
+            self.assertIn('action="{}"'.format(path), page)
+            self.assertIn("已删除 DNS", page)
+        with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
+            self.request(path, data={}, headers=headers)
+        self.assertEqual(403, missing_csrf.exception.code)
+        self.assertIsNone(self.db.list_nodes()[0]["budget_dns_confirmed_at"])
+        with self.request(path, data={"csrf": csrf}, headers=headers) as response:
+            self.assertEqual(200, response.status)
+        self.assertIsNotNone(self.db.list_nodes()[0]["budget_dns_confirmed_at"])
+        self.assertEqual("draining", self.db.list_nodes()[0]["lifecycle_state"])
+        with self.db._connect() as connection:
+            self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM node_commands").fetchone()[0])
+
     def test_public_signed_heartbeat_is_https_only_bounded_and_stable(self):
         service = self.application.node_enrollment_service
         issued = service.create("edge-heartbeat", "127.0.0.1", 10, "Elegy")

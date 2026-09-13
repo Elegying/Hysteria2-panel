@@ -349,6 +349,26 @@ try:
     passed('断连中仍可删除，取消保留状态；卸载回执后无需刷新自动移除（隔离节点）')
     browser.screenshot('node-after-uninstall.png')
     browser.click('#node-onboarding-dialog [data-dialog-close]')
+    budget_node = service.create('web-budget-node','9.9.9.7',10,'Elegy')['nodeId']
+    with fixture.db._connect() as connection:
+        connection.execute("UPDATE nodes SET status='pending_verification',policy_state='protocol_ready',data_plane_state='direct_canary_passed',verified_at=?,last_heartbeat_at=?,agent_version='0.39.19' WHERE node_id=?",(now,now,budget_node))
+    fixture.db.register_usage_origin('node:'+budget_node,'remote','web-budget-node',budget_node,now)
+    fixture.db.set_origin_budget('node:'+budget_node,10000,80,'Elegy',now,manual_used_bytes=9500)
+    fixture.db.reconcile_node_budgets(fixture.application.usage_manager.local_origin_id,now)
+    browser.navigate(fixture.base_url+'/')
+    browser.click('[data-dialog-open="node-onboarding-dialog"]')
+    dns_confirm = 'form[action="/nodes/'+budget_node+'/lifecycle/budget-dns-removed"] button'
+    browser.accept = False
+    browser.click(dns_confirm)
+    assert next(n for n in fixture.db.list_nodes() if n['node_id']==budget_node)['budget_dns_confirmed_at'] is None
+    browser.accept = True
+    browser.click(dns_confirm,navigation=True)
+    assert next(n for n in fixture.db.list_nodes() if n['node_id']==budget_node)['budget_dns_confirmed_at'] is not None
+    browser.click('[data-dialog-open="node-onboarding-dialog"]')
+    assert browser.evaluate('document.querySelector("#node-onboarding-dialog").innerText.includes("至少 24 小时")')
+    browser.screenshot('budget-dns-grace.png')
+    browser.click('#node-onboarding-dialog [data-dialog-close]')
+    passed('远端95%退出：手动DNS确认取消与提交、过渡期提示')
     browser.click('[data-dialog-open="budget-dialog-'+fixture.application.usage_manager.local_origin_id.split(':',1)[1]+'"]')
     for name, value in (('limit_gib','200'),('used_gib','2.5'),('warning_percent','88'),('reset_day','28')):
         browser.value('.budget-dialog[open] [name="'+name+'"]',value)
