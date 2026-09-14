@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.4.0+17
+version: 0.4.1+23
 
 environment:
   sdk: ^3.13.2
@@ -41,6 +41,8 @@ dependencies:
   url_launcher: ^6.3.2
   share_plus: ^13.3.0
   flutter_svg: ^2.3.0
+  liquid_glass_widgets:
+    path: third_party/liquid_glass_widgets
 
 dev_dependencies:
   flutter_test:
@@ -67,6 +69,7 @@ flutter:
 
   assets:
     - assets/h2-icon.svg
+    - assets/liquid-tech-background.png
 
 flutter_launcher_icons:
   android: true

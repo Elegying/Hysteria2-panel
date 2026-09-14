@@ -56,7 +56,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   void _startTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 10), (_) {
-      if (!_refreshing) _load(silent: true);
+      if (mounted &&
+          !_refreshing &&
+          TickerMode.valuesOf(context).enabled &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        _load(silent: true);
+      }
     });
   }
 
@@ -100,13 +105,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 : '重启期间现有连接会短暂中断，流量会先完成结算。确认继续吗？',
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
             ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: Text(label),
+            GlassControlSurface(
+              child: FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(label),
+              ),
             ),
           ],
         ),
@@ -134,13 +143,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         title: const Text('确认重启服务器'),
         content: const Text('重启后面板和所有连接会暂时中断，通常需要 30 至 90 秒恢复。确认继续吗？'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('重启服务器'),
+          GlassControlSurface(
+            child: FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('重启服务器'),
+            ),
           ),
         ],
       ),
@@ -184,14 +197,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               children: [
                 const Text('生成前请先自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS。'),
                 const SizedBox(height: 16),
-                TextField(
-                  controller: name,
-                  decoration: const InputDecoration(labelText: '节点名称'),
+                GlassControlSurface(
+                  child: TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: '节点名称'),
+                  ),
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: expectedIp,
-                  decoration: const InputDecoration(labelText: '目标服务器公网 IP'),
+                GlassControlSurface(
+                  child: TextField(
+                    controller: expectedIp,
+                    decoration: const InputDecoration(labelText: '目标服务器公网 IP'),
+                  ),
                 ),
                 if (formError != null)
                   Text(
@@ -204,48 +221,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('取消'),
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
             ),
-            FilledButton(
-              onPressed: submitting
-                  ? null
-                  : () async {
-                      if (submitting) return;
-                      if (name.text.trim().isEmpty ||
-                          expectedIp.text.trim().isEmpty) {
-                        setDialogState(() => formError = '请填写节点名称和目标服务器公网 IP');
-                        return;
-                      }
-                      setDialogState(() {
-                        submitting = true;
-                        formError = null;
-                      });
-                      try {
-                        final data = await ref
-                            .read(appControllerProvider.notifier)
-                            .postJson('/api/v1/mobile/node-enrollments', {
-                              'name': name.text.trim(),
-                              'expectedIp': expectedIp.text.trim(),
-                              'ttlMinutes': 10,
-                              'mode': 'join',
+            GlassControlSurface(
+              child: FilledButton(
+                onPressed: submitting
+                    ? null
+                    : () async {
+                        if (submitting) return;
+                        if (name.text.trim().isEmpty ||
+                            expectedIp.text.trim().isEmpty) {
+                          setDialogState(
+                            () => formError = '请填写节点名称和目标服务器公网 IP',
+                          );
+                          return;
+                        }
+                        setDialogState(() {
+                          submitting = true;
+                          formError = null;
+                        });
+                        try {
+                          final data = await ref
+                              .read(appControllerProvider.notifier)
+                              .postJson('/api/v1/mobile/node-enrollments', {
+                                'name': name.text.trim(),
+                                'expectedIp': expectedIp.text.trim(),
+                                'ttlMinutes': 10,
+                                'mode': 'join',
+                              });
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            Navigator.pop(dialogContext, data);
+                          }
+                        } on ApiException catch (error) {
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            setDialogState(() {
+                              submitting = false;
+                              formError = error.message;
                             });
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          Navigator.pop(dialogContext, data);
+                          }
                         }
-                      } on ApiException catch (error) {
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          setDialogState(() {
-                            submitting = false;
-                            formError = error.message;
-                          });
-                        }
-                      }
-                    },
-              child: Text(submitting ? '生成中…' : '一键对接'),
+                      },
+                child: Text(submitting ? '生成中…' : '一键对接'),
+              ),
             ),
           ],
         ),
@@ -279,9 +302,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
           ),
         ],
       ),
@@ -303,10 +328,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               pinned: false,
               title: const Text('首页'),
               actions: [
-                IconButton(
-                  onPressed: _loading ? null : _load,
-                  tooltip: '刷新',
-                  icon: const Icon(Icons.refresh_rounded),
+                GlassControlSurface(
+                  child: IconButton(
+                    onPressed: _loading ? null : _load,
+                    tooltip: '刷新',
+                    icon: const Icon(Icons.refresh_rounded),
+                  ),
                 ),
               ],
             ),
@@ -350,6 +377,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       disabled: _acting,
                       onReboot: _rebootServer,
                     ),
+                    SizedBox(height: appDockExtent(context)),
                   ],
                 ),
               ),
@@ -442,16 +470,9 @@ class _StatusHeader extends StatelessWidget {
         ),
       ],
     );
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(28),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF122F42), Color(0xFF183C51), Color(0xFF162437)],
-        ),
-        border: Border.all(color: const Color(0xFF38566B), width: .5),
-      ),
+    return GlassSurface(
+      borderRadius: 28,
+      tintColor: const Color(0xD0122F42),
       child: Padding(
         padding: const EdgeInsets.all(22),
         child: Column(
@@ -658,10 +679,12 @@ class _ServiceButtons extends StatelessWidget {
             .map(
               (item) => SizedBox(
                 width: (constraints.maxWidth - 9) / 2,
-                child: FilledButton.tonalIcon(
-                  onPressed: disabled ? null : item.$3,
-                  icon: Icon(item.$2, color: item.$4),
-                  label: Text(item.$1),
+                child: GlassControlSurface(
+                  child: FilledButton.tonalIcon(
+                    onPressed: disabled ? null : item.$3,
+                    icon: Icon(item.$2, color: item.$4),
+                    label: Text(item.$1),
+                  ),
                 ),
               ),
             )
@@ -776,10 +799,13 @@ class _ResourcesCard extends StatelessWidget {
     return _SectionCard(
       title: '系统资源',
       subtitle: '服务器实时负载与网络优化状态',
-      action: IconButton.filledTonal(
-        onPressed: disabled ? null : onReboot,
-        tooltip: '重启服务器',
-        icon: const Icon(Icons.restart_alt_rounded),
+      action: GlassControlSurface(
+        child: IconButton(
+          color: Colors.orange,
+          onPressed: disabled ? null : onReboot,
+          tooltip: '重启服务器',
+          icon: const Icon(Icons.restart_alt_rounded),
+        ),
       ),
       child: GridView.builder(
         shrinkWrap: true,
@@ -792,11 +818,8 @@ class _ResourcesCard extends StatelessWidget {
           mainAxisSpacing: 9,
         ),
         itemCount: rows.length,
-        itemBuilder: (context, index) => DecoratedBox(
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: BorderRadius.circular(12),
-          ),
+        itemBuilder: (context, index) => GlassSurface(
+          borderRadius: 12,
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -843,10 +866,12 @@ class _LoadError extends StatelessWidget {
           const SizedBox(height: 12),
           Text(message, textAlign: TextAlign.center),
           const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: onRetry,
-            icon: const Icon(Icons.refresh_rounded),
-            label: const Text('重试'),
+          GlassControlSurface(
+            child: FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('重试'),
+            ),
           ),
         ],
       ),

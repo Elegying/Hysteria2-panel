@@ -153,6 +153,25 @@ class AppController extends StateNotifier<AppState> {
     }
   }
 
+  /// Remember only connection details; authentication stays in secure storage.
+  Future<({String address, String port, String username})?>
+  rememberedLogin() async {
+    final preferences = await SharedPreferences.getInstance();
+    final uri = Uri.tryParse(preferences.getString(_baseUrlKey) ?? '');
+    final username = preferences.getString(_usernameKey) ?? '';
+    if (uri == null ||
+        uri.scheme != 'https' ||
+        uri.host.isEmpty ||
+        username.isEmpty) {
+      return null;
+    }
+    return (
+      address: Uri(scheme: 'https', host: uri.host).toString(),
+      port: uri.port.toString(),
+      username: username,
+    );
+  }
+
   static Dio _createDio(String baseUrl) => Dio(
     BaseOptions(
       baseUrl: baseUrl,
@@ -281,9 +300,7 @@ class AppController extends StateNotifier<AppState> {
     state = const AppState(initializing: false);
     await _persistSession(generation, () async {
       await _storage.delete(key: _refreshKey);
-      final preferences = await SharedPreferences.getInstance();
-      await preferences.remove(_baseUrlKey);
-      await preferences.remove(_usernameKey);
+      // Connection hints survive logout, but never authorize a session.
     });
     if (session != null && dio != null) {
       await _revokeSession(dio, session.accessToken);

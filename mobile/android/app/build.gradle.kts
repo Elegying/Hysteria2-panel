@@ -6,6 +6,8 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val previewBuild = providers.gradleProperty("previewBuild").orNull == "true"
+
 android {
     namespace = "vip.ssrvpn.hysteria2manager"
     compileSdk = flutter.compileSdkVersion
@@ -17,7 +19,8 @@ android {
     }
 
     defaultConfig {
-        applicationId = "vip.ssrvpn.hysteria2manager"
+        applicationId = if (previewBuild) "vip.ssrvpn.hysteria2manager.preview" else "vip.ssrvpn.hysteria2manager"
+        manifestPlaceholders["appLabel"] = if (previewBuild) "H2 液态玻璃预览" else "Hysteria2管理"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -62,7 +65,7 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".preview"
+            if (!previewBuild) applicationIdSuffix = ".preview"
         }
         release {
             signingConfig = signingConfigs.findByName("release")

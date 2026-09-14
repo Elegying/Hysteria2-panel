@@ -48,6 +48,7 @@ Future<PendingRefreshController> mountPage(
   WidgetTester tester,
   Widget screen,
 ) async {
+  tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
   final controller = PendingRefreshController();
   await tester.pumpWidget(
     ProviderScope(
@@ -114,6 +115,44 @@ void main() {
       });
     }
     if (entry.key == 'domains') continue;
+    for (final hidden in [true, false]) {
+      testWidgets(
+        '${entry.key} suspends polling when ${hidden ? "hidden" : "backgrounded"}',
+        (tester) async {
+          final controller = await mountPage(
+            tester,
+            TickerMode(enabled: !hidden, child: entry.value),
+          );
+          controller.requests.single.complete(snapshot('cached'));
+          await tester.pumpAndSettle();
+          if (!hidden) {
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.inactive,
+            );
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.hidden,
+            );
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.paused,
+            );
+          }
+          await tester.pump(const Duration(seconds: 31));
+          expect(controller.requests, hasLength(1));
+          await tester.pumpWidget(const SizedBox.shrink());
+          if (!hidden) {
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.hidden,
+            );
+            tester.binding.handleAppLifecycleStateChanged(
+              AppLifecycleState.inactive,
+            );
+          }
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+        },
+      );
+    }
     testWidgets('${entry.key} polling waits for a slow request', (
       tester,
     ) async {

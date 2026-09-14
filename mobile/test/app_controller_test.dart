@@ -70,6 +70,22 @@ void main() {
     );
   }
 
+  test(
+    'logout retains connection hints while removing authentication',
+    () async {
+      final controller = AppController();
+      addTearDown(controller.dispose);
+      await controller.logout();
+      expect(await _storage.read(key: _refreshKey), isNull);
+      expect(controller.state.session, isNull);
+      expect(await controller.rememberedLogin(), (
+        address: 'https://panel.example.test',
+        port: '19998',
+        username: 'test-admin',
+      ));
+    },
+  );
+
   test('an explicitly rejected refresh token is removed', () async {
     final controller = _controller((options, handler) {
       _respond(handler, options, 401, {

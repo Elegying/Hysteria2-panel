@@ -67,13 +67,16 @@ class _DomainUsageScreenState extends ConsumerState<DomainUsageScreen> {
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverAppBar(
+                leading: const GlassControlSurface(child: BackButton()),
                 pinned: false,
                 title: Text(title),
                 actions: [
-                  IconButton(
-                    onPressed: _load,
-                    icon: const Icon(Icons.refresh_rounded),
-                    tooltip: '刷新',
+                  GlassControlSurface(
+                    child: IconButton(
+                      onPressed: _load,
+                      icon: const Icon(Icons.refresh_rounded),
+                      tooltip: '刷新',
+                    ),
                   ),
                 ],
               ),
@@ -120,10 +123,12 @@ class _DomainUsageScreenState extends ConsumerState<DomainUsageScreen> {
                             children: [
                               Text(_error!, textAlign: TextAlign.center),
                               const SizedBox(height: 12),
-                              FilledButton.icon(
-                                onPressed: _load,
-                                icon: const Icon(Icons.refresh_rounded),
-                                label: const Text('重试'),
+                              GlassControlSurface(
+                                child: FilledButton.icon(
+                                  onPressed: _load,
+                                  icon: const Icon(Icons.refresh_rounded),
+                                  label: const Text('重试'),
+                                ),
                               ),
                             ],
                           ),

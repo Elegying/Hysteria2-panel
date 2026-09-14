@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart' as liquid;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
@@ -89,7 +90,12 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     _search.addListener(_redraw);
     Future.microtask(_load);
     _timer = Timer.periodic(const Duration(seconds: 15), (_) {
-      if (!_refreshing) _load(silent: true);
+      if (mounted &&
+          !_refreshing &&
+          TickerMode.valuesOf(context).enabled &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        _load(silent: true);
+      }
     });
   }
 
@@ -165,28 +171,36 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: name,
-                  decoration: const InputDecoration(labelText: '用户名'),
+                GlassControlSurface(
+                  child: TextField(
+                    controller: name,
+                    decoration: const InputDecoration(labelText: '用户名'),
+                  ),
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: deviceLimit,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: '设备数限制'),
+                GlassControlSurface(
+                  child: TextField(
+                    controller: deviceLimit,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '设备数限制'),
+                  ),
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: trafficLimit,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: '流量额度（GiB）'),
+                GlassControlSurface(
+                  child: TextField(
+                    controller: trafficLimit,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '流量额度（GiB）'),
+                  ),
                 ),
                 const SizedBox(height: 8),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('允许 UDP 443'),
-                  value: udp443,
-                  onChanged: (value) => setDialogState(() => udp443 = value),
+                GlassControlSurface(
+                  child: SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('允许 UDP 443'),
+                    value: udp443,
+                    onChanged: (value) => setDialogState(() => udp443 = value),
+                  ),
                 ),
                 if (formError != null)
                   Text(
@@ -199,48 +213,52 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             ),
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('取消'),
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
             ),
-            FilledButton(
-              onPressed: submitting
-                  ? null
-                  : () async {
-                      if (submitting) return;
-                      final devices = int.tryParse(deviceLimit.text.trim());
-                      final traffic = int.tryParse(trafficLimit.text.trim());
-                      setDialogState(
-                        () => formError = name.text.trim().isEmpty
-                            ? '请输入用户名'
-                            : _userLimitsError(devices, traffic),
-                      );
-                      if (formError != null) return;
-                      setDialogState(() => submitting = true);
-                      try {
-                        final data = await ref
-                            .read(appControllerProvider.notifier)
-                            .postJson('/api/v1/mobile/users', {
-                              'name': name.text.trim(),
-                              'deviceLimit': devices,
-                              'trafficLimitGb': traffic,
-                              'allowUdp443': udp443,
+            GlassControlSurface(
+              child: FilledButton(
+                onPressed: submitting
+                    ? null
+                    : () async {
+                        if (submitting) return;
+                        final devices = int.tryParse(deviceLimit.text.trim());
+                        final traffic = int.tryParse(trafficLimit.text.trim());
+                        setDialogState(
+                          () => formError = name.text.trim().isEmpty
+                              ? '请输入用户名'
+                              : _userLimitsError(devices, traffic),
+                        );
+                        if (formError != null) return;
+                        setDialogState(() => submitting = true);
+                        try {
+                          final data = await ref
+                              .read(appControllerProvider.notifier)
+                              .postJson('/api/v1/mobile/users', {
+                                'name': name.text.trim(),
+                                'deviceLimit': devices,
+                                'trafficLimitGb': traffic,
+                                'allowUdp443': udp443,
+                              });
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            Navigator.pop(dialogContext, data);
+                          }
+                        } on ApiException catch (error) {
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            setDialogState(() {
+                              submitting = false;
+                              formError = error.message;
                             });
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          Navigator.pop(dialogContext, data);
+                          }
                         }
-                      } on ApiException catch (error) {
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          setDialogState(() {
-                            submitting = false;
-                            formError = error.message;
-                          });
-                        }
-                      }
-                    },
-              child: Text(submitting ? '创建中…' : '创建'),
+                      },
+                child: Text(submitting ? '创建中…' : '创建'),
+              ),
             ),
           ],
         ),
@@ -278,17 +296,19 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                           ?.copyWith(fontWeight: FontWeight.w700),
                     ),
                   ),
-                  OutlinedButton.icon(
-                    onPressed: () => Navigator.of(sheetContext).push(
-                      MaterialPageRoute<void>(
-                        builder: (_) => DomainUsageScreen.user(
-                          userId: user['id'] as int,
-                          userName: user['name'].toString(),
+                  GlassControlSurface(
+                    child: OutlinedButton.icon(
+                      onPressed: () => Navigator.of(sheetContext).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => DomainUsageScreen.user(
+                            userId: user['id'] as int,
+                            userName: user['name'].toString(),
+                          ),
                         ),
                       ),
+                      icon: const Icon(Icons.language_rounded, size: 18),
+                      label: const Text('流量详情'),
                     ),
-                    icon: const Icon(Icons.language_rounded, size: 18),
-                    label: const Text('流量详情'),
                   ),
                 ],
               ),
@@ -377,18 +397,24 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             title: Text(title),
             content: Text(message),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('取消'),
+              GlassControlSurface(
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消'),
+                ),
               ),
-              FilledButton(
-                style: destructive
-                    ? FilledButton.styleFrom(
-                        backgroundColor: Theme.of(context).colorScheme.error,
-                      )
-                    : null,
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('确认'),
+              GlassControlSurface(
+                child: FilledButton(
+                  style: destructive
+                      ? FilledButton.styleFrom(
+                          backgroundColor: Theme.of(context).colorScheme.error
+                              .withValues(alpha: .22),
+                          foregroundColor: Theme.of(context).colorScheme.error,
+                        )
+                      : null,
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('确认'),
+                ),
               ),
             ],
           ),
@@ -506,12 +532,14 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(
-                controller: traffic,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
+              GlassControlSurface(
+                child: TextField(
+                  controller: traffic,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(labelText: '已用流量（GiB）'),
                 ),
-                decoration: const InputDecoration(labelText: '已用流量（GiB）'),
               ),
               const SizedBox(height: 12),
               const Text('设置当前已用总量，支持小数；设为 0 即清零。达到流量额度后将停止该账号的连接。'),
@@ -523,57 +551,61 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('取消'),
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
             ),
-            FilledButton(
-              onPressed: submitting
-                  ? null
-                  : () async {
-                      if (submitting) return;
-                      final value = traffic.text.trim();
-                      final number = double.tryParse(value);
-                      if (!RegExp(r'^[0-9]{1,7}(?:\.[0-9]{1,9})?$')
-                              .hasMatch(value) ||
-                          number == null ||
-                          !number.isFinite ||
-                          number > 1048576) {
-                        setDialogState(
-                          () => formError = '请输入 0～1048576 GiB，最多 9 位小数',
-                        );
-                        return;
-                      }
-                      if (value == initial) {
-                        Navigator.pop(dialogContext, false);
-                        return;
-                      }
-                      setDialogState(() {
-                        submitting = true;
-                        formError = null;
-                      });
-                      try {
-                        await ref
-                            .read(appControllerProvider.notifier)
-                            .patchJson('/api/v1/mobile/users/${user['id']}', {
-                              'generation': user['generation'],
-                              'usedTrafficGiB': value,
+            GlassControlSurface(
+              child: FilledButton(
+                onPressed: submitting
+                    ? null
+                    : () async {
+                        if (submitting) return;
+                        final value = traffic.text.trim();
+                        final number = double.tryParse(value);
+                        if (!RegExp(r'^[0-9]{1,7}(?:\.[0-9]{1,9})?$')
+                                .hasMatch(value) ||
+                            number == null ||
+                            !number.isFinite ||
+                            number > 1048576) {
+                          setDialogState(
+                            () => formError = '请输入 0～1048576 GiB，最多 9 位小数',
+                          );
+                          return;
+                        }
+                        if (value == initial) {
+                          Navigator.pop(dialogContext, false);
+                          return;
+                        }
+                        setDialogState(() {
+                          submitting = true;
+                          formError = null;
+                        });
+                        try {
+                          await ref
+                              .read(appControllerProvider.notifier)
+                              .patchJson('/api/v1/mobile/users/${user['id']}', {
+                                'generation': user['generation'],
+                                'usedTrafficGiB': value,
+                              });
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            Navigator.pop(dialogContext, true);
+                          }
+                        } on ApiException catch (error) {
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            setDialogState(() {
+                              submitting = false;
+                              formError = error.message;
                             });
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          Navigator.pop(dialogContext, true);
+                          }
                         }
-                      } on ApiException catch (error) {
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          setDialogState(() {
-                            submitting = false;
-                            formError = error.message;
-                          });
-                        }
-                      }
-                    },
-              child: Text(submitting ? '保存中…' : '保存'),
+                      },
+                child: Text(submitting ? '保存中…' : '保存'),
+              ),
             ),
           ],
         ),
@@ -605,22 +637,28 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              TextField(
-                controller: devices,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '设备数限制'),
+              GlassControlSurface(
+                child: TextField(
+                  controller: devices,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: '设备数限制'),
+                ),
               ),
               const SizedBox(height: 12),
-              TextField(
-                controller: traffic,
-                keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '流量额度（GiB）'),
+              GlassControlSurface(
+                child: TextField(
+                  controller: traffic,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: '流量额度（GiB）'),
+                ),
               ),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('允许 UDP 443'),
-                value: udp443,
-                onChanged: (value) => setDialogState(() => udp443 = value),
+              GlassControlSurface(
+                child: SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('允许 UDP 443'),
+                  value: udp443,
+                  onChanged: (value) => setDialogState(() => udp443 = value),
+                ),
               ),
               if (formError != null)
                 Text(
@@ -630,49 +668,53 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('取消'),
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('取消'),
+              ),
             ),
-            FilledButton(
-              onPressed: submitting
-                  ? null
-                  : () async {
-                      if (submitting) return;
-                      final deviceValue = int.tryParse(devices.text.trim());
-                      final trafficValue = int.tryParse(traffic.text.trim());
-                      setDialogState(
-                        () => formError = _userLimitsError(
-                          deviceValue,
-                          trafficValue,
-                        ),
-                      );
-                      if (formError != null) return;
-                      setDialogState(() => submitting = true);
-                      try {
-                        await ref
-                            .read(appControllerProvider.notifier)
-                            .patchJson('/api/v1/mobile/users/${user['id']}', {
-                              'generation': user['generation'],
-                              'deviceLimit': deviceValue,
-                              'trafficLimitGb': trafficValue,
-                              'allowUdp443': udp443,
+            GlassControlSurface(
+              child: FilledButton(
+                onPressed: submitting
+                    ? null
+                    : () async {
+                        if (submitting) return;
+                        final deviceValue = int.tryParse(devices.text.trim());
+                        final trafficValue = int.tryParse(traffic.text.trim());
+                        setDialogState(
+                          () => formError = _userLimitsError(
+                            deviceValue,
+                            trafficValue,
+                          ),
+                        );
+                        if (formError != null) return;
+                        setDialogState(() => submitting = true);
+                        try {
+                          await ref
+                              .read(appControllerProvider.notifier)
+                              .patchJson('/api/v1/mobile/users/${user['id']}', {
+                                'generation': user['generation'],
+                                'deviceLimit': deviceValue,
+                                'trafficLimitGb': trafficValue,
+                                'allowUdp443': udp443,
+                              });
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            Navigator.pop(dialogContext, true);
+                          }
+                        } on ApiException catch (error) {
+                          if (dialogContext.mounted &&
+                              ModalRoute.of(dialogContext)?.isCurrent == true) {
+                            setDialogState(() {
+                              submitting = false;
+                              formError = error.message;
                             });
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          Navigator.pop(dialogContext, true);
+                          }
                         }
-                      } on ApiException catch (error) {
-                        if (dialogContext.mounted &&
-                            ModalRoute.of(dialogContext)?.isCurrent == true) {
-                          setDialogState(() {
-                            submitting = false;
-                            formError = error.message;
-                          });
-                        }
-                      }
-                    },
-              child: Text(submitting ? '保存中…' : '保存'),
+                      },
+                child: Text(submitting ? '保存中…' : '保存'),
+              ),
             ),
           ],
         ),
@@ -709,14 +751,18 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
           ),
-          FilledButton.icon(
-            onPressed: () => SharePlus.instance.share(ShareParams(text: uri)),
-            icon: const Icon(Icons.share_rounded),
-            label: const Text('分享'),
+          GlassControlSurface(
+            child: FilledButton.icon(
+              onPressed: () => SharePlus.instance.share(ShareParams(text: uri)),
+              icon: const Icon(Icons.share_rounded),
+              label: const Text('分享'),
+            ),
           ),
         ],
       ),
@@ -735,9 +781,11 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           backgroundColor: Colors.white,
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
           ),
         ],
       ),
@@ -756,10 +804,28 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       );
     return SafeArea(
       child: Scaffold(
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: _createUser,
-          icon: const Icon(Icons.person_add_alt_1_rounded),
-          label: const Text('新增用户'),
+        floatingActionButton: Padding(
+          padding: EdgeInsets.only(bottom: appDockExtent(context)),
+          child: liquid.GlassButton.custom(
+            onTap: _createUser,
+            quality: liquid.GlassQuality.premium,
+            useOwnLayer: true,
+            shape: const liquid.LiquidRoundedSuperellipse(borderRadius: 20),
+            width: 144 + MediaQuery.textScalerOf(context).scale(16) * 2,
+            height: 48 + MediaQuery.textScalerOf(context).scale(16),
+            label: '新增用户',
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.person_add_alt_1_rounded),
+                  SizedBox(width: 8),
+                  Flexible(child: Text('新增用户')),
+                ],
+              ),
+            ),
+          ),
         ),
         body: RefreshIndicator(
           onRefresh: _load,
@@ -771,10 +837,12 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                 pinned: false,
                 title: const Text('用户'),
                 actions: [
-                  IconButton(
-                    onPressed: _load,
-                    icon: const Icon(Icons.refresh_rounded),
-                    tooltip: '刷新',
+                  GlassControlSurface(
+                    child: IconButton(
+                      onPressed: _load,
+                      icon: const Icon(Icons.refresh_rounded),
+                      tooltip: '刷新',
+                    ),
                   ),
                 ],
               ),
@@ -792,10 +860,12 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               else if (_error != null && _users.isEmpty)
                 SliverFillRemaining(
                   child: Center(
-                    child: FilledButton.icon(
-                      onPressed: _load,
-                      icon: const Icon(Icons.refresh_rounded),
-                      label: Text(_error!),
+                    child: GlassControlSurface(
+                      child: FilledButton.icon(
+                        onPressed: _load,
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: Text(_error!),
+                      ),
                     ),
                   ),
                 )
@@ -815,15 +885,17 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                     ?.copyWith(fontWeight: FontWeight.w700),
                               ),
                             ),
-                            TextButton.icon(
-                              onPressed: () => Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) =>
-                                      const DomainUsageScreen.global(),
+                            GlassControlSurface(
+                              child: TextButton.icon(
+                                onPressed: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) =>
+                                        const DomainUsageScreen.global(),
+                                  ),
                                 ),
+                                icon: const Icon(Icons.language_rounded),
+                                label: const Text('流量详情'),
                               ),
-                              icon: const Icon(Icons.language_rounded),
-                              label: const Text('流量详情'),
                             ),
                           ],
                         ),
@@ -897,84 +969,96 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                 ),
                         ),
                         const SizedBox(height: 14),
-                        TextField(
-                          controller: _search,
-                          decoration: InputDecoration(
-                            hintText: '搜索用户名',
-                            prefixIcon: const Icon(Icons.search_rounded),
-                            suffixIcon: _search.text.isEmpty
-                                ? null
-                                : IconButton(
-                                    onPressed: _search.clear,
-                                    tooltip: '清除搜索',
-                                    icon: const Icon(Icons.clear_rounded),
+                        GlassCard(
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              children: [
+                                GlassControlSurface(
+                                  child: TextField(
+                                    controller: _search,
+                                    decoration: InputDecoration(
+                                      hintText: '搜索用户名',
+                                      prefixIcon: const Icon(
+                                        Icons.search_rounded,
+                                      ),
+                                      suffixIcon: _search.text.isEmpty
+                                          ? null
+                                          : GlassControlSurface(
+                                              child: IconButton(
+                                                onPressed: _search.clear,
+                                                tooltip: '清除搜索',
+                                                icon: const Icon(
+                                                  Icons.clear_rounded,
+                                                ),
+                                              ),
+                                            ),
+                                    ),
                                   ),
+                                ),
+                                const SizedBox(height: 9),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: GlassDropdownField<String>(
+                                        initialValue: _status,
+                                        decoration: const InputDecoration(
+                                          labelText: '状态',
+                                        ),
+                                        items: const [
+                                          DropdownMenuItem(
+                                            value: 'all',
+                                            child: Text('全部状态'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'enabled',
+                                            child: Text('已启用'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'disabled',
+                                            child: Text('已禁用'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'online',
+                                            child: Text('当前在线'),
+                                          ),
+                                        ],
+                                        onChanged: (value) => setState(
+                                          () => _status = value ?? 'all',
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 9),
+                                    Expanded(
+                                      child: GlassDropdownField<String>(
+                                        initialValue: _sort,
+                                        decoration: const InputDecoration(
+                                          labelText: '排序',
+                                        ),
+                                        hint: const Text('默认倒序'),
+                                        items: const [
+                                          DropdownMenuItem(
+                                            value: 'traffic',
+                                            child: Text('流量降序'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'online',
+                                            child: Text('在线设备'),
+                                          ),
+                                          DropdownMenuItem(
+                                            value: 'name',
+                                            child: Text('用户名'),
+                                          ),
+                                        ],
+                                        onChanged: (value) =>
+                                            setState(() => _sort = value),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 9),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                initialValue: _status,
-                                isExpanded: true,
-                                dropdownColor: glassMenuColor(context),
-                                borderRadius: BorderRadius.circular(16),
-                                decoration: const InputDecoration(
-                                  labelText: '状态',
-                                ),
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: 'all',
-                                    child: Text('全部状态'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'enabled',
-                                    child: Text('已启用'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'disabled',
-                                    child: Text('已禁用'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'online',
-                                    child: Text('当前在线'),
-                                  ),
-                                ],
-                                onChanged: (value) =>
-                                    setState(() => _status = value ?? 'all'),
-                              ),
-                            ),
-                            const SizedBox(width: 9),
-                            Expanded(
-                              child: DropdownButtonFormField<String>(
-                                initialValue: _sort,
-                                isExpanded: true,
-                                dropdownColor: glassMenuColor(context),
-                                borderRadius: BorderRadius.circular(16),
-                                decoration: const InputDecoration(
-                                  labelText: '排序',
-                                ),
-                                hint: const Text('默认倒序'),
-                                items: const [
-                                  DropdownMenuItem(
-                                    value: 'traffic',
-                                    child: Text('流量降序'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'online',
-                                    child: Text('在线设备'),
-                                  ),
-                                  DropdownMenuItem(
-                                    value: 'name',
-                                    child: Text('用户名'),
-                                  ),
-                                ],
-                                onChanged: (value) =>
-                                    setState(() => _sort = value),
-                              ),
-                            ),
-                          ],
                         ),
                         const SizedBox(height: 10),
                         Text(
@@ -996,14 +1080,16 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                             ),
                           ),
                         )
-                      : SliverList.separated(
+                      : GlassSliverList(
                           itemCount: filtered.length,
-                          separatorBuilder: (_, _) => const SizedBox(height: 8),
                           itemBuilder: (context, index) => _CompactUserCard(
                             user: filtered[index],
                             onTap: () => _showUser(filtered[index]),
                           ),
                         ),
+                ),
+                SliverToBoxAdapter(
+                  child: SizedBox(height: appDockExtent(context)),
                 ),
               ],
             ],
@@ -1112,11 +1198,8 @@ class _UserFacts extends StatelessWidget {
         mainAxisSpacing: 8,
       ),
       itemCount: values.length,
-      itemBuilder: (context, index) => DecoratedBox(
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(12),
-        ),
+      itemBuilder: (context, index) => GlassSurface(
+        borderRadius: 12,
         child: Padding(
           padding: const EdgeInsets.all(11),
           child: Column(
@@ -1154,26 +1237,22 @@ class _ActionChipButton extends StatelessWidget {
   final bool destructive;
 
   @override
-  Widget build(BuildContext context) => ActionChip(
-    backgroundColor: Colors.white.withValues(
-      alpha: Theme.of(context).brightness == Brightness.dark ? .07 : .55,
-    ),
-    side: BorderSide(
-      color: Colors.white.withValues(
-        alpha: Theme.of(context).brightness == Brightness.dark ? .16 : .76,
-      ),
-    ),
-    avatar: Icon(
-      icon,
-      size: 18,
-      color: destructive ? Theme.of(context).colorScheme.error : null,
-    ),
-    label: Text(
-      label,
-      style: TextStyle(
+  Widget build(BuildContext context) => GlassControlSurface(
+    child: ActionChip(
+      backgroundColor: Colors.transparent,
+      side: BorderSide.none,
+      avatar: Icon(
+        icon,
+        size: 18,
         color: destructive ? Theme.of(context).colorScheme.error : null,
       ),
+      label: Text(
+        label,
+        style: TextStyle(
+          color: destructive ? Theme.of(context).colorScheme.error : null,
+        ),
+      ),
+      onPressed: onTap,
     ),
-    onPressed: onTap,
   );
 }

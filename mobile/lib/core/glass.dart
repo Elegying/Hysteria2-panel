@@ -1,16 +1,24 @@
-import 'dart:ui';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart' as liquid;
+
+import 'h2_glass_capture.dart';
+import 'h2_drifting_background.dart';
+
+double appDockExtent(BuildContext context) =>
+    104 + (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(0, 100) * 2;
 
 class RefreshWarning extends StatelessWidget {
   const RefreshWarning({required this.message, super.key});
   final String message;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: Theme.of(context).colorScheme.errorContainer,
-    borderRadius: BorderRadius.circular(12),
+  Widget build(BuildContext context) => GlassSurface(
+    tintColor: Theme.of(context).colorScheme.errorContainer
+        .withValues(alpha: .65),
+    borderRadius: 12,
     child: Padding(
       padding: const EdgeInsets.all(12),
       child: Row(
@@ -24,65 +32,104 @@ class RefreshWarning extends StatelessWidget {
   );
 }
 
-/// Static tinted backdrop makes the frosted surfaces visible without motion.
+/// Shared SSRVPN capture/paint lifecycle, with this app's artwork and palette.
 class LiquidBackdrop extends StatelessWidget {
   const LiquidBackdrop({required this.child, super.key});
   final Widget child;
-
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final dark = theme.brightness == Brightness.dark;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final shade = dark ? const Color(0x4005111F) : const Color(0xDDF0F5FA);
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: (dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark)
           .copyWith(
             statusBarColor: Colors.transparent,
-            systemNavigationBarColor: theme.colorScheme.surface,
-            systemNavigationBarIconBrightness: dark
-                ? Brightness.light
-                : Brightness.dark,
+            systemNavigationBarColor: Colors.transparent,
           ),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: dark
-                ? [
-                    const Color(0xFF0B111D),
-                    Color.alphaBlend(
-                      theme.colorScheme.primary.withValues(alpha: .09),
-                      const Color(0xFF11151F),
+      child: liquid.LiquidGlassScope(
+        child: H2GlassCapture(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: H2DriftingBackground(
+                    captureBackground: true,
+                    child: SizedBox.expand(
+                      child: Image.asset(
+                        'assets/liquid-tech-background.png',
+                        fit: BoxFit.cover,
+                        filterQuality: FilterQuality.medium,
+                        color: shade,
+                        colorBlendMode: BlendMode.srcATop,
+                        frameBuilder: (_, image, frame, synchronous) =>
+                            frame != null || synchronous
+                            ? image
+                            : ColoredBox(color: shade, child: image),
+                      ),
                     ),
-                    const Color(0xFF101B23),
-                  ]
-                : [
-                    const Color(0xFFF2F6FB),
-                    Color.alphaBlend(
-                      theme.colorScheme.primary.withValues(alpha: .10),
-                      const Color(0xFFF5F5FA),
-                    ),
-                    const Color(0xFFE8F3F1),
-                  ],
+                  ),
+                ),
+              ),
+              child,
+            ],
           ),
         ),
-        child: BackdropGroup(child: child),
       ),
     );
   }
+}
+
+/// Keep native focus, validation and semantics inside the optical surface.
+class GlassControlSurface extends StatelessWidget {
+  const GlassControlSurface({required this.child, super.key});
+  final Widget child;
+  @override
+  Widget build(BuildContext context) => GlassSurface(
+    borderRadius: 16,
+    blurSigma: 5,
+    child: child is TextField || child is TextFormField
+        ? Padding(
+            padding: const EdgeInsets.only(top: 10, bottom: 2),
+            child: child,
+          )
+        : child,
+  );
+}
+
+/// Keep scrolling cards in independent layers. Shared moving shader groups can
+/// sample a stale backdrop when a sliver crosses the viewport on Impeller.
+class GlassSliverList extends StatelessWidget {
+  const GlassSliverList({
+    required this.itemCount,
+    required this.itemBuilder,
+    this.spacing = 8,
+    super.key,
+  });
+  final int itemCount;
+  final IndexedWidgetBuilder itemBuilder;
+  final double spacing;
+  @override
+  Widget build(BuildContext context) => SliverList.separated(
+    itemCount: itemCount,
+    itemBuilder: itemBuilder,
+    separatorBuilder: (_, _) => SizedBox(height: spacing),
+  );
 }
 
 class GlassSurface extends StatelessWidget {
   const GlassSurface({
     required this.child,
     this.borderRadius = 20,
-    this.blurSigma = 0,
+    this.blurSigma = 8,
     this.margin,
     this.grouped = false,
+    this.tintColor,
     super.key,
   });
 
   final bool grouped;
+  final Color? tintColor;
   final Widget child;
   final double borderRadius;
   final double blurSigma;
@@ -95,64 +142,72 @@ class GlassSurface extends StatelessWidget {
     final opaque = MediaQuery.highContrastOf(context);
     final floating = blurSigma > 0;
     final radius = BorderRadius.circular(borderRadius);
-    final surface = DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: opaque || !floating
-              ? [scheme.surfaceContainerLow, scheme.surfaceContainerLow]
-              : dark
-              ? [
-                  const Color(0xFF293342).withValues(alpha: .72),
-                  const Color(0xFF1B2533).withValues(alpha: .52),
-                ]
-              : [
-                  Colors.white.withValues(alpha: .80),
-                  Colors.white.withValues(alpha: .52),
-                ],
+    if (floating && !opaque) {
+      final shape = liquid.LiquidRoundedSuperellipse(
+        borderRadius: borderRadius,
+      );
+      final settings = liquid.LiquidGlassSettings(
+        thickness: 24,
+        blur: blurSigma,
+        chromaticAberration: .025,
+        lightIntensity: dark ? .65 : .8,
+        refractiveIndex: 1.3,
+        glassColor:
+            tintColor ??
+            (dark ? const Color(0x241B304A) : const Color(0x60FFFFFF)),
+      );
+      final content = Material(type: MaterialType.transparency, child: child);
+      final frames = H2GlassFrame.listenableOf(context);
+      final useCapture =
+          ui.ImageFilter.isShaderFilterSupported && frames != null;
+      final surface = liquid.GlassContainer(
+        margin: margin,
+        shape: shape,
+        quality: liquid.GlassQuality.premium,
+        useOwnLayer: !useCapture,
+        clipBehavior: Clip.antiAlias,
+        settings: settings,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: radius,
+            border: Border.all(color: Colors.white.withValues(alpha: .18)),
+          ),
+          child: content,
         ),
-      ),
-      child: Material(type: MaterialType.transparency, child: child),
-    );
+      );
+      if (!useCapture) return surface;
+      return ValueListenableBuilder<H2GlassFrame?>(
+        valueListenable: frames,
+        child: liquid.LiquidGlassBlendGroup(
+          blend: 0,
+          child: liquid.GlassIsolationScope(isolated: false, child: surface),
+        ),
+        builder: (context, captured, child) => liquid.LiquidGlassLayer(
+          settings: settings,
+          captureOnly: true,
+          captureImage: captured?.image,
+          captureOriginInScreenSpace: captured?.origin ?? Offset.zero,
+          child: child!,
+        ),
+      );
+    }
     return Container(
       margin: margin,
       decoration: BoxDecoration(
+        color: tintColor == null
+            ? scheme.surfaceContainerLow
+            : Color.alphaBlend(tintColor!, scheme.surfaceContainerLow),
         borderRadius: radius,
         border: Border.all(
-          color: MediaQuery.highContrastOf(context)
+          color: opaque
               ? scheme.outline
-              : Colors.white.withValues(alpha: dark ? .16 : .75),
-          width: MediaQuery.highContrastOf(context) ? 1.5 : .5,
+              : scheme.outlineVariant.withValues(alpha: .45),
+          width: opaque ? 1.5 : .5,
         ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: dark ? .20 : .055),
-            blurRadius: floating ? 24 : 14,
-            offset: const Offset(0, 6),
-            spreadRadius: -4,
-          ),
-        ],
       ),
       child: ClipRRect(
         borderRadius: radius,
-        child: floating && !opaque
-            ? grouped
-                  ? BackdropFilter.grouped(
-                      filter: ImageFilter.blur(
-                        sigmaX: blurSigma,
-                        sigmaY: blurSigma,
-                      ),
-                      child: surface,
-                    )
-                  : BackdropFilter(
-                      filter: ImageFilter.blur(
-                        sigmaX: blurSigma,
-                        sigmaY: blurSigma,
-                      ),
-                      child: surface,
-                    )
-            : surface,
+        child: Material(type: MaterialType.transparency, child: child),
       ),
     );
   }
@@ -162,7 +217,7 @@ class GlassCard extends StatelessWidget {
   const GlassCard({
     required this.child,
     this.margin,
-    this.blurSigma = 0,
+    this.blurSigma = 8,
     super.key,
   });
 
@@ -297,3 +352,93 @@ Future<T?> showGlassModalBottomSheet<T>({
     ),
   ),
 );
+
+/// A glass selection sheet replaces the platform's opaque dropdown popup.
+class GlassDropdownField<T> extends StatelessWidget {
+  const GlassDropdownField({
+    required this.items,
+    required this.onChanged,
+    required this.decoration,
+    this.initialValue,
+    this.hint,
+    super.key,
+  });
+  final List<DropdownMenuItem<T>> items;
+  final ValueChanged<T?>? onChanged;
+  final InputDecoration decoration;
+  final T? initialValue;
+  final Widget? hint;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget? selected;
+    for (final item in items) {
+      if (item.value == initialValue) selected = item.child;
+    }
+    return GlassControlSurface(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onChanged == null
+            ? null
+            : () async {
+                final result = await showGlassFormDialog<T>(
+                  context: context,
+                  builder: (dialogContext) => GlassDialog(
+                    title: Text(decoration.labelText ?? '请选择'),
+                    content: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (final item in items)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: GlassControlSurface(
+                                child: ListTile(
+                                  title: item.child,
+                                  selected: item.value == initialValue,
+                                  trailing: item.value == initialValue
+                                      ? const Icon(Icons.check_rounded)
+                                      : null,
+                                  onTap: item.enabled
+                                      ? () => Navigator.pop(
+                                          dialogContext,
+                                          item.value,
+                                        )
+                                      : null,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+                if (context.mounted && result != null) onChanged?.call(result);
+              },
+        child: InputDecorator(
+          decoration: decoration.copyWith(
+            floatingLabelBehavior: FloatingLabelBehavior.never,
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (decoration.labelText != null)
+                      Text(
+                        decoration.labelText!,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    selected ?? hint ?? const Text('请选择'),
+                  ],
+                ),
+              ),
+              const Icon(Icons.expand_more_rounded),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

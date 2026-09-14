@@ -23,6 +23,32 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    _restoreLoginHint();
+  }
+
+  Future<void> _restoreLoginHint() async {
+    try {
+      final hint = await ref
+          .read(appControllerProvider.notifier)
+          .rememberedLogin();
+      if (!mounted ||
+          hint == null ||
+          _address.text.isNotEmpty ||
+          _port.text.isNotEmpty ||
+          _username.text.isNotEmpty) {
+        return;
+      }
+      _address.text = hint.address;
+      _port.text = hint.port;
+      _username.text = hint.username;
+    } catch (_) {
+      // Unavailable local preferences must not block manual login.
+    }
+  }
+
+  @override
   void dispose() {
     _address.dispose();
     _port.dispose();
@@ -100,90 +126,100 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 style: theme.textTheme.bodySmall,
                               ),
                               const SizedBox(height: 22),
-                              TextFormField(
-                                controller: _address,
-                                keyboardType: TextInputType.url,
-                                autocorrect: false,
-                                textInputAction: TextInputAction.next,
-                                decoration: const InputDecoration(
-                                  labelText: '面板地址',
-                                  prefixIcon: Icon(Icons.language_rounded),
-                                  helperText:
-                                      '仅支持 HTTPS，例如 https://panel.example.com',
-                                ),
-                                validator: (value) =>
-                                    value == null || value.trim().isEmpty
-                                    ? '请输入面板地址'
-                                    : null,
-                              ),
-                              const SizedBox(height: 14),
-                              TextFormField(
-                                controller: _port,
-                                keyboardType: TextInputType.number,
-                                textInputAction: TextInputAction.next,
-                                inputFormatters: [
-                                  FilteringTextInputFormatter.digitsOnly,
-                                ],
-                                validator: (value) {
-                                  final port = int.tryParse(value ?? '');
-                                  if (port == null ||
-                                      port < 1 ||
-                                      port > 65535) {
-                                    return '请输入 1 至 65535 之间的端口';
-                                  }
-                                  return null;
-                                },
-                                decoration: const InputDecoration(
-                                  labelText: '面板端口',
-                                  prefixIcon: Icon(
-                                    Icons.settings_ethernet_rounded,
+                              GlassControlSurface(
+                                child: TextFormField(
+                                  controller: _address,
+                                  keyboardType: TextInputType.url,
+                                  autocorrect: false,
+                                  textInputAction: TextInputAction.next,
+                                  decoration: const InputDecoration(
+                                    labelText: '面板地址',
+                                    prefixIcon: Icon(Icons.language_rounded),
+                                    helperText: '仅支持 HTTPS，例如 https://panel.example.com',
                                   ),
+                                  validator: (value) =>
+                                      value == null || value.trim().isEmpty
+                                      ? '请输入面板地址'
+                                      : null,
                                 ),
                               ),
                               const SizedBox(height: 14),
-                              TextFormField(
-                                controller: _username,
-                                autofillHints: const [AutofillHints.username],
-                                textInputAction: TextInputAction.next,
-                                decoration: const InputDecoration(
-                                  labelText: '面板账号',
-                                  prefixIcon: Icon(
-                                    Icons.person_outline_rounded,
-                                  ),
-                                ),
-                                validator: (value) =>
-                                    value == null || value.trim().isEmpty
-                                    ? '请输入面板账号'
-                                    : null,
-                              ),
-                              const SizedBox(height: 14),
-                              TextFormField(
-                                controller: _password,
-                                obscureText: _obscure,
-                                textInputAction: TextInputAction.done,
-                                autofillHints: const [AutofillHints.password],
-                                onFieldSubmitted: (_) =>
-                                    working ? null : _login(),
-                                decoration: InputDecoration(
-                                  labelText: '面板密码',
-                                  prefixIcon: const Icon(
-                                    Icons.lock_outline_rounded,
-                                  ),
-                                  suffixIcon: IconButton(
-                                    tooltip: _obscure ? '显示密码' : '隐藏密码',
-                                    onPressed: () =>
-                                        setState(() => _obscure = !_obscure),
-                                    icon: Icon(
-                                      _obscure
-                                          ? Icons.visibility_outlined
-                                          : Icons.visibility_off_outlined,
+                              GlassControlSurface(
+                                child: TextFormField(
+                                  controller: _port,
+                                  keyboardType: TextInputType.number,
+                                  textInputAction: TextInputAction.next,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                  ],
+                                  validator: (value) {
+                                    final port = int.tryParse(value ?? '');
+                                    if (port == null ||
+                                        port < 1 ||
+                                        port > 65535) {
+                                      return '请输入 1 至 65535 之间的端口';
+                                    }
+                                    return null;
+                                  },
+                                  decoration: const InputDecoration(
+                                    labelText: '面板端口',
+                                    prefixIcon: Icon(
+                                      Icons.settings_ethernet_rounded,
                                     ),
                                   ),
                                 ),
-                                validator: (value) =>
-                                    value == null || value.isEmpty
-                                    ? '请输入面板密码'
-                                    : null,
+                              ),
+                              const SizedBox(height: 14),
+                              GlassControlSurface(
+                                child: TextFormField(
+                                  controller: _username,
+                                  autofillHints: const [AutofillHints.username],
+                                  textInputAction: TextInputAction.next,
+                                  decoration: const InputDecoration(
+                                    labelText: '面板账号',
+                                    prefixIcon: Icon(
+                                      Icons.person_outline_rounded,
+                                    ),
+                                  ),
+                                  validator: (value) =>
+                                      value == null || value.trim().isEmpty
+                                      ? '请输入面板账号'
+                                      : null,
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              GlassControlSurface(
+                                child: TextFormField(
+                                  controller: _password,
+                                  obscureText: _obscure,
+                                  textInputAction: TextInputAction.done,
+                                  autofillHints: const [AutofillHints.password],
+                                  onFieldSubmitted: (_) =>
+                                      working ? null : _login(),
+                                  decoration: InputDecoration(
+                                    labelText: '面板密码',
+                                    prefixIcon: const Icon(
+                                      Icons.lock_outline_rounded,
+                                    ),
+                                    suffixIcon: GlassControlSurface(
+                                      child: IconButton(
+                                        tooltip: _obscure ? '显示密码' : '隐藏密码',
+                                        onPressed: () => setState(
+                                          () => _obscure = !_obscure,
+                                        ),
+                                        icon: Icon(
+                                          _obscure
+                                              ? Icons.visibility_outlined
+                                              : Icons.visibility_off_outlined,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  validator: (value) =>
+                                      value == null || value.isEmpty
+                                      ? '请输入面板密码'
+                                      : null,
+                                ),
                               ),
                               if (_error != null) ...[
                                 Semantics(
@@ -193,17 +229,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 const SizedBox(height: 16),
                               ],
                               const SizedBox(height: 18),
-                              FilledButton.icon(
-                                onPressed: working ? null : _login,
-                                icon: working
-                                    ? const SizedBox.square(
-                                        dimension: 18,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : const Icon(Icons.arrow_forward_rounded),
-                                label: Text(working ? '正在安全连接…' : '登录'),
+                              GlassControlSurface(
+                                child: FilledButton.icon(
+                                  onPressed: working ? null : _login,
+                                  icon: working
+                                      ? const SizedBox.square(
+                                          dimension: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.arrow_forward_rounded),
+                                  label: Text(working ? '正在安全连接…' : '登录'),
+                                ),
                               ),
                             ],
                           ),
