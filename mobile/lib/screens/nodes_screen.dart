@@ -451,7 +451,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
                   sliver: SliverList.separated(
                     itemCount: _nodes.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 9),
+                    separatorBuilder: (_, _) => const SizedBox(height: 12),
                     itemBuilder: (context, index) {
                       final node = _nodes[index];
                       return GlassCard(
@@ -459,10 +459,15 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                           onTap: () => _showNode(node),
                           borderRadius: BorderRadius.circular(18),
                           child: Padding(
-                            padding: const EdgeInsets.all(15),
+                            padding: const EdgeInsets.all(18),
                             child: Row(
                               children: [
                                 CircleAvatar(
+                                  radius: 24,
+                                  backgroundColor: Theme.of(context)
+                                      .colorScheme
+                                      .primary
+                                      .withValues(alpha: .09),
                                   child: Icon(
                                     node['status'] == 'online'
                                         ? Icons.dns_rounded

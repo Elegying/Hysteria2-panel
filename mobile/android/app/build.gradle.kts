@@ -61,6 +61,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".preview"
+        }
         release {
             signingConfig = signingConfigs.findByName("release")
                 ?: error("缺少 android/signing.properties，不能生成正式签名 APK")

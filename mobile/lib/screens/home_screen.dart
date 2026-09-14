@@ -331,6 +331,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     const SizedBox(height: 14),
                     _SummaryGrid(data: data),
                     const SizedBox(height: 14),
+                    _BudgetsCard(data: data),
+                    const SizedBox(height: 14),
                     _SectionCard(
                       title: '服务控制',
                       subtitle: '管理本机服务，或连接新的服务器',
@@ -342,8 +344,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         onEnroll: _showEnrollment,
                       ),
                     ),
-                    const SizedBox(height: 14),
-                    _BudgetsCard(data: data),
                     const SizedBox(height: 14),
                     _ResourcesCard(
                       data: data,
@@ -367,46 +367,133 @@ class _StatusHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final active = data['serviceStatus'] == 'active';
-    return GlassCard(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          children: [
-            CircleAvatar(
-              radius: 24,
-              backgroundColor: active
-                  ? Colors.green.withValues(alpha: .16)
-                  : Theme.of(context).colorScheme.errorContainer,
-              child: Icon(
-                active
-                    ? Icons.check_circle_rounded
-                    : Icons.error_outline_rounded,
-                color: active
-                    ? Colors.green
-                    : Theme.of(context).colorScheme.error,
-              ),
+    final nodes = Map<String, dynamic>.from(data['nodes'] as Map? ?? {});
+    final online = (nodes['online'] as num?) ?? 0;
+    final total = (nodes['total'] as num?) ?? 0;
+    final accent = active ? const Color(0xFF8CEAD3) : const Color(0xFFFFBEAD);
+    final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
+    final ring = SizedBox.square(
+      dimension: 106,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          SizedBox.square(
+            dimension: 100,
+            child: CircularProgressIndicator(
+              value: total > 0 ? (online / total).clamp(0, 1) : 0,
+              strokeWidth: 5,
+              strokeCap: StrokeCap.round,
+              color: accent,
+              backgroundColor: Colors.white.withValues(alpha: .12),
+              semanticsLabel: '在线节点 $online / $total',
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+          ),
+          ExcludeSemantics(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$online',
+                  style: const TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.white,
+                  ),
+                ),
+                Text(
+                  '/ $total 节点',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFFCCD9E6),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+    final status = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'NETWORK OVERVIEW',
+          style: TextStyle(
+            color: accent,
+            fontSize: 11,
+            letterSpacing: 1.5,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          serviceLabel(data['serviceStatus']),
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 24,
+            fontWeight: FontWeight.w700,
+            height: 1.2,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          data['panelName']?.toString() ?? 'Hysteria 2',
+          style: const TextStyle(color: Color(0xFFCCD9E6), fontSize: 13),
+        ),
+      ],
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(28),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xFF122F42), Color(0xFF183C51), Color(0xFF162437)],
+        ),
+        border: Border.all(color: const Color(0xFF38566B), width: .5),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (scale > 1.3)
+              status
+            else
+              Row(
                 children: [
-                  Text(
-                    serviceLabel(data['serviceStatus']),
-                    style: Theme.of(context).textTheme.titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    '${data['panelName'] ?? 'Hysteria 2'} · 面板 v${data['panelVersion'] ?? '-'}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  Text(
-                    '最近刷新 ${formatTimestamp(data['refreshedAt'])}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
+                  Expanded(child: status),
+                  const SizedBox(width: 12),
+                  ring,
                 ],
               ),
+            const SizedBox(height: 22),
+            const Divider(
+              color: Color(0xFF446072),
+              indent: 0,
+              endIndent: 0,
+              height: 1,
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: [
+                Text(
+                  '面板 v${data['panelVersion'] ?? '-'}',
+                  style: const TextStyle(
+                    color: Color(0xFFCCD9E6),
+                    fontSize: 12,
+                  ),
+                ),
+                Text(
+                  '最近刷新 ${formatTimestamp(data['refreshedAt'])}',
+                  style: const TextStyle(
+                    color: Color(0xFFCCD9E6),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -444,7 +531,7 @@ class _SummaryGrid extends StatelessWidget {
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         mainAxisExtent:
-            132 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
+            114 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
       ),
@@ -458,9 +545,23 @@ class _SummaryGrid extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(item.$3, color: Theme.of(context).colorScheme.primary),
+                Row(
+                  children: [
+                    Icon(
+                      item.$3,
+                      size: 19,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        item.$1,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
                 const Spacer(),
-                Text(item.$1, style: Theme.of(context).textTheme.bodySmall),
                 Text(
                   item.$2,
                   maxLines: 1,
@@ -578,7 +679,7 @@ class _BudgetsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final raw = data['trafficBudgets'] as List? ?? const [];
     return _SectionCard(
-      title: '节点统计与流量预算',
+      title: '流量预算',
       subtitle: '按面板节点与远程节点统计当前周期用量',
       child: raw.isEmpty
           ? const Text('暂无节点流量数据')
@@ -612,6 +713,13 @@ class _BudgetsCard extends StatelessWidget {
                       const SizedBox(height: 7),
                       LinearProgressIndicator(
                         value: (percent / 100).clamp(0, 1),
+                        color: percent >= 95
+                            ? Theme.of(context).colorScheme.error
+                            : percent >= 80
+                            ? const Color(0xFFB66A16)
+                            : Theme.of(context).colorScheme.primary,
+                        semanticsLabel:
+                            '${item['name']} 流量用量${budget == null ? '，未设置预算' : ''}',
                       ),
                       const SizedBox(height: 5),
                       Text(

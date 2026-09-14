@@ -75,10 +75,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 24),
-                      Text('Hysteria2管理', style: theme.textTheme.headlineLarge),
+                      Text(
+                        '你的网络，\n尽在掌握。',
+                        style: theme.textTheme.headlineLarge,
+                      ),
                       const SizedBox(height: 8),
                       Text(
-                        '你的服务，尽在掌握。',
+                        'Hysteria2 · 移动管理',
                         style: theme.textTheme.titleMedium?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),

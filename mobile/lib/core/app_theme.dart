@@ -5,8 +5,8 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
   final dark = brightness == Brightness.dark;
   final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: brightness)
       .copyWith(
-        surface: dark ? const Color(0xFF000000) : const Color(0xFFF2F2F7),
-        surfaceContainerLow: dark ? const Color(0xFF1C1C1E) : Colors.white,
+        surface: dark ? const Color(0xFF0B111D) : const Color(0xFFF1F4F8),
+        surfaceContainerLow: dark ? const Color(0xFF192330) : Colors.white,
         surfaceContainerHighest: dark
             ? const Color(0xFF2C2C2E)
             : const Color(0xFFE5E5EA),
@@ -20,7 +20,7 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       );
   final base = ThemeData(useMaterial3: true, colorScheme: scheme);
   final text = base.textTheme;
-  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(14));
+  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(18));
   final fieldBorder = OutlineInputBorder(
     borderRadius: BorderRadius.circular(12),
     borderSide: BorderSide.none,
