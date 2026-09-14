@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hysteria2_manager/core/glass.dart';
+import 'package:liquid_glass_widgets/liquid_glass_widgets.dart' as liquid;
 import 'package:hysteria2_manager/screens/home_shell.dart';
 
 void main() {
@@ -28,19 +28,19 @@ void main() {
     );
 
     expect(find.byType(NavigationBar), findsNothing);
-    expect(find.byType(GlassSurface), findsOneWidget);
+    expect(find.byType(liquid.GlassTabBar), findsOneWidget);
     for (final label in ['首页', '用户', '节点', '设置']) {
-      expect(find.text(label), findsOneWidget);
+      expect(find.text(label), findsWidgets);
     }
 
-    final dock = tester.getRect(find.byType(GlassSurface));
+    final dock = tester.getRect(find.byType(liquid.GlassTabBar));
     expect(dock.height, greaterThanOrEqualTo(66));
     expect(
       tester.getBottomLeft(find.byKey(const Key('page-body'))).dy,
       lessThanOrEqualTo(tester.getTopLeft(find.byType(AppBottomDock)).dy),
     );
 
-    await tester.tap(find.text('节点'));
+    await tester.tap(find.text('节点').hitTestable().first);
     await tester.pumpAndSettle();
     expect(selectedIndex, 2);
   });
@@ -63,19 +63,23 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.text('节点'));
+      await tester.tap(find.text('节点').hitTestable().first);
       await tester.pump(const Duration(milliseconds: 40));
       expect(selected, 2);
-      expect(
-        tester.widget<AnimatedAlign>(find.byType(AnimatedAlign)).duration,
-        reduced ? Duration.zero : const Duration(milliseconds: 320),
-      );
-      await tester.tap(find.text('用户'));
+      await tester.tap(find.text('用户').hitTestable().first);
       await tester.pumpAndSettle();
       expect(selected, 1);
       expect(
-        tester.widget<AnimatedAlign>(find.byType(AnimatedAlign)).alignment,
-        const Alignment(-1 + 2 / 3, 0),
+        tester
+            .widget<liquid.GlassTabBar>(find.byType(liquid.GlassTabBar))
+            .selectedIndex,
+        1,
+      );
+      expect(
+        tester
+            .widget<liquid.GlassTabBar>(find.byType(liquid.GlassTabBar))
+            .quality,
+        liquid.GlassQuality.premium,
       );
       expect(tester.takeException(), isNull);
     });

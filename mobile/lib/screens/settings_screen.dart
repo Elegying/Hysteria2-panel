@@ -90,18 +90,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
               '当前版本 v$current，可更新到 v${latest!.version}。下载后请直接覆盖安装，固定签名会保留应用数据。',
             ),
             actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('稍后'),
+              GlassControlSurface(
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('稍后'),
+                ),
               ),
-              FilledButton.icon(
-                onPressed: () async {
-                  final url = Uri.parse(latest!.url);
-                  await launchUrl(url, mode: LaunchMode.externalApplication);
-                  if (context.mounted) Navigator.pop(context);
-                },
-                icon: const Icon(Icons.download_rounded),
-                label: const Text('下载 APK'),
+              GlassControlSurface(
+                child: FilledButton.icon(
+                  onPressed: () async {
+                    final url = Uri.parse(latest!.url);
+                    await launchUrl(url, mode: LaunchMode.externalApplication);
+                    if (context.mounted) Navigator.pop(context);
+                  },
+                  icon: const Icon(Icons.download_rounded),
+                  label: const Text('下载 APK'),
+                ),
               ),
             ],
           ),
@@ -117,8 +121,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   }
 
   static int _compare(String a, String b) {
-    final left = a.split('.').map(int.parse).toList();
-    final right = b.split('.').map(int.parse).toList();
+    final left = a.split('-').first.split('.').map(int.parse).toList();
+    final right = b.split('-').first.split('.').map(int.parse).toList();
     for (var index = 0; index < 3; index++) {
       final value = left[index].compareTo(right[index]);
       if (value != 0) return value;
@@ -132,9 +136,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       title: Text(title),
       content: Text(body),
       actions: [
-        FilledButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('知道了'),
+        GlassControlSurface(
+          child: FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('知道了'),
+          ),
         ),
       ],
     ),
@@ -147,13 +153,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         title: const Text('退出登录'),
         content: const Text('退出后会撤销当前手机的设备会话，需要重新输入面板账号和密码。'),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('退出登录'),
+          GlassControlSurface(
+            child: FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('退出登录'),
+            ),
           ),
         ],
       ),
@@ -278,13 +288,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                               (ThemeMode.light, '浅色', Icons.light_mode_rounded),
                               (ThemeMode.dark, '深色', Icons.dark_mode_rounded),
                             ])
-                              ChoiceChip(
-                                avatar: Icon(item.$3, size: 18),
-                                label: Text(item.$2),
-                                selected: settings.mode == item.$1,
-                                showCheckmark: false,
-                                onSelected: (_) =>
-                                    themeController.setMode(item.$1),
+                              GlassControlSurface(
+                                child: ChoiceChip(
+                                  avatar: Icon(item.$3, size: 18),
+                                  label: Text(item.$2),
+                                  selected: settings.mode == item.$1,
+                                  showCheckmark: false,
+                                  onSelected: (_) =>
+                                      themeController.setMode(item.$1),
+                                ),
                               ),
                           ],
                         ),
@@ -308,30 +320,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                   child: InkWell(
                                     onTap: () => themeController.setSeed(color),
                                     borderRadius: BorderRadius.circular(999),
-                                    child: Container(
-                                      width: 48,
-                                      height: 48,
-                                      decoration: BoxDecoration(
-                                        color: color,
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color:
-                                              settings.seedValue ==
-                                                  color.toARGB32()
-                                              ? Theme.of(context)
-                                                    .colorScheme
-                                                    .onSurface
-                                              : Colors.transparent,
-                                          width: 3,
+                                    child: GlassSurface(
+                                      borderRadius: 999,
+                                      tintColor: color.withValues(alpha: .55),
+                                      child: Container(
+                                        width: 48,
+                                        height: 48,
+                                        decoration: BoxDecoration(
+                                          color: Colors.transparent,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color:
+                                                settings.seedValue ==
+                                                    color.toARGB32()
+                                                ? Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurface
+                                                : Colors.transparent,
+                                            width: 3,
+                                          ),
                                         ),
+                                        child:
+                                            settings.seedValue ==
+                                                color.toARGB32()
+                                            ? const Icon(
+                                                Icons.check_rounded,
+                                                color: Colors.white,
+                                              )
+                                            : null,
                                       ),
-                                      child:
-                                          settings.seedValue == color.toARGB32()
-                                          ? const Icon(
-                                              Icons.check_rounded,
-                                              color: Colors.white,
-                                            )
-                                          : null,
                                     ),
                                   ),
                                 ),
@@ -343,19 +360,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   ),
                 ),
                 const SizedBox(height: 14),
-                OutlinedButton.icon(
-                  onPressed: _logout,
-                  icon: Icon(
-                    Icons.logout_rounded,
-                    color: Theme.of(context).colorScheme.error,
-                  ),
-                  label: Text(
-                    '退出登录',
-                    style: TextStyle(
+                GlassControlSurface(
+                  child: OutlinedButton.icon(
+                    onPressed: _logout,
+                    icon: Icon(
+                      Icons.logout_rounded,
                       color: Theme.of(context).colorScheme.error,
+                    ),
+                    label: Text(
+                      '退出登录',
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
                     ),
                   ),
                 ),
+                SizedBox(height: appDockExtent(context)),
               ],
             ),
           ),

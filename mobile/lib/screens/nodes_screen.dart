@@ -37,7 +37,12 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     WidgetsBinding.instance.addObserver(this);
     Future.microtask(_load);
     _timer = Timer.periodic(const Duration(seconds: 5), (_) {
-      if (!_refreshing) _load(silent: true);
+      if (mounted &&
+          !_refreshing &&
+          TickerMode.valuesOf(context).enabled &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        _load(silent: true);
+      }
     });
   }
 
@@ -118,13 +123,17 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           enabled ? '启用后节点将重新承载连接。确认继续吗？' : '紧急停用会立即中断该节点上的现有连接，仅应在故障或安全事件中使用。',
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(label),
+          GlassControlSurface(
+            child: FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(label),
+            ),
           ),
         ],
       ),
@@ -170,13 +179,17 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
               : '立即撤销此节点的面板授权并移出当前列表，无需远端确认。不会卸载服务器文件，也不保证已有连接立即断开；历史流量保留。',
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(disconnect ? '一键断连' : '删除对接'),
+          GlassControlSurface(
+            child: FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(disconnect ? '一键断连' : '删除对接'),
+            ),
           ),
         ],
       ),
@@ -263,44 +276,56 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
               _StatusPill(status: node['status'].toString()),
               const SizedBox(height: 18),
               if (isLocal && node['canEmergencyControl'] == true) ...[
-                FilledButton.icon(
-                  style: node['enabled'] == true
-                      ? FilledButton.styleFrom(
-                          backgroundColor: Theme.of(context).colorScheme.error,
-                        )
-                      : null,
-                  onPressed: () => _setNodeEnabled(
-                    node,
-                    node['enabled'] != true,
-                    sheetContext,
+                GlassControlSurface(
+                  child: FilledButton.icon(
+                    style: node['enabled'] == true
+                        ? FilledButton.styleFrom(
+                            backgroundColor: Theme.of(context).colorScheme.error
+                                .withValues(alpha: .22),
+                            foregroundColor: Theme.of(context)
+                                .colorScheme
+                                .error,
+                          )
+                        : null,
+                    onPressed: () => _setNodeEnabled(
+                      node,
+                      node['enabled'] != true,
+                      sheetContext,
+                    ),
+                    icon: Icon(
+                      node['enabled'] == true
+                          ? Icons.emergency_rounded
+                          : Icons.play_arrow_rounded,
+                    ),
+                    label: Text(node['enabled'] == true ? '紧急停用' : '启用节点'),
                   ),
-                  icon: Icon(
-                    node['enabled'] == true
-                        ? Icons.emergency_rounded
-                        : Icons.play_arrow_rounded,
-                  ),
-                  label: Text(node['enabled'] == true ? '紧急停用' : '启用节点'),
                 ),
                 const SizedBox(height: 12),
               ],
               if (!isLocal) ...[
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.error,
+                GlassControlSurface(
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.error
+                          .withValues(alpha: .22),
+                      foregroundColor: Theme.of(context).colorScheme.error,
+                    ),
+                    onPressed: node['canDisconnect'] == true
+                        ? () => _pairingAction(node, 'disconnect', sheetContext)
+                        : null,
+                    icon: const Icon(Icons.link_off_rounded),
+                    label: const Text('一键断连'),
                   ),
-                  onPressed: node['canDisconnect'] == true
-                      ? () => _pairingAction(node, 'disconnect', sheetContext)
-                      : null,
-                  icon: const Icon(Icons.link_off_rounded),
-                  label: const Text('一键断连'),
                 ),
                 const SizedBox(height: 10),
-                OutlinedButton.icon(
-                  onPressed: node['canDeletePairing'] == true
-                      ? () => _pairingAction(node, 'delete', sheetContext)
-                      : null,
-                  icon: const Icon(Icons.delete_outline_rounded),
-                  label: const Text('删除对接'),
+                GlassControlSurface(
+                  child: OutlinedButton.icon(
+                    onPressed: node['canDeletePairing'] == true
+                        ? () => _pairingAction(node, 'delete', sheetContext)
+                        : null,
+                    icon: const Icon(Icons.delete_outline_rounded),
+                    label: const Text('删除对接'),
+                  ),
                 ),
                 const SizedBox(height: 12),
               ],
@@ -314,19 +339,21 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                         : '不可用',
                   ),
                   trailing: item.$1 == '节点 ID'
-                      ? IconButton(
-                          tooltip: '复制节点 ID',
-                          onPressed: () async {
-                            await Clipboard.setData(
-                              ClipboardData(text: item.$2.toString()),
-                            );
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('节点 ID 已复制')),
+                      ? GlassControlSurface(
+                          child: IconButton(
+                            tooltip: '复制节点 ID',
+                            onPressed: () async {
+                              await Clipboard.setData(
+                                ClipboardData(text: item.$2.toString()),
                               );
-                            }
-                          },
-                          icon: const Icon(Icons.copy_rounded),
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('节点 ID 已复制')),
+                                );
+                              }
+                            },
+                            icon: const Icon(Icons.copy_rounded),
+                          ),
                         )
                       : null,
                 ),
@@ -379,10 +406,12 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
               pinned: false,
               title: const Text('节点'),
               actions: [
-                IconButton(
-                  onPressed: _load,
-                  icon: const Icon(Icons.refresh_rounded),
-                  tooltip: '刷新',
+                GlassControlSurface(
+                  child: IconButton(
+                    onPressed: _load,
+                    icon: const Icon(Icons.refresh_rounded),
+                    tooltip: '刷新',
+                  ),
                 ),
               ],
             ),
@@ -400,10 +429,12 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             else if (_error != null && _nodes.isEmpty)
               SliverFillRemaining(
                 child: Center(
-                  child: FilledButton.icon(
-                    onPressed: _load,
-                    icon: const Icon(Icons.refresh_rounded),
-                    label: Text(_error!),
+                  child: GlassControlSurface(
+                    child: FilledButton.icon(
+                      onPressed: _load,
+                      icon: const Icon(Icons.refresh_rounded),
+                      label: Text(_error!),
+                    ),
                   ),
                 ),
               )
@@ -449,9 +480,9 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
               else
                 SliverPadding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                  sliver: SliverList.separated(
+                  sliver: GlassSliverList(
                     itemCount: _nodes.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 12),
+                    spacing: 12,
                     itemBuilder: (context, index) {
                       final node = _nodes[index];
                       return GlassCard(
@@ -534,6 +565,9 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                     ),
                   ),
                 ),
+              SliverToBoxAdapter(
+                child: SizedBox(height: appDockExtent(context)),
+              ),
             ],
           ],
         ),

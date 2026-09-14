@@ -11,6 +11,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'support/design_fixture.dart';
 
 void main() {
+  final binding = TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(
+    () => binding.platformDispatcher.accessibilityFeaturesTestValue =
+        const FakeAccessibilityFeatures(disableAnimations: true),
+  );
+  tearDown(
+    () => binding.platformDispatcher.clearAccessibilityFeaturesTestValue(),
+  );
   setUp(() {
     SharedPreferences.setMockInitialValues({});
     PackageInfo.setMockInitialValues(
@@ -52,15 +60,25 @@ void main() {
         await tester.pumpAndSettle();
         for (final label in ['首页', '用户', '节点', '设置']) {
           await tester.tap(
-            find.descendant(
-              of: find.byType(AppBottomDock),
-              matching: find.text(label),
-            ),
+            find
+                .descendant(
+                  of: find.byType(AppBottomDock),
+                  matching: find.text(label),
+                )
+                .hitTestable()
+                .first,
           );
           await tester.pumpAndSettle();
           expect(tester.takeException(), isNull, reason: label);
           // Titles and actions must share one compact toolbar, with no expanded blank header.
           final header = tester.widget<SliverAppBar>(find.byType(SliverAppBar));
+          expect(
+            find.descendant(
+              of: find.byType(SliverAppBar),
+              matching: find.text(label),
+            ),
+            findsOneWidget,
+          );
           expect(header.expandedHeight, isNull);
           expect(header.toolbarHeight, lessThanOrEqualTo(64));
           if (label == '首页') {

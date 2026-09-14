@@ -52,6 +52,7 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       ),
     ),
     appBarTheme: AppBarTheme(
+      actionsPadding: const EdgeInsetsDirectional.only(end: 16),
       centerTitle: false,
       elevation: 0,
       scrolledUnderElevation: 0,
@@ -65,7 +66,7 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: scheme.surface,
+      fillColor: scheme.surface.withValues(alpha: .24),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       border: fieldBorder,
       enabledBorder: fieldBorder,
@@ -83,6 +84,8 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
+        backgroundColor: scheme.primary.withValues(alpha: .16),
+        foregroundColor: scheme.onSurface,
         minimumSize: const Size(48, 50),
         shape: shape,
         textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
@@ -90,9 +93,11 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
+        backgroundColor: scheme.primary.withValues(alpha: .16),
+        foregroundColor: scheme.onSurface,
         minimumSize: const Size(48, 50),
         shape: shape,
-        side: BorderSide(color: scheme.outlineVariant),
+        side: BorderSide.none,
       ),
     ),
     textButtonTheme: TextButtonThemeData(
@@ -129,6 +134,8 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       shape: shape,
     ),
     chipTheme: base.chipTheme.copyWith(
+      backgroundColor: Colors.transparent,
+      selectedColor: scheme.primary.withValues(alpha: .25),
       side: BorderSide.none,
       shape: shape,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
