@@ -44,4 +44,40 @@ void main() {
     await tester.pumpAndSettle();
     expect(selectedIndex, 2);
   });
+
+  for (final reduced in [false, true]) {
+    testWidgets('dock retargets immediately, reduced motion=$reduced', (
+      tester,
+    ) async {
+      var selected = 0;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: StatefulBuilder(
+            builder: (context, setState) => MediaQuery(
+              data: MediaQueryData(disableAnimations: reduced),
+              child: AppBottomDock(
+                selectedIndex: selected,
+                onSelected: (value) => setState(() => selected = value),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('节点'));
+      await tester.pump(const Duration(milliseconds: 40));
+      expect(selected, 2);
+      expect(
+        tester.widget<AnimatedAlign>(find.byType(AnimatedAlign)).duration,
+        reduced ? Duration.zero : const Duration(milliseconds: 320),
+      );
+      await tester.tap(find.text('用户'));
+      await tester.pumpAndSettle();
+      expect(selected, 1);
+      expect(
+        tester.widget<AnimatedAlign>(find.byType(AnimatedAlign)).alignment,
+        const Alignment(-1 + 2 / 3, 0),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
 }

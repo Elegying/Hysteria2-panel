@@ -100,7 +100,7 @@ class GlassSurface extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: opaque
+          colors: opaque || !floating
               ? [scheme.surfaceContainerLow, scheme.surfaceContainerLow]
               : dark
               ? [
@@ -162,7 +162,7 @@ class GlassCard extends StatelessWidget {
   const GlassCard({
     required this.child,
     this.margin,
-    this.blurSigma = 12,
+    this.blurSigma = 0,
     super.key,
   });
 
