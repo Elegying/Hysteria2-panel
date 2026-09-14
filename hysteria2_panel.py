@@ -819,7 +819,10 @@ class BackupManager:
         return size
 
     @staticmethod
-    def _copy_database(source_path, destination_path, preflight=None):
+    def _copy_database(
+        source_path, destination_path, preflight=None,
+        maximum_bytes=MAX_BACKUP_CONTENT_BYTES,
+    ):
         try:
             source_metadata = os.lstat(source_path)
         except OSError as exc:
@@ -832,7 +835,9 @@ class BackupManager:
                 int(source.execute("PRAGMA page_count").fetchone()[0])
                 * int(source.execute("PRAGMA page_size").fetchone()[0])
             )
-            if logical_size <= 0 or logical_size > MAX_BACKUP_CONTENT_BYTES:
+            if logical_size <= 0 or (
+                maximum_bytes is not None and logical_size > maximum_bytes
+            ):
                 raise BackupValidationError("数据库大小超过备份上限")
             if preflight is not None:
                 preflight(logical_size)
@@ -1201,6 +1206,10 @@ class BackupManager:
                 self._copy_database(
                     self.database.path,
                     database_path,
+                    # Runtime tables can exceed the portable payload limit.
+                    # Bound staging by free space; _file_details checks the
+                    # compacted payload against FILE_LIMITS before publication.
+                    maximum_bytes=None,
                     preflight=lambda logical_size: self._require_free_space(
                         self.work_dir,
                         3 * logical_size

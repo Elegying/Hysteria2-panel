@@ -102,6 +102,37 @@ class BackupStreamingTests(unittest.TestCase):
 
         self.assertEqual([], list(self.manager.work_dir.iterdir()))
 
+    def test_large_runtime_database_is_compacted_before_payload_limit_check(self):
+        with sqlite_connection(str(self.database.path)) as connection:
+            connection.execute(
+                """INSERT INTO audit_log(
+                    created_at, actor, action, target, remote_ip
+                ) VALUES (1, 'fixture', 'large-runtime', 'runtime', zeroblob(?))""",
+                (hysteria2_panel.MAX_BACKUP_CONTENT_BYTES + 4096,),
+            )
+        self.assertGreater(
+            self.database.path.stat().st_size,
+            hysteria2_panel.MAX_BACKUP_CONTENT_BYTES,
+        )
+        archive = self.manager.create_archive()
+        manifest = self.manager.validate_archive(archive)
+        self.assertEqual(1, manifest["proxyUserCount"])
+        self.assertLess(
+            manifest["files"]["data/panel.db"]["size"],
+            hysteria2_panel.MAX_BACKUP_CONTENT_BYTES,
+        )
+        with sqlite_connection(str(self.database.path)) as connection:
+            self.assertEqual(1, connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE action = 'large-runtime'"
+            ).fetchone()[0])
+        self.assertIsNotNone(self.database.authenticate_token(self.user["token"]))
+
+    def test_compacted_payload_still_cannot_exceed_limit(self):
+        with mock.patch.dict(self.manager.FILE_LIMITS, {"data/panel.db": 1}):
+            with self.assertRaises(BackupValidationError):
+                self.manager.create_archive()
+        self.assertEqual([], list(self.manager.work_dir.iterdir()))
+
     def test_archive_capacity_uses_logical_database_size_including_wal(self):
         required = []
         with sqlite_connection(str(self.database.path)) as connection:
