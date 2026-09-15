@@ -7936,7 +7936,11 @@ class PanelHttpTests(unittest.TestCase):
         self.assertNotIn("data-data-plane-bootstrap-form", body)
         self.assertNotIn("data-data-plane-canary-form", body)
         self.assertNotIn("data-node-dns-action-form", body)
-        self.assertIn('先为独立面板域名配置 HTTPS，登录新面板完成恢复并验证，再切换节点域名 DNS', body)
+        migration_steps = ('为新服务器的独立面板域名配置 HTTPS。', '登录新面板，恢复备份并验证。', '确认正常后，再切换节点域名 DNS。')
+        for step in migration_steps:
+            self.assertIn('<li>' + step + '</li>', body)
+        self.assertLess(body.index(migration_steps[0]), body.index(migration_steps[1]))
+        self.assertLess(body.index(migration_steps[1]), body.index(migration_steps[2]))
         self.assertNotIn('.user-table td::before{content:attr(data-label)', body)
         self.assertNotIn('限 3 个并发连接', body)
 
