@@ -7875,9 +7875,12 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-qr-form', body)
         for label in ("分享", "二维码", "禁用", "改密", "重置", "删除"):
             self.assertIn(">{}<".format(label), body)
-        self.assertNotIn("更多操作", body)
+        edit_button = 'data-edit-user-id="{}">编辑</button>'.format(created["id"])
+        self.assertLess(body.index('/users/{}/toggle'.format(created["id"])), body.index(edit_button))
+        self.assertLess(body.index(edit_button), body.index('/users/{}/rotate'.format(created["id"])))
+        self.assertIn("<details><summary>更多操作</summary>", body)
         self.assertNotIn('class="action-menu"', body)
-        for label in ("启动", "重启", "停止", "刷新", "对接管理"):
+        for label in ("启动", "重启代理服务", "停止", "刷新", "对接管理"):
             self.assertIn(">{}<".format(label), body)
         self.assertIn('class="button-row service-actions"', body)
         self.assertIn('class="button-row version-actions"', body)
@@ -7904,8 +7907,7 @@ class PanelHttpTests(unittest.TestCase):
             body,
         )
         self.assertIn(
-            '.user-table .actions button{min-height:32px;padding:5px 4px;'
-            'font-size:11px}',
+            '.user-table .actions button,.user-table .actions summary{min-height:44px;',
             body,
         )
         self.assertIn(
@@ -7934,7 +7936,11 @@ class PanelHttpTests(unittest.TestCase):
         self.assertNotIn("data-data-plane-bootstrap-form", body)
         self.assertNotIn("data-data-plane-canary-form", body)
         self.assertNotIn("data-node-dns-action-form", body)
-        self.assertIn('先为独立面板域名配置 HTTPS，登录新面板完成恢复并验证，再切换节点域名 DNS', body)
+        migration_steps = ('为新服务器的独立面板域名配置 HTTPS。', '登录新面板，恢复备份并验证。', '确认正常后，再切换节点域名 DNS。')
+        for step in migration_steps:
+            self.assertIn('<li>' + step + '</li>', body)
+        self.assertLess(body.index(migration_steps[0]), body.index(migration_steps[1]))
+        self.assertLess(body.index(migration_steps[1]), body.index(migration_steps[2]))
         self.assertNotIn('.user-table td::before{content:attr(data-label)', body)
         self.assertNotIn('限 3 个并发连接', body)
 
@@ -8166,7 +8172,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(body.index('class="user-heading"'), body.index('class="user-search"'))
         self.assertIn('data-search-status', body)
         self.assertIn("url.searchParams.delete('page');", body)
-        self.assertIn("window.location.assign(url.pathname + url.search);", body)
+        self.assertIn("window.location.assign(url.pathname + url.search + '#users');", body)
         self.assertIn('data-dialog-open="create-user-dialog"', body)
         self.assertIn('<dialog id="create-user-dialog"', body)
         self.assertIn('aria-labelledby="create-user-title"', body)
@@ -8212,7 +8218,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("new URLSearchParams(new FormData(filterForm))", body)
         self.assertNotIn('data-user-name="disabled-user"', body)
         self.assertIn("url.searchParams.delete('page');", body)
-        self.assertIn("window.location.assign(url.pathname + url.search);", body)
+        self.assertIn("window.location.assign(url.pathname + url.search + '#users');", body)
         self.assertNotIn("history.replaceState", body)
         self.assertIn("field.value = '';", body)
         self.assertNotIn("filterForm.reset();", body)
