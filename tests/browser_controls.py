@@ -196,8 +196,21 @@ try:
     browser.click('#credentials-dialog [data-dialog-close]',navigation=True)
     passed('添加用户、连接信息、复制与关闭后刷新')
 
-    browser.click('[data-dialog-open="edit-user-dialog"]')
-    browser.value('#edit-user-select',str(user_id),'change')
+    browser.click('[data-edit-user-id="'+str(user_id)+'"]')
+    assert browser.evaluate('document.querySelector("[data-edit-user-select]").value') == str(user_id)
+    assert 'web-created' in browser.evaluate('document.getElementById("edit-user-title").textContent')
+    browser.value('#edit-device-limit','6')
+    browser.accept = False
+    browser.click('#edit-user-dialog [data-dialog-close]')
+    assert browser.evaluate('document.getElementById("edit-user-dialog").open')
+    assert browser.evaluate('document.getElementById("edit-device-limit").value') == '6'
+    browser.value('#edit-user-select',str(fixture.db.get_proxy_user_by_name('web-alpha')['id']),'change')
+    assert browser.evaluate('document.getElementById("edit-user-select").value') == str(user_id)
+    browser.accept = True
+    browser.click('#edit-user-dialog [data-dialog-close]')
+    browser.click('[data-edit-user-id="'+str(user_id)+'"]')
+    assert browser.evaluate('document.getElementById("edit-device-limit").value') == '3'
+    passed('编辑未保存关闭和切换保护、放弃后重新载入')
     browser.value('#edit-device-limit','7')
     browser.value('#edit-traffic-limit-gb','20')
     browser.value('#edit-used-traffic-gib','1.5')
@@ -247,10 +260,12 @@ try:
     browser.navigate(fixture.base_url+'/')
     passed('改密取消与确认分支')
     fixture.db.add_traffic({'web-created':{'tx':1000,'rx':2000}})
+    browser.click(row+'details summary')
     browser.click(row+'form[action$="/reset"] button',navigation=True)
     user = fixture.db.get_proxy_user(user_id)
     assert user['tx_bytes']==user['rx_bytes']==0
     passed('单用户重置流量')
+    browser.click(row+'details summary')
     browser.accept = False
     browser.click(row+'form[action$="/delete"] button')
     assert fixture.db.get_proxy_user_by_name('web-created') is not None
@@ -260,7 +275,12 @@ try:
     passed('删除用户取消与确认分支')
 
     browser.value('[data-user-search]','web-alpha')
+    time.sleep(.5)
+    assert 'q=web-alpha' not in browser.evaluate('location.search')
+    browser.click('[data-user-filters] button[type="submit"]',navigation=True)
     browser.wait('location.search.includes("q=web-alpha") && document.querySelectorAll("[data-user-name]").length===1')
+    assert browser.evaluate('location.hash') == '#users'
+    assert browser.evaluate('document.activeElement.id') == 'user-search'
     browser.click('[data-clear-user-filters]',navigation=True)
     assert browser.evaluate('document.querySelectorAll("[data-user-name]").length')==2
     passed('搜索与清除筛选')
@@ -385,15 +405,19 @@ try:
     browser.click('a.sort-link[href*="sort=traffic"]',navigation=True)
     assert browser.evaluate('Array.from(document.querySelectorAll("[data-user-name]")).map(e=>e.dataset.userName)') == ['web-alpha','web-beta']
     browser.value('[data-status-filter]','enabled','change')
+    browser.click('[data-user-filters] button[type="submit"]',navigation=True)
     browser.wait('location.search.includes("status=enabled")')
     browser.value('[data-online-filter]','inactive','change')
+    browser.click('[data-user-filters] button[type="submit"]',navigation=True)
     browser.wait('location.search.includes("online=inactive")')
     browser.value('[data-udp443-filter]','blocked','change')
+    browser.click('[data-user-filters] button[type="submit"]',navigation=True)
     browser.wait('location.search.includes("udp443=blocked")')
     assert browser.evaluate('document.querySelectorAll("[data-user-name]").length') == 2
     browser.click('[data-clear-user-filters]',navigation=True)
     passed('页面刷新、流量升降排序与组合筛选')
     browser.accept = False
+    browser.click('.maintenance summary')
     browser.click('form[action="/users/reset-traffic"] button')
     assert fixture.db.get_proxy_user_by_name('web-alpha')['tx_bytes'] == 111
     browser.accept = True

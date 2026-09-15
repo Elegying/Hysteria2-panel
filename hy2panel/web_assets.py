@@ -61,6 +61,8 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 @media(max-width:640px){.version-row{display:grid;grid-template-columns:1fr;align-items:start;gap:8px}.version-actions{grid-template-columns:1fr;width:100%}.version-actions form,.version-actions button{width:100%}}
 .service-badge.pending{border-color:rgba(243,189,98,.34);background:rgba(243,189,98,.12);color:var(--warning)}.service-badge.failed{border-color:rgba(255,120,134,.34);background:rgba(255,120,134,.13);color:#ffabb4}.user-table td:first-child strong,.node-row strong{overflow-wrap:anywhere;word-break:break-word}.topbar .pill,.topbar .topbar-action,.topbar .logout-form button{border:1px solid #3a506b;border-radius:10px;background:#17273b;box-shadow:none}
 @media(max-width:640px){.user-table td:first-child strong{display:block;max-width:100%}}
+.section-nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}.section-nav a{min-height:44px;display:flex;align-items:center;padding:8px 18px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);text-decoration:none}#overview,#nodes,#users{scroll-margin-top:16px}.maintenance{margin:16px 0;padding:12px;border:1px solid var(--line);border-radius:12px}.maintenance summary::after,.advanced-help summary::after{content:"＋";margin-left:auto}.maintenance[open] summary::after,.advanced-help[open] summary::after{content:"−"}.maintenance summary,.advanced-help summary{cursor:pointer;min-height:44px;display:flex;align-items:center}.maintenance form{margin-top:12px}.advanced-help{margin-top:12px}.migration-guide{display:grid;gap:12px}.migration-guide p{margin:8px 0;line-height:1.65}.migration-guide h3{margin:0}.migration-guide code{white-space:nowrap}.actions details{position:relative}.actions summary{cursor:pointer;list-style:none;border:1px solid var(--line);border-radius:10px;padding:8px 12px}.actions details[open]{padding:8px;background:var(--surface-2);border-radius:10px}.actions details form{margin-top:8px}.egress-help{font-size:13px;line-height:1.6}.user-filters{grid-template-columns:minmax(160px,2fr) repeat(3,minmax(90px,1fr)) auto auto}
+@media(max-width:640px){.user-filters{grid-template-columns:1fr 1fr}.user-table .actions{gap:8px}.user-table .actions button,.user-table .actions summary{min-height:44px;font-size:14px;padding:10px 6px;text-align:center}.user-table .traffic-label,.user-table td:nth-child(4){font-size:12px}.user-table .actions details{grid-column:auto}.section-nav a{flex:1;justify-content:center}.section-actions button{min-height:44px}.user-filters button[type="submit"]{grid-column:1}.user-table td:nth-child(4){white-space:normal}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop,.dialog-head{backdrop-filter:none}}
 """
 
@@ -190,12 +192,31 @@ function showCredentials(payload, withQr, refreshOnClose) {
   dialog.dataset.refreshOnClose = refreshOnClose ? '1' : '0';
   dialog.showModal();
 }
+let editBaseline = '';
+let editSelectedId = '';
+function editValues() {
+  const form = document.querySelector('[data-edit-user-form]');
+  return JSON.stringify(['device_limit', 'traffic_limit_gb', 'used_traffic_gib', 'allow_udp_443'].map(function(name) {
+    const field = form.elements.namedItem(name);
+    return field.type === 'checkbox' ? field.checked : field.value;
+  }));
+}
+function canDiscardEdit() {
+  if (document.querySelector('[data-edit-user-form] button[type="submit"]').disabled) return false;
+  return editValues() === editBaseline || window.confirm('此用户有未保存的修改，确定放弃吗？');
+}
+function closeUserDialog(dialog) {
+  if (dialog.id === 'edit-user-dialog' && !canDiscardEdit()) return;
+  dialog.close();
+}
 function syncEditUserForm() {
   const form = document.querySelector('[data-edit-user-form]');
   if (!form) return;
   const selector = form.querySelector('[data-edit-user-select]');
   const option = selector && selector.options[selector.selectedIndex];
   if (!option || !option.value) return;
+  document.getElementById('edit-user-title').textContent = '编辑 · ' + option.textContent;
+  editSelectedId = option.value;
   form.action = '/users/' + encodeURIComponent(option.value) + '/edit';
   form.querySelector('[name="generation"]').value = option.dataset.generation;
   form.querySelector('[name="device_limit"]').value = option.dataset.deviceLimit;
@@ -204,6 +225,7 @@ function syncEditUserForm() {
   used.value = option.dataset.usedTrafficGib;
   used.dataset.initialValue = used.value;
   form.querySelector('[name="allow_udp_443"]').checked = option.dataset.allowUdp443 === '1';
+  editBaseline = editValues();
 }
 function renderUpdateStatus(payload) {
   const status = document.querySelector('[data-update-status]');
@@ -268,7 +290,11 @@ const dialogOpeners = new WeakMap();
 document.addEventListener('click', function(event) {
   const opener = event.target.closest('[data-dialog-open]');
   if (opener) {
-    if (opener.dataset.dialogOpen === 'edit-user-dialog') syncEditUserForm();
+    if (opener.dataset.dialogOpen === 'edit-user-dialog') {
+      const selector = document.querySelector('[data-edit-user-select]');
+      if (opener.dataset.editUserId && selector) selector.value = opener.dataset.editUserId;
+      syncEditUserForm();
+    }
     const dialog = document.getElementById(opener.dataset.dialogOpen);
     if (dialog && typeof dialog.showModal === 'function') {
       dialogOpeners.set(dialog, opener);
@@ -279,7 +305,7 @@ document.addEventListener('click', function(event) {
   const closer = event.target.closest('[data-dialog-close]');
   if (closer) {
     const dialog = closer.closest('dialog');
-    if (dialog) dialog.close();
+    if (dialog) closeUserDialog(dialog);
   }
 });
 document.addEventListener('keydown', function(event) {
@@ -288,8 +314,13 @@ document.addEventListener('keydown', function(event) {
   const dialog = dialogs[dialogs.length - 1];
   if (!dialog) return;
   event.preventDefault();
-  dialog.close();
+  closeUserDialog(dialog);
 });
+document.addEventListener('cancel', function(event) {
+  if (event.target.id !== 'edit-user-dialog') return;
+  event.preventDefault();
+  closeUserDialog(event.target);
+}, true);
 document.addEventListener('close', function(event) {
   const dialog = event.target;
   if (!(dialog instanceof HTMLDialogElement)) return;
@@ -386,6 +417,7 @@ document.addEventListener('submit', async function(event) {
   if (!form || event.defaultPrevented) return;
   event.preventDefault();
   const button = form.querySelector('button[type="submit"]');
+  if (button.disabled) return;
   button.disabled = true;
   button.textContent = '保存中…';
   const used = form.querySelector('[name="used_traffic_gib"]');
@@ -542,14 +574,17 @@ if (nodeOnboardingDialog) nodeOnboardingDialog.addEventListener('close', functio
 });
 const editUserSelect = document.querySelector('[data-edit-user-select]');
 if (editUserSelect) {
-  editUserSelect.addEventListener('change', syncEditUserForm);
+  editUserSelect.addEventListener('change', function() {
+    if (!canDiscardEdit()) { editUserSelect.value = editSelectedId; return; }
+    syncEditUserForm();
+  });
   syncEditUserForm();
 }
 const filterForm = document.querySelector('[data-user-filters]');
 if (filterForm) {
   const userSearch = filterForm.querySelector('[data-user-search]');
   const clearFilters = filterForm.querySelector('[data-clear-user-filters]');
-  let searchTimer = 0;
+  let composing = false;
   function applyServerFilters() {
     const params = new URLSearchParams(new FormData(filterForm));
     const url = new URL(window.location.href);
@@ -559,17 +594,17 @@ if (filterForm) {
       else url.searchParams.delete(name);
     });
     url.searchParams.delete('page');
-    window.location.assign(url.pathname + url.search);
+    window.location.assign(url.pathname + url.search + '#users');
   }
   filterForm.addEventListener('submit', function(event) {
     event.preventDefault();
-    applyServerFilters();
+    if (!composing) applyServerFilters();
   });
-  filterForm.addEventListener('change', applyServerFilters);
-  userSearch.addEventListener('input', function() {
-    window.clearTimeout(searchTimer);
-    searchTimer = window.setTimeout(applyServerFilters, 350);
-  });
+  userSearch.addEventListener('compositionstart', function() { composing = true; });
+  userSearch.addEventListener('compositionend', function() { composing = false; });
+  if (window.location.hash === '#users') window.addEventListener('load', function() {
+    userSearch.focus({preventScroll: true});
+  }, {once: true});
   if (clearFilters) clearFilters.addEventListener('click', function() {
     ['q', 'status', 'online', 'udp443'].forEach(function(name) {
       const field = filterForm.elements.namedItem(name);
