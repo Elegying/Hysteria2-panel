@@ -152,6 +152,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/login` | 创建 HttpOnly、SameSite=Strict 会话；HTTPS 模式额外设置 Secure；按来源 IP 执行登录限速 |
 | `GET` | `/` | 服务控制、系统资源、版本、全局统计、高流量前五、完整用户列表、即时搜索与限额进度 |
 | `POST` | `/users` | 创建带设备/总流量限制的用户并显示认证密钥和 URI |
+| `GET` | `/users/lookup?name={username}` | 需要面板登录会话，按完整用户名精确查询编辑字段；不存在返回 404，不返回密码或订阅凭据 |
 | `POST` | `/users/{id}/edit` | 携带当前 `generation`，修改客户端实例数、总流量限制和账号级 UDP 443 权限，不修改 token 或 URI |
 | `POST` | `/users/{id}/toggle` | 携带当前 `generation`，启用或禁用用户 |
 | `POST` | `/users/{id}/rotate` | 携带当前 `generation`，轮换认证密钥并断开旧连接 |

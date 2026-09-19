@@ -7875,10 +7875,10 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-qr-form', body)
         for label in ("分享", "二维码", "禁用", "改密", "重置", "删除"):
             self.assertIn(">{}<".format(label), body)
-        edit_button = 'data-edit-user-id="{}">编辑</button>'.format(created["id"])
+        edit_button = 'data-edit-user-id="{}"'.format(created["id"])
         self.assertLess(body.index('/users/{}/toggle'.format(created["id"])), body.index(edit_button))
         self.assertLess(body.index(edit_button), body.index('/users/{}/rotate'.format(created["id"])))
-        self.assertIn("<details><summary>更多操作</summary>", body)
+        self.assertNotIn("更多操作", body)
         self.assertNotIn('class="action-menu"', body)
         for label in ("启动", "重启代理服务", "停止", "刷新", "对接管理"):
             self.assertIn(">{}<".format(label), body)
@@ -7907,7 +7907,7 @@ class PanelHttpTests(unittest.TestCase):
             body,
         )
         self.assertIn(
-            '.user-table .actions button,.user-table .actions summary{min-height:44px;',
+            '.user-table .actions button{min-height:44px;',
             body,
         )
         self.assertIn(

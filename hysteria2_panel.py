@@ -675,6 +675,7 @@ class BackupManager:
         ("mobile_sessions", "DELETE FROM mobile_sessions"),
         ("sessions", "DELETE FROM sessions"),
         ("audit_log", "DELETE FROM audit_log"),
+        ("user_traffic_reset_state", "DELETE FROM user_traffic_reset_state"),
         ("domain_usage_monthly", "DELETE FROM domain_usage_monthly"),
         ("applied_traffic_batches", "DELETE FROM applied_traffic_batches"),
         ("node_online_counts", "DELETE FROM node_online_counts"),
@@ -2305,6 +2306,18 @@ def parse_used_traffic_gib(value):
     return int(gib * 1024**3)
 
 
+def user_traffic_month(now):
+    """User quotas use Beijing time independently of the server timezone."""
+    local = datetime.datetime.fromtimestamp(now, datetime.timezone(datetime.timedelta(hours=8)))
+    return local.strftime("%Y-%m")
+
+
+def seconds_to_user_traffic_month(now):
+    local = datetime.datetime.fromtimestamp(now, datetime.timezone(datetime.timedelta(hours=8)))
+    year, month = (local.year + 1, 1) if local.month == 12 else (local.year, local.month + 1)
+    return max(0.01, local.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0).timestamp() - now)
+
+
 class Database:
     # The agent loop is clamped to no less than one batch per second. This keeps
     # the complete eight-day idempotency window for a healthy node, while a
@@ -2339,6 +2352,11 @@ class Database:
             connection.executescript(
                 """
                 PRAGMA journal_mode = WAL;
+                CREATE TABLE IF NOT EXISTS user_traffic_reset_state (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    period TEXT NOT NULL,
+                    reset_at INTEGER
+                );
                 CREATE TABLE IF NOT EXISTS admins (
                     id INTEGER PRIMARY KEY,
                     username TEXT NOT NULL UNIQUE,
@@ -2600,6 +2618,11 @@ class Database:
                 CREATE INDEX IF NOT EXISTS node_data_plane_bootstrap_node_idx
                     ON node_data_plane_bootstrap_grants(node_id, created_at);
                 """
+            )
+            # Enabling the schedule never clears existing traffic immediately.
+            connection.execute(
+                "INSERT OR IGNORE INTO user_traffic_reset_state(singleton, period) VALUES (1, ?)",
+                (user_traffic_month(time.time()),),
             )
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(proxy_users)")
@@ -4266,19 +4289,46 @@ class Database:
                 (row["name"],),
             )
 
+    @staticmethod
+    def _reset_all_traffic(connection, now):
+        connection.execute(
+            """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
+            generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?""",
+            (now, now),
+        )
+        connection.execute(
+            "UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0, updated_at = ?",
+            (now,),
+        )
+        connection.execute("DELETE FROM domain_usage_monthly")
+
     def reset_all_traffic(self):
         with self._connect() as connection:
-            now = int(time.time())
+            connection.execute("BEGIN IMMEDIATE")
+            self._reset_all_traffic(connection, int(time.time()))
+
+    def reset_monthly_traffic_if_due(self, now):
+        period = user_traffic_month(now)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT period FROM user_traffic_reset_state WHERE singleton = 1"
+            ).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO user_traffic_reset_state(singleton, period) VALUES (1, ?)",
+                    (period,),
+                )
+                return False
+            if row["period"] >= period:
+                return False
+            self._reset_all_traffic(connection, int(now))
             connection.execute(
-                """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
-                generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?""",
-                (now, now),
+                "UPDATE user_traffic_reset_state SET period = ?, reset_at = ? WHERE singleton = 1",
+                (period, int(now)),
             )
-            connection.execute(
-                "UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0, updated_at = ?",
-                (now,),
-            )
-            connection.execute("DELETE FROM domain_usage_monthly")
+        LOGGER.info("monthly user traffic reset completed for %s (Asia/Shanghai)", period)
+        return True
 
     def create_node_enrollment(
         self,
@@ -8440,6 +8490,26 @@ class PanelHandler(JsonHandler):
             else:
                 self._send_html(200, self._login_page())
             return
+        if path == "/users/lookup":
+            if not self._require_session():
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            name = query.get("name", [""])[0].strip()
+            if not name or len(name) > 64:
+                self.send_json(400, {"error": "请输入完整用户名（最多 64 个字符）"})
+                return
+            user = self.app.database.get_proxy_user_by_name(name)
+            if user is None:
+                self.send_json(404, {"error": "未找到该用户，请检查完整用户名"})
+                return
+            self.send_json(200, {
+                "id": user["id"], "name": user["name"], "generation": user["generation"],
+                "device_limit": user["device_limit"],
+                "traffic_limit_gb": max(1, user["traffic_limit_bytes"] // 1024**3),
+                "used_traffic_gib": format((user["tx_bytes"] + user["rx_bytes"]) / 1024**3, ".9f").rstrip("0").rstrip(".") or "0",
+                "allow_udp_443": bool(user["allow_udp_443"]),
+            })
+            return
         if path == "/updates/status":
             session = self._require_session()
             if not session:
@@ -8822,6 +8892,7 @@ class PanelHandler(JsonHandler):
                     form.get("name", ""),
                     device_limit=device_limit,
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
+                    allow_udp_443=form.get("allow_udp_443") == "1",
                 )
         except (TypeError, ValueError) as exc:
             if inline:
@@ -9616,6 +9687,7 @@ class UsageManager:
     def collect_once(self):
         with self.lock:
             traffic = self._collect_locked()
+            self.database.reset_monthly_traffic_if_due(self.wall_clock())
             try:
                 blocked = self._blocked_online_names_locked()
             except Exception:
@@ -9958,7 +10030,7 @@ class UsageManager:
                 LOGGER.exception("remote budget retirement check failed")
             if heartbeat is not None:
                 heartbeat()
-            if stop_event.wait(interval):
+            if stop_event.wait(min(interval, seconds_to_user_traffic_month(self.wall_clock()))):
                 break
 
 
