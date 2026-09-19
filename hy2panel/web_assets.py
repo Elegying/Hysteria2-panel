@@ -61,8 +61,9 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 @media(max-width:640px){.version-row{display:grid;grid-template-columns:1fr;align-items:start;gap:8px}.version-actions{grid-template-columns:1fr;width:100%}.version-actions form,.version-actions button{width:100%}}
 .service-badge.pending{border-color:rgba(243,189,98,.34);background:rgba(243,189,98,.12);color:var(--warning)}.service-badge.failed{border-color:rgba(255,120,134,.34);background:rgba(255,120,134,.13);color:#ffabb4}.user-table td:first-child strong,.node-row strong{overflow-wrap:anywhere;word-break:break-word}.topbar .pill,.topbar .topbar-action,.topbar .logout-form button{border:1px solid #3a506b;border-radius:10px;background:#17273b;box-shadow:none}
 @media(max-width:640px){.user-table td:first-child strong{display:block;max-width:100%}}
-.section-nav{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}.section-nav a{min-height:44px;display:flex;align-items:center;padding:8px 18px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--text);text-decoration:none}#overview,#nodes,#users{scroll-margin-top:16px}.maintenance{margin:16px 0;padding:12px;border:1px solid var(--line);border-radius:12px}.maintenance summary::after,.advanced-help summary::after{content:"＋";margin-left:auto}.maintenance[open] summary::after,.advanced-help[open] summary::after{content:"−"}.maintenance summary,.advanced-help summary{cursor:pointer;min-height:44px;display:flex;align-items:center}.maintenance form{margin-top:12px}.advanced-help{margin-top:12px}.migration-guide{display:grid;gap:12px}.migration-guide p{margin:8px 0;line-height:1.65}.migration-guide h3{margin:0}.migration-guide code{white-space:nowrap}.actions details{position:relative}.actions summary{cursor:pointer;list-style:none;border:1px solid var(--line);border-radius:10px;padding:8px 12px}.actions details[open]{padding:8px;background:var(--surface-2);border-radius:10px}.actions details form{margin-top:8px}.egress-help{font-size:13px;line-height:1.6}.user-filters{grid-template-columns:minmax(160px,2fr) repeat(3,minmax(90px,1fr)) auto auto}
-@media(max-width:640px){.user-filters{grid-template-columns:1fr 1fr}.user-table .actions{gap:8px}.user-table .actions button,.user-table .actions summary{min-height:44px;font-size:14px;padding:10px 6px;text-align:center}.user-table .traffic-label,.user-table td:nth-child(4){font-size:12px}.user-table .actions details{grid-column:auto}.section-nav a{flex:1;justify-content:center}.section-actions button{min-height:44px}.user-filters button[type="submit"]{grid-column:1}.user-table td:nth-child(4){white-space:normal}}
+#overview,#nodes,#users{scroll-margin-top:16px}.advanced-help{margin-top:12px}.migration-guide{display:grid;gap:12px}.migration-guide p{margin:8px 0;line-height:1.65}.migration-guide h3{margin:0}.migration-guide code{white-space:nowrap}.egress-help{font-size:13px;line-height:1.6}.user-filters{grid-template-columns:minmax(160px,2fr) repeat(3,minmax(90px,1fr)) auto auto}
+@media(max-width:640px){.user-filters{grid-template-columns:1fr 1fr}.user-table .actions{gap:8px}.user-table .actions button{min-height:44px;font-size:14px;padding:10px 6px;text-align:center}.user-table .traffic-label,.user-table td:nth-child(4){font-size:12px}.section-actions button{min-height:44px}.user-filters button[type="submit"]{grid-column:1}.user-table td:nth-child(4){white-space:normal}}
+.edit-lookup{display:flex;gap:8px}.edit-lookup input{min-width:0;flex:1}.edit-lookup button{flex-shrink:0}.edit-fields{border:0;padding:0;min-width:0}.dialog-head>div{min-width:0}#edit-user-title{overflow-wrap:anywhere}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop,.dialog-head{backdrop-filter:none}}
 """
 
@@ -194,6 +195,8 @@ function showCredentials(payload, withQr, refreshOnClose) {
 }
 let editBaseline = '';
 let editSelectedId = '';
+let editLoadedName = '';
+let editLoadSequence = 0;
 function editValues() {
   const form = document.querySelector('[data-edit-user-form]');
   return JSON.stringify(['device_limit', 'traffic_limit_gb', 'used_traffic_gib', 'allow_udp_443'].map(function(name) {
@@ -202,30 +205,64 @@ function editValues() {
   }));
 }
 function canDiscardEdit() {
-  if (document.querySelector('[data-edit-user-form] button[type="submit"]').disabled) return false;
-  return editValues() === editBaseline || window.confirm('此用户有未保存的修改，确定放弃吗？');
+  if (document.querySelector('[data-edit-user-form]').dataset.saving === '1') return false;
+  return !editSelectedId || editValues() === editBaseline || window.confirm('此用户有未保存的修改，确定放弃吗？');
 }
 function closeUserDialog(dialog) {
   if (dialog.id === 'edit-user-dialog' && !canDiscardEdit()) return;
   dialog.close();
 }
-function syncEditUserForm() {
+function clearEditUser() {
+  editLoadSequence += 1;
+  editSelectedId = '';
+  editLoadedName = '';
   const form = document.querySelector('[data-edit-user-form]');
-  if (!form) return;
-  const selector = form.querySelector('[data-edit-user-select]');
-  const option = selector && selector.options[selector.selectedIndex];
-  if (!option || !option.value) return;
-  document.getElementById('edit-user-title').textContent = '编辑 · ' + option.textContent;
-  editSelectedId = option.value;
-  form.action = '/users/' + encodeURIComponent(option.value) + '/edit';
-  form.querySelector('[name="generation"]').value = option.dataset.generation;
-  form.querySelector('[name="device_limit"]').value = option.dataset.deviceLimit;
-  form.querySelector('[name="traffic_limit_gb"]').value = option.dataset.trafficLimitGb;
-  const used = form.querySelector('[name="used_traffic_gib"]');
-  used.value = option.dataset.usedTrafficGib;
-  used.dataset.initialValue = used.value;
-  form.querySelector('[name="allow_udp_443"]').checked = option.dataset.allowUdp443 === '1';
-  editBaseline = editValues();
+  form.action = '/users/0/edit';
+  form.querySelector('[data-edit-user-name-input]').value = '';
+  form.querySelector('[data-edit-user-fields]').disabled = true;
+  form.querySelector('button[type="submit"]').disabled = true;
+  form.querySelector('[data-edit-user-status]').textContent = '输入完整用户名后加载设置。';
+  document.getElementById('edit-user-title').textContent = '编辑用户';
+}
+async function loadEditUser() {
+  const form = document.querySelector('[data-edit-user-form]');
+  const input = form.querySelector('[data-edit-user-name-input]');
+  const status = form.querySelector('[data-edit-user-status]');
+  if (form.dataset.saving === '1') return;
+  if (!canDiscardEdit()) {
+    input.value = editLoadedName;
+    form.querySelector('button[type="submit"]').disabled = !editSelectedId;
+    return;
+  }
+  const name = input.value.trim();
+  if (!name) { status.textContent = '请输入完整用户名'; input.focus(); return; }
+  const sequence = ++editLoadSequence;
+  editSelectedId = '';
+  editLoadedName = '';
+  form.querySelector('[data-edit-user-fields]').disabled = true;
+  form.querySelector('button[type="submit"]').disabled = true;
+  status.textContent = '正在加载用户…';
+  try {
+    const user = await postJson('/users/lookup?name=' + encodeURIComponent(name), {method: 'GET'}, 15000);
+    if (sequence !== editLoadSequence || !form.closest('dialog').open) return;
+    editSelectedId = String(user.id);
+    editLoadedName = user.name;
+    input.value = user.name;
+    document.getElementById('edit-user-title').textContent = '编辑 · ' + user.name;
+    form.action = '/users/' + encodeURIComponent(user.id) + '/edit';
+    ['generation', 'device_limit', 'traffic_limit_gb', 'used_traffic_gib'].forEach(function(key) {
+      form.elements.namedItem(key).value = user[key];
+    });
+    const used = form.elements.namedItem('used_traffic_gib');
+    used.dataset.initialValue = used.value;
+    form.elements.namedItem('allow_udp_443').checked = user.allow_udp_443;
+    editBaseline = editValues();
+    form.querySelector('[data-edit-user-fields]').disabled = false;
+    form.querySelector('button[type="submit"]').disabled = false;
+    status.textContent = '已加载 ' + user.name + ' 的设置';
+  } catch (error) {
+    if (sequence === editLoadSequence) status.textContent = error.message || '加载失败，请重试';
+  }
 }
 function renderUpdateStatus(payload) {
   const status = document.querySelector('[data-update-status]');
@@ -291,9 +328,11 @@ document.addEventListener('click', function(event) {
   const opener = event.target.closest('[data-dialog-open]');
   if (opener) {
     if (opener.dataset.dialogOpen === 'edit-user-dialog') {
-      const selector = document.querySelector('[data-edit-user-select]');
-      if (opener.dataset.editUserId && selector) selector.value = opener.dataset.editUserId;
-      syncEditUserForm();
+      clearEditUser();
+      if (opener.dataset.editUserName) {
+        document.querySelector('[data-edit-user-name-input]').value = opener.dataset.editUserName;
+        loadEditUser();
+      }
     }
     const dialog = document.getElementById(opener.dataset.dialogOpen);
     if (dialog && typeof dialog.showModal === 'function') {
@@ -324,6 +363,7 @@ document.addEventListener('cancel', function(event) {
 document.addEventListener('close', function(event) {
   const dialog = event.target;
   if (!(dialog instanceof HTMLDialogElement)) return;
+  if (dialog.id === 'edit-user-dialog' && !dialog.open) editLoadSequence += 1;
   const opener = dialogOpeners.get(dialog);
   dialogOpeners.delete(dialog);
   if (opener && opener.isConnected) opener.focus();
@@ -417,7 +457,8 @@ document.addEventListener('submit', async function(event) {
   if (!form || event.defaultPrevented) return;
   event.preventDefault();
   const button = form.querySelector('button[type="submit"]');
-  if (button.disabled) return;
+  if (button.disabled || !editSelectedId || form.querySelector('[data-edit-user-name-input]').value.trim() !== editLoadedName) return;
+  form.dataset.saving = '1';
   button.disabled = true;
   button.textContent = '保存中…';
   const used = form.querySelector('[name="used_traffic_gib"]');
@@ -431,8 +472,9 @@ document.addEventListener('submit', async function(event) {
   } catch (error) {
     notify(error.message || '用户设置更新失败，请重试', true);
   } finally {
+    delete form.dataset.saving;
     used.disabled = false;
-    button.disabled = false;
+    button.disabled = !editSelectedId || form.querySelector('[data-edit-user-name-input]').value.trim() !== editLoadedName;
     button.textContent = '保存修改';
   }
 });
@@ -572,13 +614,17 @@ if (nodeOnboardingDialog) nodeOnboardingDialog.addEventListener('close', functio
   if (expiry) expiry.textContent = '';
   if (result) result.hidden = true;
 });
-const editUserSelect = document.querySelector('[data-edit-user-select]');
-if (editUserSelect) {
-  editUserSelect.addEventListener('change', function() {
-    if (!canDiscardEdit()) { editUserSelect.value = editSelectedId; return; }
-    syncEditUserForm();
+const editNameInput = document.querySelector('[data-edit-user-name-input]');
+if (editNameInput) {
+  document.querySelector('[data-edit-user-load]').addEventListener('click', loadEditUser);
+  editNameInput.addEventListener('keydown', function(event) {
+    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); loadEditUser(); }
   });
-  syncEditUserForm();
+  editNameInput.addEventListener('input', function() {
+    editLoadSequence += 1;
+    document.querySelector('[data-edit-user-form] button[type="submit"]').disabled =
+      !editSelectedId || editNameInput.value.trim() !== editLoadedName;
+  });
 }
 const filterForm = document.querySelector('[data-user-filters]');
 if (filterForm) {

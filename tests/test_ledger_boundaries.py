@@ -4,13 +4,19 @@ import json
 from unittest import mock
 
 from tests import test_distributed_control as distributed_tests
-from hysteria2_panel import Database, PartialTrafficCollectionError, UsageManager
+from hysteria2_panel import Database, PartialTrafficCollectionError, UsageManager, user_traffic_month
 from tests.test_panel import PolicyStatsClient
 
 
 class LedgerBoundaryTests(distributed_tests.DistributedControlCase):
     def setUp(self):
         super().setUp()
+        # Keep initialization and collection on the same simulated calendar.
+        with self.db._connect() as connection:
+            connection.execute(
+                "UPDATE user_traffic_reset_state SET period = ?",
+                (user_traffic_month(self.now[0]),),
+            )
         self.serial = 100
         self.local_origin = 'local:' + 'a' * 32
 
