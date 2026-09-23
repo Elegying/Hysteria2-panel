@@ -54,7 +54,7 @@ class TrafficRecoveryTests(unittest.TestCase):
                 real_open = os.open
                 writes = 0
 
-                def failing_open(path, flags, mode=0o777, **kwargs):
+                def failing_open(path, flags, mode=0o600, **kwargs):
                     nonlocal writes
                     if Path(path).name.startswith(".traffic-"):
                         writes += 1
