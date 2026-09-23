@@ -278,37 +278,64 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     expectedIp.dispose();
     if (result == null || !mounted) return;
     final command = result['deploymentCommand']?.toString() ?? '';
-    await Clipboard.setData(ClipboardData(text: command));
+    var copied = false;
+    try {
+      await Clipboard.setData(ClipboardData(text: command));
+      copied = true;
+    } on PlatformException {
+      // The enrollment has already been created. Always expose its result.
+    }
     if (!mounted) return;
     await showDialog<void>(
       context: context,
-      builder: (context) => GlassDialog(
-        title: const Text('部署代码已生成'),
-        content: SizedBox(
-          width: 620,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text('代码已复制。请在目标服务器以 root 粘贴运行；短时授权只能使用一次。'),
-                const SizedBox(height: 12),
-                SelectableText(
-                  command,
-                  style: Theme.of(context).textTheme.bodySmall
-                      ?.copyWith(fontFamily: 'monospace'),
-                ),
-              ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setResultState) => GlassDialog(
+          title: const Text('部署代码已生成'),
+          content: SizedBox(
+            width: 620,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    copied
+                        ? '代码已复制。请在目标服务器以 root 粘贴运行；短时授权只能使用一次。'
+                        : '自动复制失败。请手动选择下方代码，或重试复制；短时授权只能使用一次。',
+                  ),
+                  const SizedBox(height: 12),
+                  SelectableText(
+                    command,
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(fontFamily: 'monospace'),
+                  ),
+                ],
+              ),
             ),
           ),
+          actions: [
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () async {
+                  var succeeded = false;
+                  try {
+                    await Clipboard.setData(ClipboardData(text: command));
+                    succeeded = true;
+                  } on PlatformException {
+                    // Keep the selectable command available for manual copying.
+                  }
+                  if (context.mounted) setResultState(() => copied = succeeded);
+                },
+                child: Text(copied ? '再次复制' : '重试复制'),
+              ),
+            ),
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('关闭'),
+              ),
+            ),
+          ],
         ),
-        actions: [
-          GlassControlSurface(
-            child: TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('关闭'),
-            ),
-          ),
-        ],
       ),
     );
   }

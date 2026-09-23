@@ -1,4 +1,6 @@
 import hashlib
+import copy
+import json
 import os
 import re
 import shlex
@@ -692,7 +694,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.24"', source)
+        self.assertIn('PANEL_VERSION="0.39.25"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
@@ -1611,6 +1613,58 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         self.assertEqual(97, result.returncode)
         self.assertEqual([], calls)
         self.assertIn("未受支持的自定义 nftables/iptables/ip6tables", result.stderr)
+
+    def test_isolated_fail2ban_ssh_rule_is_preserved_and_overbroad_rules_rejected(self):
+        chain = {"family": "inet", "table": "f2b-table", "name": "f2b-chain",
+                 "type": "filter", "hook": "input", "policy": "accept"}
+        rule = {"family": "inet", "table": "f2b-table", "chain": "f2b-chain", "expr": [
+            {"match": {"op": "==", "left": {"payload": {
+                "protocol": "tcp", "field": "dport"}}, "right": 22}},
+            {"match": {"op": "==", "left": {"payload": {
+                "protocol": "ip", "field": "saddr"}}, "right": "@addr-set-sshd"}},
+            {"counter": {"packets": 279, "bytes": 16880}}, {"drop": None}]}
+        cases = [("ssh_only", chain, rule, "", True)]
+        for name, mutate in [
+            ("proxy_port", lambda r: r["expr"][0]["match"].update(right=19999)),
+            ("udp", lambda r: r["expr"][0]["match"]["left"]["payload"].update(protocol="udp")),
+            ("inverted_port", lambda r: r["expr"][0]["match"].update(op="!=")),
+            ("port_set", lambda r: r["expr"][0]["match"].update(right={"set": [22, 443]})),
+            ("no_port_guard", lambda r: r["expr"].pop(0)),
+            ("jump", lambda r: r["expr"].__setitem__(3, {"jump": {"target": "other"}})),
+            ("extra_action", lambda r: r["expr"].insert(0, {"drop": None})),
+            ("unknown_counter", lambda r: r["expr"][2].update(drop=None)),
+        ]:
+            changed = copy.deepcopy(rule)
+            mutate(changed)
+            cases.append((name, chain, changed, "", False))
+        for field, value in [("policy", "drop"), ("hook", "prerouting"), ("type", "nat")]:
+            cases.append((field, {**chain, field: value}, rule, "", False))
+        for port_name in ["DATA_PLANE_MAIN_PORT", "HYSTERIA_PORT", "PANEL_PORT"]:
+            cases.append((port_name, chain, rule, f"{port_name}=22", False))
+        for name, case_chain, case_rule, settings, allowed in cases:
+            with self.subTest(name=name):
+                payload = json.dumps({"nftables": [{"chain": case_chain}, {"rule": case_rule}]})
+                mocks = r'''
+ufw() { printf 'Status: inactive\n'; }
+firewall-cmd() { printf 'not running\n'; return 1; }
+iptables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
+ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
+'''
+                mocks += f"\nnft() {{ printf '%s\\n' {shlex.quote(payload)}; }}\n{settings}\n"
+                result, calls = self.run_firewall_function(mocks)
+                self.assertEqual(0 if allowed else 97, result.returncode, result.stderr)
+                self.assertEqual([], calls)
+
+    def test_fail2ban_table_does_not_hide_another_blocking_rule(self):
+        result, calls = self.run_firewall_function(r'''
+ufw() { printf 'Status: inactive\n'; }
+firewall-cmd() { printf 'not running\n'; return 1; }
+nft() { printf '%s\n' '{"nftables":[{"chain":{"family":"inet","table":"f2b-table","name":"f2b-chain","type":"filter","hook":"input","policy":"accept"}},{"rule":{"family":"inet","table":"f2b-table","chain":"f2b-chain","expr":[{"drop":null}]}}]}'; }
+iptables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
+ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
+''')
+        self.assertEqual(97, result.returncode, result.stderr)
+        self.assertEqual([], calls)
 
     def test_forward_only_firewall_restrictions_do_not_trigger_input_failure(self):
         result, calls = self.run_firewall_function(

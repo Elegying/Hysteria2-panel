@@ -6220,6 +6220,15 @@ class PanelHttpTests(unittest.TestCase):
         self.server.server_close()
         self.temp_dir.cleanup()
 
+    def create_loopback_enrollment(self, name, address, ttl, actor):
+        """Seed a legacy local node for real HTTP protocol integration tests."""
+        self.assertEqual('127.0.0.1', address)
+        issued = self.application.node_enrollment_service.create(name, '8.8.8.8', ttl, actor)
+        with self.db._connect() as connection:
+            connection.execute('UPDATE nodes SET expected_ip = ? WHERE node_id = ?',
+                               (address, issued['nodeId']))
+        return issued
+
     def request(self, path, data=None, headers=None, follow_redirects=True, raw_data=None):
         body = raw_data
         if body is None and data is not None:
@@ -6263,7 +6272,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_dashboard_places_node_onboarding_after_refresh_and_renders_safe_statuses(self):
         service = self.application.node_enrollment_service
-        pending = service.create("待注册 <节点>", "198.51.100.20", 10, "Elegy")
+        pending = service.create("待注册 <节点>", "8.8.4.20", 10, "Elegy")
         token = self.enrollment_token(pending["deploymentCommand"])
         service.register(
             {
@@ -6276,7 +6285,7 @@ class PanelHttpTests(unittest.TestCase):
                 "architecture": "amd64",
                 "agentVersion": "0.24.0",
             },
-            remote_ip="198.51.100.20",
+            remote_ip="8.8.4.20",
         )
         headers, _csrf = self.authenticated_headers()
 
@@ -6503,7 +6512,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertTrue(reboot["data"]["accepted"])
         self.assertEqual(1, self.reboot_controller.queued)
 
-        issued = self.application.node_enrollment_service.create(
+        issued = self.create_loopback_enrollment(
             "mobile-edge", "127.0.0.1", 10, "Elegy"
         )
         public_der = bytes.fromhex("302a300506032b6570032100") + b"m" * 32
@@ -6699,7 +6708,7 @@ class PanelHttpTests(unittest.TestCase):
             data={
                 "csrf": csrf,
                 "name": "edge-02",
-                "expected_ip": "203.0.113.10",
+                "expected_ip": "8.8.8.10",
                 "ttl_minutes": "10",
             },
             headers={**headers, "Accept": "application/json"},
@@ -6717,7 +6726,7 @@ class PanelHttpTests(unittest.TestCase):
             data={
                 "csrf": csrf,
                 "name": "existing-edge-02",
-                "expected_ip": "203.0.113.11",
+                "expected_ip": "8.8.8.11",
                 "ttl_minutes": "10",
                 "mode": "rebind",
             },
@@ -6738,7 +6747,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_revoking_unused_enrollment_hides_placeholder_from_dashboard(self):
         issued = self.application.node_enrollment_service.create(
-            "cancelled-unused-node", "203.0.113.50", 10, "Elegy"
+            "cancelled-unused-node", "8.8.8.50", 10, "Elegy"
         )
         headers, csrf = self.authenticated_headers()
 
@@ -6760,7 +6769,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_node_registration_is_auto_verified_and_manual_verify_is_not_rendered(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-verify", "127.0.0.1", 10, "Elegy")
+        issued = self.create_loopback_enrollment("edge-verify", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         public_der = bytes.fromhex("302a300506032b6570032100") + b"v" * 32
         service.register(
@@ -6818,7 +6827,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_web_pairing_actions_delete_even_while_disconnect_is_pending(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-disconnect", "127.0.0.1", 10, "Elegy")
+        issued = self.create_loopback_enrollment("edge-disconnect", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         service.register(
             {
@@ -6878,7 +6887,7 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/api/v1/dashboard-online", headers=headers) as response:
             self.assertNotIn(issued["nodeId"], json.load(response)["activeNodeIds"])
 
-        stale = service.create("edge-lost", "203.0.113.77", 10, "Elegy")
+        stale = service.create("edge-lost", "8.8.8.77", 10, "Elegy")
         deleted = self.request(
             "/nodes/{}/delete".format(stale["nodeId"]),
             data={"csrf": csrf},
@@ -6890,7 +6899,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_budget_dns_confirmation_is_authenticated_csrf_protected_and_remote_only(self):
         now = int(time.time())
-        issued = self.application.node_enrollment_service.create("budget-edge", "127.0.0.1", 10, "Elegy")
+        issued = self.create_loopback_enrollment("budget-edge", "127.0.0.1", 10, "Elegy")
         node_id = issued["nodeId"]
         with self.db._connect() as connection:
             connection.execute(
@@ -6920,7 +6929,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_public_signed_heartbeat_is_https_only_bounded_and_stable(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-heartbeat", "127.0.0.1", 10, "Elegy")
+        issued = self.create_loopback_enrollment("edge-heartbeat", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         public_der = bytes.fromhex("302a300506032b6570032100") + b"h" * 32
         service.register(
@@ -6987,7 +6996,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_protocol_enable_and_signed_snapshot_require_admin_and_verified_node(self):
         service = self.application.node_enrollment_service
-        issued = service.create("edge-protocol", "127.0.0.1", 10, "Elegy")
+        issued = self.create_loopback_enrollment("edge-protocol", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         public_der = bytes.fromhex("302a300506032b6570032100") + b"p" * 32
         service.register(
@@ -7143,7 +7152,7 @@ class PanelHttpTests(unittest.TestCase):
         now = int(time.time())
 
         def provision_node(name, key_byte):
-            issued = self.application.node_enrollment_service.create(
+            issued = self.create_loopback_enrollment(
                 name, "127.0.0.1", 10, "Elegy"
             )
             token = self.enrollment_token(issued["deploymentCommand"])
@@ -7283,8 +7292,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(24, stored["rx_bytes"])
 
     def test_public_node_registration_is_https_only_bounded_and_has_stable_errors(self):
-        service = self.application.node_enrollment_service
-        issued = service.create("edge-02", "127.0.0.1", 10, "Elegy")
+        issued = self.create_loopback_enrollment("edge-02", "127.0.0.1", 10, "Elegy")
         token = self.enrollment_token(issued["deploymentCommand"])
         payload = {
             "enrollmentToken": token,

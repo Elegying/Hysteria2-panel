@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.24"
+PANEL_VERSION="0.39.25"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,20 +30,20 @@ OFFSITE_BACKUP_SHA256="d7c57c6d414b15a643f690032acc07f9b74dba2a3ab0acfc3f0b31510
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="17ff60ca53f7aa43c784d0626d23a921a7ed33ad307967db0580d39f95b99038"
+HY2PANEL_VERSION_SHA256="1a7224668ae2e8f2b5854e7a34da77d16a2e8c34794ec75764ebd87da0c66b1f"
 HY2PANEL_BUDGETS_SHA256="9f465224cf32495bcecd547620babee1cd94a1ee904c6678b0bd83d691667547"
-HY2PANEL_WEB_ASSETS_SHA256="f98b079b69030c49b637dd0075c75b81fe8ae16fdf007e5bee065a6d565de843"
+HY2PANEL_WEB_ASSETS_SHA256="62fb6c8eccfe20420de6405c797dfb68853b6778a372c7ef89563a2e1de30367"
 HY2PANEL_OPERATIONS_SHA256="9fff087c8e6b9fc356285db80395becc5b414b3ef93c0b099329c9c87a006949"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
-HY2PANEL_NODES_SHA256="e31e03965e8f1ebf88d5a823af9094c8cd4f46fe2080afaf0830071ed1760cba"
+HY2PANEL_NODES_SHA256="e8544e55f19131eba12050f282329ffed6f2c9a18c8bc489d13f216127aa7884"
 HY2PANEL_DISTRIBUTED_SHA256="f3d2efbb64ed9f6e271ddac6a3b98ee2d2c115bc82650c8281b18a821ce60787"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="3fefbab43dd14c7421ccb597fdb887d19fa00e4a1c5fb135936d835ec45a8402"
+HY2PANEL_DASHBOARD_SHA256="cf0ee45a7363fd7d8bc125081400c2f14f44f0c1ee3dcb0743d900ebbb455e32"
 HY2PANEL_MOBILE_API_SHA256="22e0b3214a5d8097021f7bfae3959412783ba6fd907f8d07fb27fd039e6dcfff"
-NODE_AGENT_SHA256="d0fc5f0fe13585a3290ce3945b0e36cf61f12ca84ec7c69f5a520a8c6712d1a3"
+NODE_AGENT_SHA256="9fde855ff0e72f8e0e5bb4e881ae53216f22f6d9c4805341cc7b8ebdf8bb16a8"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -5191,6 +5191,28 @@ has_unmanaged_firewall_restrictions() {
 import json
 import sys
 
+def isolated_sshd_ban(rule):
+    # Preserve a narrowly proven Fail2Ban SSH rule. Unknown expressions still
+    # fail closed, and port 22 cannot be exempted when this install needs it.
+    if "22" in sys.argv[1:]:
+        return False
+    expressions = rule.get("expr")
+    if not isinstance(expressions, list) or len(expressions) != 4:
+        return False
+    port, source, counter, verdict = expressions
+    expected_port = {"match": {"op": "==", "left": {
+        "payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}}
+    expected_source = {"match": {"op": "==", "left": {
+        "payload": {"protocol": "ip", "field": "saddr"}},
+        "right": "@addr-set-sshd"}}
+    if port != expected_port or source != expected_source or verdict != {"drop": None}:
+        return False
+    if not isinstance(counter, dict) or set(counter) != {"counter"}:
+        return False
+    counts = counter["counter"]
+    return (isinstance(counts, dict) and set(counts) == {"packets", "bytes"}
+            and all(type(value) is int and value >= 0 for value in counts.values()))
+
 try:
     payload = json.load(sys.stdin)
 except (TypeError, ValueError):
@@ -5201,6 +5223,7 @@ entries = payload.get("nftables")
 if not isinstance(entries, list):
     raise SystemExit(2)
 inbound_chains = set()
+sshd_chains = set()
 for entry in entries:
     chain = entry.get("chain") if isinstance(entry, dict) else None
     if not isinstance(chain, dict) or chain.get("hook") not in {
@@ -5213,6 +5236,9 @@ for entry in entries:
     inbound_chains.add(key)
     if chain.get("policy", "accept") != "accept":
         raise SystemExit(0)
+    if (key == ("inet", "f2b-table", "f2b-chain")
+            and chain.get("hook") == "input" and chain.get("type") == "filter"):
+        sshd_chains.add(key)
 for entry in entries:
     rule = entry.get("rule") if isinstance(entry, dict) else None
     if not isinstance(rule, dict):
@@ -5221,9 +5247,11 @@ for entry in entries:
     if not all(isinstance(value, str) and value for value in key):
         raise SystemExit(2)
     if key in inbound_chains:
+        if key in sshd_chains and isolated_sshd_ban(rule):
+            continue
         raise SystemExit(0)
 raise SystemExit(1)
-'; then
+' "${DATA_PLANE_MAIN_PORT:-19999}" "${HYSTERIA_PORT:-19999}" "${PANEL_PORT:-19998}"; then
     return 0
   else
     status=$?

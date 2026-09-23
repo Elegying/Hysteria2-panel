@@ -353,6 +353,24 @@ Future<T?> showGlassModalBottomSheet<T>({
   ),
 );
 
+/// Keep action errors above the modal route that initiated the request.
+Future<void> showGlassError(BuildContext context, String message) =>
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => GlassDialog(
+        title: const Text('操作未完成'),
+        content: SingleChildScrollView(child: Text(message)),
+        actions: [
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('关闭'),
+            ),
+          ),
+        ],
+      ),
+    );
+
 /// A glass selection sheet replaces the platform's opaque dropdown popup.
 class GlassDropdownField<T> extends StatelessWidget {
   const GlassDropdownField({

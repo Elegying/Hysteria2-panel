@@ -330,7 +330,7 @@ try:
     browser.wait('!document.getElementById("node-onboarding-dialog").open')
     passed('对接弹窗关闭后重开，不接收上一轮迟到代码')
     service = fixture.application.node_enrollment_service
-    issued = service.create('web-ready-node','127.0.0.1',10,'Elegy')
+    issued = fixture.create_loopback_enrollment('web-ready-node','127.0.0.1',10,'Elegy')
     service.register({
         'enrollmentToken':fixture.enrollment_token(issued['deploymentCommand']),
         'publicKey':base64.b64encode(bytes.fromhex('302a300506032b6570032100')+b'd'*32).decode(),
