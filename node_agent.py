@@ -4,6 +4,7 @@
 import argparse
 import base64
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -28,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.24"
+AGENT_VERSION = "0.39.25"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -68,7 +69,9 @@ finally:
 '''
 CONTROL_LOOP_INTERVAL_SECONDS = 2
 CONTROL_LOOP_MAX_INTERVAL_SECONDS = 5
+CONTROL_LOOP_IDLE_INTERVAL_SECONDS = 5
 CONTROL_LOOP_MAX_BACKOFF_SECONDS = 30
+CONTROL_TLS_SESSION_SECONDS = 600
 CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES = 480 * 1024
 LOCAL_TRAFFIC_RESPONSE_MAX_BYTES = 512 * 1024
 LOCAL_STREAM_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
@@ -103,6 +106,10 @@ class ProtocolError(RuntimeError):
 
 class ProtocolNotSupported(ProtocolError):
     """The panel does not yet support an additive node protocol endpoint."""
+
+
+class TrafficSpoolFullError(ProtocolError):
+    pass
 
 
 class PartialLocalTrafficCollectionError(ProtocolError):
@@ -497,10 +504,10 @@ class DurableTrafficSpool:
         self._recover_staged_entries()
 
     @staticmethod
-    def _validate_traffic(traffic):
+    def _validate_traffic(traffic, maximum_users=1000):
         if (
             not isinstance(traffic, dict)
-            or len(traffic) > 1000
+            or (maximum_users is not None and len(traffic) > maximum_users)
             or not all(
                 isinstance(name, str)
                 and 1 <= len(name) <= 64
@@ -658,6 +665,9 @@ class DurableTrafficSpool:
         required_entries = 1 + (
             maximum_response_bytes + TRAFFIC_SPOOL_ENTRY_MAX_BYTES - 1
         ) // TRAFFIC_SPOOL_ENTRY_MAX_BYTES
+        # A small counter object can hit the 1,000-user transport limit well
+        # before the byte limit. Reserve for both kinds of partitioning.
+        required_entries += (maximum_response_bytes + 19999) // 20000
         required_bytes = maximum_response_bytes + required_entries * 4096
         free = shutil.disk_usage(str(self.path)).free
         count, current_size = self._current_usage()
@@ -674,7 +684,7 @@ class DurableTrafficSpool:
         ).encode("utf-8") + b"\n"
 
     def _partition(self, traffic, observed_at):
-        self._validate_traffic(traffic)
+        self._validate_traffic(traffic, maximum_users=None)
         if isinstance(observed_at, bool) or not isinstance(observed_at, int):
             raise ProtocolError("traffic observation time is invalid")
         encoded_batches = []
@@ -689,7 +699,7 @@ class DurableTrafficSpool:
                 "traffic": candidate,
             }
             encoded = self._encode_batch(batch)
-            if len(encoded) <= TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
+            if len(candidate) <= 1000 and len(encoded) <= TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
                 current = candidate
                 continue
             if not current:
@@ -755,28 +765,44 @@ class DurableTrafficSpool:
         encoded_batches.append((completed, encoded))
         return encoded_batches
 
-    def enqueue_collections(self, traffic_collections, observed_at, domains=None):
+    def prepare_collections(self, traffic_collections, observed_at, domains=None):
+        """Assign stable IDs before disk I/O so a failed write can be retried."""
         traffic_collections = list(traffic_collections)
         domains = [] if domains is None else domains
         if not traffic_collections and not domains:
             return []
-        self._recover_staged_entries()
         encoded_batches = []
         for traffic in traffic_collections:
             encoded_batches.extend(self._partition(traffic, observed_at))
         encoded_batches.extend(self._partition_domains(domains, observed_at))
+        return encoded_batches
+
+    def persist_collections(self, encoded_batches):
+        """Persist a prepared collection, accepting identical prior writes."""
+        self._recover_staged_entries()
         count, current_size = self._current_usage()
-        total_size = sum(len(encoded) for _batch, encoded in encoded_batches)
+        missing = []
+        for batch, encoded in encoded_batches:
+            self._validate_batch(batch)
+            if encoded != self._encode_batch(batch) or len(encoded) > TRAFFIC_SPOOL_ENTRY_MAX_BYTES:
+                raise ProtocolError("prepared traffic batch is invalid")
+            destination = self.path / (batch["batchId"] + ".json")
+            if destination.exists():
+                if destination.read_bytes() != encoded:
+                    raise ProtocolError("traffic batch id already exists")
+            else:
+                missing.append((batch, encoded))
+        total_size = sum(len(encoded) for _batch, encoded in missing)
         if (
-            count + len(encoded_batches) > self.max_entries
+            count + len(missing) > self.max_entries
             or current_size + total_size > self.max_bytes
-            or shutil.disk_usage(str(self.path)).free
-            < total_size + self.reserve_bytes
+            or (missing and shutil.disk_usage(str(self.path)).free
+                < total_size + self.reserve_bytes)
         ):
-            raise ProtocolError("traffic spool is full")
+            raise TrafficSpoolFullError("traffic spool is full")
         staged = []
         try:
-            for batch, encoded in encoded_batches:
+            for batch, encoded in missing:
                 staged_path = self.path / (".traffic-" + batch["batchId"] + ".json")
                 destination = self.path / (batch["batchId"] + ".json")
                 if destination.exists():
@@ -804,6 +830,11 @@ class DurableTrafficSpool:
                 raise persist_error from directory_error
             raise
         return [batch for batch, _encoded in encoded_batches]
+
+    def enqueue_collections(self, traffic_collections, observed_at, domains=None):
+        return self.persist_collections(
+            self.prepare_collections(traffic_collections, observed_at, domains)
+        )
 
     def enqueue_many(self, traffic, observed_at):
         return self.enqueue_collections([traffic], observed_at)
@@ -2010,6 +2041,88 @@ def _post_auth_with_deadline(request, maximum, deadline):
         raise ProtocolError("local authentication request deadline exceeded") from exc
 
 
+class _SessionHTTPSConnection(http.client.HTTPSConnection):
+    """Resume TLS while retaining the panel's bounded, closing HTTP requests."""
+
+    def __init__(self, host, port, *, context, session, timeout):
+        super().__init__(host, port, context=context, timeout=timeout)
+        self.resume_session = session
+        self.last_session = None
+        self.session_reused = False
+
+    def connect(self):
+        http.client.HTTPConnection.connect(self)
+        try:
+            self.sock = self._context.wrap_socket(
+                self.sock, server_hostname=self.host, session=self.resume_session
+            )
+            self.session_reused = self.sock.session_reused
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        # HTTP/1.0 closes the connection after reading the response headers.
+        # TLS 1.3 tickets have arrived by then; retain them before closing the
+        # socket, including when HTTPResponse still owns its buffered reader.
+        if isinstance(self.sock, ssl.SSLSocket):
+            self.last_session = self.sock.session
+        super().close()
+
+
+class NodeControlTransport:
+    """Cache one verified TLS session, never a live panel worker or POST retry."""
+
+    def __init__(self, context_factory=ssl.create_default_context, clock=time.monotonic):
+        self.context_factory = context_factory
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._context = None
+        self._origin = None
+        self._session = None
+        self._expires_at = 0
+
+    def post(self, request, maximum, timeout):
+        url = urllib.parse.urlsplit(request.full_url)
+        if (
+            url.scheme != "https" or not url.hostname
+            or url.username is not None or url.password is not None
+            or url.query or url.fragment or request.get_method() != "POST"
+        ):
+            raise ProtocolError("invalid node control endpoint")
+        origin = (url.hostname, url.port or 443)
+        with self._lock:
+            if origin != self._origin or self.clock() >= self._expires_at:
+                self._session = None
+                self._context = self.context_factory()
+                self._context.set_alpn_protocols(["http/1.1"])
+                self._origin = origin
+                self._expires_at = self.clock() + CONTROL_TLS_SESSION_SECONDS
+            connection = _SessionHTTPSConnection(
+                *origin, context=self._context, session=self._session, timeout=timeout
+            )
+            try:
+                headers = dict(request.header_items())
+                headers["Connection"] = "close"
+                connection.request("POST", url.path or "/", request.data, headers)
+                with connection.getresponse() as response:
+                    status = response.status
+                    body = response.read(maximum + 1)
+                if len(body) > maximum:
+                    raise ProtocolError("the panel returned an invalid node response")
+            except BaseException:
+                # A broken socket/session is discarded. The durable control
+                # cycle retries with a fresh signature, never replays this POST.
+                self._session = None
+                raise
+            else:
+                connection.close()
+                self._session = connection.last_session
+                return status, body
+            finally:
+                connection.close()
+
+
 class NodeProtocolClient:
     """Sign bounded node protocol requests using the enrolled Ed25519 key."""
 
@@ -2035,6 +2148,7 @@ class NodeProtocolClient:
         self.private_key_path = pathlib.Path(private_key_path)
         self.opener = urllib.request.urlopen if opener is None else opener
         self._default_auth_transport = opener is None
+        self._control_transport = NodeControlTransport() if opener is None else None
         self.signer = signer
         self.clock = clock
         self.nonce_factory = nonce_factory or secrets.token_urlsafe
@@ -2077,6 +2191,8 @@ class NodeProtocolClient:
                     request, maximum, started + NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS,
                 )
                 status = 200
+            elif self._control_transport is not None:
+                status, body = self._control_transport.post(request, maximum, timeout)
             else:
                 with self.opener(request, timeout=timeout) as response:
                     status = getattr(
@@ -2091,8 +2207,12 @@ class NodeProtocolClient:
                     "the panel does not support combined node control cycles"
                 ) from exc
             raise ProtocolError("the panel rejected or could not receive the node request") from exc
-        except (urllib.error.URLError, OSError) as exc:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise ProtocolError("the panel rejected or could not receive the node request") from exc
+        if purpose == "control-cycle" and status == 404:
+            raise ProtocolNotSupported(
+                "the panel does not support combined node control cycles"
+            )
         if status != 200 or len(body) > maximum:
             raise ProtocolError("the panel returned an invalid node response")
         try:
@@ -2331,7 +2451,7 @@ class LocalStatsClient:
 
     def collect_and_clear(self):
         result = self._request("/traffic?clear=1")
-        DurableTrafficSpool._validate_traffic(result)
+        DurableTrafficSpool._validate_traffic(result, maximum_users=None)
         return result
 
     def dump_streams(self):
@@ -2495,7 +2615,7 @@ class CombinedLocalStatsClient:
         for client in self.clients:
             try:
                 current = client.collect_and_clear()
-                DurableTrafficSpool._validate_traffic(current)
+                DurableTrafficSpool._validate_traffic(current, maximum_users=None)
                 if current:
                     collected.append(current)
             except Exception as exc:
@@ -2515,7 +2635,7 @@ class CombinedLocalStatsClient:
                     if value > 2**63 - 1:
                         raise ProtocolError("traffic batch is invalid")
                     target[field] = value
-        DurableTrafficSpool._validate_traffic(combined)
+        DurableTrafficSpool._validate_traffic(combined, maximum_users=None)
         return combined
 
     def kick(self, users):
@@ -2860,6 +2980,9 @@ class NodeControlCycle:
         self._combined_supported = hasattr(protocol_client, "send_control_cycle")
         self.domain_usage_collector = DomainStreamAccumulator()
         self._next_domain_collection_at = 0
+        self._unpersisted_collection = None
+        self._prepared_collection = None
+        self.idle = False
 
     def _upload_pending(self):
         last_ack = None
@@ -2882,9 +3005,34 @@ class NodeControlCycle:
         return endpoint_count * LOCAL_TRAFFIC_RESPONSE_MAX_BYTES
 
     def _can_collect(self):
+        if self._unpersisted_collection is not None:
+            return True  # Retry the retained response without clearing counters again.
         return self.spool.can_collect(self._collection_capacity())
 
+    def _persist_retained_collection(self):
+        batches, observed_at, domains = self._unpersisted_collection
+        if self._prepared_collection is None:
+            self._prepared_collection = self.spool.prepare_collections(
+                batches, observed_at=observed_at, domains=domains
+            )
+        try:
+            self.spool.persist_collections(self._prepared_collection)
+        except TrafficSpoolFullError:
+            # Free durable backlog before retrying a retained response. Reuse
+            # the same IDs even if some entries were already committed/ACKed.
+            self._upload_pending()
+            self.spool.persist_collections(self._prepared_collection)
+        traffic_bytes = sum(
+            counters["tx"] + counters["rx"]
+            for batch in batches for counters in batch.values()
+        )
+        self._unpersisted_collection = None
+        self._prepared_collection = None
+        return traffic_bytes
+
     def _collect_to_spool(self):
+        if self._unpersisted_collection is not None:
+            return self._persist_retained_collection()
         observed_at = int(self.clock())
         domains = []
         if observed_at >= self._next_domain_collection_at:
@@ -2898,18 +3046,11 @@ class NodeControlCycle:
             else:
                 batches = [self.stats_client.collect_and_clear()]
         except PartialLocalTrafficCollectionError as exc:
-            self.spool.enqueue_collections(
-                exc.batches, observed_at=observed_at, domains=domains
-            )
+            self._unpersisted_collection = (exc.batches, observed_at, domains)
+            self._persist_retained_collection()
             raise
-        self.spool.enqueue_collections(
-            batches, observed_at=observed_at, domains=domains
-        )
-        return sum(
-            counters["tx"] + counters["rx"]
-            for batch in batches
-            for counters in batch.values()
-        )
+        self._unpersisted_collection = (batches, observed_at, domains)
+        return self._persist_retained_collection()
 
     def quiesce_traffic(self, attempts=30, interval=1.0, sleeper=time.sleep, kick_users=True):
         """Drain kicked sessions to disk after new authentication is blocked.
@@ -2932,7 +3073,8 @@ class NodeControlCycle:
             if online:
                 if not kick_users:
                     raise ProtocolError("node still has online devices; retaining service")
-                self.stats_client.kick(online)
+                for offset in range(0, len(online), 100):
+                    self.stats_client.kick(online[offset:offset + 100])
             if not self._can_collect():
                 self._upload_pending()
                 if not self._can_collect():
@@ -2953,6 +3095,8 @@ class NodeControlCycle:
         return self._upload_pending()
 
     def refresh_snapshot(self):
+        if self._unpersisted_collection is not None:
+            raise ProtocolError("traffic collection has not been persisted")
         traffic_acked_at = self.state.traffic_acked_at()
         if int(self.clock()) - traffic_acked_at > MAX_STATE_AGE_SECONDS:
             raise ProtocolError("traffic checkpoint is stale")
@@ -3019,6 +3163,15 @@ class NodeControlCycle:
             or result["online"].get("sequence") != snapshot["sequence"]
         ):
             raise ProtocolError("central online snapshot ACK is invalid")
+        self.idle = (
+            snapshot is not None
+            and not any(snapshot["online"].values())
+            and not result["commands"]
+            and all(
+                counters["tx"] == 0 and counters["rx"] == 0
+                for batch in selected for counters in batch["traffic"].values()
+            )
+        )
         return result["commands"]
 
     def _legacy_control(self, stopped, collect=True):
@@ -3041,6 +3194,7 @@ class NodeControlCycle:
         return commands, control_error
 
     def run_once(self):
+        self.idle = False
         stopped = self.state.data_plane_stopped()
         control_error = None
         commands = None
@@ -3190,7 +3344,10 @@ def run_control_loop(
                 next_delay = min(maximum_backoff, delay * 2)
             else:
                 next_delay = interval
-                delay = interval
+                delay = (
+                    max(interval, CONTROL_LOOP_IDLE_INTERVAL_SECONDS)
+                    if getattr(cycle, "idle", False) is True else interval
+                )
             if metrics is not None:
                 try:
                     metrics.record_cycle(failed=failed)
@@ -3198,7 +3355,8 @@ def run_control_loop(
                     pass
             notifier.watchdog()
             jitter = 0.8 + 0.4 * max(0.0, min(1.0, float(jitter_source())))
-            wait_delay = min(float(maximum_backoff), max(1.0, delay * jitter))
+            wait_limit = maximum_backoff if failed else CONTROL_LOOP_MAX_INTERVAL_SECONDS
+            wait_delay = min(float(wait_limit), max(1.0, delay * jitter))
             if sleeper is None:
                 remaining = wait_delay
                 notify_interval = notifier.watchdog_interval or remaining

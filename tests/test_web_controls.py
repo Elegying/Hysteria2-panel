@@ -8,6 +8,46 @@ from hy2panel.web_assets import PAGE_SCRIPT
 
 
 class WebControlsTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute dashboard JavaScript")
+    def test_modal_errors_stay_inside_the_open_dialog_until_dismissed(self):
+        self.run_script(r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+let status;
+let scrolled = 0;
+let open = [];
+const toast = {classList: {toggle() {}}, hidden: true};
+const dialog = {
+  querySelector() { return status; },
+  appendChild(element) { status = element; }
+};
+const context = {
+  document: {
+    addEventListener() {}, getElementById() { return null; },
+    querySelectorAll(selector) { return selector === 'dialog[open]' ? open : []; },
+    querySelector(selector) { return selector === '[data-page-status]' ? toast : null; },
+    createElement() { return {dataset: {}, setAttribute(k, v) { this[k] = v; },
+      scrollIntoView() { scrolled++; }}; }
+  },
+  window: {clearTimeout() {}, setTimeout() { return 1; }}
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(0, 'utf8'), context);
+open = [dialog];
+context.notify('Request rejected', true);
+assert.equal(status.textContent, 'Request rejected');
+assert.equal(status.role, 'alert');
+assert.equal(toast.hidden, true);
+context.notify('Retry failed', true);
+assert.equal(status.textContent, 'Retry failed');
+assert.equal(scrolled, 2);
+open = [];
+context.notify('Saved', false);
+assert.equal(toast.textContent, 'Saved');
+assert.equal(toast.hidden, false);
+""")
+
     def run_script(self, script):
         result = subprocess.run(
             [shutil.which("node"), "-e", script],

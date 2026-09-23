@@ -490,7 +490,11 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         if (mounted) _message('操作已完成');
       }
     } on ApiException catch (error) {
-      if (mounted) _message(error.message, error: true);
+      if (sheetContext.mounted) {
+        await showGlassError(sheetContext, error.message);
+      } else if (mounted) {
+        _message(error.message, error: true);
+      }
     }
   }
 
@@ -510,11 +514,11 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       }
     } on ApiException catch (error) {
       if (sheetContext.mounted) {
-        ScaffoldMessenger.of(sheetContext)
-            .showSnackBar(SnackBar(content: Text(error.message)));
+        await showGlassError(sheetContext, error.message);
       }
       return;
     }
+    if (!sheetContext.mounted) return;
     final initial = ((user['usedBytes'] as num? ?? 0) / 1073741824)
         .toStringAsFixed(9)
         .replaceFirst(RegExp(r'\.?0+$'), '');

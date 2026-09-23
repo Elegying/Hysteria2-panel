@@ -27,6 +27,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   int _loadGeneration = 0;
   String? _error;
   Timer? _timer;
+  final _detailsRevision = ValueNotifier<int>(0);
+  final _nodeActions = <String>{};
 
   @override
   bool get wantKeepAlive => true;
@@ -55,6 +57,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    _detailsRevision.dispose();
     super.dispose();
   }
 
@@ -96,6 +99,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           _loading = false;
           _error = null;
         });
+        _detailsRevision.value++;
       }
     } on ApiException catch (error) {
       if (mounted && generation == _loadGeneration) {
@@ -103,6 +107,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           _loading = false;
           _error = error.message;
         });
+        _detailsRevision.value++;
       }
     } finally {
       if (generation == _loadGeneration) _refreshing = false;
@@ -114,52 +119,59 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     bool enabled,
     BuildContext detailContext,
   ) async {
-    final label = enabled ? '启用' : '紧急停用';
-    final confirmed = await showDialog<bool>(
-      context: detailContext,
-      builder: (context) => GlassDialog(
-        title: Text('确认$label面板本机节点'),
-        content: Text(
-          enabled ? '启用后节点将重新承载连接。确认继续吗？' : '紧急停用会立即中断该节点上的现有连接，仅应在故障或安全事件中使用。',
-        ),
-        actions: [
-          GlassControlSurface(
-            child: TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-          ),
-          GlassControlSurface(
-            child: FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: Text(label),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
+    final id = node['nodeId'].toString();
+    if (!_nodeActions.add(id)) return;
+    _detailsRevision.value++;
     try {
-      await ref
-          .read(appControllerProvider.notifier)
-          .postJson(
-            '/api/v1/mobile/nodes/local/${enabled ? 'enable' : 'disable'}',
-          );
-      if (detailContext.mounted) Navigator.pop(detailContext);
-      await _load(silent: true);
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$label任务已提交')));
-      }
-    } on ApiException catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(error.message),
-            backgroundColor: Theme.of(context).colorScheme.error,
+      final label = enabled ? '启用' : '紧急停用';
+      final confirmed = await showDialog<bool>(
+        context: detailContext,
+        builder: (context) => GlassDialog(
+          title: Text('确认$label面板本机节点'),
+          content: Text(
+            enabled
+                ? '启用后节点将重新承载连接。确认继续吗？'
+                : '紧急停用会立即中断该节点上的现有连接，仅应在故障或安全事件中使用。',
           ),
-        );
+          actions: [
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+            ),
+            GlassControlSurface(
+              child: FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(label),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      try {
+        await ref
+            .read(appControllerProvider.notifier)
+            .postJson(
+              '/api/v1/mobile/nodes/local/${enabled ? 'enable' : 'disable'}',
+            );
+        if (detailContext.mounted) Navigator.pop(detailContext);
+        await _load(silent: true);
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('$label任务已提交')));
+        }
+      } on ApiException catch (error) {
+        if (detailContext.mounted) {
+          await showGlassError(detailContext, error.message);
+        } else if (mounted) {
+          await showGlassError(context, error.message);
+        }
       }
+    } finally {
+      _nodeActions.remove(id);
+      if (mounted) _detailsRevision.value++;
     }
   }
 
@@ -168,204 +180,246 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     String action,
     BuildContext detailContext,
   ) async {
-    final disconnect = action == 'disconnect';
-    final confirmed = await showDialog<bool>(
-      context: detailContext,
-      builder: (context) => GlassDialog(
-        title: Text(disconnect ? '确认一键断连' : '确认删除对接'),
-        content: Text(
-          disconnect
-              ? '远端服务器会立即停止对接业务，并卸载本项目安装的服务、身份、配置、状态、防火墙规则和网络参数。'
-              : '立即撤销此节点的面板授权并移出当前列表，无需远端确认。不会卸载服务器文件，也不保证已有连接立即断开；历史流量保留。',
-        ),
-        actions: [
-          GlassControlSurface(
-            child: TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-          ),
-          GlassControlSurface(
-            child: FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: Text(disconnect ? '一键断连' : '删除对接'),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
+    final id = node['nodeId'].toString();
+    if (!_nodeActions.add(id)) return;
+    _detailsRevision.value++;
     try {
-      await ref
-          .read(appControllerProvider.notifier)
-          .postJson('/api/v1/mobile/nodes/${node['nodeId']}/$action');
-      if (detailContext.mounted) Navigator.pop(detailContext);
-      await _load(silent: true);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(disconnect ? '远端卸载任务已提交' : '对接已从面板删除')),
-        );
-      }
-    } on ApiException catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(error.message),
-            backgroundColor: Theme.of(context).colorScheme.error,
+      final disconnect = action == 'disconnect';
+      final confirmed = await showDialog<bool>(
+        context: detailContext,
+        builder: (context) => GlassDialog(
+          title: Text(disconnect ? '确认一键断连' : '确认删除对接'),
+          content: Text(
+            disconnect
+                ? '远端服务器会立即停止对接业务，并卸载本项目安装的服务、身份、配置、状态、防火墙规则和网络参数。'
+                : '立即撤销此节点的面板授权并移出当前列表，无需远端确认。不会卸载服务器文件，也不保证已有连接立即断开；历史流量保留。',
           ),
-        );
+          actions: [
+            GlassControlSurface(
+              child: TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('取消'),
+              ),
+            ),
+            GlassControlSurface(
+              child: FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(disconnect ? '一键断连' : '删除对接'),
+              ),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+      try {
+        await ref
+            .read(appControllerProvider.notifier)
+            .postJson('/api/v1/mobile/nodes/${node['nodeId']}/$action');
+        if (detailContext.mounted) Navigator.pop(detailContext);
+        await _load(silent: true);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(disconnect ? '远端卸载任务已提交' : '对接已从面板删除')),
+          );
+        }
+      } on ApiException catch (error) {
+        if (detailContext.mounted) {
+          await showGlassError(detailContext, error.message);
+        } else if (mounted) {
+          await showGlassError(context, error.message);
+        }
       }
+    } finally {
+      _nodeActions.remove(id);
+      if (mounted) _detailsRevision.value++;
     }
   }
 
-  Future<void> _showNode(Map<String, dynamic> node) {
-    final isLocal = node['kind'] == 'local';
-    final rows = isLocal
-        ? [
-            ('节点类型', '面板本机节点'),
-            ('面板入口', node['observedIp']),
-            ('在线设备', node['onlineDevices'] ?? '—'),
-            ('累计上传', formatBytes(node['txBytes'])),
-            ('累计下载', formatBytes(node['rxBytes'])),
-            ('累计流量', formatBytes(node['totalBytes'])),
-            ('实时流量', '${formatBytes(_trafficRates['local'] ?? 0)}/s'),
-            ('最后采样', formatTimestamp(node['trafficObservedAt'])),
-          ]
-        : [
-            ('节点 ID', node['nodeId']),
-            (
-              '公网 IP',
-              node['observedIp'].toString().isNotEmpty
-                  ? node['observedIp']
-                  : node['expectedIp'],
-            ),
-            ('主机名', node['hostname']),
-            ('Agent 版本', node['agentVersion']),
-            ('平台', '${node['platform']} ${node['architecture']}'),
-            ('控制协议', node['policyState']),
-            ('数据面', node['dataPlaneState']),
-            ('在线设备', node['onlineDevices'] ?? '—'),
-            ('最后心跳', formatTimestamp(node['lastHeartbeatAt'])),
-            ('在线快照', formatTimestamp(node['lastSnapshotAt'])),
-            ('流量 ACK', formatTimestamp(node['lastTrafficAckAt'])),
-            ('待执行命令', node['pendingCommands']),
-            ('失败命令', node['failedCommands']),
-            ('累计上传', formatBytes(node['txBytes'])),
-            ('累计下载', formatBytes(node['rxBytes'])),
-            ('累计流量', formatBytes(node['totalBytes'])),
-            ('实时流量', '${formatBytes(_trafficRates[node['nodeId']] ?? 0)}/s'),
-          ];
+  Future<void> _showNode(Map<String, dynamic> selectedNode) {
     return showGlassModalBottomSheet<void>(
       context: context,
-      builder: (sheetContext) => SafeArea(
-        child: DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: .82,
-          minChildSize: .55,
-          maxChildSize: .95,
-          builder: (context, controller) => ListView(
-            controller: controller,
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
-            children: [
-              Text(
-                node['name'].toString(),
-                style: Theme.of(context).textTheme.headlineSmall
-                    ?.copyWith(fontWeight: FontWeight.w700),
+      builder: (sheetContext) => ValueListenableBuilder<int>(
+        valueListenable: _detailsRevision,
+        builder: (context, revision, child) {
+          final matches = _nodes.where(
+            (item) => item['nodeId'] == selectedNode['nodeId'],
+          );
+          if (matches.isEmpty) {
+            return const SafeArea(
+              child: Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('此节点已从面板移除，请关闭详情并刷新列表。'),
               ),
-              const SizedBox(height: 4),
-              _StatusPill(status: node['status'].toString()),
-              const SizedBox(height: 18),
-              if (isLocal && node['canEmergencyControl'] == true) ...[
-                GlassControlSurface(
-                  child: FilledButton.icon(
-                    style: node['enabled'] == true
-                        ? FilledButton.styleFrom(
-                            backgroundColor: Theme.of(context).colorScheme.error
-                                .withValues(alpha: .22),
-                            foregroundColor: Theme.of(context)
-                                .colorScheme
-                                .error,
-                          )
-                        : null,
-                    onPressed: () => _setNodeEnabled(
-                      node,
-                      node['enabled'] != true,
-                      sheetContext,
+            );
+          }
+          final node = matches.first;
+          final busy = _nodeActions.contains(node['nodeId'].toString());
+          final isLocal = node['kind'] == 'local';
+          final rows = isLocal
+              ? [
+                  ('节点类型', '面板本机节点'),
+                  ('面板入口', node['observedIp']),
+                  ('在线设备', node['onlineDevices'] ?? '—'),
+                  ('累计上传', formatBytes(node['txBytes'])),
+                  ('累计下载', formatBytes(node['rxBytes'])),
+                  ('累计流量', formatBytes(node['totalBytes'])),
+                  ('实时流量', '${formatBytes(_trafficRates['local'] ?? 0)}/s'),
+                  ('最后采样', formatTimestamp(node['trafficObservedAt'])),
+                ]
+              : [
+                  ('节点 ID', node['nodeId']),
+                  (
+                    '公网 IP',
+                    node['observedIp'].toString().isNotEmpty
+                        ? node['observedIp']
+                        : node['expectedIp'],
+                  ),
+                  ('主机名', node['hostname']),
+                  ('Agent 版本', node['agentVersion']),
+                  ('平台', '${node['platform']} ${node['architecture']}'),
+                  ('控制协议', node['policyState']),
+                  ('数据面', node['dataPlaneState']),
+                  ('在线设备', node['onlineDevices'] ?? '—'),
+                  ('最后心跳', formatTimestamp(node['lastHeartbeatAt'])),
+                  ('在线快照', formatTimestamp(node['lastSnapshotAt'])),
+                  ('流量 ACK', formatTimestamp(node['lastTrafficAckAt'])),
+                  ('待执行命令', node['pendingCommands']),
+                  ('失败命令', node['failedCommands']),
+                  ('累计上传', formatBytes(node['txBytes'])),
+                  ('累计下载', formatBytes(node['rxBytes'])),
+                  ('累计流量', formatBytes(node['totalBytes'])),
+                  (
+                    '实时流量',
+                    '${formatBytes(_trafficRates[node['nodeId']] ?? 0)}/s',
+                  ),
+                ];
+          return SafeArea(
+            child: DraggableScrollableSheet(
+              expand: false,
+              initialChildSize: .82,
+              minChildSize: .55,
+              maxChildSize: .95,
+              builder: (context, controller) => ListView(
+                controller: controller,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+                children: [
+                  if (_error != null) RefreshWarning(message: _error!),
+                  if (busy)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 12),
+                      child: Text('操作处理中，请稍候…'),
                     ),
-                    icon: Icon(
-                      node['enabled'] == true
-                          ? Icons.emergency_rounded
-                          : Icons.play_arrow_rounded,
+                  Text(
+                    node['name'].toString(),
+                    style: Theme.of(context).textTheme.headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 4),
+                  _StatusPill(status: node['status'].toString()),
+                  const SizedBox(height: 18),
+                  if (isLocal && node['canEmergencyControl'] == true) ...[
+                    GlassControlSurface(
+                      child: FilledButton.icon(
+                        style: node['enabled'] == true
+                            ? FilledButton.styleFrom(
+                                backgroundColor: Theme.of(context)
+                                    .colorScheme
+                                    .error
+                                    .withValues(alpha: .22),
+                                foregroundColor: Theme.of(context)
+                                    .colorScheme
+                                    .error,
+                              )
+                            : null,
+                        onPressed: busy
+                            ? null
+                            : () => _setNodeEnabled(
+                                node,
+                                node['enabled'] != true,
+                                sheetContext,
+                              ),
+                        icon: Icon(
+                          node['enabled'] == true
+                              ? Icons.emergency_rounded
+                              : Icons.play_arrow_rounded,
+                        ),
+                        label: Text(node['enabled'] == true ? '紧急停用' : '启用节点'),
+                      ),
                     ),
-                    label: Text(node['enabled'] == true ? '紧急停用' : '启用节点'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              if (!isLocal) ...[
-                GlassControlSurface(
-                  child: FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Theme.of(context).colorScheme.error
-                          .withValues(alpha: .22),
-                      foregroundColor: Theme.of(context).colorScheme.error,
+                    const SizedBox(height: 12),
+                  ],
+                  if (!isLocal) ...[
+                    GlassControlSurface(
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Theme.of(context).colorScheme.error
+                              .withValues(alpha: .22),
+                          foregroundColor: Theme.of(context).colorScheme.error,
+                        ),
+                        onPressed: !busy && node['canDisconnect'] == true
+                            ? () => _pairingAction(
+                                node,
+                                'disconnect',
+                                sheetContext,
+                              )
+                            : null,
+                        icon: const Icon(Icons.link_off_rounded),
+                        label: const Text('一键断连'),
+                      ),
                     ),
-                    onPressed: node['canDisconnect'] == true
-                        ? () => _pairingAction(node, 'disconnect', sheetContext)
-                        : null,
-                    icon: const Icon(Icons.link_off_rounded),
-                    label: const Text('一键断连'),
+                    const SizedBox(height: 10),
+                    GlassControlSurface(
+                      child: OutlinedButton.icon(
+                        onPressed: !busy && node['canDeletePairing'] == true
+                            ? () => _pairingAction(node, 'delete', sheetContext)
+                            : null,
+                        icon: const Icon(Icons.delete_outline_rounded),
+                        label: const Text('删除对接'),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  ...rows.map(
+                    (item) => ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(item.$1),
+                      subtitle: Text(
+                        item.$2?.toString().isNotEmpty == true
+                            ? item.$2.toString()
+                            : '不可用',
+                      ),
+                      trailing: item.$1 == '节点 ID'
+                          ? GlassControlSurface(
+                              child: IconButton(
+                                tooltip: '复制节点 ID',
+                                onPressed: () async {
+                                  await Clipboard.setData(
+                                    ClipboardData(text: item.$2.toString()),
+                                  );
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('节点 ID 已复制'),
+                                      ),
+                                    );
+                                  }
+                                },
+                                icon: const Icon(Icons.copy_rounded),
+                              ),
+                            )
+                          : null,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                GlassControlSurface(
-                  child: OutlinedButton.icon(
-                    onPressed: node['canDeletePairing'] == true
-                        ? () => _pairingAction(node, 'delete', sheetContext)
-                        : null,
-                    icon: const Icon(Icons.delete_outline_rounded),
-                    label: const Text('删除对接'),
+                  const SizedBox(height: 8),
+                  Text(
+                    _dataPlaneHelp(node['dataPlaneState']?.toString()),
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              ...rows.map(
-                (item) => ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(item.$1),
-                  subtitle: Text(
-                    item.$2?.toString().isNotEmpty == true
-                        ? item.$2.toString()
-                        : '不可用',
-                  ),
-                  trailing: item.$1 == '节点 ID'
-                      ? GlassControlSurface(
-                          child: IconButton(
-                            tooltip: '复制节点 ID',
-                            onPressed: () async {
-                              await Clipboard.setData(
-                                ClipboardData(text: item.$2.toString()),
-                              );
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('节点 ID 已复制')),
-                                );
-                              }
-                            },
-                            icon: const Icon(Icons.copy_rounded),
-                          ),
-                        )
-                      : null,
-                ),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                _dataPlaneHelp(node['dataPlaneState']?.toString()),
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -511,22 +565,17 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
-                                      Row(
-                                        children: [
-                                          Expanded(
-                                            child: Text(
-                                              node['name'].toString(),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                            ),
-                                          ),
-                                          _StatusPill(
-                                            status: node['status'].toString(),
-                                          ),
-                                        ],
+                                      Text(
+                                        node['name'].toString(),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      _StatusPill(
+                                        status: node['status'].toString(),
                                       ),
                                       const SizedBox(height: 5),
                                       Text(

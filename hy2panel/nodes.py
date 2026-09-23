@@ -774,6 +774,9 @@ unset HY2PANEL_ENROLLMENT_TOKEN
     def create(self, name, expected_ip, ttl_minutes, actor, mode="join"):
         name = _normalize_name(name)
         expected_ip = _normalize_ip(expected_ip)
+        address = ipaddress.ip_address(expected_ip)
+        if not address.is_global or address.is_multicast:
+            raise ValueError("请输入节点的公网 IP；内网、回环和保留地址无法完成对接验证")
         mode = str(mode or "join")
         if mode not in {"join", "rebind"}:
             raise ValueError("enrollment mode must be join or rebind")

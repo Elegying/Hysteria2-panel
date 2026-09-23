@@ -62,7 +62,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
     def create(self, **changes):
         values = {
             "name": "香港分流-02",
-            "expected_ip": "203.0.113.10",
+            "expected_ip": "8.8.8.10",
             "ttl_minutes": 10,
             "actor": "admin",
         }
@@ -87,7 +87,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertNotEqual(token, enrollment["token_digest"])
         self.assertNotIn(token.encode("ascii"), self.db_path.read_bytes())
         self.assertEqual("pending_registration", node["status"])
-        self.assertEqual("203.0.113.10", node["expected_ip"])
+        self.assertEqual("8.8.8.10", node["expected_ip"])
         self.assertEqual(self.now[0] + 600, issued["expiresAt"])
         command = issued["deploymentCommand"]
         self.assertIn("v0.25.0", command)
@@ -142,7 +142,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         token = token_from_command(issued["deploymentCommand"])
 
         result = self.service.register(
-            registration_payload(token), remote_ip="203.0.113.10"
+            registration_payload(token), remote_ip="8.8.8.10"
         )
 
         self.assertEqual(issued["nodeId"], result["nodeId"])
@@ -151,58 +151,58 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertEqual("pending_verification", node["status"])
         self.assertEqual(self.now[0], node["verified_at"])
         self.assertEqual("system:one-click-enrollment", node["verified_by"])
-        self.assertEqual("203.0.113.10", node["observed_ip"])
+        self.assertEqual("8.8.8.10", node["observed_ip"])
         self.assertEqual(ed25519_public_key(), node["public_key"])
         retry = self.service.register(
-            registration_payload(token), remote_ip="203.0.113.10"
+            registration_payload(token), remote_ip="8.8.8.10"
         )
         self.assertEqual(result, retry)
         with self.assertRaises(EnrollmentRejected):
             self.service.register(
                 registration_payload(token, ed25519_public_key(8)),
-                remote_ip="203.0.113.10",
+                remote_ip="8.8.8.10",
             )
 
     def test_expired_revoked_wrong_ip_and_malformed_public_keys_fail_closed(self):
         expired = self.create(
-            name="expired", expected_ip="198.51.100.20", ttl_minutes=5
+            name="expired", expected_ip="8.8.4.20", ttl_minutes=5
         )
         expired_token = token_from_command(expired["deploymentCommand"])
         self.now[0] += 301
         with self.assertRaises(EnrollmentRejected):
             self.service.register(
-                registration_payload(expired_token), remote_ip="198.51.100.20"
+                registration_payload(expired_token), remote_ip="8.8.4.20"
             )
 
         self.now[0] += 1
-        revoked = self.create(name="revoked", expected_ip="198.51.100.20")
+        revoked = self.create(name="revoked", expected_ip="8.8.4.20")
         revoked_token = token_from_command(revoked["deploymentCommand"])
         self.assertTrue(self.service.revoke(revoked["enrollmentId"]))
         self.assertTrue(self.service.revoke(revoked["enrollmentId"]))
         with self.assertRaises(EnrollmentRejected):
             self.service.register(
-                registration_payload(revoked_token), remote_ip="198.51.100.20"
+                registration_payload(revoked_token), remote_ip="8.8.4.20"
             )
 
         wrong_ip = self.create(name="wrong-ip")
         wrong_ip_token = token_from_command(wrong_ip["deploymentCommand"])
         with self.assertRaises(EnrollmentRejected):
             self.service.register(
-                registration_payload(wrong_ip_token), remote_ip="203.0.113.11"
+                registration_payload(wrong_ip_token), remote_ip="8.8.8.11"
             )
 
-        malformed = self.create(name="bad-key", expected_ip="198.51.100.20")
+        malformed = self.create(name="bad-key", expected_ip="8.8.4.20")
         malformed_token = token_from_command(malformed["deploymentCommand"])
         for public_key in ("not-base64", base64.b64encode(b"wrong").decode("ascii")):
             with self.subTest(public_key=public_key):
                 with self.assertRaises(EnrollmentRejected):
                     self.service.register(
                         registration_payload(malformed_token, public_key),
-                        remote_ip="198.51.100.20",
+                        remote_ip="8.8.4.20",
                     )
 
     def test_concurrent_registration_has_exactly_one_success(self):
-        issued = self.create(expected_ip="198.51.100.20")
+        issued = self.create(expected_ip="8.8.4.20")
         token = token_from_command(issued["deploymentCommand"])
         barrier = threading.Barrier(3)
         outcomes = []
@@ -212,7 +212,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
             try:
                 self.service.register(
                     registration_payload(token, ed25519_public_key(value)),
-                    remote_ip="198.51.100.20",
+                    remote_ip="8.8.4.20",
                 )
                 outcomes.append("success")
             except EnrollmentRejected:
@@ -228,7 +228,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertEqual(["rejected", "success"], sorted(outcomes))
 
     def test_node_state_conflict_rolls_back_token_consumption(self):
-        issued = self.create(expected_ip="198.51.100.20")
+        issued = self.create(expected_ip="8.8.4.20")
         token = token_from_command(issued["deploymentCommand"])
         with sqlite_connection(str(self.db_path)) as connection:
             connection.execute(
@@ -238,7 +238,7 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
 
         with self.assertRaises(EnrollmentRejected):
             self.service.register(
-                registration_payload(token), remote_ip="198.51.100.20"
+                registration_payload(token), remote_ip="8.8.4.20"
             )
 
         with sqlite_connection(str(self.db_path)) as connection:
@@ -247,6 +247,17 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
                 (issued["enrollmentId"],),
             ).fetchone()[0]
         self.assertIsNone(consumed_at)
+
+    def test_creation_rejects_nonpublic_addresses_before_creating_records(self):
+        for address in ('127.0.0.1', '10.0.0.1', '192.168.1.1', '100.64.0.1',
+                        '169.254.1.1', '0.0.0.0', '203.0.113.1', '224.0.0.1',
+                        '::1', 'fc00::1', 'fe80::1', '2001:db8::1', 'ff02::1'):
+            with self.subTest(address=address):
+                with self.assertRaisesRegex(ValueError, '公网 IP'):
+                    self.create(expected_ip=address)
+                self.assertEqual([], self.db.list_nodes())
+        issued = self.create(expected_ip='2606:4700:4700::1111')
+        self.assertEqual('PENDING_REGISTRATION', issued['status'])
 
     def test_creation_validates_name_ip_ttl_and_https_panel_url(self):
         for changes in (
