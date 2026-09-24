@@ -85,16 +85,26 @@ class GlassControlSurface extends StatelessWidget {
   const GlassControlSurface({required this.child, super.key});
   final Widget child;
   @override
-  Widget build(BuildContext context) => GlassSurface(
-    borderRadius: 16,
-    blurSigma: 5,
-    child: child is TextField || child is TextFormField
-        ? Padding(
-            padding: const EdgeInsets.only(top: 10, bottom: 2),
+  Widget build(BuildContext context) {
+    // RawChip paints its Ink fill over an internal canvas Material. A transparent
+    // chip fill alone still exposes that canvas instead of our glass surface.
+    final control = child is ChipAttributes
+        ? Theme(
+            data: Theme.of(context).copyWith(canvasColor: Colors.transparent),
             child: child,
           )
-        : child,
-  );
+        : child;
+    return GlassSurface(
+      borderRadius: 16,
+      blurSigma: 5,
+      child: child is TextField || child is TextFormField
+          ? Padding(
+              padding: const EdgeInsets.only(top: 10, bottom: 2),
+              child: control,
+            )
+          : control,
+    );
+  }
 }
 
 /// Keep scrolling cards in independent layers. Shared moving shader groups can
