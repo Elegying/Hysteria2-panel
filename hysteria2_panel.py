@@ -2595,6 +2595,7 @@ class Database:
                     attempts INTEGER NOT NULL DEFAULT 0,
                     delivered_at INTEGER,
                     next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                    quota_generations TEXT,
                     last_error TEXT
                 );
                 CREATE INDEX IF NOT EXISTS node_commands_pending_idx
@@ -2719,6 +2720,7 @@ class Database:
                 row["name"] for row in connection.execute("PRAGMA table_info(node_commands)")
             }
             command_migrations = {
+                "quota_generations": "ALTER TABLE node_commands ADD COLUMN quota_generations TEXT",
                 "delivered_at": "ALTER TABLE node_commands ADD COLUMN delivered_at INTEGER",
                 "next_attempt_at": (
                     "ALTER TABLE node_commands ADD COLUMN next_attempt_at "
@@ -3277,7 +3279,9 @@ class Database:
                 self._set_user_used_traffic(connection, row, used_traffic_bytes, now)
             updated = self._get_proxy_user(row["id"], connection)
             if updated["tx_bytes"] + updated["rx_bytes"] >= updated["traffic_limit_bytes"]:
-                self._queue_kick_users_on_ready_nodes(connection, [row["name"]], now)
+                self._queue_kick_users_on_ready_nodes(
+                    connection, [row["name"]], now, quota_only=True
+                )
             return updated
 
     @staticmethod
@@ -4229,7 +4233,7 @@ class Database:
                     account_traffic=account_traffic, observed_at=observed_at,
                 )
             self._queue_kick_users_on_ready_nodes(
-                connection, exhausted_users, now
+                connection, exhausted_users, now, quota_only=True
             )
             if domain_usage:
                 connection.execute(
@@ -5158,8 +5162,23 @@ class Database:
                     row["name"]
                     for row in connection.execute("SELECT name FROM proxy_users")
                 }
-                if any(name not in known_names for name in online):
-                    raise sqlite3.IntegrityError("snapshot contains an unknown user")
+                unknown_names = set(online) - known_names
+                if unknown_names:
+                    retired_names = {
+                        row["name_fingerprint"]
+                        for row in connection.execute(
+                            "SELECT name_fingerprint FROM retired_proxy_names"
+                        )
+                    }
+                    if any(
+                        self._retired_name_fingerprint(name) not in retired_names
+                        for name in unknown_names
+                    ):
+                        raise sqlite3.IntegrityError("snapshot contains an unknown user")
+                    # Hysteria can retain idle sessions after a user is deleted.
+                    # Keep the full live-user snapshot fresh without restoring
+                    # a retired identity or trusting genuinely unknown names.
+                    online = {name: count for name, count in online.items() if name in known_names}
                 previous_counts = {
                     row["user_name"]: row["count"]
                     for row in connection.execute(
@@ -5641,7 +5660,7 @@ class Database:
                         account_traffic=account_traffic, observed_at=observed_at,
                     )
                 self._queue_kick_users_on_ready_nodes(
-                    connection, exhausted_users, int(accepted_at)
+                    connection, exhausted_users, int(accepted_at), quota_only=True
                 )
                 self._record_domain_usage(
                     connection,
@@ -6105,7 +6124,7 @@ class Database:
                 raise ValueError("only a stopped node can be archived")
             return True
 
-    def _queue_kick_users_on_ready_nodes(self, connection, names, created_at):
+    def _queue_kick_users_on_ready_nodes(self, connection, names, created_at, quota_only=False):
         if (
             not isinstance(names, (list, tuple, set))
             or len(names) > 1000
@@ -6118,15 +6137,28 @@ class Database:
         names = sorted(set(names), key=str.casefold)
         if not names:
             return 0
-        payloads = [
-            json.dumps(
-                {"users": names[offset : offset + 100]},
+        payloads = []
+        for offset in range(0, len(names), 100):
+            chunk = names[offset : offset + 100]
+            payload = json.dumps(
+                {"users": chunk},
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            for offset in range(0, len(names), 100)
-        ]
+            quota_generations = None
+            if quota_only:
+                generations = {
+                    row["name"]: row["generation"]
+                    for row in connection.execute(
+                        "SELECT name, generation FROM proxy_users WHERE name IN ({})".format(  # nosec B608
+                            ",".join("?" for _ in chunk)
+                        ),
+                        chunk,
+                    )
+                }
+                quota_generations = json.dumps(generations, ensure_ascii=False, sort_keys=True)
+            payloads.append((payload, quota_generations))
         queued = 0
         for row in connection.execute(
             """SELECT node_id FROM nodes
@@ -6135,25 +6167,28 @@ class Database:
                 AND lifecycle_state IN ('active', 'draining')
             ORDER BY node_id"""
         ):
-            for payload in payloads:
+            for payload, quota_generations in payloads:
                 existing = connection.execute(
                     """SELECT 1 FROM node_commands
                     WHERE node_id = ? AND kind = 'KICK_USERS' AND payload = ?
+                        AND quota_generations IS ?
                         AND acked_at IS NULL""",
-                    (row["node_id"], payload),
+                    (row["node_id"], payload, quota_generations),
                 ).fetchone()
                 if existing is not None:
                     continue
                 connection.execute(
                     """INSERT INTO node_commands(
-                        command_id, node_id, kind, payload, created_at, next_attempt_at
-                    ) VALUES (?, ?, 'KICK_USERS', ?, ?, ?)""",
+                        command_id, node_id, kind, payload, created_at, next_attempt_at,
+                        quota_generations
+                    ) VALUES (?, ?, 'KICK_USERS', ?, ?, ?, ?)""",
                     (
                         uuid.uuid4().hex,
                         row["node_id"],
                         payload,
                         int(created_at),
                         int(created_at),
+                        quota_generations,
                     ),
                 )
                 queued += 1
@@ -6210,17 +6245,43 @@ class Database:
                 if node is None:
                     raise sqlite3.IntegrityError("node is not protocol ready")
                 rows = connection.execute(
-                    """SELECT command_id, kind, payload, attempts FROM node_commands
+                    """SELECT command_id, kind, payload, attempts, quota_generations FROM node_commands
                     WHERE node_id = ? AND acked_at IS NULL AND next_attempt_at <= ?
                     ORDER BY created_at, command_id LIMIT 32""",
                     (node_id, int(accepted_at)),
                 ).fetchall()
                 commands = []
                 for row in rows:
+                    payload = json.loads(row["payload"])
+                    if row["kind"] == "KICK_USERS" and row["quota_generations"] is not None:
+                        generations = json.loads(row["quota_generations"])
+                        eligible = []
+                        for name in payload["users"]:
+                            user = connection.execute(
+                                """SELECT generation, tx_bytes, rx_bytes, traffic_limit_bytes
+                                FROM proxy_users WHERE name = ? COLLATE NOCASE""",
+                                (name,),
+                            ).fetchone()
+                            if (
+                                user is not None
+                                and user["generation"] == generations.get(name)
+                                and user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]
+                            ):
+                                eligible.append(name)
+                        if not eligible:
+                            connection.execute(
+                                """UPDATE node_commands SET acked_at = ?, last_error = 'QUOTA_SUPERSEDED'
+                                WHERE command_id = ?""",
+                                (int(accepted_at), row["command_id"]),
+                            )
+                            continue
+                        # Keep the wire contract compatible with existing agents.
+                        # Security kicks have no quota condition and are never filtered.
+                        payload = {"users": eligible}
                     command = {
                         "commandId": row["command_id"],
                         "kind": row["kind"],
-                        "payload": json.loads(row["payload"]),
+                        "payload": payload,
                     }
                     candidate = commands + [command]
                     encoded_size = len(
@@ -8592,7 +8653,7 @@ class PanelHandler(JsonHandler):
             return
         distributed_routes = {
             "/api/v1/node-auth-decisions": ("authorize", 16 * 1024),
-            "/api/v1/node-online-snapshots": ("accept_online_snapshot", 128 * 1024),
+            "/api/v1/node-online-snapshots": ("accept_online_snapshot", 512 * 1024),
             "/api/v1/node-traffic-batches": ("apply_traffic_batch", 256 * 1024),
             "/api/v1/node-control-cycles": ("control_cycle", 512 * 1024),
             "/api/v1/node-commands/poll": ("poll_commands", 8 * 1024),
