@@ -10,6 +10,15 @@ DEPENDABOT = (ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
 
 
 class SupplyChainTests(unittest.TestCase):
+    def test_documented_verified_installer_targets_the_current_release(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        version = re.search(r'^PANEL_VERSION = "([^"]+)"',
+                            (ROOT / "hy2panel/version.py").read_text(), re.MULTILINE).group(1)
+        documented = re.search(r"示例固定到 `v([0-9.]+)`", readme).group(1)
+        command = re.search(r"^version=([0-9.]+)$", readme, re.MULTILINE).group(1)
+        self.assertEqual(version, documented)
+        self.assertEqual(version, command)
+
     def test_every_external_action_is_pinned_to_a_full_commit(self):
         action_pattern = re.compile(r"^\s*- uses: [^@\s]+@([^\s#]+)", re.MULTILINE)
         for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):

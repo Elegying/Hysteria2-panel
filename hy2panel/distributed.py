@@ -62,6 +62,9 @@ MAX_CLOCK_SKEW_SECONDS = 120
 MAX_STATE_AGE_SECONDS = 43
 MAX_TRAFFIC_BATCH_AGE_SECONDS = 7 * 86400
 MAX_USERS_PER_PAYLOAD = 1000
+# Online state is a complete snapshot, unlike splittable traffic batches.
+# Bound serialized bytes below the 512 KiB HTTP envelope, not account count.
+MAX_ONLINE_SNAPSHOT_BYTES = 480 * 1024
 MAX_COUNTER = 2**63 - 1
 
 
@@ -98,9 +101,9 @@ def _user_name(value):
 
 
 def _online_mapping(value):
-    return (
+    valid = (
         isinstance(value, dict)
-        and len(value) <= MAX_USERS_PER_PAYLOAD
+        and len(value) <= MAX_ONLINE_SNAPSHOT_BYTES // 6
         and all(
             _user_name(name)
             and not isinstance(count, bool)
@@ -109,6 +112,13 @@ def _online_mapping(value):
             for name, count in value.items()
         )
     )
+    if not valid:
+        return False
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return len(encoded) <= MAX_ONLINE_SNAPSHOT_BYTES
+    except UnicodeError:
+        return False
 
 
 def _traffic_mapping(value):

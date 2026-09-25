@@ -165,7 +165,7 @@ bootstrap 响应传输当前生产 Hysteria TLS 身份的原始字节及固定�
 | `POST` | `/node-enrollments` | 生成短时、单用途节点对接代码；要求面板 HTTPS |
 | `POST` | `/node-enrollments/{id}/revoke` | 作废尚未消费的节点对接码 |
 | `POST` | `/nodes/{id}/disconnect` | 仅对在线且心跳新鲜的节点下发固定 `UNINSTALL_NODE`；成功签名回执后归档中央记录 |
-| `POST` | `/nodes/{id}/delete` | 仅在节点心跳失效时撤销中央授权并删除待处理命令；保留身份和历史账本 |
+| `POST` | `/nodes/{id}/delete` | 管理员可在在线、离线或断连中单方面撤销中央授权并删除待处理命令，无需远端回执；保留身份和历史账本，不代表远端已卸载或已有连接立即断开 |
 | `POST` | `/service/{start,stop,restart}` | 通过固定 sudoers 白名单控制项目专用 Hysteria 服务 |
 | `POST` | `/egress/{web,full}` | 切换整台节点的出站策略；通过固定 root oneshot 同步更新两份 Hysteria 配置和持久状态，重启失败时恢复旧策略 |
 | `POST` | `/system/reboot` | 二次确认后通过固定 sudoers 白名单排队重启整台服务器，成功返回 HTTP 202 |

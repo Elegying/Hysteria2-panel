@@ -29,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.26"
+AGENT_VERSION = "0.39.27"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -3111,6 +3111,7 @@ class NodeControlCycle:
 
     def _run_combined(self, stopped):
         snapshot = None
+        deferred_snapshot = False
         selected = []
         if not stopped:
             if self._can_collect():
@@ -3147,6 +3148,7 @@ class NodeControlCycle:
                     ).encode("utf-8")
                 )
                 if encoded_size > CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES:
+                    deferred_snapshot = True
                     snapshot = None
         result = self.protocol_client.send_control_cycle(selected, snapshot)
         for batch, acknowledgement in zip(selected, result["traffic"]):
@@ -3158,6 +3160,11 @@ class NodeControlCycle:
             self.spool.ack(batch["batchId"])
         if selected:
             self.state.set_traffic_ack(int(result["acceptedAt"]))
+        if deferred_snapshot:
+            # Full online state may fit alone but not alongside traffic. Settle
+            # and ACK traffic first, then publish the complete snapshot without
+            # truncating accounts or starving it behind the next collection.
+            self.refresh_snapshot()
         if snapshot is not None and (
             not isinstance(result.get("online"), dict)
             or result["online"].get("sequence") != snapshot["sequence"]

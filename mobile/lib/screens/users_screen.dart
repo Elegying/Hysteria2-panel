@@ -39,6 +39,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   bool _refreshing = false;
   int _loadGeneration = 0;
   Timer? _timer;
+  final _detailsRevision = ValueNotifier<int>(0);
+  final _userActions = <int>{};
 
   @override
   bool get wantKeepAlive => true;
@@ -110,6 +112,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    _detailsRevision.dispose();
     _search.removeListener(_redraw);
     _search.dispose();
     super.dispose();
@@ -133,6 +136,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           _loading = false;
           _error = null;
         });
+        _detailsRevision.value++;
       }
     } on ApiException catch (error) {
       if (mounted && generation == _loadGeneration) {
@@ -273,114 +277,214 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     }
   }
 
-  Future<void> _showUser(Map<String, dynamic> user) async {
+  Future<void> _runUserOperation(
+    Map<String, dynamic> user,
+    Future<void> Function() operation,
+  ) async {
+    final id = user['id'] as int;
+    if (!_userActions.add(id)) return;
+    _detailsRevision.value++;
+    try {
+      await operation();
+    } finally {
+      _userActions.remove(id);
+      if (mounted) _detailsRevision.value++;
+    }
+  }
+
+  Future<void> _showUser(Map<String, dynamic> selectedUser) async {
     await showGlassModalBottomSheet<void>(
       context: context,
-      builder: (sheetContext) => SafeArea(
-        child: SingleChildScrollView(
-          padding: EdgeInsets.fromLTRB(
-            20,
-            0,
-            20,
-            20 + MediaQuery.viewInsetsOf(sheetContext).bottom,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      user['name'].toString(),
-                      style: Theme.of(sheetContext).textTheme.headlineSmall
-                          ?.copyWith(fontWeight: FontWeight.w700),
+      builder: (sheetContext) => ValueListenableBuilder<int>(
+        valueListenable: _detailsRevision,
+        builder: (context, revision, child) {
+          final matches = _users.where(
+            (item) => item['id'] == selectedUser['id'],
+          );
+          if (matches.isEmpty) {
+            return SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('此用户已从面板删除。'),
+                    GlassControlSurface(
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        child: const Text('关闭详情'),
+                      ),
                     ),
-                  ),
-                  GlassControlSurface(
-                    child: OutlinedButton.icon(
-                      onPressed: () => Navigator.of(sheetContext).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => DomainUsageScreen.user(
-                            userId: user['id'] as int,
-                            userName: user['name'].toString(),
-                          ),
+                  ],
+                ),
+              ),
+            );
+          }
+          final user = matches.first;
+          final busy = _userActions.contains(user['id']);
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                0,
+                20,
+                20 + MediaQuery.viewInsetsOf(sheetContext).bottom,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          user['name'].toString(),
+                          style: Theme.of(sheetContext).textTheme.headlineSmall
+                              ?.copyWith(fontWeight: FontWeight.w700),
                         ),
                       ),
-                      icon: const Icon(Icons.language_rounded, size: 18),
-                      label: const Text('流量详情'),
+                      GlassControlSurface(
+                        child: OutlinedButton.icon(
+                          onPressed: () => Navigator.of(sheetContext).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => DomainUsageScreen.user(
+                                userId: user['id'] as int,
+                                userName: user['name'].toString(),
+                              ),
+                            ),
+                          ),
+                          icon: const Icon(Icons.language_rounded, size: 18),
+                          label: const Text('流量详情'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(user['enabled'] == true ? '启用中' : '已禁用'),
+                  const SizedBox(height: 18),
+                  _UserFacts(user: user),
+                  const SizedBox(height: 20),
+                  Text(
+                    '用户操作',
+                    style: Theme.of(sheetContext).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 10),
+                  if (busy)
+                    Semantics(
+                      liveRegion: true,
+                      child: const Padding(
+                        padding: EdgeInsets.only(bottom: 10),
+                        child: Text('正在处理，请稍候…'),
+                      ),
                     ),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _ActionChipButton(
+                        icon: Icons.share_rounded,
+                        label: '分享',
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _userAction(sheetContext, user, 'share'),
+                              ),
+                      ),
+                      _ActionChipButton(
+                        icon: Icons.qr_code_rounded,
+                        label: '扫码',
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _userAction(sheetContext, user, 'qr'),
+                              ),
+                      ),
+                      _ActionChipButton(
+                        icon: Icons.data_usage_rounded,
+                        label: '流量',
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _setUsedTraffic(sheetContext, user),
+                              ),
+                      ),
+                      _ActionChipButton(
+                        icon: user['enabled'] == true
+                            ? Icons.block_rounded
+                            : Icons.check_circle_rounded,
+                        label: user['enabled'] == true ? '禁用' : '启用',
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _userAction(
+                                  sheetContext,
+                                  user,
+                                  user['enabled'] == true
+                                      ? 'disable'
+                                      : 'enable',
+                                ),
+                              ),
+                      ),
+                      _ActionChipButton(
+                        icon: Icons.password_rounded,
+                        label: '改密',
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _userAction(
+                                  sheetContext,
+                                  user,
+                                  'rotate-secret',
+                                ),
+                              ),
+                      ),
+                      _ActionChipButton(
+                        icon: Icons.restart_alt_rounded,
+                        label: '重置',
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _userAction(
+                                  sheetContext,
+                                  user,
+                                  'reset-traffic',
+                                ),
+                              ),
+                      ),
+                      _ActionChipButton(
+                        icon: Icons.edit_rounded,
+                        label: '编辑',
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _editUser(sheetContext, user),
+                              ),
+                      ),
+                      _ActionChipButton(
+                        icon: Icons.delete_outline_rounded,
+                        label: '删除',
+                        destructive: true,
+                        onTap: busy
+                            ? null
+                            : () => _runUserOperation(
+                                user,
+                                () => _userAction(sheetContext, user, 'delete'),
+                              ),
+                      ),
+                    ],
                   ),
                 ],
               ),
-              const SizedBox(height: 4),
-              Text(user['enabled'] == true ? '启用中' : '已禁用'),
-              const SizedBox(height: 18),
-              _UserFacts(user: user),
-              const SizedBox(height: 20),
-              Text(
-                '用户操作',
-                style: Theme.of(sheetContext).textTheme.titleMedium
-                    ?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _ActionChipButton(
-                    icon: Icons.share_rounded,
-                    label: '分享',
-                    onTap: () => _userAction(sheetContext, user, 'share'),
-                  ),
-                  _ActionChipButton(
-                    icon: Icons.qr_code_rounded,
-                    label: '扫码',
-                    onTap: () => _userAction(sheetContext, user, 'qr'),
-                  ),
-                  _ActionChipButton(
-                    icon: Icons.data_usage_rounded,
-                    label: '流量',
-                    onTap: () => _setUsedTraffic(sheetContext, user),
-                  ),
-                  _ActionChipButton(
-                    icon: user['enabled'] == true
-                        ? Icons.block_rounded
-                        : Icons.check_circle_rounded,
-                    label: user['enabled'] == true ? '禁用' : '启用',
-                    onTap: () => _userAction(
-                      sheetContext,
-                      user,
-                      user['enabled'] == true ? 'disable' : 'enable',
-                    ),
-                  ),
-                  _ActionChipButton(
-                    icon: Icons.password_rounded,
-                    label: '改密',
-                    onTap: () =>
-                        _userAction(sheetContext, user, 'rotate-secret'),
-                  ),
-                  _ActionChipButton(
-                    icon: Icons.restart_alt_rounded,
-                    label: '重置',
-                    onTap: () =>
-                        _userAction(sheetContext, user, 'reset-traffic'),
-                  ),
-                  _ActionChipButton(
-                    icon: Icons.edit_rounded,
-                    label: '编辑',
-                    onTap: () => _editUser(sheetContext, user),
-                  ),
-                  _ActionChipButton(
-                    icon: Icons.delete_outline_rounded,
-                    label: '删除',
-                    destructive: true,
-                    onTap: () => _userAction(sheetContext, user, 'delete'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -485,7 +589,10 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         }
       }
       if (action != 'share' && action != 'qr') {
-        if (sheetContext.mounted) Navigator.pop(sheetContext);
+        if (sheetContext.mounted &&
+            ModalRoute.of(sheetContext)?.isCurrent == true) {
+          Navigator.pop(sheetContext);
+        }
         await _load(silent: true);
         if (mounted) _message('操作已完成');
       }
@@ -617,7 +724,10 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     );
     traffic.dispose();
     if (saved == true) {
-      if (sheetContext.mounted) Navigator.pop(sheetContext);
+      if (sheetContext.mounted &&
+          ModalRoute.of(sheetContext)?.isCurrent == true) {
+        Navigator.pop(sheetContext);
+      }
       await _load(silent: true);
       if (mounted) _message('已用流量已保存');
     }
@@ -727,7 +837,10 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     devices.dispose();
     traffic.dispose();
     if (saved == true) {
-      if (sheetContext.mounted) Navigator.pop(sheetContext);
+      if (sheetContext.mounted &&
+          ModalRoute.of(sheetContext)?.isCurrent == true) {
+        Navigator.pop(sheetContext);
+      }
       await _load(silent: true);
       if (mounted) _message('用户配置已保存');
     }
@@ -1237,7 +1350,7 @@ class _ActionChipButton extends StatelessWidget {
   });
   final IconData icon;
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final bool destructive;
 
   @override

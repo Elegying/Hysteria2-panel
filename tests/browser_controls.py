@@ -163,8 +163,13 @@ try:
     switch = fixture.egress_policy_controller.switch
     fixture.server.request_deadline = .2
     def slow_switch(policy):
-        time.sleep(.6)
-        return switch(policy)
+        try:
+            time.sleep(.6)
+            return switch(policy)
+        finally:
+            # Only the POST under test gets the short deadline. Its redirect
+            # opens a separate dashboard request with the normal time budget.
+            fixture.server.request_deadline = 30
     fixture.egress_policy_controller.switch = slow_switch
     browser.click('[data-egress-form] button',navigation=True)
     assert fixture.egress_policy_controller.state == 'full'
