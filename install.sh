@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.27"
+PANEL_VERSION="0.39.28"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -25,12 +25,12 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="f48b0d55e6b021e6729d13bb8c1625ef754c9cf6ee0eddae4a0cb8d3f96d523f"
+PANEL_SHA256="9258660e7a76319b31150578b2d2375224d006d76bb25497ee35ab7401b65e8f"
 OFFSITE_BACKUP_SHA256="d7c57c6d414b15a643f690032acc07f9b74dba2a3ab0acfc3f0b315101d08a94"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="53134d6faefd68fb7982e782e41d19ed2e6ce2ce79616283d12665408ca5e34e"
+HY2PANEL_VERSION_SHA256="a83ca3a50aa70b0c5aac2b6dc5d349f922f9be416091a09ea8dd1a666bf844b2"
 HY2PANEL_BUDGETS_SHA256="9f465224cf32495bcecd547620babee1cd94a1ee904c6678b0bd83d691667547"
 HY2PANEL_WEB_ASSETS_SHA256="62fb6c8eccfe20420de6405c797dfb68853b6778a372c7ef89563a2e1de30367"
 HY2PANEL_OPERATIONS_SHA256="9fff087c8e6b9fc356285db80395becc5b414b3ef93c0b099329c9c87a006949"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce5
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="cf0ee45a7363fd7d8bc125081400c2f14f44f0c1ee3dcb0743d900ebbb455e32"
 HY2PANEL_MOBILE_API_SHA256="22e0b3214a5d8097021f7bfae3959412783ba6fd907f8d07fb27fd039e6dcfff"
-NODE_AGENT_SHA256="54d1c18e13465d8f47e3d2c2f87828993031ab1b712a3b3e5735a8e8cb4f020d"
+NODE_AGENT_SHA256="dc75fa6516677999c562817d7fb73a344ba07aa4ad2ffc29035cb2f28810bf33"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -108,8 +108,10 @@ UPGRADE_WATCH_UNIT=hysteria2-panel-upgrade-watch.service
 UPGRADE_RUNTIME_SYSCTL_STATE=runtime-sysctl.state
 UPGRADE_RECOVERY_DROPIN_DIR=/etc/systemd/system/hysteria2-panel.service.d
 UPGRADE_RECOVERY_DROPIN=${UPGRADE_RECOVERY_DROPIN_DIR}/10-hysteria2-panel-upgrade-recovery.conf
-BACKUP_RETENTION_DAYS=90
-BACKUP_MAX_COUNT=10
+BACKUP_RETENTION_DAYS=30
+BACKUP_MAX_COUNT=3
+BACKUP_MIN_COUNT=2
+BACKUP_MAX_KIB=1048576
 BACKUP_MIN_HEADROOM_KIB=65536
 UFW_RULES_PATH=/etc/ufw
 UFW_TEMPLATE_PATH=/usr/share/ufw/iptables
@@ -927,7 +929,8 @@ restore_managed_directory() {
 }
 
 prune_automatic_backups() {
-  local backup_root=/var/backups/hysteria2-panel count=0 directory metadata name
+  local backup_root=/var/backups/hysteria2-panel count=0 total_kib=0
+  local directory metadata name size_kib
   local automatic_backups=()
   [[ ! -L "${backup_root}" && -d "${backup_root}" ]] || return 1
   [[ "$(stat -c '%u:%g:%a' "${backup_root}")" == "0:0:700" ]] || return 1
@@ -941,12 +944,23 @@ prune_automatic_backups() {
   done < <(find "${backup_root}" -mindepth 1 -maxdepth 1 -type d -print | LC_ALL=C sort -r)
   for directory in "${automatic_backups[@]}"; do
     count=$((count + 1))
-    [[ "${directory}" != "${BACKUP_DIR}" ]] || continue
-    if (( count > BACKUP_MAX_COUNT )) || \
+    size_kib="$(du -sk -- "${directory}" | cut -f1)" || return 1
+    [[ "${size_kib}" =~ ^[0-9]+$ ]] || return 1
+    # Always retain the newest two recovery points and this upgrade's backup.
+    if (( count <= BACKUP_MIN_COUNT )) || [[ "${directory}" == "${BACKUP_DIR}" ]]; then
+      total_kib=$((total_kib + size_kib))
+      continue
+    fi
+    if (( count > BACKUP_MAX_COUNT || total_kib + size_kib > BACKUP_MAX_KIB )) || \
       find "${directory}" -maxdepth 0 -mtime "+${BACKUP_RETENTION_DAYS}" -print -quit | grep -q .; then
       rm -r -- "${directory}" || return 1
+    else
+      total_kib=$((total_kib + size_kib))
     fi
   done
+  if (( total_kib > BACKUP_MAX_KIB )); then
+    echo "警告：受保护的恢复点超过自动备份空间预算；请迁移备份，未删除恢复点" >&2
+  fi
 }
 
 rollback_firewall_after_service_recovery() {

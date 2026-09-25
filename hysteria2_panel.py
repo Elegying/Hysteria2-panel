@@ -2486,6 +2486,10 @@ class Database:
                     ON domain_usage_monthly(
                         usage_month, user_name COLLATE NOCASE, domain
                     );
+                CREATE INDEX IF NOT EXISTS domain_usage_monthly_global_idx
+                    ON domain_usage_monthly(
+                        usage_month, domain, tx_bytes, rx_bytes, updated_at
+                    );
                 CREATE TABLE IF NOT EXISTS nodes (
                     node_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -4104,7 +4108,8 @@ class Database:
                 user_name = user["name"]
                 rows = connection.execute(
                     """SELECT domain, SUM(tx_bytes) AS tx_bytes,
-                        SUM(rx_bytes) AS rx_bytes, MAX(updated_at) AS updated_at
+                        SUM(rx_bytes) AS rx_bytes,
+                        MAX(MAX(updated_at)) OVER () AS observed_at
                     FROM domain_usage_monthly
                     WHERE usage_month = ? AND user_name = ? COLLATE NOCASE
                     GROUP BY domain
@@ -4112,26 +4117,18 @@ class Database:
                     LIMIT ?""",
                     (usage_month, user_name, limit),
                 ).fetchall()
-                observed_at = connection.execute(
-                    """SELECT MAX(updated_at) FROM domain_usage_monthly
-                    WHERE usage_month = ? AND user_name = ? COLLATE NOCASE""",
-                    (usage_month, user_name),
-                ).fetchone()[0]
             else:
                 rows = connection.execute(
                     """SELECT domain, SUM(tx_bytes) AS tx_bytes,
-                        SUM(rx_bytes) AS rx_bytes, MAX(updated_at) AS updated_at
+                        SUM(rx_bytes) AS rx_bytes,
+                        MAX(MAX(updated_at)) OVER () AS observed_at
                     FROM domain_usage_monthly WHERE usage_month = ?
                     GROUP BY domain
                     ORDER BY SUM(tx_bytes) + SUM(rx_bytes) DESC, domain
                     LIMIT ?""",
                     (usage_month, limit),
                 ).fetchall()
-                observed_at = connection.execute(
-                    """SELECT MAX(updated_at) FROM domain_usage_monthly
-                    WHERE usage_month = ?""",
-                    (usage_month,),
-                ).fetchone()[0]
+        observed_at = rows[0]["observed_at"] if rows else 0
         return {
             "month": usage_month,
             "user": user_name,
