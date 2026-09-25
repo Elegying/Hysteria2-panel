@@ -646,8 +646,10 @@ restore_upgrade_runtime_state
 
         self.assertIn("require_backup_space()", source)
         self.assertIn("prune_automatic_backups()", source)
-        self.assertIn("BACKUP_RETENTION_DAYS=90", source)
-        self.assertIn("BACKUP_MAX_COUNT=10", source)
+        self.assertIn("BACKUP_RETENTION_DAYS=30", source)
+        self.assertIn("BACKUP_MAX_COUNT=3", source)
+        self.assertIn("BACKUP_MIN_COUNT=2", source)
+        self.assertIn("BACKUP_MAX_KIB=1048576", source)
         preflight = source.index("require_backup_space", source.index('timestamp="$(date'))
         create_backup = source.index('install -d -m 0700 "${BACKUP_DIR}"', preflight)
         self.assertLess(preflight, create_backup)
@@ -694,7 +696,7 @@ restore_upgrade_runtime_state
     def test_installer_pins_upstream_release_and_checksums(self):
         source = INSTALLER.read_text()
 
-        self.assertIn('PANEL_VERSION="0.39.27"', source)
+        self.assertIn('PANEL_VERSION="0.39.28"', source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
             'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',

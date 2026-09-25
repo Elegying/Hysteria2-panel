@@ -2,6 +2,7 @@ import datetime
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import node_agent
 from hysteria2_panel import Database
@@ -92,6 +93,28 @@ class DomainUsageTests(unittest.TestCase):
         self.assertEqual(
             [], self.database.domain_usage_top(now=self.observed_at)["items"]
         )
+
+    def test_observed_at_includes_domains_outside_top_and_empty_result(self):
+        with mock.patch("hysteria2_panel.time.time", return_value=self.observed_at):
+            self.database.apply_traffic_batch(
+                "5" * 32, {},
+                domain_usage=[{"user": "alice", "domain": "large.example", "tx": 100, "rx": 0}],
+                observed_at=self.observed_at,
+            )
+        with mock.patch("hysteria2_panel.time.time", return_value=self.observed_at + 60):
+            self.database.apply_traffic_batch(
+                "6" * 32, {},
+                domain_usage=[{"user": "alice", "domain": "recent.example", "tx": 1, "rx": 0}],
+                observed_at=self.observed_at + 60,
+            )
+        for user_id in (None, self.alice["id"]):
+            result = self.database.domain_usage_top(user_id, limit=1, now=self.observed_at)
+            self.assertEqual("large.example", result["items"][0]["domain"])
+            self.assertEqual(self.observed_at + 60, result["observedAt"])
+        self.database.reset_proxy_user_traffic(self.alice["id"])
+        result = self.database.domain_usage_top(now=self.observed_at)
+        self.assertEqual([], result["items"])
+        self.assertEqual(0, result["observedAt"])
 
     def test_stream_accumulator_uses_deltas_and_ignores_ip_destinations(self):
         class Client:
