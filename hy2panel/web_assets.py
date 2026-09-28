@@ -738,9 +738,30 @@ function applyOnlineStatus(payload) {
       const forecast = payload.machineForecasts[card.dataset.originId];
       if (!forecast || typeof forecast.text !== 'string' || typeof forecast.basis !== 'string') return;
       const text = card.querySelector('[data-machine-forecast]');
-      const basis = card.querySelector('[data-machine-forecast-basis]');
       if (text) text.textContent = forecast.text;
-      if (basis) basis.textContent = forecast.basis;
+      const budget = forecast.budget;
+      if (budget && Number.isFinite(budget.percent) && Number.isFinite(budget.used_bytes) &&
+          Number.isFinite(budget.limit_bytes)) {
+        const bytes = function(value) {
+          const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+          let index = 0;
+          while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
+          return (index ? value.toFixed(1) : String(value)) + ' ' + units[index];
+        };
+        const usage = card.querySelector('[data-machine-budget-usage]');
+        const period = card.querySelector('[data-machine-budget-period]');
+        const progress = card.querySelector('progress');
+        if (usage) {
+          usage.textContent = bytes(budget.used_bytes) + ' / ' +
+            (budget.limit_bytes ? bytes(budget.limit_bytes) : '不限') + ' · ' + budget.percent.toFixed(1) + '%';
+          usage.parentElement.className = ({disabled:'muted',normal:'ok',warning:'warning',exhausted:'bad'})[budget.status] || 'warning';
+        }
+        if (progress) progress.value = Math.max(0, Math.min(100, budget.percent));
+        if (period && typeof budget.period_start === 'string' && typeof budget.period_end === 'string') {
+          period.textContent = '本周期 ' + budget.period_start + ' 至 ' + budget.period_end +
+            ' · 下次重置 ' + budget.period_end;
+        }
+      }
     });
     const count = document.querySelector('.machine-count');
     if (count) count.textContent = String(document.querySelectorAll(

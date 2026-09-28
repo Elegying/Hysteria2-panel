@@ -778,19 +778,23 @@ class _BudgetsCard extends StatelessWidget {
                       Text(
                         budget == null
                             ? '未设置预算 · 已用 ${formatBytes((item['txBytes'] as num? ?? 0) + (item['rxBytes'] as num? ?? 0))}'
-                            : '${formatBytes(budget['usedBytes'])} / ${formatBytes(budget['limitBytes'])} · ${percent.toStringAsFixed(1)}%${(budget['forecastText']?.toString() ?? '').isEmpty ? '' : ' · ${budget['forecastText']}'}',
-                        style: Theme.of(context).textTheme.bodySmall,
+                            : '${formatBytes(budget['usedBytes'])} / ${formatBytes(budget['limitBytes'])} · ${percent.toStringAsFixed(1)}%',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? const Color(0xFF56D29F)
+                              : const Color(0xFF16764E),
+                        ),
                       ),
+                      if ((budget?['forecastText']?.toString() ?? '').isNotEmpty)
+                        Text(
+                          budget!['forecastText'].toString(),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       if ((budget?['nextResetDate']?.toString() ?? '')
                           .isNotEmpty)
                         Text(
-                          '下次重置 ${budget!['nextResetDate']}（UTC）',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      if ((budget?['forecastBasis']?.toString() ?? '')
-                          .isNotEmpty)
-                        Text(
-                          budget!['forecastBasis'].toString(),
+                          '下次重置 ${budget!['nextResetDate']}',
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                     ],

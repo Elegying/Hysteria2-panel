@@ -202,3 +202,7 @@ Hysteria 流量统计客户端只接受带明确端口、无路径的 `http://12
 ### 节点预算预测（v0.39.29）
 
 管理 App `/api/v1/mobile/overview` 的 `trafficBudgets[]` 新增 `serverIp`；其 `budget` 新增 `nextResetDate`（UTC 日期）、`forecastText` 与 `forecastBasis`。旧字段保留，客户端对缺失字段兼容。网页 `/api/v1/dashboard-online` 新增以 origin ID 为键的 `machineForecasts`（`text`、`basis`）。预测按近 7 个完整 UTC 日实际流量日均在供流机器间均分；删除节点保留历史样本并更新均分数量，预测不参与自动停用判断。
+
+流量预测不足时，`forecastText` 显示到本机重置日的预计缺口（整数 G，1 G = 1 GiB，向上取整，含已超额部分）。网页 `machineForecasts` 的每条记录还提供 `budget` 快照：`used_bytes`、`limit_bytes`、`percent`、`status`、`period_start`、`period_end`，供用量和周期与预测同步刷新。
+
+`forecastBasis` 保留为空字符串兼容既有 App；网页与 App 不展示均分算法说明，预测文字不再附 UTC 标签，日期仍按 UTC 周期计算。

@@ -6358,6 +6358,7 @@ class PanelHttpTests(unittest.TestCase):
                     self.application.usage_manager.local_origin_id: {
                         "text": "未设置预算，暂不预测",
                         "basis": "按近 0 个完整日均值、1 台供流机器均分预测",
+                        "budget": mock.ANY,
                     }
                 },
                 "onlineComplete": True,

@@ -90,17 +90,20 @@ void main() {
         },
       ],
     };
-    controller.requests.single.complete(data('预计5月28日用尽（UTC）', 2));
+    controller.requests.single.complete(data('预计5月28日用尽 · 到重置日还缺 4 G', 2));
     await tester.pumpAndSettle();
     expect(find.textContaining('主节点 · 2001:db8::1234'), findsOneWidget);
     expect(find.textContaining('预计5月28日'), findsOneWidget);
+    expect(find.textContaining('还缺 4 G'), findsOneWidget);
     refreshPage(tester);
     await tester.pump();
-    controller.requests.last.complete(data('预计5月23日用尽（UTC）', 1));
+    controller.requests.last.complete(data('预计5月23日用尽 · 到重置日还缺 18 G', 1));
     await tester.pumpAndSettle();
     expect(find.textContaining('预计5月28日'), findsNothing);
     expect(find.textContaining('预计5月23日'), findsOneWidget);
-    expect(find.textContaining('1 台供流机器'), findsOneWidget);
+    expect(find.textContaining('供流机器'), findsNothing);
+    expect(find.textContaining('UTC'), findsNothing);
+    expect(find.textContaining('还缺 18 G'), findsOneWidget);
     refreshPage(tester);
     await tester.pump();
     controller.requests.last.complete(data('预计重置前够用', 1));
