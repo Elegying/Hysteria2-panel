@@ -79,15 +79,28 @@ class Browser:
 
     def click(self, selector, navigation=False):
         tag = str(time.time_ns())
-        point = self.evaluate('''(() => {
+        point = self.evaluate('''(async () => {
             window.__auditDocument = %s;
             const e = document.querySelector(%s);
             if (!e) throw new Error('control is missing');
             if (e.disabled) throw new Error('control is disabled');
-            e.scrollIntoView({behavior:'instant',block:'center', inline:'center'});
-            const r = e.getBoundingClientRect();
-            if (!r.width || !r.height) throw new Error('control is hidden');
-            return {x:r.x+r.width/2, y:r.y+r.height/2};
+            let previous = null;
+            let stable = 0;
+            // Fragment navigation and scroll restoration can continue after load.
+            // Stabilize the target and hit-test before sending a single real click.
+            for (let frame = 0; frame < 120; frame++) {
+                e.scrollIntoView({behavior:'instant',block:'center', inline:'center'});
+                await new Promise(requestAnimationFrame);
+                const r = e.getBoundingClientRect();
+                if (!r.width || !r.height) throw new Error('control is hidden');
+                const point = {x:r.x+r.width/2, y:r.y+r.height/2};
+                const hit = document.elementFromPoint(point.x, point.y);
+                stable = previous && previous.x === point.x && previous.y === point.y
+                    && hit && (hit === e || e.contains(hit)) ? stable + 1 : 0;
+                if (stable >= 2) return point;
+                previous = point;
+            }
+            throw new Error('control did not settle at a hittable position');
         })()''' % (json.dumps(tag), json.dumps(selector)))
         self.call('Input.dispatchMouseEvent', {'type':'mousePressed','button':'left','clickCount':1, **point})
         self.call('Input.dispatchMouseEvent', {'type':'mouseReleased','button':'left','clickCount':1, **point})
