@@ -29,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.30"
+AGENT_VERSION = "0.39.31"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -2081,6 +2081,12 @@ class NodeControlTransport:
         self._origin = None
         self._session = None
         self._expires_at = 0
+        # CPython gh-116810 leaks native memory merely reading SSLSocket.session.
+        # Conservatively skip it on older runtimes, including vendor backports.
+        self._resume_tls = (
+            (3, 12, 7) <= sys.version_info < (3, 13)
+            or sys.version_info >= (3, 13, 1)
+        )
 
     def post(self, request, maximum, timeout):
         url = urllib.parse.urlsplit(request.full_url)
@@ -2098,9 +2104,14 @@ class NodeControlTransport:
                 self._context.set_alpn_protocols(["http/1.1"])
                 self._origin = origin
                 self._expires_at = self.clock() + CONTROL_TLS_SESSION_SECONDS
-            connection = _SessionHTTPSConnection(
-                *origin, context=self._context, session=self._session, timeout=timeout
-            )
+            if self._resume_tls:
+                connection = _SessionHTTPSConnection(
+                    *origin, context=self._context, session=self._session, timeout=timeout
+                )
+            else:
+                connection = http.client.HTTPSConnection(
+                    *origin, context=self._context, timeout=timeout
+                )
             try:
                 headers = dict(request.header_items())
                 headers["Connection"] = "close"
@@ -2117,7 +2128,7 @@ class NodeControlTransport:
                 raise
             else:
                 connection.close()
-                self._session = connection.last_session
+                self._session = connection.last_session if self._resume_tls else None
                 return status, body
             finally:
                 connection.close()

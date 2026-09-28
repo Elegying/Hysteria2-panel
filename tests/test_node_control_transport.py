@@ -85,12 +85,37 @@ class ControlTransportCase(unittest.TestCase):
         )
 
     def test_resumes_verified_tls_over_closing_http_and_periodically_revalidates(self):
+        self.transport._resume_tls = True
         for _ in range(2):
             self.assertEqual((200, b'{"ok":true}'), self.transport.post(self.request(), 64, 2))
         self.assertEqual([False, True], [row[2] for row in self.requests])
         self.now = node_agent.CONTROL_TLS_SESSION_SECONDS + 1
         self.transport.post(self.request(), 64, 2)
         self.assertEqual([False, True, False], [row[2] for row in self.requests])
+
+    def test_old_runtime_never_reads_tls_session_and_keeps_verified_context(self):
+        self.transport._resume_tls = False
+        with mock.patch.object(ssl.SSLSocket, "session", new_callable=mock.PropertyMock,
+                               side_effect=AssertionError("unsafe session read")):
+            for _ in range(2):
+                self.assertEqual((200, b'{"ok":true}'), self.transport.post(self.request(), 64, 2))
+            context = self.transport._context
+            self.assertIsNone(self.transport._session)
+            self.assertEqual([False, False], [row[2] for row in self.requests])
+            with self.assertRaises(ssl.SSLCertVerificationError):
+                self.transport.post(self.request(host="127.0.0.1"), 64, 2)
+            self.now = node_agent.CONTROL_TLS_SESSION_SECONDS + 1
+            self.transport.post(self.request(), 64, 2)
+            self.assertIsNot(context, self.transport._context)
+
+    def test_session_reuse_requires_a_fixed_runtime(self):
+        for version, expected in [
+            ((3, 8, 20), False), ((3, 11, 14), False),
+            ((3, 12, 3), False), ((3, 12, 6), False), ((3, 12, 7), True),
+            ((3, 13, 0), False), ((3, 13, 1), True), ((3, 14, 0), True),
+        ]:
+            with self.subTest(version=version), mock.patch.object(node_agent.sys, "version_info", version):
+                self.assertEqual(expected, node_agent.NodeControlTransport()._resume_tls)
 
     def test_still_checks_certificate_authority_and_hostname(self):
         with self.assertRaises(ssl.SSLCertVerificationError):
