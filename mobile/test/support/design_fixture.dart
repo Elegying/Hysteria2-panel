@@ -39,7 +39,7 @@ class DesignFixtureController extends AppController {
             'onlineDevices': 24,
             'budget': {
               'percent': 25,
-              'forecastText': '预计重置前够用',
+              'forecastText': '预计 5月23日用尽 · 到重置日还缺 1234 G',
               'forecastBasis': '按近 7 个完整日均值、2 台供流机器均分预测',
               'nextResetDate': '2033-06-01',
               'usedBytes': 268435456000,

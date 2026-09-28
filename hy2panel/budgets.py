@@ -2,6 +2,7 @@
 
 import calendar
 import datetime
+import math
 import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
@@ -104,21 +105,29 @@ def budget_forecast(budget, daily_bytes, node_count, now):
     """Project equal load sharing only within the current UTC budget period."""
     if not budget["limit_bytes"]:
         return "未设置预算，暂不预测"
-    if budget["remaining_bytes"] == 0:
-        return "流量已用尽"
+    exhausted = budget["remaining_bytes"] == 0
+    unavailable = "流量已用尽；" if exhausted else ""
     if node_count <= 0:
-        return "未参与供流，暂不预测"
+        return unavailable + "未参与供流，暂不预测"
     if daily_bytes is None:
-        return "完整日数据不足，暂不预测"
+        return unavailable + "完整日数据不足，暂不预测"
     if daily_bytes <= 0:
-        return "近期无流量，暂不预测"
+        return unavailable + "近期无流量，暂不预测"
     reset_at = datetime.datetime.strptime(
         budget["period_end"], "%Y-%m-%d"
     ).replace(tzinfo=datetime.timezone.utc).timestamp()
     seconds = budget["remaining_bytes"] * node_count * 86400 / daily_bytes
-    if now + seconds >= reset_at:
+    if not exhausted and now + seconds >= reset_at:
         return "预计重置前够用"
+    # Include already exceeded quota, since remaining_bytes is clamped to zero.
+    demand = (Decimal(str(daily_bytes)) * Decimal(str(max(0, reset_at - now)))
+              / node_count / 86400)
+    shortfall = max(0, math.ceil(demand + budget["used_bytes"] - budget["limit_bytes"]))
+    shortfall_gib = (shortfall + 1024**3 - 1) // 1024**3
+    suffix = " · 到重置日还缺 {} G".format(shortfall_gib)
+    if exhausted:
+        return "流量已用尽" + suffix
     exhausted_at = datetime.datetime.fromtimestamp(
         now + seconds, tz=datetime.timezone.utc
     )
-    return "预计 {}月{}日用尽（UTC）".format(exhausted_at.month, exhausted_at.day)
+    return "预计 {}月{}日用尽".format(exhausted_at.month, exhausted_at.day) + suffix

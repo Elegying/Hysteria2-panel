@@ -20,14 +20,15 @@ def machine_forecasts(application, nodes, budgets=None, service_status=None, now
         and node.get("lifecycle_state") in {"active", "draining"}
         and node.get("data_plane_state") in {"dns_admitted", "direct_canary_passed"}
     }
-    key = (now // 60, local_id, tuple(sorted(serving)))
-    cached = getattr(application, "_machine_forecast_cache", None)
-    if budgets is None and cached and cached[0] == key:
-        return cached[1]
     if service_status is None:
         service_status = application.service_controller.status()
     if local_id and service_status == "active":
         serving.add(local_id)
+    key = (now // 60, local_id, tuple(sorted(serving)))
+    cached = getattr(application, "_machine_forecast_cache", None)
+    cache_result = budgets is None
+    if cache_result and cached and cached[0] == key:
+        return cached[1]
     if budgets is None:
         origin_ids = sorted({"node:" + node["node_id"] for node in nodes
                              if node.get("status") != "revoked"} | ({local_id} if local_id else set()))
@@ -41,8 +42,15 @@ def machine_forecasts(application, nodes, budgets=None, service_status=None, now
         "text": budget_forecast(budget, average["daily_bytes"],
                                 len(serving) if origin_id in serving else 0, now),
         "basis": basis,
+        "budget": {name: budget[name] for name in (
+            "used_bytes", "limit_bytes", "percent", "status", "period_start", "period_end"
+        )},
     } for origin_id, budget in budgets.items()}
-    application._machine_forecast_cache = (key, result)
+    if cache_result:
+        application._machine_forecast_cache = (key, result)
+    else:
+        # A caller-supplied subset must not poison polling or retain pre-edit data.
+        application._machine_forecast_cache = None
     return result
 
 
@@ -422,7 +430,7 @@ def render_dashboard(
                     reset_day=budget["reset_day"],
                 )
             )
-            budget_line = "{used} / {limit} · {percent:.1f}%".format(
+            budget_line = '<span data-machine-budget-usage>{used} / {limit} · {percent:.1f}%</span>'.format(
                 used=used_text,
                 limit=limit_text,
                 percent=budget["percent"],
@@ -431,13 +439,10 @@ def render_dashboard(
             budget_line += ' · <span data-machine-forecast>{}</span>'.format(
                 html.escape(forecast["text"])
             )
-            budget_detail = "本周期 {} 至 {}（UTC） · 下次重置 {}".format(
+            budget_detail = '<span data-machine-budget-period>本周期 {} 至 {} · 下次重置 {}</span>'.format(
                 budget["period_start"],
                 budget["period_end"],
                 budget["next_reset_date"],
-            )
-            budget_detail += ' · <span data-machine-forecast-basis>{}</span>'.format(
-                html.escape(forecast["basis"])
             )
             progress_value = max(0.0, min(100.0, float(budget["percent"])))
         else:

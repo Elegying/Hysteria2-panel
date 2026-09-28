@@ -380,7 +380,7 @@ def nodes_payload(application, snapshot=None):
     }
 
 
-def _traffic_budgets(application, snapshot):
+def _traffic_budgets(application, snapshot, service_status=None):
     origins = snapshot.get("machine_stats", {}).get("origins", [])
     budget_origin_ids = [
         origin.get("origin_id")
@@ -395,7 +395,7 @@ def _traffic_budgets(application, snapshot):
     }
     nodes = application.database.list_nodes()
     node_by_origin = {"node:" + node["node_id"]: node for node in nodes}
-    forecasts = machine_forecasts(application, nodes, budgets)
+    forecasts = machine_forecasts(application, nodes, budgets, service_status)
     local_id = getattr(application.usage_manager, "local_origin_id", "")
     local_ips = (application.system_metrics.server_ips()
                  if hasattr(application.system_metrics, "server_ips") else ())
@@ -431,7 +431,7 @@ def _traffic_budgets(application, snapshot):
                         "nextResetAt": _non_negative_int(budget.get("next_reset_at")),
                         "nextResetDate": budget["next_reset_date"],
                         "forecastText": forecasts[origin_id]["text"],
-                        "forecastBasis": forecasts[origin_id]["basis"],
+                        "forecastBasis": "",
                     }
                     if budget
                     else None
@@ -482,7 +482,7 @@ def overview_payload(application, panel_version):
             "online": nodes["online"],
             "statusCounts": nodes["statusCounts"],
         },
-        "trafficBudgets": _traffic_budgets(application, snapshot),
+        "trafficBudgets": _traffic_budgets(application, snapshot, service_status),
         "resources": {
             "cpuPercent": resources.get("cpu_percent"),
             "memoryPercent": resources.get("memory_percent"),

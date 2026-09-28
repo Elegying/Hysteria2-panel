@@ -440,20 +440,27 @@ try:
                                  manual_used_bytes=0, reset_day=today.day)
     browser.navigate(fixture.base_url + '/')
     local_card = '[data-origin-id="' + local_origin + '"]'
-    browser.wait('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast-basis]') + ').textContent.includes("2 台")')
+    assert not browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast-basis]') + ')')
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' .machine-ip') + ').textContent.includes("203.0.113.5")')
     before_forecast = browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent')
-    assert '用尽' in before_forecast
+    assert '用尽' in before_forecast and '还缺 1 G' in before_forecast
+    assert 'UTC' not in browser.evaluate('document.querySelector(' + json.dumps(local_card) + ').textContent')
     before_machine_count = int(browser.evaluate('document.querySelector(".machine-count").textContent.split(" " )[0]'))
     fixture.db.delete_node_pairing(budget_node, 'Elegy', forecast_now + 1)
-    browser.wait('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast-basis]') + ').textContent.includes("1 台")')
+    browser.wait('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent !== ' + json.dumps(before_forecast))
     after_forecast = browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent')
     assert '用尽' in after_forecast and before_forecast != after_forecast
     assert browser.evaluate('document.querySelector(' + json.dumps('[data-origin-id="node:' + budget_node + '"]') + ') === null')
     assert browser.evaluate('document.querySelector(".machine-count").textContent') == str(before_machine_count - 1) + ' 台机器'
     browser.screenshot('forecast-node-deleted.png')
-    fixture.db.set_origin_budget(local_origin, 100000, 80, 'Elegy', forecast_now + 1)
-    browser.navigate(fixture.base_url + '/')
+    fixture.db.set_origin_budget(local_origin, 100000, 80, 'Elegy', forecast_now + 1,
+                                 manual_used_bytes=100, reset_day=1 if today.day != 1 else 2)
+    fixture.application._machine_forecast_cache = None
+    browser.wait('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent === "预计重置前够用"')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-budget-usage]') + ').textContent') == '100 B / 97.7 KiB · 0.1%'
+    expected_period = fixture.db.get_origin_budget(local_origin)['period_end']
+    assert expected_period in browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-budget-period]') + ').textContent')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' progress') + ').value') == 0.1
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent') == '预计重置前够用'
     browser.call('Emulation.setDeviceMetricsOverride', {'width':390,'height':844,'deviceScaleFactor':1,'mobile':True})
     browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
