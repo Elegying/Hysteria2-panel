@@ -68,6 +68,47 @@ void refreshPage(WidgetTester tester) => unawaited(
 );
 
 void main() {
+  testWidgets('budget IP and forecast update when a node disappears', (
+    tester,
+  ) async {
+    final controller = await mountPage(tester, const HomeScreen());
+    Map<String, dynamic> data(String forecast, int count) => {
+      ...snapshot('budget-panel'),
+      'trafficBudgets': [
+        {
+          'name': '主节点',
+          'serverIp': '2001:db8::1234',
+          'onlineDevices': 2,
+          'budget': {
+            'usedBytes': 100,
+            'limitBytes': 1000,
+            'percent': 10,
+            'forecastText': forecast,
+            'forecastBasis': '按近 7 个完整日均值、$count 台供流机器均分预测',
+            'nextResetDate': '2033-06-01',
+          },
+        },
+      ],
+    };
+    controller.requests.single.complete(data('预计5月28日用尽（UTC）', 2));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('主节点 · 2001:db8::1234'), findsOneWidget);
+    expect(find.textContaining('预计5月28日'), findsOneWidget);
+    refreshPage(tester);
+    await tester.pump();
+    controller.requests.last.complete(data('预计5月23日用尽（UTC）', 1));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('预计5月28日'), findsNothing);
+    expect(find.textContaining('预计5月23日'), findsOneWidget);
+    expect(find.textContaining('1 台供流机器'), findsOneWidget);
+    refreshPage(tester);
+    await tester.pump();
+    controller.requests.last.complete(data('预计重置前够用', 1));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('预计重置前够用'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
   final screens = <String, Widget>{
     'overview': const HomeScreen(),
     'users': const UsersScreen(),

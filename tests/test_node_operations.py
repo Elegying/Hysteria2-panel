@@ -120,24 +120,24 @@ class NodeBudgetTests(NodeOperationsCase):
 
         budget = self.db.get_origin_budget(origin_id, self.now)
 
-        self.assertEqual(1800, budget["used_bytes"])
-        self.assertEqual("exhausted", budget["status"])
-        self.assertEqual(180.0, budget["percent"])
+        self.assertEqual(900, budget["used_bytes"])
+        self.assertEqual("warning", budget["status"])
+        self.assertEqual(90.0, budget["percent"])
         self.assertEqual("2033-05", budget["period"])
         from hy2panel.mobile_api import _traffic_fields
         user = self.db.get_proxy_user_by_name("alice")
         self.assertEqual(900, user['tx_bytes'] + user['rx_bytes'])
         machine = next(row for row in self.db.list_usage_origins(machine_totals=True)
                        if row['origin_id'] == origin_id)
-        self.assertEqual((1200, 600, 1800), tuple(
+        self.assertEqual((600, 300, 900), tuple(
             _traffic_fields(machine)[key] for key in ('txBytes', 'rxBytes', 'totalBytes')
         ))
         self.db.reset_proxy_user_traffic(user['id'], expected_generation=0)
         self.assertEqual(0, self.db.get_proxy_user_by_name('alice')['tx_bytes'])
-        self.assertEqual(1800, self.db.get_origin_budget(origin_id, self.now)['used_bytes'])
+        self.assertEqual(900, self.db.get_origin_budget(origin_id, self.now)['used_bytes'])
         machine = next(row for row in self.db.list_usage_origins(machine_totals=True)
                        if row['origin_id'] == origin_id)
-        self.assertEqual(1800, _traffic_fields(machine)['totalBytes'])
+        self.assertEqual(900, _traffic_fields(machine)['totalBytes'])
 
     def test_remote_budget_is_idempotent_and_next_month_starts_at_zero(self):
         self.db.create_proxy_user("alice", token="u" * 32)
@@ -164,7 +164,7 @@ class NodeBudgetTests(NodeOperationsCase):
         )
 
         self.assertEqual("exhausted", current["status"])
-        self.assertEqual(2000, current["used_bytes"])
+        self.assertEqual(1000, current["used_bytes"])
         self.assertEqual(0, following["used_bytes"])
         self.assertEqual("normal", following["status"])
 
@@ -200,7 +200,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
         budget = self.db.get_origin_budget(origin_id, saved_at + 120)
 
-        self.assertEqual(5_600, budget["used_bytes"])
+        self.assertEqual(5_300, budget["used_bytes"])
         self.assertEqual(5_000, budget["manual_used_bytes"])
         self.assertEqual(15, budget["reset_day"])
         self.assertEqual("2033-05-15", budget["period_start"])
@@ -274,7 +274,7 @@ class NodeBudgetTests(NodeOperationsCase):
         self.assertFalse(traffic.is_alive())
         self.assertEqual([], failures)
         self.assertEqual(
-            5_600,
+            5_300,
             self.db.get_origin_budget(origin_id, saved_at + 60)["used_bytes"],
         )
 
@@ -317,7 +317,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
         budget = self.db.get_origin_budget(origin_id, first_save + 240)
 
-        self.assertEqual(7_400, budget["used_bytes"])
+        self.assertEqual(7_200, budget["used_bytes"])
 
     def test_manual_baseline_expires_at_custom_reset_and_new_cycle_uses_ledger(self):
         self.db.create_proxy_user("cycle", token="y" * 32)
@@ -339,7 +339,7 @@ class NodeBudgetTests(NodeOperationsCase):
 
         budget = self.db.get_origin_budget(origin_id, after_reset + 60)
 
-        self.assertEqual(600, budget["used_bytes"])
+        self.assertEqual(300, budget["used_bytes"])
         self.assertEqual("2033-05-19", budget["period_start"])
         self.assertEqual("2033-06-19", budget["period_end"])
 
@@ -450,7 +450,7 @@ class NodeBudgetTests(NodeOperationsCase):
         counts = self.db.origin_budget_status_counts(self.now)
 
         self.assertEqual(
-            {"disabled": 0, "normal": 0, "warning": 0, "exhausted": 2},
+            {"disabled": 0, "normal": 0, "warning": 1, "exhausted": 1},
             counts,
         )
 
@@ -732,6 +732,31 @@ class RemoteBudgetRetirementTests(NodeOperationsCase):
         self.db.set_origin_budget(self.origin, 10000, 80, 'admin', self.now, manual_used_bytes=20000)
         self.assertEqual({'draining': 0, 'stopping': 0}, self.tick(self.now))
         self.assertEqual('active', self.db.list_nodes()[0]['lifecycle_state'])
+
+    def test_single_count_ledger_reaches_retirement_at_exact_95_percent(self):
+        self.db.create_proxy_user("single-count")
+        self.db.set_origin_budget(self.origin, 10000, 80, 'admin', self.now,
+                                  manual_used_bytes=0)
+        with mock.patch("hysteria2_panel.time.time", return_value=self.now + 1):
+            self.db.apply_traffic_batch(
+                'a' * 32, {'single-count': {'tx': 5000, 'rx': 3000}},
+                origin_id=self.origin, origin_kind='remote', origin_name='remote',
+            )
+        self.assertEqual(8000, self.db.get_origin_budget(self.origin, self.now + 1)['used_bytes'])
+        self.assertEqual({'draining': 0, 'stopping': 0}, self.tick(self.now + 1))
+        with mock.patch("hysteria2_panel.time.time", return_value=self.now + 2):
+            self.db.apply_traffic_batch(
+                'b' * 32, {'single-count': {'tx': 1000, 'rx': 499}},
+                origin_id=self.origin, origin_kind='remote', origin_name='remote',
+            )
+        self.assertEqual(0, self.tick(self.now + 2)['draining'])
+        with mock.patch("hysteria2_panel.time.time", return_value=self.now + 3):
+            self.db.apply_traffic_batch(
+                'c' * 32, {'single-count': {'tx': 0, 'rx': 1}},
+                origin_id=self.origin, origin_kind='remote', origin_name='remote',
+            )
+        self.assertEqual(9500, self.db.get_origin_budget(self.origin, self.now + 3)['used_bytes'])
+        self.assertEqual(1, self.tick(self.now + 3)['draining'])
 
     def test_budget_increase_cancels_unfinished_retirement(self):
         self.tick(self.now)

@@ -411,6 +411,45 @@ try:
     assert budget['manual_used_bytes'] == 2.5*1024**3
     assert budget['warning_percent'] == 88 and budget['reset_day'] == 28
     passed('流量预算、基线、告警与重置日保存')
+    # Forecasts must update in an already-open page after another admin deletes a node.
+    import datetime
+    forecast_now = int(time.time())
+    today = datetime.datetime.fromtimestamp(forecast_now, datetime.timezone.utc).date()
+    yesterday = (today - datetime.timedelta(days=1)).isoformat()
+    local_origin = fixture.application.usage_manager.local_origin_id
+    with fixture.db._connect() as connection:
+        connection.execute("UPDATE usage_origins SET created_at = ? WHERE origin_id IN (?, ?)",
+                           (forecast_now - 8 * 86400, local_origin, 'node:' + budget_node))
+        for origin in (local_origin, 'node:' + budget_node):
+            connection.execute("INSERT OR REPLACE INTO origin_traffic_daily VALUES (?, ?, 500, 200, ?)",
+                               (origin, yesterday, forecast_now - 86400))
+    fixture.db.set_origin_budget(local_origin, 1000, 80, 'Elegy', forecast_now,
+                                 manual_used_bytes=0, reset_day=today.day)
+    browser.navigate(fixture.base_url + '/')
+    local_card = '[data-origin-id="' + local_origin + '"]'
+    browser.wait('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast-basis]') + ').textContent.includes("2 台")')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' .machine-ip') + ').textContent.includes("203.0.113.5")')
+    before_forecast = browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent')
+    assert '用尽' in before_forecast
+    before_machine_count = int(browser.evaluate('document.querySelector(".machine-count").textContent.split(" " )[0]'))
+    fixture.db.delete_node_pairing(budget_node, 'Elegy', forecast_now + 1)
+    browser.wait('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast-basis]') + ').textContent.includes("1 台")')
+    after_forecast = browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent')
+    assert '用尽' in after_forecast and before_forecast != after_forecast
+    assert browser.evaluate('document.querySelector(' + json.dumps('[data-origin-id="node:' + budget_node + '"]') + ') === null')
+    assert browser.evaluate('document.querySelector(".machine-count").textContent') == str(before_machine_count - 1) + ' 台机器'
+    browser.screenshot('forecast-node-deleted.png')
+    fixture.db.set_origin_budget(local_origin, 100000, 80, 'Elegy', forecast_now + 1)
+    browser.navigate(fixture.base_url + '/')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent') == '预计重置前够用'
+    browser.call('Emulation.setDeviceMetricsOverride', {'width':390,'height':844,'deviceScaleFactor':1,'mobile':True})
+    browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+    browser.evaluate('document.querySelector(' + json.dumps(local_card) + ').scrollIntoView({behavior:"instant",block:"center"})')
+    assert browser.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+    browser.screenshot('forecast-mobile.png')
+    browser.call('Emulation.clearDeviceMetricsOverride')
+    passed('节点IP、均分耗尽预测、删除后自动重算、重置前够用及窄屏布局')
+
     fixture.db.add_traffic({'web-alpha':{'tx':111,'rx':222},'web-beta':{'tx':333,'rx':444}})
     browser.click('.service-actions a[href="/"]',navigation=True)
     browser.click('a.sort-link[href*="sort=traffic"]',navigation=True)

@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -1115,7 +1116,38 @@ class SystemMetrics:
         self.cpu_count = cpu_count
         self.loadavg = loadavg
         self.previous_cpu = None
+        self._server_ips = ()
+        self._server_ips_checked_at = None
         self.lock = threading.Lock()
+
+    def server_ips(self):
+        """Read local interface addresses; never resolve a shared proxy domain."""
+        with self.lock:
+            now = time.monotonic()
+            if self._server_ips_checked_at is not None and now - self._server_ips_checked_at < 300:
+                return self._server_ips
+            addresses = set()
+            try:
+                routes = (self.proc_root / "net/fib_trie").read_text()
+                for address in re.findall(r"[|+]-- ([0-9.]+)\s+\/32 host LOCAL", routes):
+                    addresses.add(ipaddress.ip_address(address))
+            except (OSError, ValueError):
+                pass
+            try:
+                for line in (self.proc_root / "net/if_inet6").read_text().splitlines():
+                    fields = line.split()
+                    if len(fields) == 6 and fields[3] == "00":
+                        addresses.add(ipaddress.IPv6Address(int(fields[0], 16)))
+            except (OSError, ValueError):
+                pass
+            addresses = {ip for ip in addresses if not ip.is_loopback and not ip.is_link_local
+                         and not ip.is_unspecified and not ip.is_multicast}
+            public = {ip for ip in addresses if ip.is_global}
+            self._server_ips = tuple(str(ip) for ip in sorted(
+                public or addresses, key=lambda ip: (ip.version, int(ip))
+            ))
+            self._server_ips_checked_at = now
+            return self._server_ips
 
     def _cpu_sample(self):
         parts = (self.proc_root / "stat").read_text().splitlines()[0].split()[1:]

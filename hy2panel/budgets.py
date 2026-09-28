@@ -11,8 +11,8 @@ GIB_INPUT_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,9})(?:\.[0-9]{1,12})?")
 
 
 def provider_traffic_bytes(value):
-    """Both provider directions are billed; stored user counters stay unchanged."""
-    return 2 * max(0, int(value or 0))
+    """Count each recorded byte once; stored user counters stay unchanged."""
+    return max(0, int(value or 0))
 
 
 def gib_input_to_bytes(value):
@@ -98,3 +98,27 @@ def budget_result(origin_id, period, period_start, period_end, budget, used):
         "updated_by": budget["updated_by"] if budget is not None else None,
         "updated_at": budget["updated_at"] if budget is not None else None,
     }
+
+
+def budget_forecast(budget, daily_bytes, node_count, now):
+    """Project equal load sharing only within the current UTC budget period."""
+    if not budget["limit_bytes"]:
+        return "未设置预算，暂不预测"
+    if budget["remaining_bytes"] == 0:
+        return "流量已用尽"
+    if node_count <= 0:
+        return "未参与供流，暂不预测"
+    if daily_bytes is None:
+        return "完整日数据不足，暂不预测"
+    if daily_bytes <= 0:
+        return "近期无流量，暂不预测"
+    reset_at = datetime.datetime.strptime(
+        budget["period_end"], "%Y-%m-%d"
+    ).replace(tzinfo=datetime.timezone.utc).timestamp()
+    seconds = budget["remaining_bytes"] * node_count * 86400 / daily_bytes
+    if now + seconds >= reset_at:
+        return "预计重置前够用"
+    exhausted_at = datetime.datetime.fromtimestamp(
+        now + seconds, tz=datetime.timezone.utc
+    )
+    return "预计 {}月{}日用尽（UTC）".format(exhausted_at.month, exhausted_at.day)

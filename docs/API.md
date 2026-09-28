@@ -197,3 +197,8 @@ root 进程不信任 Web 预检，会以 `O_NOFOLLOW` 和固定所有权/权限�
 `POST /egress/{web,full}` 不接收 ACL、命令、文件路径或端口参数，且作用于节点上的全部代理账号。面板只把严格匹配的目标映射到 `hysteria2-panel-egress-web.service` 或 `hysteria2-panel-egress-full.service`；两个 root oneshot 使用安装、更新和恢复共用的维护锁，拒绝并发维护。任务只读取 root 所有且不可组写/全局写的普通受管文件，用同目录临时文件、`fsync` 和原子替换同时更新主入口、UDP `443` 入口及 `HY2PANEL_EGRESS_POLICY`，随后重启并复核业务服务。写入或重启失败时恢复原内容并再次启动旧策略；面板显示持久化的当前状态，切换前明确提醒全部现有连接会短暂中断以及 `full` 的滥用风险。
 
 Hysteria 流量统计客户端只接受带明确端口、无路径的 `http://127.0.0.1` 或 `http://[::1]`，单次响应最多 8 MiB，避免配置错误把面板变成外部请求入口或让异常统计响应无限占用内存。
+
+
+### 节点预算预测（v0.39.29）
+
+管理 App `/api/v1/mobile/overview` 的 `trafficBudgets[]` 新增 `serverIp`；其 `budget` 新增 `nextResetDate`（UTC 日期）、`forecastText` 与 `forecastBasis`。旧字段保留，客户端对缺失字段兼容。网页 `/api/v1/dashboard-online` 新增以 origin ID 为键的 `machineForecasts`（`text`、`basis`）。预测按近 7 个完整 UTC 日实际流量日均在供流机器间均分；删除节点保留历史样本并更新均分数量，预测不参与自动停用判断。
