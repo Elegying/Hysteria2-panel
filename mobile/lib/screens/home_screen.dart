@@ -749,9 +749,12 @@ class _BudgetsCard extends StatelessWidget {
                         children: [
                           Expanded(
                             child: Text(
-                              item['name']?.toString() ?? '未知节点',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                              [
+                                item['name']?.toString() ?? '未知节点',
+                                if ((item['serverIp']?.toString() ?? '')
+                                    .isNotEmpty)
+                                  item['serverIp'].toString(),
+                              ].join(' · '),
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                               ),
@@ -775,9 +778,21 @@ class _BudgetsCard extends StatelessWidget {
                       Text(
                         budget == null
                             ? '未设置预算 · 已用 ${formatBytes((item['txBytes'] as num? ?? 0) + (item['rxBytes'] as num? ?? 0))}'
-                            : '${formatBytes(budget['usedBytes'])} / ${formatBytes(budget['limitBytes'])} · ${percent.toStringAsFixed(1)}%',
+                            : '${formatBytes(budget['usedBytes'])} / ${formatBytes(budget['limitBytes'])} · ${percent.toStringAsFixed(1)}%${(budget['forecastText']?.toString() ?? '').isEmpty ? '' : ' · ${budget['forecastText']}'}',
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
+                      if ((budget?['nextResetDate']?.toString() ?? '')
+                          .isNotEmpty)
+                        Text(
+                          '下次重置 ${budget!['nextResetDate']}（UTC）',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      if ((budget?['forecastBasis']?.toString() ?? '')
+                          .isNotEmpty)
+                        Text(
+                          budget!['forecastBasis'].toString(),
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                     ],
                   ),
                 );

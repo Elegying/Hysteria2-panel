@@ -6,7 +6,44 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 
-from .budgets import provider_traffic_bytes
+from .budgets import budget_forecast, provider_traffic_bytes
+
+
+def machine_forecasts(application, nodes, budgets=None, service_status=None, now=None):
+    """Cache polling projections for one minute; membership changes invalidate them."""
+    now = int(time.time()) if now is None else int(now)
+    local_id = getattr(application.usage_manager, "local_origin_id", "")
+    serving = {
+        "node:" + node["node_id"] for node in nodes
+        if node.get("status") == "pending_verification"
+        and node.get("policy_state") == "protocol_ready"
+        and node.get("lifecycle_state") in {"active", "draining"}
+        and node.get("data_plane_state") in {"dns_admitted", "direct_canary_passed"}
+    }
+    key = (now // 60, local_id, tuple(sorted(serving)))
+    cached = getattr(application, "_machine_forecast_cache", None)
+    if budgets is None and cached and cached[0] == key:
+        return cached[1]
+    if service_status is None:
+        service_status = application.service_controller.status()
+    if local_id and service_status == "active":
+        serving.add(local_id)
+    if budgets is None:
+        origin_ids = sorted({"node:" + node["node_id"] for node in nodes
+                             if node.get("status") != "revoked"} | ({local_id} if local_id else set()))
+        budgets = {budget["origin_id"]: budget for budget in
+                   application.database.list_origin_budgets(origin_ids, now)}
+    average = application.database.recent_daily_traffic_average(now)
+    basis = "按近 {} 个完整日均值、{} 台供流机器均分预测".format(
+        average["sample_days"], len(serving)
+    )
+    result = {origin_id: {
+        "text": budget_forecast(budget, average["daily_bytes"],
+                                len(serving) if origin_id in serving else 0, now),
+        "basis": basis,
+    } for origin_id, budget in budgets.items()}
+    application._machine_forecast_cache = (key, result)
+    return result
 
 
 def select_dashboard_users(
@@ -306,9 +343,23 @@ def render_dashboard(
         if not snapshot.get("online_complete", True)
         else '<small class="muted" data-live-online-note>按 Hysteria 客户端实例统计</small>'
     )
+    nodes = self.app.database.list_nodes()
+    node_by_origin = {"node:" + node["node_id"]: node for node in nodes}
+    local_origin_id = getattr(self.app.usage_manager, "local_origin_id", "")
+    forecasts = machine_forecasts(self.app, nodes, machine_budgets, service_status)
+    local_ips = (self.app.system_metrics.server_ips()
+                 if hasattr(self.app.system_metrics, "server_ips") else ())
     machine_rows = []
     machine_budget_dialogs = []
     for origin in machine_origins:
+        server_ip = ""
+        if origin["origin_id"] == local_origin_id:
+            server_ip = " / ".join(local_ips) or "IP 暂不可用"
+        elif origin.get("kind") == "remote":
+            node = node_by_origin.get(origin["origin_id"], {})
+            server_ip = node.get("observed_ip") or node.get("expected_ip") or "IP 暂不可用"
+        elif origin.get("kind") == "local":
+            server_ip = "历史机器 IP 未记录"
         online_state = origin.get("online_state", "history")
         status_label, status_class = machine_status_labels.get(
             online_state, ("状态未知", "warning")
@@ -358,7 +409,7 @@ def render_dashboard(
                 dialog_id=html.escape(dialog_id, quote=True)
             )
             machine_budget_dialogs.append(
-                """<dialog id="{dialog_id}" class="migration-dialog budget-dialog" aria-labelledby="{dialog_id}-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="{dialog_id}-title">编辑 {name} 的流量预算</h2><p class="muted">按用户上传＋下载的两倍计费；当前已用填写服务商计费值。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭预算编辑弹窗">关闭</button></div><form class="budget-form budget-dialog-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button type="submit">保存预算与基线</button></form></div></dialog>""".format(
+                """<dialog id="{dialog_id}" class="migration-dialog budget-dialog" aria-labelledby="{dialog_id}-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="{dialog_id}-title">编辑 {name} 的流量预算</h2><p class="muted">按用户上传＋下载计一次；当前已用填写服务商计费值。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭预算编辑弹窗">关闭</button></div><form class="budget-form budget-dialog-form" method="post" action="/usage-origins/{origin_id}/budget"><input type="hidden" name="csrf" value="{csrf}"><label>月预算 GiB<input name="limit_gib" type="number" min="0" max="8589934591" value="{limit_gib}" required></label><label>当前已用 GiB<input name="used_gib" type="number" min="0" max="8589934591" step="0.000000000001" value="{used_gib}" required></label><label>告警 %<input name="warning_percent" type="number" min="1" max="99" value="{warning}" required></label><label>每月重置日<input name="reset_day" type="number" min="1" max="31" value="{reset_day}" required></label><button type="submit">保存预算与基线</button></form></div></dialog>""".format(
                     dialog_id=html.escape(dialog_id, quote=True),
                     name=html.escape(
                         str(origin.get("display_name") or "未命名节点")
@@ -376,10 +427,17 @@ def render_dashboard(
                 limit=limit_text,
                 percent=budget["percent"],
             )
+            forecast = forecasts[origin["origin_id"]]
+            budget_line += ' · <span data-machine-forecast>{}</span>'.format(
+                html.escape(forecast["text"])
+            )
             budget_detail = "本周期 {} 至 {}（UTC） · 下次重置 {}".format(
                 budget["period_start"],
                 budget["period_end"],
                 budget["next_reset_date"],
+            )
+            budget_detail += ' · <span data-machine-forecast-basis>{}</span>'.format(
+                html.escape(forecast["basis"])
             )
             progress_value = max(0.0, min(100.0, float(budget["percent"])))
         else:
@@ -391,9 +449,10 @@ def render_dashboard(
                 csrf=csrf
             )
         machine_rows.append(
-            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong><small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail} · 最后上报 <span data-live-machine-observed>{observed}</span></small>{budget_action}</div></article>""".format(
+            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong>{server_ip}<small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail} · 最后上报 <span data-live-machine-observed>{observed}</span></small>{budget_action}</div></article>""".format(
                 origin_id=html.escape(origin["origin_id"], quote=True),
                 name=html.escape(str(origin.get("display_name") or "未命名节点")),
+                server_ip=('<span class="muted machine-ip"> · {}</span>'.format(html.escape(server_ip)) if server_ip else ""),
                 kind=kind_label,
                 status_class=status_class,
                 status=status_label,
@@ -538,7 +597,7 @@ def render_dashboard(
         )
     node_rows = []
     current_time = int(time.time())
-    for node in self.app.database.list_nodes():
+    for node in nodes:
         status = node["status"]
         if status == "revoked":
             continue

@@ -48,6 +48,7 @@ from qrcodegen import DataTooLongError, QrCode
 
 from hy2panel.dashboard import (
     DashboardContext,
+    machine_forecasts,
     render_dashboard,
     select_dashboard_users,
 )
@@ -3702,6 +3703,33 @@ class Database:
                 )
             )
         return results
+
+    def recent_daily_traffic_average(self, now=None):
+        """Use complete UTC days, including zero-use days, without manual edits."""
+        now = int(time.time()) if now is None else int(now)
+        today = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc).date()
+        with self._connect() as connection:
+            first = connection.execute(
+                "SELECT MIN(created_at) FROM usage_origins WHERE kind IN ('local', 'remote')"
+            ).fetchone()[0]
+            if first is None:
+                return {"daily_bytes": None, "sample_days": 0}
+            first_day = datetime.datetime.fromtimestamp(
+                int(first), tz=datetime.timezone.utc
+            ).date() + datetime.timedelta(days=1)
+            start = max(today - datetime.timedelta(days=7), first_day)
+            days = (today - start).days
+            if days <= 0:
+                return {"daily_bytes": None, "sample_days": 0}
+            total = connection.execute(
+                """SELECT COALESCE(SUM(d.tx_bytes + d.rx_bytes), 0)
+                FROM usage_origins AS o JOIN origin_traffic_daily AS d
+                    ON d.origin_id = o.origin_id
+                WHERE o.kind IN ('local', 'remote')
+                    AND d.usage_date >= ? AND d.usage_date < ?""",
+                (start.isoformat(), today.isoformat()),
+            ).fetchone()[0]
+        return {"daily_bytes": int(total) / days, "sample_days": days}
 
     def delete_unattributed_history(self):
         with self._connect() as connection:
@@ -8595,10 +8623,14 @@ class PanelHandler(JsonHandler):
                 payload = dashboard_online_payload(
                     [user["name"] for user in selected["users"]], snapshot
                 )
+                nodes = self.app.database.list_nodes()
                 payload["activeNodeIds"] = [
-                    node["node_id"] for node in self.app.database.list_nodes()
-                    if node["status"] != "revoked"
+                    node["node_id"] for node in nodes if node["status"] != "revoked"
                 ]
+                try:
+                    payload["machineForecasts"] = machine_forecasts(self.app, nodes)
+                except Exception:
+                    LOGGER.debug("live budget forecast unavailable", exc_info=True)
             except Exception:
                 LOGGER.debug("live dashboard online snapshot unavailable", exc_info=True)
                 self.send_json(503, {"error": "online device status unavailable"})

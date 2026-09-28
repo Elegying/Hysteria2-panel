@@ -121,7 +121,7 @@ class LedgerBoundaryTests(distributed_tests.DistributedControlCase):
                     budget = self.db.get_origin_budget(self.origin(source), self.now[0])
                     self.assertEqual(0, budget['used_bytes'])
                     self.settle(source, name, 20, boundary + 1)
-                    self.assertEqual(40, self.db.get_origin_budget(
+                    self.assertEqual(20, self.db.get_origin_budget(
                         self.origin(source), self.now[0])['used_bytes'])
 
     def test_manual_provider_baseline_excludes_late_history_and_rolls_over(self):
@@ -143,7 +143,7 @@ class LedgerBoundaryTests(distributed_tests.DistributedControlCase):
                 self.assertEqual(5000, self.db.get_origin_budget(
                     self.origin(source), self.now[0])['used_bytes'])
                 self.settle(source, source, 20, saved_at + 1)
-                self.assertEqual(5040, self.db.get_origin_budget(
+                self.assertEqual(5020, self.db.get_origin_budget(
                     self.origin(source), self.now[0])['used_bytes'])
                 self.assertEqual(180, self.machine_total(source))
                 self.now[0] = int(datetime.datetime(
@@ -155,7 +155,7 @@ class LedgerBoundaryTests(distributed_tests.DistributedControlCase):
                 self.assertEqual(0, self.db.get_origin_budget(
                     self.origin(source), self.now[0])['used_bytes'])
                 self.settle(source, source, 10, self.now[0])
-                self.assertEqual(20, self.db.get_origin_budget(
+                self.assertEqual(10, self.db.get_origin_budget(
                     self.origin(source), self.now[0])['used_bytes'])
 
     def test_local_pending_journal_replays_original_observation_after_restart(self):

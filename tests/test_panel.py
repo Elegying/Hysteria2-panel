@@ -5071,6 +5071,9 @@ class FakeRebootController:
         self.queued += 1
 
 class FakeSystemMetrics:
+    def server_ips(self):
+        return ("203.0.113.5",)
+
     def snapshot(self):
         return {
             "cpu_percent": 12.5,
@@ -6351,6 +6354,12 @@ class PanelHttpTests(unittest.TestCase):
             {
                 "observedAt": 1_700_000_200,
                 "activeNodeIds": [],
+                "machineForecasts": {
+                    self.application.usage_manager.local_origin_id: {
+                        "text": "未设置预算，暂不预测",
+                        "basis": "按近 0 个完整日均值、1 台供流机器均分预测",
+                    }
+                },
                 "onlineComplete": True,
                 "onlineDevices": 1,
                 "users": [{"name": "ceshi", "onlineDevices": 1}],
@@ -7659,6 +7668,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_dashboard_renders_per_machine_devices_traffic_and_stale_warning(self):
         headers, _ = self.authenticated_headers()
+        issued = self.create_loopback_enrollment("forecast-edge", "127.0.0.1", 10, "Elegy")
         snapshot = {
             "traffic": {},
             "online": {},
@@ -7669,7 +7679,7 @@ class PanelHttpTests(unittest.TestCase):
                 "tracking_started_at": 1_700_000_000,
                 "origins": [
                     {
-                        "origin_id": "local:" + "1" * 32,
+                        "origin_id": self.application.usage_manager.local_origin_id,
                         "kind": "local",
                         "display_name": "面板本机",
                         "online_devices": 10,
@@ -7682,7 +7692,7 @@ class PanelHttpTests(unittest.TestCase):
                         "last_traffic_at": 1_700_000_100,
                     },
                     {
-                        "origin_id": "node:" + "2" * 32,
+                        "origin_id": "node:" + issued["nodeId"],
                         "kind": "remote",
                         "display_name": "香港分流-02",
                         "online_devices": None,
@@ -7717,6 +7727,9 @@ class PanelHttpTests(unittest.TestCase):
             with self.request("/", headers=headers) as response:
                 body = response.read().decode()
 
+        self.assertIn('class="muted machine-ip"> · 203.0.113.5</span>', body)
+        self.assertIn('class="muted machine-ip"> · 127.0.0.1</span>', body)
+        self.assertIn("data-machine-forecast", body)
         self.assertIn("节点统计", body)
         self.assertIn("面板本机", body)
         self.assertIn("香港分流-02", body)
@@ -7725,6 +7738,9 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("上次 5", body)
         self.assertIn("按面板节点与远程节点统计当前周期用量", body)
         self.assertIn("节点统计与流量预算", body)
+        self.assertIn("按用户上传＋下载计一次", body)
+        self.assertNotIn("两倍计费", body)
+        self.assertIn("计费上传 35.0 GiB · 计费下载 1.0 TiB", body)
         self.assertIn('class="machine-budget-list"', body)
         self.assertEqual(3, body.count('class="machine-budget-row"'))
         self.assertIn('<span class="machine-count">2 台机器</span>', body)

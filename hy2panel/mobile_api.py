@@ -1,6 +1,7 @@
 """Stable JSON projections for the Hysteria2 Manager Android client."""
 
 from .budgets import provider_traffic_bytes
+from .dashboard import machine_forecasts
 
 import base64
 import hashlib
@@ -392,14 +393,25 @@ def _traffic_budgets(application, snapshot):
             budget_origin_ids, int(time.time())
         )
     }
+    nodes = application.database.list_nodes()
+    node_by_origin = {"node:" + node["node_id"]: node for node in nodes}
+    forecasts = machine_forecasts(application, nodes, budgets)
+    local_id = getattr(application.usage_manager, "local_origin_id", "")
+    local_ips = (application.system_metrics.server_ips()
+                 if hasattr(application.system_metrics, "server_ips") else ())
     items = []
     for origin in origins:
         budget = budgets.get(origin.get("origin_id"))
+        origin_id = origin.get("origin_id")
+        node = node_by_origin.get(origin_id, {})
+        server_ip = (" / ".join(local_ips) if origin_id == local_id else
+                     node.get("observed_ip") or node.get("expected_ip") or "")
         items.append(
             {
                 "originId": origin.get("origin_id") or "",
                 "kind": origin.get("kind") or "legacy",
                 "name": origin.get("display_name") or origin.get("name") or "未知节点",
+                "serverIp": server_ip,
                 "onlineState": origin.get("online_state") or "history",
                 "onlineDevices": origin.get("online_devices"),
                 "lastKnownOnlineDevices": _non_negative_int(
@@ -417,6 +429,9 @@ def _traffic_budgets(application, snapshot):
                         "warningPercent": int(budget["warning_percent"]),
                         "resetDay": int(budget["reset_day"]),
                         "nextResetAt": _non_negative_int(budget.get("next_reset_at")),
+                        "nextResetDate": budget["next_reset_date"],
+                        "forecastText": forecasts[origin_id]["text"],
+                        "forecastBasis": forecasts[origin_id]["basis"],
                     }
                     if budget
                     else None

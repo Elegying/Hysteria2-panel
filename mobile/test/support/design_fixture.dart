@@ -35,9 +35,13 @@ class DesignFixtureController extends AppController {
         'trafficBudgets': [
           {
             'name': '主节点',
+            'serverIp': '2001:db8:1234:5678:abcd:ef01:2345:6789',
             'onlineDevices': 24,
             'budget': {
               'percent': 25,
+              'forecastText': '预计重置前够用',
+              'forecastBasis': '按近 7 个完整日均值、2 台供流机器均分预测',
+              'nextResetDate': '2033-06-01',
               'usedBytes': 268435456000,
               'limitBytes': 1073741824000,
             },
