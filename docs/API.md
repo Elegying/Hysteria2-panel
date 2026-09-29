@@ -206,3 +206,13 @@ Hysteria 流量统计客户端只接受带明确端口、无路径的 `http://12
 流量预测不足时，`forecastText` 显示到本机重置日的预计缺口（整数 G，1 G = 1 GiB，向上取整，含已超额部分）。网页 `machineForecasts` 的每条记录还提供 `budget` 快照：`used_bytes`、`limit_bytes`、`percent`、`status`、`period_start`、`period_end`，供用量和周期与预测同步刷新。
 
 `forecastBasis` 保留为空字符串兼容既有 App；网页与 App 不展示均分算法说明，预测文字不再附 UTC 标签，日期仍按 UTC 周期计算。
+
+## 用户本月流量历史（v0.39.32）
+
+- 网页会话：`GET /api/v1/users/{id}/traffic-history`。
+- 预留 App Bearer 会话：`GET /api/v1/mobile/users/{id}/traffic-history`，沿用移动 API 的 `data` 包装；capabilities 增加 `user-traffic-history`。本次不修改 App 或其版本号。
+- 仅登录管理员可读，未知用户返回 404；一次最多返回当前自然月 31 天、每天 24 个小时，无任意范围或跨用户聚合查询。
+- 字段：`userId/name/month/timezone/totalBytes/days`。`days` 倒序；每天含 `date/txBytes/rxBytes/totalBytes/percent/hasRecords/hours`，每小时含 `hour/txBytes/rxBytes/totalBytes/percent`。
+- `timezone=Asia/Shanghai`；日百分比为日合计 / 本月已记录合计，小时百分比为小时合计 / 当天合计；分母为零时返回 0。上传＋下载只计一次。
+- 按采样时间归档，多来源汇总；跨小时采样归入采样完成时段，不能解释为逐字节的精确发生时间。补传不会重复计量，也不会重新写入上月的用户详情。
+- 无采集记录的日期 `hasRecords=false`，不能推断功能启用前的历史流量为零。手动修改额度或清零不改写已记录的使用历史；每月 1 日清理过期记录。

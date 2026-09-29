@@ -215,6 +215,40 @@ try:
     browser.click('#credentials-dialog [data-dialog-close]',navigation=True)
     passed('添加用户、连接信息、复制与关闭后刷新')
 
+    fixture.db.add_traffic({'web-created': {'tx': 1024, 'rx': 3072}})
+    browser.click('[data-traffic-user-id="'+str(user_id)+'"]')
+    browser.wait('document.querySelector(".traffic-history-total")')
+    assert '4.00 KiB' in browser.evaluate('document.querySelector(".traffic-history-total").textContent')
+    browser.click('.traffic-history-day summary')
+    browser.wait('document.querySelector(".traffic-history-day[open]").querySelectorAll(":scope > .traffic-history-line").length === 24')
+    browser.screenshot('traffic-history-desktop.png')
+    browser.call('Emulation.setDeviceMetricsOverride', {'width':375,'height':812,'deviceScaleFactor':1,'mobile':True})
+    assert browser.evaluate('document.getElementById("traffic-history-dialog").scrollWidth <= innerWidth')
+    browser.screenshot('traffic-history-mobile.png')
+    browser.call('Emulation.clearDeviceMetricsOverride')
+    browser.click('#traffic-history-dialog [data-dialog-close]')
+    browser.wait('!document.getElementById("traffic-history-dialog").open')
+    browser.wait('document.activeElement.dataset.trafficUserId === "'+str(user_id)+'"')
+    passed('用户流量弹窗、24小时时段、移动布局与关闭焦点恢复')
+
+    browser.evaluate("""window.__historyFetch = window.fetch; window.__historyCalls = 0;
+      window.fetch = function(url, options) {
+        const promise = window.__historyFetch(url, options);
+        if (!String(url).includes('/traffic-history')) return promise;
+        const delay = (++window.__historyCalls === 1) ? 800 : 0;
+        return promise.then(response => new Promise(resolve => setTimeout(() => resolve(response), delay)));
+      };""")
+    browser.click('[data-traffic-user-id="'+str(user_id)+'"]')
+    browser.click('#traffic-history-dialog [data-dialog-close]')
+    alpha_id = fixture.db.get_proxy_user_by_name('web-alpha')['id']
+    browser.click('[data-traffic-user-id="'+str(alpha_id)+'"]')
+    browser.wait('document.getElementById("traffic-history-title").textContent.includes("web-alpha")')
+    time.sleep(1)
+    assert 'web-alpha' in browser.evaluate('document.getElementById("traffic-history-title").textContent')
+    browser.evaluate('window.fetch = window.__historyFetch; delete window.__historyFetch;')
+    browser.click('#traffic-history-dialog [data-dialog-close]')
+    passed('流量弹窗关闭切换账号后拒绝迟到响应')
+
     browser.click('[data-edit-user-id="'+str(user_id)+'"]')
     browser.wait('document.querySelector("[data-edit-user-form]").action.endsWith("/users/'+str(user_id)+'/edit") && !document.querySelector("[data-edit-user-form] button[type=submit]").disabled')
     assert 'web-created' in browser.evaluate('document.getElementById("edit-user-title").textContent')

@@ -16,6 +16,7 @@ h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.m
 .button-row,.actions{display:flex;flex-wrap:wrap;gap:9px}.service-actions>.button{display:inline-flex;align-items:center;justify-content:center;text-align:center}button,.button{display:inline-block;border:1px solid transparent;border-radius:10px;background:var(--accent);color:#fff;padding:10px 15px;font:inherit;font-weight:700;text-decoration:none;cursor:pointer;transition:filter .15s ease,transform .15s ease}button:hover,.button:hover{filter:brightness(1.08);transform:translateY(-1px)}button:active,.button:active{transform:none}button.secondary,.button.secondary{background:#1b2c40;border-color:#34495f}button.success{background:var(--success);color:#082016}button.warning{background:var(--warning);color:#251a05}button.danger{background:var(--danger)}button.ghost{background:transparent;border-color:#3a526b;color:#dce8f8}form.inline{display:inline}.system-actions{flex:0 0 auto}.system-actions button{padding:8px 11px}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.certificate-resource{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;min-width:0}.certificate-resource span{white-space:nowrap}.certificate-resource strong{margin:0;font-size:16px;white-space:nowrap}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.port-detail{display:flex;align-items:center;justify-content:space-between;gap:12px}.port-detail>div strong{white-space:nowrap}.egress-control{display:grid;justify-items:end;gap:3px;margin:0}.egress-state{color:var(--muted);font-size:11px;font-weight:750;white-space:nowrap}.egress-state.on{color:var(--success)}.egress-state.unknown{color:var(--warning)}.egress-switch{display:inline-flex;align-items:center;gap:6px;padding:5px 7px;background:#1b2c40;border-color:#40566f;border-radius:999px;font-size:11px}.egress-switch.on{background:#123833;border-color:#26745d;color:#caffec}.egress-switch.unknown{border-color:#8b6b30}.egress-switch-track{position:relative;width:30px;height:18px;border-radius:999px;background:#52647a;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.egress-switch-track>span{position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .15s ease}.egress-switch.on .egress-switch-track{background:var(--success)}.egress-switch.on .egress-switch-track>span{transform:translateX(12px)}.egress-switch-action{min-width:22px;text-align:center}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.version-actions{flex-wrap:nowrap}.version-actions form{margin:0}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
+.traffic-history-total{font-size:22px;font-weight:750;color:var(--success)}.traffic-history-day{border-top:1px solid var(--line);padding:12px 0}.traffic-history-day summary{cursor:pointer}.traffic-history-line{display:grid;grid-template-columns:minmax(110px,1fr) minmax(90px,1fr) 60px;gap:8px;align-items:center;padding:8px 0;font-variant-numeric:tabular-nums}.traffic-history-line strong{color:var(--success)}.traffic-history-line> :last-child{text-align:right}.traffic-history-day>p{font-size:13px}
 .create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:flex;align-items:center;flex-wrap:wrap}.user-heading{flex:1 1 240px}.user-section-head .section-actions{flex:0 0 auto}.user-tools{justify-content:space-between;margin-bottom:14px}.user-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(120px,1fr)) auto;align-items:end;gap:9px;flex:1}.user-filters label{margin-bottom:4px;font-size:12px;color:var(--muted)}.user-filters button{padding:10px 12px}.search-status{margin:0;white-space:nowrap}.filter-empty{margin:0 0 14px;padding:11px 14px;border:1px dashed #3a526b;border-radius:10px;text-align:center}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.limit-alert[hidden]{display:none}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:420px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
 .checkbox-field{display:flex;align-items:flex-start;gap:10px;margin:0;padding:12px;border:1px solid #3a4d63;border-radius:10px;background:#101f31}.checkbox-field input{width:auto;margin:4px 0 0;flex:0 0 auto}.checkbox-field span{font-weight:650}.checkbox-field small{display:block;margin-top:3px;font-weight:400}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
@@ -343,6 +344,87 @@ if (updateForm && updateStatus && ['queued', 'running'].includes(updateStatus.da
   pollUpdateStatus(button, Date.now() + 180000);
 }
 const dialogOpeners = new WeakMap();
+let trafficHistoryRequest = null;
+const trafficHistoryDialog = document.getElementById('traffic-history-dialog');
+function trafficBytes(value) {
+  const bytes = Number(value) || 0;
+  if (bytes < 1024) return bytes + ' B';
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  const index = Math.min(3, Math.floor(Math.log(bytes) / Math.log(1024)) - 1);
+  return (bytes / Math.pow(1024, index + 1)).toFixed(2) + ' ' + units[index];
+}
+function trafficLine(label, record) {
+  const line = document.createElement('div');
+  line.className = 'traffic-history-line';
+  const title = document.createElement('span'); title.textContent = label;
+  const total = document.createElement('strong'); total.textContent = trafficBytes(record.totalBytes);
+  const percent = document.createElement('span'); percent.textContent = Number(record.percent).toFixed(1) + '%';
+  line.append(title, total, percent);
+  return line;
+}
+if (trafficHistoryDialog) trafficHistoryDialog.addEventListener('close', function() {
+  if (trafficHistoryDialog.open) return;
+  if (trafficHistoryRequest) trafficHistoryRequest.abort();
+  trafficHistoryRequest = null;
+  trafficHistoryDialog.querySelector('[data-traffic-history-content]').replaceChildren();
+});
+document.addEventListener('click', async function(event) {
+  const button = event.target.closest('[data-traffic-user-id]');
+  if (!button || !trafficHistoryDialog) return;
+  if (trafficHistoryRequest) trafficHistoryRequest.abort();
+  const request = new AbortController(); trafficHistoryRequest = request;
+  const content = trafficHistoryDialog.querySelector('[data-traffic-history-content]');
+  content.textContent = '正在读取流量记录…';
+  document.getElementById('traffic-history-title').textContent = '用户流量';
+  if (!trafficHistoryDialog.open) {
+    dialogOpeners.set(trafficHistoryDialog, button);
+    trafficHistoryDialog.showModal();
+  }
+  const timeout = window.setTimeout(function() { request.abort(); }, 15000);
+  try {
+    const response = await fetch('/api/v1/users/' + encodeURIComponent(button.dataset.trafficUserId) + '/traffic-history', {
+      credentials: 'same-origin', headers: {'Accept': 'application/json'}, signal: request.signal
+    });
+    if (response.redirected || response.status === 401) throw new Error('登录已失效，请重新登录后重试');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '读取失败，请重试');
+    if (trafficHistoryRequest !== request || !trafficHistoryDialog.open) return;
+    document.getElementById('traffic-history-title').textContent = data.name + ' · ' + data.month + ' 流量';
+    content.replaceChildren();
+    const total = document.createElement('p');
+    total.className = 'traffic-history-total'; total.textContent = '本月已记录 ' + trafficBytes(data.totalBytes);
+    content.append(total);
+    for (const day of data.days) {
+      const detail = document.createElement('details'); detail.className = 'traffic-history-day';
+      const summary = document.createElement('summary');
+      summary.append(trafficLine(day.date, day));
+      detail.append(summary);
+      const info = document.createElement('p'); info.className = 'muted';
+      info.textContent = day.hasRecords ? '上传 ' + trafficBytes(day.txBytes) + ' · 下载 ' + trafficBytes(day.rxBytes) : '当天暂无采集记录';
+      detail.append(info);
+      let rendered = false;
+      detail.addEventListener('toggle', function() {
+        if (!detail.open || rendered) return;
+        rendered = true;
+        for (const hour of day.hours) {
+          const slot = String(hour.hour).padStart(2, '0') + ':00–' + String(hour.hour + 1).padStart(2, '0') + ':00';
+          const row = trafficLine(slot, hour);
+          row.title = '上传 ' + trafficBytes(hour.txBytes) + ' · 下载 ' + trafficBytes(hour.rxBytes);
+          detail.append(row);
+        }
+      });
+      content.append(detail);
+    }
+  } catch (error) {
+    if (trafficHistoryRequest !== request || !trafficHistoryDialog.open) return;
+    content.textContent = request.signal.aborted ? '读取超时，请关闭后重试' : (error.message || '读取失败，请关闭后重试');
+    const retry = document.createElement('button'); retry.type = 'button'; retry.textContent = '重试';
+    retry.dataset.trafficUserId = button.dataset.trafficUserId; content.append(document.createElement('br'), retry);
+  } finally {
+    window.clearTimeout(timeout);
+  }
+});
+
 document.addEventListener('click', function(event) {
   const opener = event.target.closest('[data-dialog-open]');
   if (opener) {
@@ -383,7 +465,7 @@ document.addEventListener('cancel', function(event) {
 }, true);
 document.addEventListener('close', function(event) {
   const dialog = event.target;
-  if (!(dialog instanceof HTMLDialogElement)) return;
+  if (!(dialog instanceof HTMLDialogElement) || dialog.open) return;
   if (dialog.id === 'edit-user-dialog' && !dialog.open) editLoadSequence += 1;
   const opener = dialogOpeners.get(dialog);
   dialogOpeners.delete(dialog);

@@ -673,6 +673,7 @@ class BackupManager:
     # other application table must be listed here so a newly introduced table
     # cannot silently leak runtime state or be silently discarded.
     RUNTIME_TABLE_CLEANUP = (
+        ("user_traffic_hourly", "DELETE FROM user_traffic_hourly"),
         ("mobile_sessions", "DELETE FROM mobile_sessions"),
         ("sessions", "DELETE FROM sessions"),
         ("audit_log", "DELETE FROM audit_log"),
@@ -1927,7 +1928,7 @@ class BackupManager:
             # Keep the destination's machine identity, daily provider ledger and
             # budgets. Invalidate old user/session views of the replaced accounts.
             for table in (
-                "sessions", "mobile_sessions", "domain_usage_monthly",
+                "sessions", "mobile_sessions", "domain_usage_monthly", "user_traffic_hourly",
                 "node_online_counts", "node_online_snapshots", "node_usage_checkpoints",
                 "node_auth_decisions", "local_auth_leases", "usage_origin_users",
                 "proxy_users", "retired_proxy_names",
@@ -2365,6 +2366,16 @@ class Database:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS user_traffic_hourly (
+                    user_id INTEGER NOT NULL REFERENCES proxy_users(id) ON DELETE CASCADE,
+                    usage_day TEXT NOT NULL,
+                    usage_hour INTEGER NOT NULL CHECK (usage_hour BETWEEN 0 AND 23),
+                    tx_bytes INTEGER NOT NULL CHECK (typeof(tx_bytes) = 'integer' AND tx_bytes >= 0),
+                    rx_bytes INTEGER NOT NULL CHECK (typeof(rx_bytes) = 'integer' AND rx_bytes >= 0),
+                    PRIMARY KEY (user_id, usage_day, usage_hour)
+                );
+                CREATE INDEX IF NOT EXISTS user_traffic_hourly_day_idx
+                    ON user_traffic_hourly(usage_day);
                 CREATE TABLE IF NOT EXISTS retired_proxy_names (
                     name_fingerprint TEXT PRIMARY KEY,
                     retired_at INTEGER NOT NULL
@@ -3429,6 +3440,18 @@ class Database:
         observed_at=None,
     ):
         observed_at = int(now) if observed_at is None else int(observed_at)
+        if user_name is not None and tx + rx > 0 and user_traffic_month(observed_at) == user_traffic_month(now):
+            stamp = datetime.datetime.fromtimestamp(
+                observed_at, datetime.timezone(datetime.timedelta(hours=8))
+            )
+            connection.execute(
+                """INSERT INTO user_traffic_hourly(user_id, usage_day, usage_hour, tx_bytes, rx_bytes)
+                SELECT id, ?, ?, ?, ? FROM proxy_users WHERE name = ? COLLATE NOCASE
+                ON CONFLICT(user_id, usage_day, usage_hour) DO UPDATE SET
+                    tx_bytes = user_traffic_hourly.tx_bytes + excluded.tx_bytes,
+                    rx_bytes = user_traffic_hourly.rx_bytes + excluded.rx_bytes""",
+                (stamp.strftime("%Y-%m-%d"), stamp.hour, tx, rx, user_name),
+            )
         connection.execute(
             """INSERT INTO usage_origins(
                 origin_id, kind, node_id, display_name, created_at, last_traffic_at
@@ -4000,6 +4023,43 @@ class Database:
             )
         return True
 
+    def user_traffic_history(self, user_id, now=None):
+        """Bounded current-month history; byte counters are independent of quota edits."""
+        now = int(time.time()) if now is None else int(now)
+        local = datetime.datetime.fromtimestamp(now, datetime.timezone(datetime.timedelta(hours=8)))
+        month = local.strftime("%Y-%m")
+        with self._connect() as connection:
+            connection.execute("BEGIN")
+            user = connection.execute("SELECT id, name FROM proxy_users WHERE id = ?", (user_id,)).fetchone()
+            if user is None:
+                raise KeyError("user not found")
+            rows = connection.execute(
+                """SELECT usage_day, usage_hour, tx_bytes, rx_bytes FROM user_traffic_hourly
+                WHERE user_id = ? AND usage_day >= ? AND usage_day <= ?
+                ORDER BY usage_day, usage_hour""",
+                (user_id, month + "-01", local.strftime("%Y-%m-%d")),
+            ).fetchall()
+        buckets = {(r["usage_day"], r["usage_hour"]): r for r in rows}
+        total = sum(int(r["tx_bytes"]) + int(r["rx_bytes"]) for r in rows)
+        days = []
+        for day in range(local.day, 0, -1):
+            date = local.replace(day=day).strftime("%Y-%m-%d")
+            hours = []
+            for hour in range(24):
+                row = buckets.get((date, hour))
+                tx, rx = (int(row["tx_bytes"]), int(row["rx_bytes"])) if row else (0, 0)
+                hours.append({"hour": hour, "txBytes": tx, "rxBytes": rx, "totalBytes": tx + rx})
+            used = sum(h["totalBytes"] for h in hours)
+            for entry in hours:
+                entry["percent"] = round(entry["totalBytes"] * 100 / used, 2) if used else 0
+            days.append({"date": date, "txBytes": sum(h["txBytes"] for h in hours),
+                         "rxBytes": sum(h["rxBytes"] for h in hours), "totalBytes": used,
+                         "percent": round(used * 100 / total, 2) if total else 0,
+                         "hasRecords": any((date, hour) in buckets for hour in range(24)), "hours": hours})
+        return {"userId": user["id"], "name": user["name"], "month": month,
+                "timezone": "Asia/Shanghai", "totalBytes": total, "days": days,
+                "percentBasis": "day/month;hour/day", "retention": "current-calendar-month"}
+
     def list_node_online_states(self, now, freshness_seconds):
         now = int(now)
         freshness_seconds = max(1, int(freshness_seconds))
@@ -4064,6 +4124,8 @@ class Database:
         if not records:
             return
         usage_month = _usage_month(observed_at)
+        if usage_month != _usage_month(updated_at):
+            return
         known_users = {
             row["name"].lower(): row["name"]
             for row in connection.execute("SELECT name FROM proxy_users")
@@ -4319,7 +4381,7 @@ class Database:
             )
 
     @staticmethod
-    def _reset_all_traffic(connection, now):
+    def _reset_all_traffic(connection, now, clear_domains=True):
         connection.execute(
             """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
             generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?""",
@@ -4329,7 +4391,8 @@ class Database:
             "UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0, updated_at = ?",
             (now,),
         )
-        connection.execute("DELETE FROM domain_usage_monthly")
+        if clear_domains:
+            connection.execute("DELETE FROM domain_usage_monthly")
 
     def reset_all_traffic(self):
         with self._connect() as connection:
@@ -4351,7 +4414,13 @@ class Database:
                 return False
             if row["period"] >= period:
                 return False
-            self._reset_all_traffic(connection, int(now))
+            self._reset_all_traffic(connection, int(now), clear_domains=False)
+            connection.execute("DELETE FROM user_traffic_hourly WHERE usage_day < ?", (period + "-01",))
+            connection.execute("DELETE FROM domain_usage_monthly WHERE usage_month < ?", (period,))
+            boundary = datetime.datetime.strptime(period + "-01", "%Y-%m-%d").replace(
+                tzinfo=datetime.timezone(datetime.timedelta(hours=8))
+            ).timestamp()
+            connection.execute("DELETE FROM audit_log WHERE created_at < ?", (int(boundary),))
             connection.execute(
                 "UPDATE user_traffic_reset_state SET period = ?, reset_at = ? WHERE singleton = 1",
                 (period, int(now)),
@@ -7473,6 +7542,9 @@ class PanelHandler(JsonHandler):
             if route == "domain-usage":
                 self._mobile_response(200, domain_usage_payload(self.app))
                 return
+            if route == "user-traffic-history":
+                self._mobile_response(200, self.app.database.user_traffic_history(int(parameters[0])))
+                return
             if route == "user-domain-usage":
                 self._mobile_response(
                     200, domain_usage_payload(self.app, int(parameters[0]))
@@ -8575,6 +8647,18 @@ class PanelHandler(JsonHandler):
                 self._redirect("/")
             else:
                 self._send_html(200, self._login_page())
+            return
+        history_match = re.fullmatch(r"/api/v1/users/(\d{1,18})/traffic-history", path)
+        if history_match:
+            if not self._require_session():
+                return
+            try:
+                self.send_json(200, self.app.database.user_traffic_history(int(history_match.group(1))))
+            except KeyError:
+                self.send_json(404, {"error": "用户不存在"})
+            except Exception:
+                LOGGER.exception("user traffic history unavailable")
+                self.send_json(503, {"error": "暂时无法读取流量记录，请重试"})
             return
         if path == "/users/lookup":
             if not self._require_session():

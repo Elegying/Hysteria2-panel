@@ -21,6 +21,9 @@ class DomainUsageTests(unittest.TestCase):
                 2026, 9, 1, 12, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
             ).timestamp()
         )
+        clock = mock.patch("hysteria2_panel.time.time", return_value=self.observed_at)
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def tearDown(self):
         self.temporary.cleanup()

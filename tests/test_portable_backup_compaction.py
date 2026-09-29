@@ -211,6 +211,17 @@ class PortableBackupCompactionTests(unittest.TestCase):
                 for table in BackupManager.USER_TABLES
             }
 
+    def test_user_history_is_not_exported_and_identity_is_unchanged(self):
+        before = self.database.recover_proxy_token(self.user["id"])
+        archive = self.manager.create_archive()
+        path = self._extract_database(archive, "history-free.db")
+        with sqlite_connection(self.database.path) as source, sqlite_connection(path) as backup:
+            self.assertGreater(source.execute("SELECT COUNT(*) FROM user_traffic_hourly").fetchone()[0], 0)
+            self.assertEqual(0, backup.execute("SELECT COUNT(*) FROM user_traffic_hourly").fetchone()[0])
+        restored = Database(path, self.hmac_key)
+        self.assertEqual(before, restored.recover_proxy_token(self.user["id"]))
+        self.assertEqual(self._user_rows(self.database.path), self._user_rows(path))
+
     def test_all_application_tables_have_an_explicit_portable_classification(self):
         with sqlite_connection(self.database.path) as connection:
             actual = BackupManager._application_tables(connection)
