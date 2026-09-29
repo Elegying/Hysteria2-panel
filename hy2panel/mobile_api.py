@@ -41,6 +41,7 @@ _MOBILE_EXACT_ROUTES = {
     ("POST", "/api/v1/mobile/node-enrollments"): "create-enrollment",
 }
 _MOBILE_ROUTE_PATTERNS = (
+    ("GET", "user-traffic-history", re.compile(r"/api/v1/mobile/users/(\d{1,18})/traffic-history")),
     (
         "GET",
         "user-domain-usage",
@@ -517,5 +518,6 @@ def capabilities_payload(panel_version):
             "server-reboot",
             "app-update-check",
             "domain-traffic-top10",
+            "user-traffic-history",
         ],
     }
