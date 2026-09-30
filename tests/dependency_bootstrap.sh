@@ -47,17 +47,22 @@ PY
     done
     [[ -s "${trial}/port" ]]
     # Only shorten the native lock wait in this test, never bypass its lock.
+    # shellcheck disable=SC2329 # Invoked by the extracted retry helper.
     apt-get() { command apt-get "$@" -o DPkg::Lock::Timeout=0; }
+    # shellcheck disable=SC2329 # Hook invoked indirectly by the extracted helper.
     repair_debian_apt_sources() { echo UNEXPECTED_SOURCE_REPAIR >&2; return 1; }
     HY2PANEL_APT_REPAIR_ATTEMPTED=0
     if retry_package_command apt-get install -y python3 > "${trial}/lock.log" 2>&1; then
       fail "APT unexpectedly ignored an active dpkg lock"
     fi
     grep -F 'Could not get lock' "${trial}/lock.log"
-    ! grep -Fq UNEXPECTED_SOURCE_REPAIR "${trial}/lock.log"
+    if grep -Fq UNEXPECTED_SOURCE_REPAIR "${trial}/lock.log"; then
+      fail "A lock error entered repository repair"
+    fi
     mkdir -p "${trial}/lists/partial"
     IFS= read -r port < "${trial}/port"
     printf 'deb http://127.0.0.1:%s missing main\n' "${port}" > "${trial}/sources.list"
+    # shellcheck disable=SC2034 # Read by the extracted retry helper.
     HY2PANEL_APT_REPAIR_ATTEMPTED=0
     if retry_package_command apt-get -o "Dir::Etc::sourcelist=${trial}/sources.list" \
       -o Dir::Etc::sourceparts=- -o "Dir::State::lists=${trial}/lists" \
@@ -65,7 +70,9 @@ PY
       fail "APT unexpectedly accepted a repository without a Release file"
     fi
     grep -F 'does not have a Release file' "${trial}/repository.log"
-    ! grep -Fq UNEXPECTED_SOURCE_REPAIR "${trial}/repository.log"
+    if grep -Fq UNEXPECTED_SOURCE_REPAIR "${trial}/repository.log"; then
+      fail "A third-party repository error entered repository repair"
+    fi
     echo 'APT_FAILURE_ISOLATION_OK'
   )
 fi
