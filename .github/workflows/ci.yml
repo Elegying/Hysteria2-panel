@@ -268,14 +268,35 @@ jobs:
         run: sudo bash tests/systemd_integration.sh
 
   full-installer-e2e:
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.check }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: full-installer-e2e
+            runner: ubuntu-24.04
+            image: ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+          - check: full-installer-debian12
+            runner: ubuntu-24.04
+            image: debian:12-slim
+          - check: full-installer-debian13
+            runner: ubuntu-24.04
+            image: debian:13-slim
+          - check: full-installer-rocky9
+            runner: ubuntu-24.04
+            image: rockylinux:9
+          - check: full-installer-arm64
+            runner: ubuntu-24.04-arm
+            image: ubuntu:24.04
     env:
       PANEL_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+      E2E_BASE_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build a clean systemd host
-        run: docker build -f tests/installer_e2e.Dockerfile -t hysteria2-panel-installer-e2e .
+        run: docker build --build-arg "BASE_IMAGE=${E2E_BASE_IMAGE}" -f tests/installer_e2e.Dockerfile -t hysteria2-panel-installer-e2e .
       - name: Run a full install, upgrade and SIGKILL recovery
         shell: bash
         run: |

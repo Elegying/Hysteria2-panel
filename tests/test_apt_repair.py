@@ -11,7 +11,7 @@ FUNCTION = SOURCE[SOURCE.index('repair_debian_apt_sources() {'):SOURCE.index('re
 
 
 class AptRepairTests(unittest.TestCase):
-    def run_repair(self, text, *, fail=False, distro='11', symlink=False):
+    def run_repair(self, text, *, fail=False, distro='11', symlink=False, report_fail=False):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             apt = base / 'apt'
@@ -27,9 +27,17 @@ class AptRepairTests(unittest.TestCase):
             executable.write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$APT_CAPTURE"\nexit ' + ('1' if fail else '0') + '\n')
             executable.chmod(0o700)
             capture = base / 'capture'
+            if report_fail:
+                (base / 'sitecustomize.py').write_text(
+                    'from pathlib import Path\noriginal = Path.write_text\n'
+                    'def write(self, text, *args, **kwargs):\n'
+                    '    if self.name == "report.json" and "verified" in text:\n'
+                    '        raise OSError("simulated report storage failure")\n'
+                    '    return original(self, text, *args, **kwargs)\n'
+                    'Path.write_text = write\n')
             args = [str(apt), str(release), str(base / 'backup')]
             result = subprocess.run(['bash', '-c', FUNCTION + '\nrepair_debian_apt_sources "$@"', 'test'] + args,
-                                    env={**os.environ, 'PATH': str(base) + ':' + os.environ['PATH'], 'APT_CAPTURE': str(capture)},
+                                    env={**os.environ, 'PATH': str(base) + ':' + os.environ['PATH'], 'APT_CAPTURE': str(capture), 'PYTHONPATH': str(base)},
                                     capture_output=True, text=True)
             reports = [json.loads(p.read_text()) for p in (base / 'backup').glob('*/report.json')]
             backups = [p.read_bytes() for p in (base / 'backup').glob('*/0')]
@@ -65,6 +73,25 @@ class AptRepairTests(unittest.TestCase):
         self.assertEqual('rolled_back', reports[0]['status'])
         self.assertEqual([text.encode()], backups)
 
+    def test_report_failure_restores_original_configuration(self):
+        text = 'deb http://security.debian.org/ bullseye/updates main\n'
+        result, after, reports, _, _ = self.run_repair(text, report_fail=True)
+        self.assertEqual(1, result.returncode)
+        self.assertEqual(text, after)
+        self.assertEqual('rolled_back', reports[0]['status'])
+
+    def test_unrelated_package_failures_do_not_rewrite_sources(self):
+        helper = SOURCE[SOURCE.index('repair_package_failure() {'):SOURCE.index('\ninstall_system_dependencies() {')]
+        for error in ('E: Could not get lock /var/lib/dpkg/lock-frontend',
+                      'E: Unable to locate package missing-package',
+                      'E: Failed to fetch https://example.org/pkg.deb 404 Not Found',
+                      'E: The repository http://security.debian.org bullseye-security is not signed'):
+            script = helper + '\nsleep() { :; }; repair_debian_apt_sources() { echo UNEXPECTED_REPAIR; return 0; }\n'
+            script += 'apt-get() { echo "$ERROR" >&2; return 1; }; retry_package_command apt-get install -y demo\n'
+            r = subprocess.run(['bash', '-c', script], env={**os.environ, 'ERROR': error}, capture_output=True, text=True)
+            self.assertEqual(1, r.returncode)
+            self.assertNotIn('UNEXPECTED_REPAIR', r.stdout, error)
+
     def test_other_distribution_custom_options_and_symlinks_are_untouched(self):
         original = 'deb http://security.debian.org/ bullseye/updates main\n'
         for text, kwargs in [(original, {'distro': '12'}), (original, {'symlink': True}),
@@ -79,14 +106,18 @@ class AptRepairTests(unittest.TestCase):
 
     def test_retry_repairs_once_and_reexecutes_failed_command(self):
         helper = SOURCE[SOURCE.index('repair_package_failure() {'):SOURCE.index('\ninstall_system_dependencies() {')]
-        for succeeds in (True, False):
-            script = helper + '\nattempts=0\nrepairs=0\nsleep() { :; }\n'
-            script += 'repair_debian_apt_sources() { repairs=$((repairs+1)); return 0; }\n'
-            script += 'apt-get() { attempts=$((attempts+1)); ' + ('(( attempts >= 4 ));' if succeeds else 'return 1;') + ' }\n'
-            script += 'retry_package_command apt-get update\nresult=$?\nprintf "%s %s" "$attempts" "$repairs"\nexit "$result"\n'
-            r = subprocess.run(['bash', '-c', script], capture_output=True, text=True)
-            self.assertEqual(0 if succeeds else 1, r.returncode)
-            self.assertTrue(r.stdout.endswith('4 1'), r.stdout)
+        errors = ('E: Failed to fetch http://deb.debian.org/debian-security/pool/pkg.deb 404 Not Found',
+                  "E: The repository 'http://security.debian.org bullseye/updates Release' does not have a Release file.",
+                  "E: The repository 'http://deb.debian.org/debian bullseye-backports Release' does not have a Release file.")
+        for error in errors:
+            for succeeds in (True, False):
+                script = helper + '\nattempts=0\nrepairs=0\nsleep() { :; }\n'
+                script += 'repair_debian_apt_sources() { repairs=$((repairs+1)); return 0; }\n'
+                script += 'apt-get() { attempts=$((attempts+1)); echo "$ERROR" >&2; ' + ('(( attempts >= 4 ));' if succeeds else 'return 1;') + ' }\n'
+                script += 'retry_package_command apt-get update\nresult=$?\nprintf "%s %s" "$attempts" "$repairs"\nexit "$result"\n'
+                r = subprocess.run(['bash', '-c', script], env={**os.environ, 'ERROR': error}, capture_output=True, text=True)
+                self.assertEqual(0 if succeeds else 1, r.returncode)
+                self.assertTrue(r.stdout.endswith('4 1'), r.stdout)
 
     def test_package_repair_classifies_failures_and_runs_once(self):
         helper = SOURCE[SOURCE.index('repair_package_failure() {'):SOURCE.index('retry_package_command() {')]
