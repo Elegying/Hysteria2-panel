@@ -47,9 +47,9 @@ PY
     done
     [[ -s "${trial}/port" ]]
     # Only shorten the native lock wait in this test, never bypass its lock.
-    # shellcheck disable=SC2329 # Invoked by the extracted retry helper.
+    # shellcheck disable=SC2329,SC2317 # Invoked by the extracted retry helper.
     apt-get() { command apt-get "$@" -o DPkg::Lock::Timeout=0; }
-    # shellcheck disable=SC2329 # Hook invoked indirectly by the extracted helper.
+    # shellcheck disable=SC2329,SC2317 # Hook invoked indirectly by the extracted helper.
     repair_debian_apt_sources() { echo UNEXPECTED_SOURCE_REPAIR >&2; return 1; }
     HY2PANEL_APT_REPAIR_ATTEMPTED=0
     if retry_package_command apt-get install -y python3 > "${trial}/lock.log" 2>&1; then
