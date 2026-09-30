@@ -459,6 +459,11 @@ try:
     assert budget['warning_percent'] == 88 and budget['reset_day'] == 28
     passed('流量预算、基线、告警与重置日保存')
     # Forecasts must update in an already-open page after another admin deletes a node.
+    # FakeStatsClient emits the same traffic on every collection. Freeze and
+    # settle it before the tiny forecast budget, so polling cannot exhaust the
+    # budget while this scenario isolates a change in serving-node membership.
+    fixture.stats.collect_and_clear = lambda: {}
+    fixture.application.usage_manager.collect_once()
     import datetime
     forecast_now = int(time.time())
     today = datetime.datetime.fromtimestamp(forecast_now, datetime.timezone.utc).date()
@@ -476,6 +481,7 @@ try:
     local_card = '[data-origin-id="' + local_origin + '"]'
     assert not browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast-basis]') + ')')
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' .machine-ip') + ').textContent.includes("203.0.113.5")')
+    assert fixture.db.get_origin_budget(local_origin)['used_bytes'] == 0
     before_forecast = browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent')
     assert '用尽' in before_forecast and '还缺 1 G' in before_forecast
     assert 'UTC' not in browser.evaluate('document.querySelector(' + json.dumps(local_card) + ').textContent')
