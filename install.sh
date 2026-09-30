@@ -3295,9 +3295,52 @@ EOF
   fi
 }
 
+bootstrap_apt_repair_runtime() (
+  # A clean image may not have Python or a CA bundle yet. Use Debian's
+  # installed archive keyring and isolated indexes, not an unsigned download.
+  local distribution trial suite mirror keyring
+  [[ -r /etc/os-release ]] || return 1
+  # shellcheck disable=SC1091
+  distribution=$(. /etc/os-release; printf '%s:%s' "${ID:-}" "${VERSION_ID:-}")
+  case "${distribution}" in
+    debian:11) suite=bullseye ;;
+    debian:12) suite=bookworm ;;
+    debian:13) suite=trixie ;;
+    ubuntu:20.04) suite=focal ;;
+    ubuntu:22.04) suite=jammy ;;
+    ubuntu:24.04) suite=noble ;;
+    *) return 1 ;;
+  esac
+  if [[ "${distribution}" == debian:* ]]; then
+    mirror=http://deb.debian.org/debian
+    keyring=/usr/share/keyrings/debian-archive-keyring.gpg
+  else
+    case "$(uname -m)" in
+      x86_64|amd64) mirror=http://archive.ubuntu.com/ubuntu ;;
+      aarch64|arm64) mirror=http://ports.ubuntu.com/ubuntu-ports ;;
+      *) return 1 ;;
+    esac
+    keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
+  fi
+  [[ -f "${keyring}" && ! -L "${keyring}" ]] || return 1
+  trial=$(mktemp -d) || return 1
+  trap 'rm -rf -- "${trial}"' EXIT
+  mkdir -p "${trial}/lists/partial" || return 1
+  printf 'deb [signed-by=%s] %s %s main\n' "${keyring}" "${mirror}" "${suite}" > "${trial}/sources.list"
+  local -a options=(-o "Dir::Etc::sourcelist=${trial}/sources.list" -o Dir::Etc::sourceparts=-
+    -o "Dir::State::lists=${trial}/lists" -o Acquire::Retries=2 -o Acquire::http::Timeout=30
+    -o DPkg::Lock::Timeout=120 -o APT::Update::Error-Mode=any
+    -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false)
+  echo "纯净系统缺少修复运行环境，正在通过官方签名主源补装 Python 与 CA 证书"
+  apt-get "${options[@]}" update || return 1
+  DEBIAN_FRONTEND=noninteractive apt-get "${options[@]}" install -y --no-remove python3 ca-certificates
+)
+
 repair_debian_apt_sources() {
   # This bootstrap must work before project Python modules are downloaded.
-  command -v python3 >/dev/null 2>&1 || return 1
+  if ! command -v python3 >/dev/null 2>&1; then
+    bootstrap_apt_repair_runtime || return 1
+  fi
   python3 - "${1:-/etc/apt}" "${2:-/etc/os-release}" "${3:-/var/backups/hysteria2-panel-apt}" <<'PYAPT'
 import datetime
 import json
@@ -3392,21 +3435,63 @@ save_report()
 PYAPT
 }
 
+repair_package_failure() {
+  local manager="$1" log="$2"
+  case "${manager}" in
+    apt-get)
+      if grep -Fq 'dpkg was interrupted' "${log}"; then
+        [[ "${HY2PANEL_DPKG_REPAIR_ATTEMPTED:-0}" == "0" ]] || return 1
+        HY2PANEL_DPKG_REPAIR_ATTEMPTED=1
+        echo "检测到上次 dpkg 配置中断，正在恢复未完成的配置"
+        DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold --configure -a
+      elif grep -Eq 'Hash Sum mismatch|File has unexpected size' "${log}"; then
+        [[ "${HY2PANEL_APT_CACHE_REPAIR_ATTEMPTED:-0}" == "0" ]] || return 1
+        HY2PANEL_APT_CACHE_REPAIR_ATTEMPTED=1
+        echo "检测到软件源缓存不同步，正在绕过 HTTP 缓存重新验证索引"
+        apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+          -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true -o APT::Update::Error-Mode=any update
+      else
+        return 1
+      fi
+      ;;
+    dnf|yum)
+      grep -Eqi 'repomd.xml|checksum mismatch|incorrect checksum' "${log}" || return 1
+      [[ "${HY2PANEL_RPM_CACHE_REPAIR_ATTEMPTED:-0}" == "0" ]] || return 1
+      HY2PANEL_RPM_CACHE_REPAIR_ATTEMPTED=1
+      echo "检测到 RPM 仓库元数据异常，正在清理可再生成的元数据缓存"
+      "${manager}" --setopt=timeout=30 --setopt=retries=2 clean metadata
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 retry_package_command() {
-  local attempt
+  local attempt log
+  local -a options=()
+  case "${1:-}" in
+    apt-get) options=(-o DPkg::Lock::Timeout=120 -o Acquire::Retries=2
+      -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o APT::Update::Error-Mode=any) ;;
+    dnf|yum) options=(--setopt=timeout=30 --setopt=retries=2) ;;
+  esac
+  log=$(mktemp) || return 1
   for attempt in 1 2 3; do
-    if "$@"; then
+    if LC_ALL=C "$@" "${options[@]}" > "${log}" 2>&1; then
+      cat "${log}"
+      rm -f -- "${log}"
       return 0
     fi
+    cat "${log}" >&2
     if (( attempt < 3 )); then
+      repair_package_failure "${1:-}" "${log}" || true
       echo "软件源操作失败，${attempt} 次重试将在 $((attempt * 2)) 秒后进行" >&2
-      sleep "$((attempt * 2))" || return 1
+      sleep "$((attempt * 2))" || { rm -f -- "${log}"; return 1; }
     fi
   done
+  rm -f -- "${log}"
   if [[ "${1:-}" == "apt-get" && "${HY2PANEL_APT_REPAIR_ATTEMPTED:-0}" == "0" ]]; then
     HY2PANEL_APT_REPAIR_ATTEMPTED=1
     if repair_debian_apt_sources; then
-      if "$@"; then
+      if LC_ALL=C "$@" "${options[@]}"; then
         echo "软件源自动修复后，依赖操作已完成。"
         return 0
       fi
@@ -3429,6 +3514,9 @@ install_system_dependencies() {
   source /etc/os-release
   echo "检测到系统：${PRETTY_NAME:-${ID:-unknown}}，正在安装缺失依赖"
   if command -v apt-get >/dev/null 2>&1; then
+    if ! command -v python3 >/dev/null 2>&1 || [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
+      bootstrap_apt_repair_runtime || echo "官方源引导未完成，继续尝试系统原有软件源" >&2
+    fi
     retry_package_command apt-get update
     DEBIAN_FRONTEND=noninteractive retry_package_command apt-get install -y \
       ca-certificates curl openssl iproute2 python3 coreutils diffutils findutils gawk grep kmod passwd procps sudo util-linux \

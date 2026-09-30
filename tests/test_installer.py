@@ -1255,7 +1255,7 @@ preflight_panel_acme_dns
 
     def test_package_retry_failure_reports_actionable_apt_error(self):
         source = INSTALLER.read_text()
-        helper = source[source.index("retry_package_command() {"):source.index("\ninstall_system_dependencies() {")]
+        helper = source[source.index("repair_package_failure() {"):source.index("\ninstall_system_dependencies() {")]
         for succeeds in (False, True):
             with self.subTest(succeeds=succeeds):
                 script = helper + "\nattempts=0\nsleep() { :; }\n"

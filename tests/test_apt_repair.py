@@ -78,7 +78,7 @@ class AptRepairTests(unittest.TestCase):
                 self.assertEqual('', command)
 
     def test_retry_repairs_once_and_reexecutes_failed_command(self):
-        helper = SOURCE[SOURCE.index('retry_package_command() {'):SOURCE.index('\ninstall_system_dependencies() {')]
+        helper = SOURCE[SOURCE.index('repair_package_failure() {'):SOURCE.index('\ninstall_system_dependencies() {')]
         for succeeds in (True, False):
             script = helper + '\nattempts=0\nrepairs=0\nsleep() { :; }\n'
             script += 'repair_debian_apt_sources() { repairs=$((repairs+1)); return 0; }\n'
@@ -87,3 +87,37 @@ class AptRepairTests(unittest.TestCase):
             r = subprocess.run(['bash', '-c', script], capture_output=True, text=True)
             self.assertEqual(0 if succeeds else 1, r.returncode)
             self.assertTrue(r.stdout.endswith('4 1'), r.stdout)
+
+    def test_package_repair_classifies_failures_and_runs_once(self):
+        helper = SOURCE[SOURCE.index('repair_package_failure() {'):SOURCE.index('retry_package_command() {')]
+        cases = [('apt-get', 'dpkg was interrupted', 'dpkg --force-confdef --force-confold --configure -a'),
+                 ('apt-get', 'Hash Sum mismatch', 'apt-get -o'),
+                 ('dnf', 'Failed to download repomd.xml', 'clean metadata'),
+                 ('yum', 'incorrect checksum', 'clean metadata'),
+                 ('apt-get', 'NO_PUBKEY untrusted key', None),
+                 ('apt-get', 'Could not get lock', None),
+                 ('dnf', 'GPG check FAILED', None)]
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'failure.log'
+            for manager, error, expected in cases:
+                with self.subTest(manager=manager, error=error):
+                    log.write_text(error)
+                    script = helper + '\ndpkg() { echo "dpkg $*"; }; apt-get() { echo "apt-get $*"; }; dnf() { echo "dnf $*"; }; yum() { echo "yum $*"; }\n'
+                    script += 'repair_package_failure "$1" "$2"; repair_package_failure "$1" "$2"\n'
+                    result = subprocess.run(['bash', '-c', script, 'test', manager, str(log)], capture_output=True, text=True)
+                    self.assertEqual(1, result.returncode)
+                    self.assertEqual('', result.stderr)
+                    if expected:
+                        self.assertEqual(1, result.stdout.count(expected))
+                    else:
+                        self.assertEqual('', result.stdout)
+
+    def test_retries_use_native_lock_and_network_limits(self):
+        helper = SOURCE[SOURCE.index('repair_package_failure() {'):SOURCE.index('\ninstall_system_dependencies() {')]
+        for manager in ('apt-get', 'dnf', 'yum'):
+            script = helper + '\n' + manager + '() { printf "%s\\n" "$*"; }\nretry_package_command ' + manager + ' install -y demo\n'
+            result = subprocess.run(['bash', '-c', script], capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertIn('DPkg::Lock::Timeout=120' if manager == 'apt-get' else '--setopt=timeout=30', result.stdout)
+            self.assertNotIn('force-yes', result.stdout)
+            self.assertNotIn('allowerasing', result.stdout)
