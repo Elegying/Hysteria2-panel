@@ -181,7 +181,7 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint installer
-        run: shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh tests/installer_e2e.sh
+        run: shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh tests/installer_e2e.sh tests/dependency_bootstrap.sh
       - name: Reject whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 

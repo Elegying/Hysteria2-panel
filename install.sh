@@ -3490,7 +3490,7 @@ retry_package_command() {
   rm -f -- "${log}"
   if [[ "${1:-}" == "apt-get" && "${HY2PANEL_APT_REPAIR_ATTEMPTED:-0}" == "0" ]]; then
     HY2PANEL_APT_REPAIR_ATTEMPTED=1
-    if repair_debian_apt_sources; then
+    if repair_debian_apt_sources /etc/apt /etc/os-release /var/backups/hysteria2-panel-apt; then
       if LC_ALL=C "$@" "${options[@]}"; then
         echo "软件源自动修复后，依赖操作已完成。"
         return 0
