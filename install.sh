@@ -3423,15 +3423,15 @@ try:
         replace(path, updated, info)
     print('已备份并修复 Debian 11 官方旧源；历史快照不提供未来安全更新。报告：' + str(backup / 'report.json'), flush=True)
     subprocess.run(['apt-get', '-o', 'Acquire::Retries=2', '-o', 'Acquire::http::Timeout=30', '-o', 'Acquire::https::Timeout=30', '-o', 'APT::Update::Error-Mode=any', 'update'], check=True, timeout=240)
+    report['status'] = 'verified'
+    save_report()
 except BaseException:
     for path, original, updated, info in changes:
         replace(path, original, info)
     report['status'] = 'rolled_back'
     save_report()
-    print('软件源验证失败，原配置已恢复；未关闭签名校验。', file=sys.stderr)
+    print('软件源修复、验证或报告写入失败，原配置已恢复；未关闭签名校验。', file=sys.stderr)
     sys.exit(1)
-report['status'] = 'verified'
-save_report()
 PYAPT
 }
 
@@ -3487,16 +3487,21 @@ retry_package_command() {
       sleep "$((attempt * 2))" || { rm -f -- "${log}"; return 1; }
     fi
   done
-  rm -f -- "${log}"
-  if [[ "${1:-}" == "apt-get" && "${HY2PANEL_APT_REPAIR_ATTEMPTED:-0}" == "0" ]]; then
+  # Only known official repository failures justify changing sources. Lock,
+  # signature and third-party errors must never trigger archive migration.
+  if [[ "${1:-}" == "apt-get" && "${HY2PANEL_APT_REPAIR_ATTEMPTED:-0}" == "0" ]] \
+    && grep -E '^E: (Failed to fetch|The repository) .?https?://(security\.debian\.org([/ :])|deb\.debian\.org/debian-security([/ :])|deb\.debian\.org/debian/?[[:space:]]+bullseye-backports[[:space:]])' "${log}" \
+      | grep -E '404|does not have a Release file' >/dev/null; then
     HY2PANEL_APT_REPAIR_ATTEMPTED=1
     if repair_debian_apt_sources /etc/apt /etc/os-release /var/backups/hysteria2-panel-apt; then
       if LC_ALL=C "$@" "${options[@]}"; then
+        rm -f -- "${log}"
         echo "软件源自动修复后，依赖操作已完成。"
         return 0
       fi
     fi
   fi
+  rm -f -- "${log}"
   echo "软件源操作在有限重试与适用的自动修复后仍失败；依赖未安装完成，请修复上方包管理器错误后重跑安装命令。" >&2
   if [[ "${1:-}" == "apt-get" ]]; then
     echo "若出现 404 或缺少 Release 文件，请检查 /etc/apt/sources.list 和 /etc/apt/sources.list.d 中的失效源及发行版支持状态；不要关闭签名校验。" >&2
