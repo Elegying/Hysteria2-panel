@@ -57,8 +57,8 @@ class _DomainUsageScreenState extends ConsumerState<DomainUsageScreen> {
         .map((value) => Map<String, dynamic>.from(value as Map))
         .toList();
     final title = widget.userName == null
-        ? '全局流量详情'
-        : '${widget.userName} · 流量详情';
+        ? '全局最常访问'
+        : '${widget.userName} · 最常访问';
     return Scaffold(
       body: SafeArea(
         child: RefreshIndicator(

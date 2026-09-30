@@ -10,6 +10,7 @@ import '../core/app_controller.dart';
 import '../core/formatters.dart';
 import '../core/glass.dart';
 import 'domain_usage_screen.dart';
+import 'user_traffic_history_screen.dart';
 
 String? _userLimitsError(int? devices, int? traffic) {
   if (devices == null || devices < 1 || devices > 100) {
@@ -163,7 +164,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final name = TextEditingController();
     final deviceLimit = TextEditingController(text: '3');
     final trafficLimit = TextEditingController(text: '250');
-    var udp443 = false;
+    var udp443 = true;
     String? formError;
     var submitting = false;
     final result = await showGlassFormDialog<Map<String, dynamic>>(
@@ -201,7 +202,17 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                 GlassControlSurface(
                   child: SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('允许 UDP 443'),
+                    title: const Text(
+                      '允许 UDP 443',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    subtitle: const Text(
+                      '可通过此端口连接节点',
+                      style: TextStyle(fontSize: 13),
+                    ),
                     value: udp443,
                     onChanged: (value) => setDialogState(() => udp443 = value),
                   ),
@@ -333,27 +344,50 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  Text(
+                    user['name'].toString(),
+                    style: Theme.of(sheetContext).textTheme.headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 12),
                   Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(
-                        child: Text(
-                          user['name'].toString(),
-                          style: Theme.of(sheetContext).textTheme.headlineSmall
-                              ?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                      GlassControlSurface(
-                        child: OutlinedButton.icon(
-                          onPressed: () => Navigator.of(sheetContext).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => DomainUsageScreen.user(
-                                userId: user['id'] as int,
-                                userName: user['name'].toString(),
+                        child: GlassControlSurface(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.of(sheetContext).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => DomainUsageScreen.user(
+                                  userId: user['id'] as int,
+                                  userName: user['name'].toString(),
+                                ),
                               ),
                             ),
+                            child: const Text(
+                              '最常访问',
+                              textAlign: TextAlign.center,
+                            ),
                           ),
-                          icon: const Icon(Icons.language_rounded, size: 18),
-                          label: const Text('流量详情'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: GlassControlSurface(
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.of(sheetContext).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => UserTrafficHistoryScreen(
+                                  userId: user['id'] as int,
+                                  userName: user['name'].toString(),
+                                ),
+                              ),
+                            ),
+                            child: const Text(
+                              '流量详情',
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
                         ),
                       ),
                     ],
@@ -769,7 +803,14 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               GlassControlSurface(
                 child: SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('允许 UDP 443'),
+                  title: const Text(
+                    '允许 UDP 443',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  subtitle: const Text(
+                    '可通过此端口连接节点',
+                    style: TextStyle(fontSize: 13),
+                  ),
                   value: udp443,
                   onChanged: (value) => setDialogState(() => udp443 = value),
                 ),
@@ -1011,7 +1052,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                   ),
                                 ),
                                 icon: const Icon(Icons.language_rounded),
-                                label: const Text('流量详情'),
+                                label: const Text('最常访问'),
                               ),
                             ),
                           ],
