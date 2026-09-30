@@ -3295,6 +3295,103 @@ EOF
   fi
 }
 
+repair_debian_apt_sources() {
+  # This bootstrap must work before project Python modules are downloaded.
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "${1:-/etc/apt}" "${2:-/etc/os-release}" "${3:-/var/backups/hysteria2-panel-apt}" <<'PYAPT'
+import datetime
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+root, release, backups = map(Path, sys.argv[1:])
+release_values = dict(re.findall(r'^([A-Z_]+)=["\']?([^\n"\']*)', release.read_text(), re.M))
+if release_values.get('ID') != 'debian' or release_values.get('VERSION_ID') != '11':
+    sys.exit(1)
+# A fixed official snapshot retains Debian's signed package manifest and hashes.
+# Expiry is disabled only for this frozen source, never signature verification.
+snapshot = 'https://snapshot.debian.org/archive/debian-security/20260831T235959Z/'
+if datetime.date.today() < datetime.date(2026, 9, 1):
+    sys.exit(1)
+if root.is_symlink() or (root / 'sources.list.d').is_symlink():
+    sys.exit(1)
+paths = [root / 'sources.list'] + sorted((root / 'sources.list.d').glob('*.list'))
+changes = []
+pattern = re.compile(r'^(deb(?:-src)?)\s+(https?://(?:deb\.debian\.org/debian(?:-security)?|security\.debian\.org(?:/debian-security)?)/?)\s+(bullseye(?:/updates|-security|-backports))\s+([^#\r\n]+)(.*)$')
+for path in paths:
+    if not path.exists():
+        continue
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        print('APT 自动修复跳过非受信任源文件：' + str(path), file=sys.stderr)
+        continue
+    original = path.read_bytes()
+    lines = original.decode('utf-8').splitlines(keepends=True)
+    result = []
+    for line in lines:
+        match = pattern.fullmatch(line.rstrip('\r\n'))
+        if not match:
+            result.append(line)
+            continue
+        kind, uri, suite, components, comment = match.groups()
+        if suite == 'bullseye-backports' and uri.rstrip('/') in ('http://deb.debian.org/debian', 'https://deb.debian.org/debian'):
+            result.append('# hysteria2-panel: obsolete optional source disabled\n# ' + line)
+        elif suite in ('bullseye/updates', 'bullseye-security') and ('security.debian.org' in uri or uri.rstrip('/').endswith('/debian-security')):
+            result.append(f'{kind} [check-valid-until=no] {snapshot} bullseye-security {components.rstrip()} {comment}\n')
+        else:
+            result.append(line)
+    updated = ''.join(result).encode('utf-8')
+    if updated != original:
+        changes.append((path, original, updated, info))
+if not changes:
+    sys.exit(1)
+backups.mkdir(mode=0o700, parents=True, exist_ok=True)
+if backups.is_symlink() or backups.stat().st_uid != os.geteuid() or backups.stat().st_mode & 0o077:
+    raise RuntimeError('APT backup directory is not private')
+backup = Path(tempfile.mkdtemp(prefix='repair-', dir=backups))
+def replace(path, data, info):
+    fd, tmp = tempfile.mkstemp(prefix='.hy2-apt-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp, stat.S_IMODE(info.st_mode))
+        os.chown(tmp, info.st_uid, info.st_gid)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+for index, (path, original, updated, info) in enumerate(changes):
+    (backup / str(index)).write_bytes(original)
+report = {'status': 'prepared', 'files': [str(c[0]) for c in changes],
+          'reason': 'Debian 11 obsolete official repositories',
+          'snapshot': snapshot, 'futureSecurityUpdates': False}
+def save_report():
+    (backup / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+save_report()
+try:
+    for path, original, updated, info in changes:
+        replace(path, updated, info)
+    print('已备份并修复 Debian 11 官方旧源；历史快照不提供未来安全更新。报告：' + str(backup / 'report.json'), flush=True)
+    subprocess.run(['apt-get', '-o', 'Acquire::Retries=2', '-o', 'Acquire::http::Timeout=30', '-o', 'Acquire::https::Timeout=30', '-o', 'APT::Update::Error-Mode=any', 'update'], check=True, timeout=240)
+except BaseException:
+    for path, original, updated, info in changes:
+        replace(path, original, info)
+    report['status'] = 'rolled_back'
+    save_report()
+    print('软件源验证失败，原配置已恢复；未关闭签名校验。', file=sys.stderr)
+    sys.exit(1)
+report['status'] = 'verified'
+save_report()
+PYAPT
+}
+
 retry_package_command() {
   local attempt
   for attempt in 1 2 3; do
@@ -3306,6 +3403,19 @@ retry_package_command() {
       sleep "$((attempt * 2))" || return 1
     fi
   done
+  if [[ "${1:-}" == "apt-get" && "${HY2PANEL_APT_REPAIR_ATTEMPTED:-0}" == "0" ]]; then
+    HY2PANEL_APT_REPAIR_ATTEMPTED=1
+    if repair_debian_apt_sources; then
+      if "$@"; then
+        echo "软件源自动修复后，依赖操作已完成。"
+        return 0
+      fi
+    fi
+  fi
+  echo "软件源操作在有限重试与适用的自动修复后仍失败；依赖未安装完成，请修复上方包管理器错误后重跑安装命令。" >&2
+  if [[ "${1:-}" == "apt-get" ]]; then
+    echo "若出现 404 或缺少 Release 文件，请检查 /etc/apt/sources.list 和 /etc/apt/sources.list.d 中的失效源及发行版支持状态；不要关闭签名校验。" >&2
+  fi
   return 1
 }
 
