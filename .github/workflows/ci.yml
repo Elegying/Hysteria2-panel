@@ -181,7 +181,7 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Lint installer
-        run: shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh tests/installer_e2e.sh
+        run: shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh tests/installer_e2e.sh tests/dependency_bootstrap.sh
       - name: Reject whitespace errors
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
 
@@ -297,6 +297,26 @@ jobs:
           docker cp . "${container}:/workspace"
           docker exec --env PANEL_REF="${PANEL_REF}" "${container}" \
             bash /workspace/tests/installer_e2e.sh
+
+  dependency-bootstrap:
+    name: dependency-bootstrap (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:11-slim', 'debian:12-slim', 'debian:13-slim', 'ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04', 'rockylinux:8', 'rockylinux:9']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify dependencies on a disposable clean distribution
+        env:
+          TEST_IMAGE: ${{ matrix.image }}
+        run: |
+          docker pull "${TEST_IMAGE}"
+          docker image inspect "${TEST_IMAGE}" --format '{{json .RepoDigests}}'
+          docker run --rm --env HY2PANEL_DISPOSABLE_TEST=1 \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" "${TEST_IMAGE}" \
+            bash /workspace/tests/dependency_bootstrap.sh
 
   rhel-firewall-package-contract:
     runs-on: ubuntu-latest

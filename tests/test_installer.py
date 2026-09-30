@@ -1253,6 +1253,25 @@ preflight_panel_acme_dns
         self.assertIn("retry_package_command dnf install -y certbot", certbot)
         self.assertIn("retry_package_command yum install -y certbot", certbot)
 
+    def test_package_retry_failure_reports_actionable_apt_error(self):
+        source = INSTALLER.read_text()
+        helper = source[source.index("repair_package_failure() {"):source.index("\ninstall_system_dependencies() {")]
+        for succeeds in (False, True):
+            with self.subTest(succeeds=succeeds):
+                script = helper + "\nattempts=0\nsleep() { :; }\n"
+                script += "repair_debian_apt_sources() { return 1; }\n"
+                script += "apt-get() { attempts=$((attempts + 1)); return " + ("0" if succeeds else "42") + "; }\n"
+                script += 'retry_package_command apt-get update\nresult=$?\nprintf "attempts=%s\\n" "$attempts"\nexit "$result"\n'
+                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+                self.assertEqual(0 if succeeds else 1, result.returncode)
+                self.assertIn("attempts=1" if succeeds else "attempts=3", result.stdout)
+                if succeeds:
+                    self.assertEqual("", result.stderr)
+                else:
+                    self.assertIn("依赖未安装完成", result.stderr)
+                    self.assertIn("/etc/apt/sources.list", result.stderr)
+                    self.assertIn("不要关闭签名校验", result.stderr)
+
     def test_rhel_dependencies_preserve_minimal_package_variants(self):
         source = INSTALLER.read_text()
         function = source.split("install_system_dependencies() {", 1)[1].split(
