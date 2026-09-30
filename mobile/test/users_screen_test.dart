@@ -200,6 +200,38 @@ void main() {
       );
     }
   }
+  testWidgets('UDP 443 permission fits a narrow dialog with large text', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 812);
+    tester.view.devicePixelRatio = 1;
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+      tester.platformDispatcher.clearTextScaleFactorTestValue();
+    });
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appControllerProvider.overrideWith((ref) => UserFormController()),
+        ],
+        child: MaterialApp(
+          theme: ThemeData.dark(useMaterial3: true),
+          home: const Scaffold(body: UsersScreen()),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('新增用户'));
+    await tester.pumpAndSettle();
+    final permission = find.byType(SwitchListTile);
+    await tester.ensureVisible(permission);
+    await tester.pumpAndSettle();
+    expect(tester.widget<SwitchListTile>(permission).value, isTrue);
+    expect(find.text('可通过此端口连接节点'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
   for (final editing in [false, true]) {
     testWidgets(
       'user form validates input before ${editing ? 'edit' : 'create'}',
@@ -261,8 +293,17 @@ void main() {
         await tester.pumpAndSettle();
         expect(controller.requests.single['deviceLimit'], 3);
         expect(controller.requests.single['trafficLimitGb'], 5);
-        expect(controller.requests.single['allowUdp443'], false);
+        expect(controller.requests.single['allowUdp443'], !editing);
         expect(find.text('测试请求失败'), findsOneWidget);
+        if (!editing) {
+          final permission = find.byType(SwitchListTile);
+          await tester.ensureVisible(permission);
+          await tester.tap(permission);
+          await tester.pumpAndSettle();
+          await tester.tap(submit);
+          await tester.pumpAndSettle();
+          expect(controller.requests.last['allowUdp443'], false);
+        }
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pumpAndSettle();
       },
