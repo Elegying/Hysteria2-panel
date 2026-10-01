@@ -76,7 +76,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final working = ref.watch(appControllerProvider).working;
+    final appState = ref.watch(appControllerProvider);
+    final working = appState.working;
+    final error = _error ?? appState.error;
     final theme = Theme.of(context);
     return Scaffold(
       body: SafeArea(
@@ -221,10 +223,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                       : null,
                                 ),
                               ),
-                              if (_error != null) ...[
+                              if (error != null) ...[
                                 Semantics(
                                   liveRegion: true,
-                                  child: RefreshWarning(message: _error!),
+                                  child: RefreshWarning(message: error),
                                 ),
                                 const SizedBox(height: 16),
                               ],

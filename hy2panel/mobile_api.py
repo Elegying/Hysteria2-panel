@@ -25,6 +25,11 @@ def json_boolean(value):
     return value
 
 
+def valid_user_id(value):
+    return (isinstance(value, str) and 1 <= len(value) <= 19
+            and value.isdecimal() and 1 <= int(value) <= 2**63 - 1)
+
+
 _MOBILE_EXACT_ROUTES = {
     ("GET", "/api/v1/mobile/capabilities"): "capabilities",
     ("GET", "/api/v1/mobile/auth/session"): "session",
@@ -82,6 +87,8 @@ def match_mobile_route(method, path):
             continue
         match = pattern.fullmatch(path)
         if match:
+            if path.startswith("/api/v1/mobile/users/") and not valid_user_id(match[1]):
+                return None, ()
             return route_name, match.groups()
     return None, ()
 

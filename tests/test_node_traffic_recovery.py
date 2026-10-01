@@ -114,6 +114,28 @@ class TrafficRecoveryTests(unittest.TestCase):
         secondary.collect_and_clear.assert_called_once()
         self.assertEqual({"alice": {"tx": 9, "rx": 2}}, self.spool.pending()[0]["traffic"])
 
+    def test_failed_traffic_and_spool_write_retain_domain_only_sample(self):
+        stream = {"auth": "alice", "connection": 1, "stream": 1, "initial_at": "stable",
+                  "req_addr": "example.test:443", "hooked_req_addr": "", "tx": 0, "rx": 0}
+        self.stats.dump_streams.side_effect = [[dict(stream)], [dict(stream, rx=100)], []]
+        self.stats.collect_and_clear.side_effect = [{}, OSError("traffic offline"), {"alice": {"tx": 0, "rx": 150}}]
+        self.cycle._collect_to_spool()
+        self.cycle.clock = lambda: 200
+        with mock.patch.object(self.spool, "persist_collections", side_effect=OSError("disk unavailable")):
+            with self.assertRaisesRegex(OSError, "disk unavailable"):
+                self.cycle._collect_to_spool()
+        self.assertEqual(2, self.stats.collect_and_clear.call_count)
+        self.cycle.clock = lambda: 300
+        self.cycle._collect_to_spool()
+        self.assertEqual(2, self.stats.collect_and_clear.call_count)
+        self.cycle._collect_to_spool()
+        batches = self.spool.pending()
+        domains = [batch for batch in batches if batch.get("domains")]
+        self.assertEqual(1, len(domains))
+        self.assertEqual(200, domains[0]["observedAt"])
+        self.assertEqual(100, domains[0]["domains"][0]["rx"])
+        self.assertEqual(150, sum(counters["rx"] for batch in batches for counters in batch["traffic"].values()))
+
     def test_quiesce_kicks_more_than_one_hundred_users_in_bounded_batches(self):
         users = {"user-{:03}".format(i): 1 for i in range(205)}
         self.stats.online.side_effect = [users, {}, {}, {}]

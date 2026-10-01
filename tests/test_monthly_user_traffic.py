@@ -11,6 +11,7 @@ import urllib.error
 
 from hysteria2_panel import Database, UsageManager, seconds_to_user_traffic_month, user_traffic_month
 from tests import test_panel
+from tests.test_distributed_control import DistributedControlCase
 
 
 def epoch(value):
@@ -97,6 +98,72 @@ class MonthlyTrafficTests(unittest.TestCase):
         stats.traffic_values = {'monthly-user': {'tx': 7, 'rx': 11}}
         manager.collect_once()
         self.assertEqual(18, self.traffic())
+
+    def test_delayed_reset_accepts_pending_samples_from_exact_month_boundary(self):
+        late = int(self.boundary) + 120
+        with mock.patch('hysteria2_panel.time.time', return_value=late):
+            self.assertTrue(self.db.reset_monthly_traffic_if_due(late))
+            for batch_id, observed, expected in (
+                ('b' * 32, int(self.boundary) - 1, 0),
+                ('c' * 32, int(self.boundary), 18),
+                ('d' * 32, int(self.boundary) + 1, 36),
+            ):
+                self.db.apply_traffic_batch(batch_id, {'monthly-user': {'tx': 7, 'rx': 11}},
+                    origin_id='node:' + 'a' * 32, origin_kind='remote', observed_at=observed)
+                self.assertEqual(expected, self.traffic())
+            self.assertFalse(self.db.reset_monthly_traffic_if_due(late + 1))
+        with self.db._connect() as connection:
+            self.assertEqual(int(self.boundary) - 1, connection.execute(
+                'SELECT traffic_adjusted_at FROM proxy_users WHERE id=?', (self.user['id'],)).fetchone()[0])
+            self.assertEqual(late, connection.execute(
+                'SELECT reset_at FROM user_traffic_reset_state').fetchone()[0])
+
+    def test_monthly_cutoff_preserves_later_manual_adjustment_and_manual_reset(self):
+        adjustment_at = int(self.boundary) + 20
+        late = adjustment_at + 100
+        user = self.db.get_proxy_user(self.user['id'])
+        with mock.patch('hysteria2_panel.time.time', return_value=adjustment_at):
+            self.db.update_proxy_user_limits(user['id'], user['device_limit'],
+                user['traffic_limit_bytes'], used_traffic_bytes=5)
+        self.db.reset_monthly_traffic_if_due(late)
+        with mock.patch('hysteria2_panel.time.time', return_value=late):
+            for batch_id, observed, expected in (
+                ('b' * 32, adjustment_at - 1, 0),
+                ('c' * 32, adjustment_at, 0),
+                ('d' * 32, adjustment_at + 1, 18),
+            ):
+                self.db.apply_traffic_batch(batch_id, {'monthly-user': {'tx': 7, 'rx': 11}},
+                    origin_id='node:' + 'a' * 32, origin_kind='remote', observed_at=observed)
+                self.assertEqual(expected, self.traffic())
+            self.db.reset_all_traffic()
+            self.db.apply_traffic_batch('e' * 32, {'monthly-user': {'tx': 7, 'rx': 11}},
+                origin_id='node:' + 'a' * 32, origin_kind='remote', observed_at=late)
+            self.assertEqual(0, self.traffic())
+
+    def test_signed_node_late_batches_keep_machine_history_and_month_boundary(self):
+        fixture = DistributedControlCase('runTest')
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        late = int(self.boundary) + 120
+        fixture.now[0] = late
+        user = fixture.db.create_proxy_user('monthly-user')
+        with fixture.db._connect() as connection:
+            connection.execute("UPDATE user_traffic_reset_state SET period='2026-09'")
+            connection.execute('UPDATE nodes SET last_heartbeat_at=?', (late,))
+        fixture.db.reset_monthly_traffic_if_due(late)
+        for index, observed in enumerate((int(self.boundary) - 1, int(self.boundary), int(self.boundary) + 1), 30):
+            payload = fixture.common(fixture.nodes[0], index)
+            payload.update(batchId='{:032x}'.format(index), observedAt=observed,
+                           traffic={'monthly-user': {'tx': 7, 'rx': 11}})
+            result = fixture.service.apply_traffic_batch(payload, '203.0.113.1')
+            self.assertTrue(result['committed'])
+            duplicate = dict(payload, **fixture.common(fixture.nodes[0], index + 10))
+            self.assertTrue(fixture.service.apply_traffic_batch(duplicate, '203.0.113.1')['duplicate'])
+        account = fixture.db.get_proxy_user(user['id'])
+        self.assertEqual(36, account['tx_bytes'] + account['rx_bytes'])
+        with fixture.db._connect() as connection:
+            self.assertEqual(54, connection.execute(
+                'SELECT SUM(tx_bytes+rx_bytes) FROM origin_traffic_daily').fetchone()[0])
 
 
 class UserLookupTests(unittest.TestCase):

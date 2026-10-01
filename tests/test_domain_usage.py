@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest import mock
 
 import node_agent
-from hysteria2_panel import Database
+from hysteria2_panel import Database, HysteriaStatsClient, UsageManager
+from tests.test_distributed_control import DistributedControlCase
 from hy2panel.domain_usage import DomainStreamAccumulator, normalize_destination
 
 
@@ -177,6 +178,122 @@ class DomainUsageTests(unittest.TestCase):
         self.assertEqual(batches, spool.pending())
         self.assertTrue(spool.ack(batches[0]["batchId"]))
         self.assertEqual([], spool.pending())
+
+    def test_reset_cutoff_filters_old_domains_but_not_quota_only_adjustments(self):
+        records = [{"user": "alice", "domain": "example.test", "tx": 0, "rx": 100}]
+        self.database.reset_proxy_user_traffic(self.alice["id"])
+        for index, observed_at in enumerate((self.observed_at - 1, self.observed_at)):
+            self.database.apply_traffic_batch(
+                format(index + 1, "032x"), {}, domain_usage=records,
+                observed_at=observed_at,
+            )
+        self.assertEqual([], self.database.domain_usage_top(self.alice["id"], now=self.observed_at)["items"])
+        self.database.apply_traffic_batch(
+            "3" * 32, {}, domain_usage=records, observed_at=self.observed_at,
+            origin_id="local:" + "a" * 32, origin_kind="local", fresh_local_collection=True,
+        )
+        user = self.database.get_proxy_user(self.alice["id"])
+        with mock.patch("hysteria2_panel.time.time", return_value=self.observed_at + 10):
+            self.database.update_proxy_user_limits(
+                user["id"], user["device_limit"], user["traffic_limit_bytes"],
+                used_traffic_bytes=0,
+            )
+        self.database.apply_traffic_batch(
+            "4" * 32, {}, domain_usage=records, observed_at=self.observed_at + 1,
+        )
+        self.assertEqual(200, self.database.domain_usage_top(self.alice["id"], now=self.observed_at)["items"][0]["usedBytes"])
+        self.database.reset_all_traffic()
+        self.database.apply_traffic_batch(
+            "5" * 32, {}, domain_usage=records, observed_at=self.observed_at,
+        )
+        self.assertEqual([], self.database.domain_usage_top(now=self.observed_at)["items"])
+
+    def test_domain_reset_cutoff_migrates_an_existing_database(self):
+        with self.database._connect() as connection:
+            schema = connection.execute("SELECT sql FROM sqlite_master WHERE name = 'proxy_users'").fetchone()[0]
+            columns = [row["name"] for row in connection.execute("PRAGMA table_info(proxy_users)")
+                       if row["name"] != "domain_usage_reset_at"]
+            rows = connection.execute("SELECT " + ",".join(columns) + " FROM proxy_users").fetchall()
+        legacy = Database(Path(self.temporary.name) / "legacy.db", b"d" * 32)
+        with legacy._connect() as connection:
+            connection.execute(schema.replace("domain_usage_reset_at INTEGER,", ""))
+            connection.executemany("INSERT INTO proxy_users (" + ",".join(columns) + ") VALUES (" + ",".join("?" for _ in columns) + ")", rows)
+        legacy.initialize()
+        legacy.initialize()
+        with legacy._connect() as connection:
+            self.assertEqual([(self.alice["id"], "alice", None), (self.bob["id"], "bob", None)],
+                             [tuple(row) for row in connection.execute("SELECT id, name, domain_usage_reset_at FROM proxy_users ORDER BY id")])
+
+
+class DomainFailureRecoveryTests(unittest.TestCase):
+    @staticmethod
+    def stream(rx):
+        return {"auth": "alice", "connection": 1, "stream": 1, "initial_at": "stable",
+                "req_addr": "example.test:443", "hooked_req_addr": "", "tx": 0, "rx": rx}
+
+    def test_failed_traffic_collection_preserves_domains_even_if_stream_disappears(self):
+        for last_streams, expected in (([self.stream(150)], 150), ([], 100)):
+            with self.subTest(stream_disappears=not last_streams), tempfile.TemporaryDirectory() as directory:
+                db = Database(Path(directory) / "panel.db", b"f" * 32)
+                db.initialize()
+                user = db.create_proxy_user("alice")
+                stats = mock.Mock(spec=HysteriaStatsClient)
+                stats.online.return_value = {}
+                stats.dump_streams.side_effect = [[self.stream(0)], [self.stream(100)], last_streams]
+                stats.collect_and_clear.side_effect = [{}, OSError("traffic offline"), {"alice": {"tx": 0, "rx": 150}}]
+                manager = UsageManager(db, stats)
+                manager.collect_once()
+                with self.assertRaisesRegex(OSError, "traffic offline"):
+                    manager.collect_once()
+                manager.collect_once()
+                self.assertEqual(expected, db.domain_usage_top(user["id"])["items"][0]["usedBytes"])
+                self.assertEqual(150, db.get_proxy_user(user["id"])["rx_bytes"])
+
+    def test_failed_domain_commit_replays_its_journal_after_restart_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "panel.db", b"f" * 32)
+            db.initialize()
+            user = db.create_proxy_user("alice")
+            stats = mock.Mock(spec=HysteriaStatsClient)
+            stats.online.return_value = {}
+            stats.dump_streams.side_effect = [[self.stream(0)], [self.stream(100)]]
+            stats.collect_and_clear.side_effect = [{}, OSError("traffic offline")]
+            manager = UsageManager(db, stats)
+            manager.collect_once()
+            with mock.patch.object(db, "apply_traffic_batch", side_effect=OSError("database unavailable")):
+                with self.assertRaises(OSError):
+                    manager.collect_once()
+            self.assertTrue(manager.pending_traffic_path.exists())
+            restarted = UsageManager(db, stats)
+            with restarted.lock:
+                restarted._flush_pending_traffic_locked()
+                restarted._flush_pending_traffic_locked()
+            self.assertEqual(100, db.domain_usage_top(user["id"])["items"][0]["usedBytes"])
+            self.assertFalse(manager.pending_traffic_path.exists())
+
+    def test_late_ready_node_batch_cannot_restore_reset_domain_history(self):
+        fixture = DistributedControlCase("runTest")
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        now = int(datetime.datetime.now().timestamp())
+        with mock.patch("hysteria2_panel.time.time", return_value=now):
+            user = fixture.db.create_proxy_user("alice")
+            records = [{"user": "alice", "domain": "example.test", "tx": 0, "rx": 100}]
+            fixture.db.apply_node_traffic_batch(
+                fixture.nodes[0], "a" * 32, {"alice": {"tx": 0, "rx": 100}},
+                b"a" * 32, now, domain_usage=records, observed_at=now - 10,
+            )
+            fixture.db.reset_proxy_user_traffic(user["id"])
+            for index, observed_at in enumerate((now - 5, now, now + 1)):
+                result = fixture.db.apply_node_traffic_batch(
+                    fixture.nodes[0], format(index + 1, "032x"),
+                    {"alice": {"tx": 0, "rx": 100}}, bytes([index]) * 32,
+                    now + 1, domain_usage=records, observed_at=observed_at,
+                )
+                self.assertTrue(result["committed"])
+                items = fixture.db.domain_usage_top(user["id"], now=now)["items"]
+                self.assertEqual([] if observed_at <= now else [100], [item["usedBytes"] for item in items])
+            self.assertEqual(100, fixture.db.get_proxy_user(user["id"])["rx_bytes"])
 
 
 if __name__ == "__main__":

@@ -40,7 +40,13 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
 import zipfile
+try:
+    from lzma import LZMAError
+except ImportError:
+    # Like zipfile, keep LZMA optional on minimal Python installations.
+    LZMAError = RuntimeError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -73,6 +79,7 @@ from hy2panel.mobile_api import (
     nodes_payload,
     overview_payload,
     users_payload,
+    valid_user_id,
 )
 from hy2panel.distributed import (
     DistributedControlService,
@@ -617,12 +624,13 @@ class BackupManager:
         "rx_bytes",
         "allow_udp_443",
         "traffic_adjusted_at",
+        "domain_usage_reset_at",
         "created_at",
         "updated_at",
     )
     REQUIRED_PROXY_COLUMNS = tuple(
         column for column in PROXY_COLUMNS
-        if column not in {"allow_udp_443", "traffic_adjusted_at"}
+        if column not in {"allow_udp_443", "traffic_adjusted_at", "domain_usage_reset_at"}
     )
     RESTORED_TABLE_COLUMNS = {
         "proxy_users": PROXY_COLUMNS,
@@ -1357,7 +1365,7 @@ class BackupManager:
                         "sha256": digest.hexdigest(),
                         "size": extracted_size,
                     }
-        except (OSError, zipfile.BadZipFile, RuntimeError) as exc:
+        except (OSError, EOFError, zlib.error, LZMAError, zipfile.BadZipFile, RuntimeError) as exc:
             if isinstance(exc, BackupValidationError):
                 raise
             raise BackupValidationError("ZIP 备份文件无效") from exc
@@ -1367,7 +1375,7 @@ class BackupManager:
                     payload_paths["manifest.json"], self.FILE_LIMITS["manifest.json"]
                 ).decode("utf-8")
             )
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise BackupValidationError("备份清单无效") from exc
         if not isinstance(manifest, dict) or manifest.get("formatVersion") != BACKUP_FORMAT_VERSION:
             raise BackupValidationError("不支持的备份格式版本")
@@ -2393,6 +2401,7 @@ class Database:
                     rx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (rx_bytes >= 0),
                     allow_udp_443 INTEGER NOT NULL DEFAULT 0 CHECK (allow_udp_443 IN (0, 1)),
                     traffic_adjusted_at INTEGER,
+                    domain_usage_reset_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -2656,6 +2665,7 @@ class Database:
                 "rx_bytes": "ALTER TABLE proxy_users ADD COLUMN rx_bytes INTEGER NOT NULL DEFAULT 0",
                 "allow_udp_443": "ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0",
                 "traffic_adjusted_at": "ALTER TABLE proxy_users ADD COLUMN traffic_adjusted_at INTEGER",
+                "domain_usage_reset_at": "ALTER TABLE proxy_users ADD COLUMN domain_usage_reset_at INTEGER",
             }
             for column, statement in migrations.items():
                 if column not in columns:
@@ -3145,7 +3155,7 @@ class Database:
                 LEFT JOIN node_usage_checkpoints AS c ON c.node_id = n.node_id
                 LEFT JOIN node_online_counts AS o
                     ON o.node_id = n.node_id AND o.user_name = ?
-                WHERE n.status != 'revoked'
+                WHERE n.status NOT IN ('revoked', 'pending_registration')
                     AND COALESCE(n.lifecycle_state, 'active')
                         NOT IN ('stopped', 'archived')""",
                 (user["name"],),
@@ -4119,7 +4129,10 @@ class Database:
         return results
 
     @staticmethod
-    def _record_domain_usage(connection, origin_id, records, observed_at, updated_at):
+    def _record_domain_usage(
+        connection, origin_id, records, observed_at, updated_at,
+        fresh_local_collection=False,
+    ):
         validate_domain_records(records)
         if not records:
             return
@@ -4127,14 +4140,19 @@ class Database:
         if usage_month != _usage_month(updated_at):
             return
         known_users = {
-            row["name"].lower(): row["name"]
-            for row in connection.execute("SELECT name FROM proxy_users")
+            row["name"].lower(): row
+            for row in connection.execute("SELECT name, domain_usage_reset_at FROM proxy_users")
         }
         touched_users = set()
         for record in records:
-            user_name = known_users.get(record["user"].lower())
-            if user_name is None:
+            user = known_users.get(record["user"].lower())
+            if user is None or (
+                not fresh_local_collection
+                and user["domain_usage_reset_at"] is not None
+                and observed_at <= user["domain_usage_reset_at"]
+            ):
                 continue
+            user_name = user["name"]
             tx = int(record["tx"])
             rx = int(record["rx"])
             connection.execute(
@@ -4319,9 +4337,14 @@ class Database:
                     user["name"] if user is not None else None, tx, rx, now,
                     account_traffic=account_traffic, observed_at=observed_at,
                 )
-            self._queue_kick_users_on_ready_nodes(
-                connection, exhausted_users, now, quota_only=True
-            )
+            # Local stats can exceed the bounded node-command input size.
+            # Keep all chunks in this accounting transaction for atomic retry.
+            exhausted_users = sorted(exhausted_users)
+            for offset in range(0, len(exhausted_users), 1000):
+                self._queue_kick_users_on_ready_nodes(
+                    connection, exhausted_users[offset:offset + 1000], now,
+                    quota_only=True,
+                )
             if domain_usage:
                 connection.execute(
                     """INSERT INTO usage_origins(
@@ -4337,7 +4360,8 @@ class Database:
                     (origin_id, origin_kind, origin_name, now, now),
                 )
             self._record_domain_usage(
-                connection, origin_id, domain_usage, observed_at, now
+                connection, origin_id, domain_usage, observed_at, now,
+                fresh_local_collection=(origin_kind == "local" and fresh_local_collection),
             )
             connection.execute(
                 "INSERT INTO applied_traffic_batches(batch_id, applied_at) VALUES (?, ?)",
@@ -4364,9 +4388,10 @@ class Database:
                 raise ConflictError("proxy user changed; refresh and try again")
             cursor = connection.execute(
                 """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
-                generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?
+                generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?,
+                domain_usage_reset_at = ?
                 WHERE id = ? AND generation = ?""",
-                (now, now, row["id"], generation),
+                (now, now, now, row["id"], generation),
             )
             if cursor.rowcount != 1:
                 raise ConflictError("proxy user changed; refresh and try again")
@@ -4381,17 +4406,20 @@ class Database:
             )
 
     @staticmethod
-    def _reset_all_traffic(connection, now, clear_domains=True):
+    def _reset_all_traffic(connection, now, clear_domains=True, traffic_cutoff=None):
         connection.execute(
             """UPDATE proxy_users SET tx_bytes = 0, rx_bytes = 0,
-            generation = generation + 1, updated_at = ?, traffic_adjusted_at = ?""",
-            (now, now),
+            generation = generation + 1, updated_at = ?,
+            traffic_adjusted_at = CASE WHEN ? IS NULL THEN ?
+                ELSE MAX(COALESCE(traffic_adjusted_at, ?), ?) END""",
+            (now, traffic_cutoff, now, traffic_cutoff, traffic_cutoff),
         )
         connection.execute(
             "UPDATE usage_origin_users SET tx_bytes = 0, rx_bytes = 0, updated_at = ?",
             (now,),
         )
         if clear_domains:
+            connection.execute("UPDATE proxy_users SET domain_usage_reset_at = ?", (now,))
             connection.execute("DELETE FROM domain_usage_monthly")
 
     def reset_all_traffic(self):
@@ -4414,12 +4442,17 @@ class Database:
                 return False
             if row["period"] >= period:
                 return False
-            self._reset_all_traffic(connection, int(now), clear_domains=False)
-            connection.execute("DELETE FROM user_traffic_hourly WHERE usage_day < ?", (period + "-01",))
-            connection.execute("DELETE FROM domain_usage_monthly WHERE usage_month < ?", (period,))
             boundary = datetime.datetime.strptime(period + "-01", "%Y-%m-%d").replace(
                 tzinfo=datetime.timezone(datetime.timedelta(hours=8))
             ).timestamp()
+            # A delayed reset must accept this month's pending samples, while
+            # retaining any later explicit user adjustment's cutoff.
+            self._reset_all_traffic(
+                connection, int(now), clear_domains=False,
+                traffic_cutoff=int(boundary) - 1,
+            )
+            connection.execute("DELETE FROM user_traffic_hourly WHERE usage_day < ?", (period + "-01",))
+            connection.execute("DELETE FROM domain_usage_monthly WHERE usage_month < ?", (period,))
             connection.execute("DELETE FROM audit_log WHERE created_at < ?", (int(boundary),))
             connection.execute(
                 "UPDATE user_traffic_reset_state SET period = ?, reset_at = ? WHERE singleton = 1",
@@ -4737,7 +4770,7 @@ class Database:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 node = connection.execute(
-                    """SELECT status, verified_at, policy_state, data_plane_state,
+                    """SELECT status, verified_at, policy_state, data_plane_state, lifecycle_state,
                         expected_ip, observed_ip, last_heartbeat_at
                     FROM nodes WHERE node_id = ?""",
                     (node_id,),
@@ -4746,6 +4779,7 @@ class Database:
                     node is None
                     or node["status"] != "pending_verification"
                     or node["verified_at"] is None
+                    or node["lifecycle_state"] != "active"
                     or (
                         not auto_enable
                         and node["policy_state"] != "protocol_ready"
@@ -4782,6 +4816,7 @@ class Database:
                             policy_enabled_at = ?, policy_enabled_by = ?
                         WHERE node_id = ? AND status = 'pending_verification'
                             AND verified_at IS NOT NULL
+                            AND lifecycle_state = 'active'
                             AND policy_state IN ('standby', 'protocol_ready')
                             AND last_heartbeat_at >= ?""",
                         (created_at, actor, node_id, created_at - 120),
@@ -4821,6 +4856,7 @@ class Database:
                         ELSE data_plane_state END
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL
+                        AND lifecycle_state = 'active'
                         AND policy_state = 'protocol_ready'
                         AND data_plane_state IN (
                             'not_issued', 'bootstrap_issued',
@@ -4866,6 +4902,7 @@ class Database:
                         AND g.expires_at > ? AND g.fetch_attempts < 3
                         AND n.status = 'pending_verification'
                         AND n.verified_at IS NOT NULL
+                        AND n.lifecycle_state = 'active'
                         AND n.policy_state = 'protocol_ready'
                         AND n.data_plane_state IN (
                             'bootstrap_issued', 'data_plane_installed',
@@ -4958,6 +4995,7 @@ class Database:
                         AND g.expires_at > ? AND g.fetch_attempts BETWEEN 1 AND 3
                         AND n.status = 'pending_verification'
                         AND n.verified_at IS NOT NULL
+                        AND n.lifecycle_state = 'active'
                         AND n.policy_state = 'protocol_ready'
                         AND n.data_plane_state IN (
                             'bootstrap_issued', 'data_plane_installed',
@@ -5001,6 +5039,7 @@ class Database:
                         )
                         AND status = 'pending_verification'
                         AND verified_at IS NOT NULL
+                        AND lifecycle_state = 'active'
                         AND policy_state = 'protocol_ready'""",
                     (
                         int(automatic_canary_passed),
@@ -6552,7 +6591,8 @@ def handle_auth_payload(database, raw_body, usage_manager=None, require_udp_443=
             raise ValueError
         if len(payload["auth"]) > 512:
             raise ValueError
-    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        payload["auth"].encode("utf-8")
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
         return 400, {"error": {"code": "INVALID_REQUEST", "message": "Invalid request"}}
     user_id = database.authenticate_token(
         payload["auth"], require_udp_443=require_udp_443
@@ -7429,7 +7469,9 @@ class PanelHandler(JsonHandler):
             raise OverflowError("request body is too large")
         try:
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            # Reject escaped lone surrogates before SQLite or signing encodes them.
+            json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
             raise ValueError("invalid JSON body") from exc
         if not isinstance(payload, dict):
             raise ValueError("JSON body must be an object")
@@ -8933,13 +8975,15 @@ class PanelHandler(JsonHandler):
         if path == "/updates/apply":
             self._handle_update_apply(session)
             return
-        edit_match = re.fullmatch(r"/users/(\d+)/edit", path)
-        if edit_match:
-            self._handle_edit_user(session, int(edit_match.group(1)), form)
-            return
-        match = re.fullmatch(r"/users/(\d+)/(toggle|rotate|delete|share|reset)", path)
+        match = re.fullmatch(r"/users/(\d+)/(edit|toggle|rotate|delete|share|reset)", path)
         if match:
-            self._handle_user_action(session, int(match.group(1)), match.group(2), form)
+            if not valid_user_id(match.group(1)):
+                self._error_page(404, "用户不存在")
+                return
+            if match.group(2) == "edit":
+                self._handle_edit_user(session, int(match.group(1)), form)
+            else:
+                self._handle_user_action(session, int(match.group(1)), match.group(2), form)
             return
         self._error_page(404, "页面不存在")
 
@@ -9823,6 +9867,14 @@ class UsageManager:
             except PartialTrafficCollectionError as exc:
                 self._persist_pending_traffic_locked(
                     exc.traffic, domain_usage, observed_at, fresh_local_collection=True
+                )
+                self._flush_pending_traffic_locked()
+                raise
+            except Exception:
+                # The domain sampler has already advanced its baseline. Retain
+                # those deltas even when no traffic endpoint could be collected.
+                self._persist_pending_traffic_locked(
+                    {}, domain_usage, observed_at, fresh_local_collection=True
                 )
                 self._flush_pending_traffic_locked()
                 raise

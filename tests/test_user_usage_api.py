@@ -133,6 +133,19 @@ class UserUsageApiTests(unittest.TestCase):
         self.assertEqual('alice', self.db.authenticate_token(password))
         self.assertTrue(self.manager.authorize('alice'))
 
+    def test_unused_and_expired_enrollment_does_not_invalidate_usage(self):
+        now = int(time.time())
+        enrollment = self.db.create_node_enrollment(
+            'unused-node', '203.0.113.10', 'fixture-admin', 'a' * 64, now, now + 600,
+        )
+        self.assertEqual(200, self.request()[0])
+        with self.db._connect() as connection:
+            connection.execute('UPDATE node_enrollments SET expires_at=? WHERE enrollment_id=?',
+                               (now - 1, enrollment['enrollment_id']))
+        self.assertEqual(200, self.request()[0])
+        self.db.revoke_node_enrollment(enrollment['enrollment_id'], now)
+        self.assertEqual(200, self.request()[0])
+
     def test_over_limit_disabled_and_full_devices_keep_identity_access(self):
         self.db.add_traffic({'alice': {'tx': 300000000000, 'rx': 9},
                              'bob': {'tx': 700, 'rx': 800}})

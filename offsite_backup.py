@@ -58,7 +58,7 @@ class OffsiteBackupConfig:
             os.close(descriptor)
         try:
             value = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise ValueError("offsite backup config is invalid") from exc
         if not isinstance(value, dict) or set(value) != {
             "endpoint",
@@ -486,7 +486,7 @@ class OffsiteBackupRunner:
                 and previous.endswith("Z")
             ):
                 return previous
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
             pass
         return None
 

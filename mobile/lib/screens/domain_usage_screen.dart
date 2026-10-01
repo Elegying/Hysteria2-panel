@@ -35,12 +35,34 @@ class _DomainUsageScreenState extends ConsumerState<DomainUsageScreen> {
           ? '/api/v1/mobile/domain-usage'
           : '/api/v1/mobile/users/${widget.userId}/domain-usage';
       final data = await ref.read(appControllerProvider.notifier).getJson(path);
+      final items = data['items'];
+      if (items is! List ||
+          items.length > 10 ||
+          items.any(
+            (item) =>
+                item is! Map ||
+                item['domain'] is! String ||
+                (item['domain'] as String).isEmpty ||
+                const ['txBytes', 'rxBytes', 'usedBytes'].any(
+                  (field) =>
+                      item.containsKey(field) &&
+                      (item[field] is! num ||
+                          !(item[field] as num).isFinite ||
+                          (item[field] as num) < 0),
+                ),
+          )) {
+        throw const FormatException();
+      }
       if (mounted && generation == _loadGeneration) {
         setState(() => _data = data);
       }
     } on ApiException catch (error) {
       if (mounted && generation == _loadGeneration) {
         setState(() => _error = error.message);
+      }
+    } catch (_) {
+      if (mounted && generation == _loadGeneration) {
+        setState(() => _error = '域名流量数据暂时无法读取，请稍后重试');
       }
     }
   }

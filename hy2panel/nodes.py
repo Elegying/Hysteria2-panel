@@ -944,6 +944,7 @@ class DataPlaneBootstrapService:
             node is None
             or node["status"] != "pending_verification"
             or node.get("verified_at") is None
+            or node.get("lifecycle_state") != "active"
             or node.get("policy_state") != "protocol_ready"
             or node.get("data_plane_state")
             not in {
@@ -1007,6 +1008,7 @@ class DataPlaneBootstrapService:
             node is None
             or node["status"] != "pending_verification"
             or node.get("verified_at") is None
+            or node.get("lifecycle_state") != "active"
             or node.get("policy_state") not in {"standby", "protocol_ready"}
             or node.get("last_heartbeat_at") is None
             or int(node["last_heartbeat_at"]) < now - HEARTBEAT_CLOCK_SKEW_SECONDS

@@ -8,6 +8,10 @@ import 'package:hysteria2_manager/screens/login_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class DelayedHintController extends AppController {
+  void showStorageFailure() {
+    state = const AppState(initializing: false, error: '本机安全存储清理失败，请重新登录后重试退出');
+  }
+
   final hint = Completer<({String address, String port, String username})?>();
   @override
   Future<({String address, String port, String username})?> rememberedLogin() =>
@@ -42,6 +46,21 @@ void main() {
       ]);
     },
   );
+
+  testWidgets('controller storage errors remain visible on the login screen', (
+    tester,
+  ) async {
+    final controller = DelayedHintController()..showStorageFailure();
+    controller.hint.complete(null);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [appControllerProvider.overrideWith((ref) => controller)],
+        child: const MaterialApp(home: LoginScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('本机安全存储清理失败，请重新登录后重试退出'), findsOneWidget);
+  });
 
   testWidgets('late history never overwrites manual input', (tester) async {
     final controller = DelayedHintController();

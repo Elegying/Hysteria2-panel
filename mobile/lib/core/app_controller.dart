@@ -103,7 +103,11 @@ class AppController extends StateNotifier<AppState> {
   bool _isCurrent(int generation) =>
       mounted && generation == _sessionGeneration;
 
-  Future<void> _persistSession(int generation, Future<void> Function() action) {
+  Future<void> _persistSession(
+    int generation,
+    Future<void> Function() action, {
+    Future<void> Function()? onFailure,
+  }) {
     final work = _storageFuture.then((_) async {
       if (_isCurrent(generation)) await action();
     });
@@ -111,7 +115,11 @@ class AppController extends StateNotifier<AppState> {
       (_) {},
       onError: (Object _, StackTrace _) {},
     );
-    return work;
+    if (onFailure == null) return work;
+    return work.catchError((Object error, StackTrace stack) async {
+      await onFailure();
+      Error.throwWithStackTrace(error, stack);
+    });
   }
 
   Future<void> initialize() async {
@@ -179,6 +187,7 @@ class AppController extends StateNotifier<AppState> {
       receiveTimeout: const Duration(seconds: 20),
       sendTimeout: const Duration(seconds: 20),
       headers: const {'Accept': 'application/json'},
+      followRedirects: false,
       validateStatus: (status) => status != null && status < 600,
     ),
   );
@@ -268,11 +277,15 @@ class AppController extends StateNotifier<AppState> {
         deviceId: deviceId,
       );
       await _persistSession(generation, () async {
+        // Never pair a previous panel's token with newly saved connection hints.
+        await _storage.delete(key: _refreshKey);
         final preferences = await SharedPreferences.getInstance();
-        await preferences.setString(_baseUrlKey, baseUrl);
-        await preferences.setString(_usernameKey, username.trim());
+        if (!await preferences.setString(_baseUrlKey, baseUrl) ||
+            !await preferences.setString(_usernameKey, username.trim())) {
+          throw StateError('Connection hints could not be saved');
+        }
         await _storage.write(key: _refreshKey, value: session.refreshToken);
-      });
+      }, onFailure: () => _revokeSession(dio, session.accessToken));
       if (!_isCurrent(generation)) {
         await _revokeSession(dio, session.accessToken);
         throw const ApiException('登录操作已结束');
@@ -298,12 +311,19 @@ class AppController extends StateNotifier<AppState> {
     _dio = null;
     _refreshFuture = null;
     state = const AppState(initializing: false);
-    await _persistSession(generation, () async {
-      await _storage.delete(key: _refreshKey);
-      // Connection hints survive logout, but never authorize a session.
-    });
-    if (session != null && dio != null) {
-      await _revokeSession(dio, session.accessToken);
+    try {
+      await _persistSession(generation, () async {
+        await _storage.delete(key: _refreshKey);
+        // Connection hints survive logout, but never authorize a session.
+      });
+    } catch (_) {
+      if (_isCurrent(generation)) {
+        state = state.copyWith(error: '本机安全存储清理失败，请重新登录后重试退出');
+      }
+    } finally {
+      if (session != null && dio != null) {
+        await _revokeSession(dio, session.accessToken);
+      }
     }
   }
 
@@ -408,6 +428,7 @@ class AppController extends StateNotifier<AppState> {
       await _persistSession(
         generation,
         () => _storage.write(key: _refreshKey, value: updated.refreshToken),
+        onFailure: () => _revokeSession(dio, updated.accessToken),
       );
       if (!_isCurrent(generation)) {
         await _revokeSession(dio, updated.accessToken);
@@ -442,7 +463,7 @@ class AppController extends StateNotifier<AppState> {
     final map = Map<String, dynamic>.from(body);
     final error = map['error'];
     if (response.statusCode == null ||
-        response.statusCode! >= 400 ||
+        response.statusCode! >= 300 ||
         error != null) {
       if (error is Map) {
         throw ApiException(
@@ -457,7 +478,17 @@ class AppController extends StateNotifier<AppState> {
       );
     }
     final data = map['data'];
-    return data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};
+    if (data is! Map) {
+      throw ApiException('服务器返回了无法识别的数据', statusCode: response.statusCode);
+    }
+    for (final field in const ['items', 'trafficBudgets']) {
+      if (data.containsKey(field) &&
+          (data[field] is! List ||
+              (data[field] as List).any((item) => item is! Map))) {
+        throw ApiException('服务器返回了无法识别的数据', statusCode: response.statusCode);
+      }
+    }
+    return Map<String, dynamic>.from(data);
   }
 
   static String _networkMessage(DioException error) {
