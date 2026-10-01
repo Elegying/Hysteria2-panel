@@ -347,6 +347,165 @@ void main() {
       expect(refreshes, 2);
     },
   );
+  for (final mode in [
+    'login-write',
+    'login-delete',
+    'refresh-write',
+    'logout-delete',
+  ]) {
+    test(
+      'storage failure in $mode cannot leave an orphan server session',
+      () async {
+        final storage = _FailingStorage();
+        storage.failWrite = mode.endsWith('write');
+        storage.failDelete = mode == 'login-delete';
+        final active = <String>{};
+        final controller = _controller((options, handler) {
+          if (options.path.endsWith('/capabilities')) {
+            _respond(handler, options, 200, {
+              'data': {
+                'features': [
+                  'local-node-control',
+                  'one-click-node-pairing',
+                  'node-realtime-traffic',
+                  'server-reboot',
+                  'domain-traffic-top10',
+                ],
+              },
+            });
+          } else if (options.path.endsWith('/auth/login') ||
+              options.path.endsWith('/auth/refresh')) {
+            active.add('current-access');
+            _respond(handler, options, 200, {
+              'data': {
+                'accessToken': 'current-access',
+                'refreshToken': 'current-refresh',
+              },
+            });
+          } else if (options.path.endsWith('/auth/logout')) {
+            active.remove(
+              options.headers['Authorization'].toString().substring(7),
+            );
+            _respond(handler, options, 200, {'data': {}});
+          }
+        }, storage: storage);
+        addTearDown(controller.dispose);
+        if (mode.startsWith('login')) {
+          await expectLater(
+            controller.login(
+              address: 'new-panel.example.test',
+              port: 19998,
+              username: 'test-admin',
+              password: 'fixture-password',
+            ),
+            throwsA(isA<ApiException>()),
+          );
+          expect(controller.state.session, isNull);
+          if (mode == 'login-delete') {
+            expect(await _storage.read(key: _refreshKey), _savedToken);
+            final preferences = await SharedPreferences.getInstance();
+            expect(
+              preferences.getString('panel_base_url'),
+              'https://panel.example.test:19998',
+            );
+          } else {
+            expect(await _storage.read(key: _refreshKey), isNull);
+            var refreshRequests = 0;
+            final restarted = _controller((options, handler) {
+              refreshRequests++;
+              _respond(handler, options, 401, {
+                'error': {'message': 'unexpected refresh'},
+              });
+            });
+            addTearDown(restarted.dispose);
+            await restarted.initialize();
+            expect(refreshRequests, 0);
+          }
+        } else {
+          await controller.initialize();
+          if (mode == 'logout-delete') {
+            storage.failDelete = true;
+            await controller.logout();
+            expect(controller.state.error, contains('安全存储清理失败'));
+            expect(controller.state.session, isNull);
+          } else {
+            expect(
+              controller.state.session?.accessToken,
+              isNot('current-access'),
+            );
+            expect(await _storage.read(key: _refreshKey), _savedToken);
+          }
+        }
+        expect(active, isEmpty);
+      },
+    );
+  }
+  for (final field in ['items', 'trafficBudgets']) {
+    test(
+      'malformed $field is rejected before rendering and can recover',
+      () async {
+        var malformed = true;
+        final controller = _controller((options, handler) {
+          if (options.path.endsWith('/auth/refresh')) {
+            _respond(handler, options, 200, {
+              'data': {
+                'accessToken': 'valid-access',
+                'refreshToken': 'valid-refresh',
+              },
+            });
+          } else {
+            _respond(handler, options, 200, {
+              'data': {
+                field: malformed
+                    ? [42]
+                    : [
+                        {'name': 'valid'},
+                      ],
+              },
+            });
+          }
+        });
+        addTearDown(controller.dispose);
+        await controller.initialize();
+        await expectLater(
+          controller.getJson('/list-payload'),
+          throwsA(isA<ApiException>()),
+        );
+        expect(controller.state.session?.accessToken, 'valid-access');
+        malformed = false;
+        expect(await controller.getJson('/list-payload'), {
+          field: [
+            {'name': 'valid'},
+          ],
+        });
+      },
+    );
+  }
+  test('invalid response data is not reported as an empty success', () async {
+    var malformed = true;
+    final controller = _controller((options, handler) {
+      if (options.path.endsWith('/auth/refresh')) {
+        _respond(handler, options, 200, {
+          'data': {
+            'accessToken': 'valid-access',
+            'refreshToken': 'valid-refresh',
+          },
+        });
+      } else {
+        _respond(handler, options, 200, {
+          'data': malformed ? [] : {'healthy': true},
+        });
+      }
+    });
+    addTearDown(controller.dispose);
+    await controller.initialize();
+    await expectLater(
+      controller.getJson('/list-payload'),
+      throwsA(isA<ApiException>()),
+    );
+    malformed = false;
+    expect(await controller.getJson('/list-payload'), {'healthy': true});
+  });
 }
 
 AppController _controller(
@@ -424,5 +583,43 @@ void _failRefresh(
     _respond(handler, options, 503, {
       'error': {'message': '服务暂时不可用'},
     });
+  }
+}
+
+class _FailingStorage extends FlutterSecureStorage {
+  bool failWrite = false;
+  bool failDelete = false;
+
+  @override
+  Future<void> write({
+    required String key,
+    required String? value,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    if (key == _refreshKey && failWrite) {
+      throw StateError('synthetic write failure');
+    }
+    await super.write(key: key, value: value);
+  }
+
+  @override
+  Future<void> delete({
+    required String key,
+    AppleOptions? iOptions,
+    AndroidOptions? aOptions,
+    LinuxOptions? lOptions,
+    WebOptions? webOptions,
+    AppleOptions? mOptions,
+    WindowsOptions? wOptions,
+  }) async {
+    if (key == _refreshKey && failDelete) {
+      throw StateError('synthetic delete failure');
+    }
+    await super.delete(key: key);
   }
 }

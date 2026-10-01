@@ -68,6 +68,39 @@ void refreshPage(WidgetTester tester) => unawaited(
 );
 
 void main() {
+  for (final malformed in [
+    {'items': 'invalid'},
+    {
+      'items': [42],
+    },
+    {
+      'items': [
+        {'domain': 'example.test', 'usedBytes': 'invalid'},
+      ],
+    },
+  ]) {
+    testWidgets('domain payload failure is recoverable: $malformed', (
+      tester,
+    ) async {
+      final controller = await mountPage(
+        tester,
+        const DomainUsageScreen.global(),
+      );
+      controller.requests.single.complete(malformed);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('域名流量数据暂时无法读取，请稍后重试'), findsOneWidget);
+      refreshPage(tester);
+      await tester.pump();
+      controller.requests.last.complete(snapshot('recovered.example.test'));
+      await tester.pumpAndSettle();
+      expect(find.text('recovered.example.test'), findsOneWidget);
+      expect(find.text('域名流量数据暂时无法读取，请稍后重试'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+    });
+  }
+
   testWidgets('budget IP and forecast update when a node disappears', (
     tester,
   ) async {

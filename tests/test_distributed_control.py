@@ -2299,7 +2299,7 @@ class NodeAgentProtocolTests(unittest.TestCase):
         cycle = node_agent.NodeControlCycle(
             protocol,
             Stats(),
-            spool=None,
+            spool=node_agent.DurableTrafficSpool(Path(self.temp_dir.name) / "snapshot-spool"),
             state=State(),
             clock=lambda: now,
         )

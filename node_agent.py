@@ -29,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.34"
+AGENT_VERSION = "0.39.35"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -78,6 +78,7 @@ LOCAL_STREAM_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
 DOMAIN_STREAM_INTERVAL_SECONDS = 10
 MAX_DOMAIN_RECORDS = 1000
 TRAFFIC_SPOOL_ENTRY_MAX_BYTES = 240 * 1024
+MAX_TRAFFIC_BATCH_AGE_SECONDS = 7 * 86400
 MAX_STATE_AGE_SECONDS = (
     NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS
     + CONTROL_LOOP_MAX_BACKOFF_SECONDS
@@ -110,6 +111,13 @@ class ProtocolNotSupported(ProtocolError):
 
 class TrafficSpoolFullError(ProtocolError):
     pass
+
+
+class ExpiredTrafficError(ProtocolError):
+    """Old unacknowledged batches require explicit accounting reconciliation."""
+
+    def __init__(self):
+        super().__init__("expired traffic retained; reconcile-traffic is required before online snapshots")
 
 
 class PartialLocalTrafficCollectionError(ProtocolError):
@@ -871,6 +879,19 @@ class DurableTrafficSpool:
             )
         batches.sort(key=lambda item: item[:3])
         return [item[3] for item in batches]
+
+    def reconcile(self, batch_id, expected_sha256, now):
+        """Archive a verified, manually accounted expired batch before removing it."""
+        batch = next((item for item in self.pending() if item["batchId"] == batch_id), None)
+        if batch is None or batch["observedAt"] >= now - MAX_TRAFFIC_BATCH_AGE_SECONDS:
+            raise ProtocolError("only a pending expired traffic batch can be reconciled")
+        encoded = self._encode_batch(batch)
+        original = (self.path / (batch_id + ".json")).read_bytes()
+        if original != encoded or hashlib.sha256(original).hexdigest() != expected_sha256:
+            raise ProtocolError("traffic reconciliation digest does not match")
+        archive = DurableTrafficSpool(self.path.with_name(self.path.name + ".reconciled"))
+        archive.persist_collections([(batch, encoded)])
+        self.ack(batch_id)
 
     def ack(self, batch_id):
         if not NODE_ID_PATTERN.fullmatch(str(batch_id or "")):
@@ -2997,7 +3018,8 @@ class NodeControlCycle:
 
     def _upload_pending(self):
         last_ack = None
-        for batch in self.spool.pending():
+        pending, expired = self._uploadable_pending()
+        for batch in pending:
             result = self.protocol_client.send_traffic(batch)
             if (
                 not isinstance(result, dict)
@@ -3008,7 +3030,15 @@ class NodeControlCycle:
             self.spool.ack(batch["batchId"])
             last_ack = int(self.clock())
             self.state.set_traffic_ack(last_ack)
+        if expired:
+            raise ExpiredTrafficError()
         return last_ack
+
+    def _uploadable_pending(self):
+        cutoff = int(self.clock()) - MAX_TRAFFIC_BATCH_AGE_SECONDS
+        pending = self.spool.pending()
+        return ([batch for batch in pending if batch["observedAt"] >= cutoff],
+                any(batch["observedAt"] < cutoff for batch in pending))
 
     def _collection_capacity(self):
         clients = getattr(self.stats_client, "clients", ())
@@ -3060,6 +3090,12 @@ class NodeControlCycle:
             self._unpersisted_collection = (exc.batches, observed_at, domains)
             self._persist_retained_collection()
             raise
+        except Exception:
+            # Keep the sampled domains and their original observation time;
+            # retrying /traffic cannot reproduce deltas from vanished streams.
+            self._unpersisted_collection = ([], observed_at, domains)
+            self._persist_retained_collection()
+            raise
         self._unpersisted_collection = (batches, observed_at, domains)
         return self._persist_retained_collection()
 
@@ -3108,6 +3144,11 @@ class NodeControlCycle:
     def refresh_snapshot(self):
         if self._unpersisted_collection is not None:
             raise ProtocolError("traffic collection has not been persisted")
+        pending, expired = self._uploadable_pending()
+        if expired:
+            raise ExpiredTrafficError()
+        if pending:
+            raise ProtocolError("pending traffic must be acknowledged before online snapshots")
         traffic_acked_at = self.state.traffic_acked_at()
         if int(self.clock()) - traffic_acked_at > MAX_STATE_AGE_SECONDS:
             raise ProtocolError("traffic checkpoint is stale")
@@ -3127,7 +3168,7 @@ class NodeControlCycle:
         if not stopped:
             if self._can_collect():
                 self._collect_to_spool()
-            pending = self.spool.pending()
+            pending, expired = self._uploadable_pending()
             for batch in pending[:8]:
                 candidate = selected + [batch]
                 encoded_size = len(
@@ -3140,7 +3181,7 @@ class NodeControlCycle:
                 if encoded_size > CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES:
                     break
                 selected = candidate
-            if len(selected) == len(pending):
+            if len(selected) == len(pending) and not expired:
                 snapshot = {
                     "snapshotId": uuid.uuid4().hex,
                     "sequence": self.state.next_sequence(),
@@ -3162,27 +3203,34 @@ class NodeControlCycle:
                     deferred_snapshot = True
                     snapshot = None
         result = self.protocol_client.send_control_cycle(selected, snapshot)
-        for batch, acknowledgement in zip(selected, result["traffic"]):
-            if (
-                acknowledgement.get("batchId") != batch["batchId"]
-                or acknowledgement.get("committed") is not True
+        control_error = None
+        try:
+            for batch, acknowledgement in zip(selected, result["traffic"]):
+                if (
+                    acknowledgement.get("batchId") != batch["batchId"]
+                    or acknowledgement.get("committed") is not True
+                ):
+                    raise ProtocolError("central traffic ACK is invalid")
+                self.spool.ack(batch["batchId"])
+            if selected:
+                self.state.set_traffic_ack(int(result["acceptedAt"]))
+            if not stopped and expired:
+                raise ExpiredTrafficError()
+            if deferred_snapshot:
+                # Full online state may fit alone but not alongside traffic.
+                self.refresh_snapshot()
+            if snapshot is not None and (
+                not isinstance(result.get("online"), dict)
+                or result["online"].get("sequence") != snapshot["sequence"]
             ):
-                raise ProtocolError("central traffic ACK is invalid")
-            self.spool.ack(batch["batchId"])
-        if selected:
-            self.state.set_traffic_ack(int(result["acceptedAt"]))
-        if deferred_snapshot:
-            # Full online state may fit alone but not alongside traffic. Settle
-            # and ACK traffic first, then publish the complete snapshot without
-            # truncating accounts or starving it behind the next collection.
-            self.refresh_snapshot()
-        if snapshot is not None and (
-            not isinstance(result.get("online"), dict)
-            or result["online"].get("sequence") != snapshot["sequence"]
-        ):
-            raise ProtocolError("central online snapshot ACK is invalid")
+                raise ProtocolError("central online snapshot ACK is invalid")
+        except (OSError, ProtocolError) as exc:
+            # The central poll has already leased these commands. Execute them
+            # before reporting accounting errors rather than polling them away.
+            control_error = exc
         self.idle = (
-            snapshot is not None
+            control_error is None
+            and snapshot is not None
             and not any(snapshot["online"].values())
             and not result["commands"]
             and all(
@@ -3190,7 +3238,7 @@ class NodeControlCycle:
                 for batch in selected for counters in batch["traffic"].values()
             )
         )
-        return result["commands"]
+        return result["commands"], control_error
 
     def _legacy_control(self, stopped, collect=True):
         control_error = None
@@ -3219,7 +3267,7 @@ class NodeControlCycle:
         legacy_collect = True
         if self._combined_supported:
             try:
-                commands = self._run_combined(stopped)
+                commands, control_error = self._run_combined(stopped)
             except ProtocolNotSupported:
                 self._combined_supported = False
                 legacy_collect = False
@@ -3233,32 +3281,38 @@ class NodeControlCycle:
             commands, control_error = self._legacy_control(
                 stopped, collect=legacy_collect
             )
+        acknowledgement_error = None
         for command in commands:
             command_id = command.get("commandId", "")
-            if self.state.command_completed(command_id):
-                self.protocol_client.ack_command(command_id, True, "")
-                continue
+            ok, error_code = True, ""
+            if not self.state.command_completed(command_id):
+                try:
+                    outcome = execute_control_command(
+                        command,
+                        self.stats_client,
+                        refresh_snapshot=self.refresh_snapshot,
+                        flush_traffic=self.flush_traffic,
+                        protocol_state=self.state,
+                        stop_data_plane=self.stop_data_plane,
+                        start_data_plane=self.start_data_plane,
+                        queue_uninstall=self.queue_uninstall,
+                        quiesce_traffic=self.quiesce_traffic,
+                    )
+                except Exception:
+                    ok, error_code = False, "EXECUTION_FAILED"
+                else:
+                    if outcome == "deferred-ack":
+                        continue
+                    self.state.record_command_completed(command_id, int(self.clock()))
             try:
-                outcome = execute_control_command(
-                    command,
-                    self.stats_client,
-                    refresh_snapshot=self.refresh_snapshot,
-                    flush_traffic=self.flush_traffic,
-                    protocol_state=self.state,
-                    stop_data_plane=self.stop_data_plane,
-                    start_data_plane=self.start_data_plane,
-                    queue_uninstall=self.queue_uninstall,
-                    quiesce_traffic=self.quiesce_traffic,
-                )
-            except Exception:
-                self.protocol_client.ack_command(
-                    command_id, False, "EXECUTION_FAILED"
-                )
-                continue
-            if outcome == "deferred-ack":
-                continue
-            self.state.record_command_completed(command_id, int(self.clock()))
-            self.protocol_client.ack_command(command_id, True, "")
+                self.protocol_client.ack_command(command_id, ok, error_code)
+            except (OSError, ProtocolError) as exc:
+                # Every command in this response is already leased centrally.
+                # An ACK failure must not strand the remaining commands.
+                if acknowledgement_error is None:
+                    acknowledgement_error = exc
+        if acknowledgement_error is not None:
+            raise acknowledgement_error
         if control_error is not None:
             raise control_error
 
@@ -3352,15 +3406,20 @@ def run_control_loop(
     delay = interval
     notifier = notifier or SystemdNotifier()
     notifier.ready("node control loop ready")
+    expired_reported = False
     try:
         while not stop_event.is_set():
             failed = False
             try:
                 cycle.run_once()
-            except (OSError, ProtocolError):
+            except (OSError, ProtocolError) as exc:
                 failed = True
+                if isinstance(exc, ExpiredTrafficError) and not expired_reported:
+                    print("错误：{}".format(exc), file=sys.stderr)
+                    expired_reported = True
                 next_delay = min(maximum_backoff, delay * 2)
             else:
+                expired_reported = False
                 next_delay = interval
                 delay = (
                     max(interval, CONTROL_LOOP_IDLE_INTERVAL_SECONDS)
@@ -3427,6 +3486,11 @@ def _parser():
     command.add_argument("--private-key", required=True)
     command.add_argument("--state-file", required=True)
     command.add_argument("--command-file", required=True)
+    command = subcommands.add_parser("reconcile-traffic")
+    command.add_argument("--spool-dir", required=True)
+    command.add_argument("--batch-id", required=True)
+    command.add_argument("--sha256", required=True)
+    command.add_argument("--confirm-accounted", action="store_true", required=True)
     for name in ("control-once", "control-loop", "quiesce-traffic"):
         command = subcommands.add_parser(name)
         command.add_argument("--private-key", required=True)
@@ -3467,6 +3531,16 @@ def main(arguments=None):
         options = _parser().parse_args(arguments)
     except SystemExit as exc:
         return int(exc.code)
+    if options.command == "reconcile-traffic":
+        try:
+            DurableTrafficSpool(options.spool_dir).reconcile(
+                options.batch_id, options.sha256, int(time.time())
+            )
+        except (OSError, ProtocolError, ValueError) as exc:
+            print("错误：{}".format(exc), file=sys.stderr)
+            return 1
+        print("已归档人工对账确认的过期批次，原始记录保留在 spool.reconciled 目录")
+        return 0
     if options.command == "register":
         token = os.environ.pop("HY2PANEL_ENROLLMENT_TOKEN", "")
         if not token:
