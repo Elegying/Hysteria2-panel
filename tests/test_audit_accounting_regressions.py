@@ -278,15 +278,13 @@ class AuditAccountingRegressions(unittest.TestCase):
             (["active", "active"], (False, False)),
             (["inactive", "inactive"], None),
         ):
-            with (
-                self.subTest(states=states),
-                mock.patch.object(
+            with self.subTest(states=states), contextlib.ExitStack() as stack:
+                stack.enter_context(mock.patch.object(
                     panel,
                     "_systemd_unit_state",
                     side_effect=[("loaded", state) for state in states],
-                ),
-                mock.patch.object(panel, "sync_traffic") as sync,
-            ):
+                ))
+                sync = stack.enter_context(mock.patch.object(panel, "sync_traffic"))
                 settings = mock.Mock()
                 panel.settle_egress_traffic(settings)
                 if expected is None:
@@ -308,23 +306,22 @@ class AuditAccountingRegressions(unittest.TestCase):
             yield
             events.append("resume-auth")
 
-        with (
-            mock.patch.object(panel.os, "geteuid", return_value=0),
-            mock.patch.object(panel.Settings, "from_mapping"),
-            mock.patch.object(
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(panel.os, "geteuid", return_value=0))
+            stack.enter_context(mock.patch.object(panel.Settings, "from_mapping"))
+            stack.enter_context(mock.patch.object(
                 panel,
                 "exclusive_maintenance_lock",
                 return_value=contextlib.nullcontext(),
-            ),
-            mock.patch.object(panel, "egress_auth_gate", gate),
-            mock.patch.object(
+            ))
+            stack.enter_context(mock.patch.object(panel, "egress_auth_gate", gate))
+            stack.enter_context(mock.patch.object(
                 panel,
                 "settle_egress_traffic",
                 side_effect=lambda _: events.append("settle"),
-            ),
-            mock.patch.object(panel, "EgressPolicyManager") as policy,
-            mock.patch("sys.stdout"),
-        ):
+            ))
+            policy = stack.enter_context(mock.patch.object(panel, "EgressPolicyManager"))
+            stack.enter_context(mock.patch("sys.stdout"))
             policy.return_value.apply.side_effect = lambda *_: events.append("apply")
             self.assertEqual(0, panel.main(["apply-egress-policy", "full"]))
         self.assertEqual(["deny-auth", "settle", "apply", "resume-auth"], events)
