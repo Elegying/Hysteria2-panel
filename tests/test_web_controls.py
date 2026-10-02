@@ -9,6 +9,40 @@ from hy2panel.web_assets import PAGE_SCRIPT
 
 class WebControlsTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute dashboard JavaScript")
+    def test_copy_fallback_stays_in_modal_cleans_up_and_restores_focus(self):
+        self.run_script(r"""
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+let parent, removed = 0, restored = 0, mode = 'success';
+const opener = {isConnected: true, focus() { restored++; }};
+const modal = {appendChild() { parent = modal; }};
+const body = {appendChild() { parent = body; }};
+const context = {
+  navigator: {clipboard: {async writeText() { throw new Error('denied'); }}},
+  window: {isSecureContext: true},
+  document: {
+    activeElement: opener, body, addEventListener() {},
+    getElementById() { return null; }, querySelector() { return null; },
+    querySelectorAll(selector) { return selector === 'dialog[open]' ? [modal] : []; },
+    createElement() { return {style: {}, setAttribute() {},
+      focus() { assert.equal(parent, modal, 'body outside the modal is inert'); },
+      select() {}, remove() { removed++; }}; },
+    execCommand() { if (mode === 'throw') throw new Error('copy blocked'); return mode === 'success'; }
+  }
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(0, 'utf8'), context);
+(async () => {
+  for (mode of ['success', 'false', 'throw']) {
+    assert.equal(await context.copyText('fixture'), mode === 'success');
+  }
+  assert.equal(removed, 3);
+  assert.equal(restored, 3);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""")
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is needed to execute dashboard JavaScript")
     def test_modal_errors_stay_inside_the_open_dialog_until_dismissed(self):
         self.run_script(r"""
 const assert = require('node:assert/strict');

@@ -4148,7 +4148,8 @@ fi
             self.assertIn("NoNewPrivileges=true", unit)
             self.assertIn("ProtectSystem=strict", unit)
             self.assertIn("ReadWritePaths=/etc/hysteria2-panel", unit)
-            self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
+            self.assertIn("RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX", unit)
+            self.assertIn("/var/lib/hysteria2-panel", unit)
             self.assertIn("TimeoutStartSec=5min", unit)
             self.assertNotIn("User=hy2panel", unit)
 

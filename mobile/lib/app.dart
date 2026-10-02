@@ -19,6 +19,12 @@ class Hysteria2ManagerApp extends ConsumerWidget {
     final appState = ref.watch(appControllerProvider);
     final themeSettings = ref.watch(themeControllerProvider);
     return MaterialApp(
+      // Session changes clear protected routes; token refresh keeps open forms.
+      key: ValueKey((
+        appState.session?.baseUrl,
+        appState.session?.username,
+        appState.session?.deviceId,
+      )),
       title: 'Hysteria2管理',
       debugShowCheckedModeBanner: false,
       themeMode: themeSettings.mode,

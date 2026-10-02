@@ -170,31 +170,53 @@ class _DomainUsageScreenState extends ConsumerState<DomainUsageScreen> {
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 10),
                           child: GlassCard(
-                            child: ListTile(
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 18,
-                                vertical: 8,
-                              ),
-                              leading: CircleAvatar(
-                                child: Text('${index + 1}'),
-                              ),
-                              title: Text(
-                                item['domain']?.toString() ?? '-',
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              subtitle: Text(
-                                '上传 ${formatBytes(item['txBytes'])} · 下载 ${formatBytes(item['rxBytes'])}',
-                              ),
-                              trailing: Text(
-                                formatBytes(item['usedBytes']),
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                final stacked =
+                                    constraints.maxWidth < 340 ||
+                                    MediaQuery.textScalerOf(context).scale(14) >
+                                        21;
+                                final total = formatBytes(item['usedBytes']);
+                                return ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 18,
+                                    vertical: 8,
+                                  ),
+                                  leading: CircleAvatar(
+                                    child: Text('${index + 1}'),
+                                  ),
+                                  title: SelectableText(
+                                    item['domain']?.toString() ?? '-',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  subtitle: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '上传 ${formatBytes(item['txBytes'])} · 下载 ${formatBytes(item['rxBytes'])}',
+                                      ),
+                                      if (stacked)
+                                        Text(
+                                          '合计 $total',
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                  trailing: stacked
+                                      ? null
+                                      : Text(
+                                          total,
+                                          style: const TextStyle(
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                );
+                              },
                             ),
                           ),
                         );

@@ -374,6 +374,18 @@ class AppController extends StateNotifier<AppState> {
         data: data,
         options: Options(
           method: method,
+          // These operations drain sessions before settling and stopping them.
+          // Match the panel's maintenance deadline instead of the normal 20s.
+          receiveTimeout:
+              method == 'POST' &&
+                  const {
+                    '/api/v1/mobile/service/stop',
+                    '/api/v1/mobile/service/restart',
+                    '/api/v1/mobile/nodes/local/disable',
+                    '/api/v1/mobile/system/reboot',
+                  }.contains(path)
+              ? const Duration(minutes: 15)
+              : null,
           headers: {'Authorization': 'Bearer ${session.accessToken}'},
         ),
       );

@@ -104,12 +104,19 @@ async function copyText(value) {
   buffer.setAttribute('readonly', '');
   buffer.style.position = 'fixed';
   buffer.style.opacity = '0';
-  document.body.appendChild(buffer);
-  buffer.focus();
-  buffer.select();
-  const copied = document.execCommand('copy');
-  buffer.remove();
-  return copied;
+  const focused = document.activeElement;
+  const dialogs = Array.from(document.querySelectorAll('dialog[open]'));
+  (dialogs[dialogs.length - 1] || document.body).appendChild(buffer);
+  try {
+    buffer.focus();
+    buffer.select();
+    return document.execCommand('copy');
+  } catch (_) {
+    return false;
+  } finally {
+    buffer.remove();
+    if (focused && focused.isConnected) focused.focus();
+  }
 }
 class UnconfirmedRequestError extends Error {
   constructor() {
@@ -230,6 +237,8 @@ function canDiscardEdit() {
 }
 function closeUserDialog(dialog) {
   if (dialog.id === 'edit-user-dialog' && !canDiscardEdit()) return;
+  const creating = dialog.querySelector('[data-create-user-form]');
+  if (creating && creating.dataset.saving === '1') return;
   dialog.close();
 }
 function clearEditUser() {
@@ -459,7 +468,7 @@ document.addEventListener('keydown', function(event) {
   closeUserDialog(dialog);
 });
 document.addEventListener('cancel', function(event) {
-  if (event.target.id !== 'edit-user-dialog') return;
+  if (!['edit-user-dialog', 'create-user-dialog'].includes(event.target.id)) return;
   event.preventDefault();
   closeUserDialog(event.target);
 }, true);
@@ -611,6 +620,10 @@ document.addEventListener('submit', async function(event) {
   if (!form || event.defaultPrevented) return;
   event.preventDefault();
   const button = form.querySelector('button[type="submit"]');
+  if (!button || button.disabled) return;
+  const closer = form.closest('dialog').querySelector('[data-dialog-close]');
+  form.dataset.saving = '1';
+  if (closer) closer.disabled = true;
   button.disabled = true;
   button.textContent = '添加中…';
   try {
@@ -622,6 +635,8 @@ document.addEventListener('submit', async function(event) {
   } catch (error) {
     notify(error.message || '添加用户失败，请重试', true);
   } finally {
+    delete form.dataset.saving;
+    if (closer) closer.disabled = false;
     button.disabled = false;
     button.textContent = '添加用户';
   }

@@ -168,7 +168,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
         ],
       ),
     );
-    if (confirmed == true) {
+    if (confirmed == true && mounted) {
       await ref.read(appControllerProvider.notifier).logout();
     }
   }

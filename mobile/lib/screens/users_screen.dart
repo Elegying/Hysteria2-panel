@@ -529,35 +529,35 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     String message, {
     bool destructive = false,
   }) async {
-    return await showDialog<bool>(
-          context: context,
-          builder: (context) => GlassDialog(
-            title: Text(title),
-            content: Text(message),
-            actions: [
-              GlassControlSurface(
-                child: TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('取消'),
-                ),
-              ),
-              GlassControlSurface(
-                child: FilledButton(
-                  style: destructive
-                      ? FilledButton.styleFrom(
-                          backgroundColor: Theme.of(context).colorScheme.error
-                              .withValues(alpha: .22),
-                          foregroundColor: Theme.of(context).colorScheme.error,
-                        )
-                      : null,
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('确认'),
-                ),
-              ),
-            ],
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => GlassDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          GlassControlSurface(
+            child: TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
           ),
-        ) ??
-        false;
+          GlassControlSurface(
+            child: FilledButton(
+              style: destructive
+                  ? FilledButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.error
+                          .withValues(alpha: .22),
+                      foregroundColor: Theme.of(context).colorScheme.error,
+                    )
+                  : null,
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确认'),
+            ),
+          ),
+        ],
+      ),
+    );
+    return mounted && context.mounted && confirmed == true;
   }
 
   Future<void> _userAction(
@@ -611,9 +611,13 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         );
         if (action == 'share') {
           final uri = data['uri']?.toString() ?? '';
-          await SharePlus.instance.share(
-            ShareParams(text: uri, subject: '${user['name']} 的 Hysteria2 连接'),
-          );
+          if (sheetContext.mounted) {
+            await _shareUri(
+              sheetContext,
+              uri,
+              subject: '${user['name']} 的 Hysteria2 连接',
+            );
+          }
         } else if (action == 'qr') {
           if (sheetContext.mounted) await _showQr(sheetContext, data);
         } else if (action == 'rotate-secret') {
@@ -917,7 +921,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           ),
           GlassControlSurface(
             child: FilledButton.icon(
-              onPressed: () => SharePlus.instance.share(ShareParams(text: uri)),
+              onPressed: () => _shareUri(context, uri),
               icon: const Icon(Icons.share_rounded),
               label: const Text('分享'),
             ),
@@ -925,6 +929,21 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         ],
       ),
     );
+  }
+
+  Future<void> _shareUri(
+    BuildContext shareContext,
+    String uri, {
+    String? subject,
+  }) async {
+    if (!mounted || !shareContext.mounted) return;
+    try {
+      await SharePlus.instance.share(ShareParams(text: uri, subject: subject));
+    } catch (_) {
+      if (mounted && shareContext.mounted) {
+        await showGlassError(shareContext, '无法打开系统分享，请稍后重试');
+      }
+    }
   }
 
   Future<void> _showQr(BuildContext context, Map<String, dynamic> data) {
