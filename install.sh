@@ -25,7 +25,7 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="8ade7e5d676f2edc353e818a2ec5a14ea86052e9c1c15279575da1b13aec17d3"
+PANEL_SHA256="2c1e12ebe7e095bda7f04da276a9d1f7b53bc9f89f3832c389fbe4d2366a33a0"
 OFFSITE_BACKUP_SHA256="98abdcb396d8e28a24ca7398a36951f2e7c21e3048dbeb59572220a658a08cf5"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce5
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="285327ccef230ffdb96f2790f98e6d53f0f89252302a6777311b0404b88b42b1"
 HY2PANEL_MOBILE_API_SHA256="d412be91aacd152d14724b39eddeabd3e59989f9f3f816cc9f477cc17901f21e"
-NODE_AGENT_SHA256="87fecc26e2255546e6839f8b34fff41a6bb695897271ca2e8282f8c698e2dc63"
+NODE_AGENT_SHA256="e6f0a29f4fb21c33b72ea5dd1acea1c81a5ee925b4be8b2f967bf3e3e2e78f31"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -68,6 +68,7 @@ NODE_SYSCTL_FILE=/etc/sysctl.d/99-hysteria2-panel-node.conf
 TMPFILES_FILE=/etc/tmpfiles.d/hysteria2-panel.conf
 MAINTENANCE_RUNTIME_DIR=/run/hysteria2-panel-maintenance
 MAINTENANCE_LOCK_FILE=${MAINTENANCE_RUNTIME_DIR}/lock
+TRAFFIC_COLLECTION_LOCK_FILE=${MAINTENANCE_RUNTIME_DIR}/traffic-lock
 EGRESS_SWITCH_ACTIVE_MARKER=${MAINTENANCE_RUNTIME_DIR}/egress-switch-active
 MANAGED_MARKER=/etc/hysteria2-panel/.managed-by-installer
 NODE_AGENT_OPT_DIR=/opt/hysteria2-panel-node
@@ -7039,11 +7040,14 @@ install -d -o root -g root -m 0755 /opt/hysteria2-panel/bin
 cat > "${TMP_DIR}/hysteria2-panel.tmpfiles" <<EOF
 d ${MAINTENANCE_RUNTIME_DIR} 0750 root hy2panel -
 f ${MAINTENANCE_LOCK_FILE} 0640 root hy2panel -
+f ${TRAFFIC_COLLECTION_LOCK_FILE} 0640 root hy2panel -
 EOF
 if [[ -e "${TMPFILES_FILE}" || -L "${TMPFILES_FILE}" ]]; then
   [[ ! -L "${TMPFILES_FILE}" && -f "${TMPFILES_FILE}" ]] \
     || fail "维护目录的 tmpfiles 配置不是普通文件；安装已停止"
+  # Upgrade only the exact previously managed two-line configuration.
   cmp -s -- "${TMP_DIR}/hysteria2-panel.tmpfiles" "${TMPFILES_FILE}" \
+    || cmp -s -- <(head -n 2 "${TMP_DIR}/hysteria2-panel.tmpfiles") "${TMPFILES_FILE}" \
     || fail "已存在非本项目管理的 tmpfiles 配置；安装已停止"
 fi
 install -o root -g root -m 0644 "${TMP_DIR}/hysteria2-panel.tmpfiles" "${TMPFILES_FILE}"

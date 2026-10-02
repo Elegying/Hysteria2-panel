@@ -2461,7 +2461,11 @@ class OperationsTests(unittest.TestCase):
         ) as settle, mock.patch("builtins.print"):
             self.assertEqual(0, hysteria2_panel.main(["apply-egress-policy", "full"]))
 
-        maintenance_lock.assert_called_once_with(blocking=False)
+        self.assertEqual([
+            mock.call(blocking=False),
+            mock.call(hysteria2_panel.TRAFFIC_COLLECTION_LOCK_PATH, blocking=True,
+                      expected_uid=0, expected_mode=0o640),
+        ], maintenance_lock.call_args_list)
         auth_gate.assert_called_once_with()
         settle.assert_called_once_with(settings)
         manager.apply.assert_called_once_with("full", 19998)

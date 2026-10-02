@@ -170,6 +170,7 @@ TRAFFIC_BATCH_MAX_ROWS = 100000
 LEGACY_USAGE_ORIGIN_ID = "legacy-unattributed"
 LEGACY_USAGE_ORIGIN_NAME = "升级前历史（未归属）"
 MAINTENANCE_LOCK_PATH = Path("/run/hysteria2-panel-maintenance/lock")
+TRAFFIC_COLLECTION_LOCK_PATH = MAINTENANCE_LOCK_PATH.with_name("traffic-lock")
 EGRESS_SWITCH_ACTIVE_MARKER = MAINTENANCE_LOCK_PATH.with_name("egress-switch-active")
 RESTORE_ACTIVE_MARKER = Path("/etc/hysteria2-panel/.restore-active")
 RESTORE_TRANSACTION_VERSION = 1
@@ -9887,8 +9888,8 @@ class UsageManager:
     def _collect_locked(self):
         if self.maintenance_lock_path is None:
             return self._collect_traffic_locked()
-        # Root egress maintenance owns the exclusive slot. It must never race
-        # the live collector over destructive stats reads or the shared journal.
+        # This slot only protects destructive stats reads and their journal.
+        # The installer keeps its separate transaction lock through readiness.
         with maintenance_upload_slot(
             self.maintenance_lock_path, expected_gid=os.getgid(),
         ):
@@ -10895,7 +10896,7 @@ def run_service(settings):
         stats_client,
         local_origin_id=settings.local_origin_id,
         local_origin_name=settings.node_name,
-        maintenance_lock_path=MAINTENANCE_LOCK_PATH,
+        maintenance_lock_path=TRAFFIC_COLLECTION_LOCK_PATH,
     )
     backup_manager = BackupManager(
         database=database,
@@ -11988,8 +11989,12 @@ def main(argv=None):
                 raise RuntimeError("apply-egress-policy must run as root")
             with exclusive_maintenance_lock(blocking=False), defer_termination_signals():
                 with egress_auth_gate():
-                    settle_egress_traffic(settings)
-                    EgressPolicyManager().apply(args.policy, settings.panel_port)
+                    with exclusive_maintenance_lock(
+                        TRAFFIC_COLLECTION_LOCK_PATH, blocking=True,
+                        expected_uid=0, expected_mode=0o640,
+                    ):
+                        settle_egress_traffic(settings)
+                        EgressPolicyManager().apply(args.policy, settings.panel_port)
             print(json.dumps({"status": "ok", "policy": args.policy}, separators=(",", ":")))
             return 0
         if args.command == "reconcile-node-dns":

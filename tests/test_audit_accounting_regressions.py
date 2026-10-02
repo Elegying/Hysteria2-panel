@@ -251,6 +251,26 @@ class AuditAccountingRegressions(unittest.TestCase):
                     manager.collect_once()
             manager.collect_once()
 
+    def test_install_transaction_does_not_block_live_readiness_collection(self):
+        f = self.monthly_fixture()
+        root = Path(f.tmp.name)
+        transaction, traffic_lock = root / "lock", root / "traffic-lock"
+        traffic_lock.touch(mode=0o640)
+        traffic_lock.chmod(0o640)
+        stats = test_panel.PolicyStatsClient()
+        manager = panel.UsageManager(f.db, stats, maintenance_lock_path=traffic_lock)
+        slot = panel.maintenance_upload_slot
+        with mock.patch.object(
+            panel, "maintenance_upload_slot",
+            lambda path, **options: slot(path, expected_uid=os.getuid(), **options),
+        ):
+            with panel.exclusive_maintenance_lock(transaction):
+                manager.collect_once()
+                self.assertTrue(manager.snapshot()["available"])
+            with panel.exclusive_maintenance_lock(traffic_lock):
+                with self.assertRaises(panel.MaintenanceBusyError):
+                    manager.collect_once()
+
     def test_egress_settlement_selects_only_active_endpoints(self):
         for states, expected in (
             (["active", "inactive"], (True, False)),
