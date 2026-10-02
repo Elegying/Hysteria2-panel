@@ -236,6 +236,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   }
 
   Future<void> _showNode(Map<String, dynamic> selectedNode) {
+    var copiedId = false;
     return showGlassModalBottomSheet<void>(
       context: context,
       builder: (sheetContext) => ValueListenableBuilder<int>(
@@ -383,25 +384,50 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                     (item) => ListTile(
                       contentPadding: EdgeInsets.zero,
                       title: Text(item.$1),
-                      subtitle: Text(
-                        item.$2?.toString().isNotEmpty == true
-                            ? item.$2.toString()
-                            : '不可用',
-                      ),
+                      subtitle: item.$1 == '节点 ID'
+                          ? Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                SelectableText(
+                                  item.$2?.toString().isNotEmpty == true
+                                      ? item.$2.toString()
+                                      : '不可用',
+                                ),
+                                if (copiedId)
+                                  Semantics(
+                                    liveRegion: true,
+                                    child: const Text('节点 ID 已复制'),
+                                  ),
+                              ],
+                            )
+                          : Text(
+                              item.$2?.toString().isNotEmpty == true
+                                  ? item.$2.toString()
+                                  : '不可用',
+                            ),
                       trailing: item.$1 == '节点 ID'
                           ? GlassControlSurface(
                               child: IconButton(
                                 tooltip: '复制节点 ID',
                                 onPressed: () async {
-                                  await Clipboard.setData(
-                                    ClipboardData(text: item.$2.toString()),
-                                  );
-                                  if (context.mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('节点 ID 已复制'),
-                                      ),
+                                  copiedId = false;
+                                  _detailsRevision.value++;
+                                  try {
+                                    await Clipboard.setData(
+                                      ClipboardData(text: item.$2.toString()),
                                     );
+                                  } on PlatformException {
+                                    if (context.mounted) {
+                                      await showGlassError(
+                                        context,
+                                        '复制失败，请重试或长按节点 ID 手动复制',
+                                      );
+                                    }
+                                    return;
+                                  }
+                                  if (mounted && context.mounted) {
+                                    copiedId = true;
+                                    _detailsRevision.value++;
                                   }
                                 },
                                 icon: const Icon(Icons.copy_rounded),

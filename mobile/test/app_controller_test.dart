@@ -24,6 +24,41 @@ void main() {
     });
   });
 
+  test(
+    'maintenance operations use their deadline while normal calls stay bounded',
+    () async {
+      final timeouts = <String, Duration?>{};
+      final controller = _controller((options, handler) {
+        timeouts[options.path] = options.receiveTimeout;
+        _respond(handler, options, 200, {
+          'data': options.path.endsWith('/auth/refresh')
+              ? {'accessToken': 'new-access', 'refreshToken': 'new-refresh'}
+              : {'done': true},
+        });
+      });
+      addTearDown(controller.dispose);
+      await controller.initialize();
+      for (final path in [
+        '/api/v1/mobile/service/restart',
+        '/api/v1/mobile/service/stop',
+        '/api/v1/mobile/nodes/local/disable',
+        '/api/v1/mobile/system/reboot',
+      ]) {
+        expect(await controller.postJson(path), {'done': true});
+        expect(timeouts[path], const Duration(minutes: 15));
+      }
+      await controller.getJson('/api/v1/mobile/overview');
+      await controller.postJson('/api/v1/mobile/users');
+      await controller.postJson('/api/v1/mobile/service/start');
+      expect(timeouts['/api/v1/mobile/overview'], const Duration(seconds: 20));
+      expect(timeouts['/api/v1/mobile/users'], const Duration(seconds: 20));
+      expect(
+        timeouts['/api/v1/mobile/service/start'],
+        const Duration(seconds: 20),
+      );
+    },
+  );
+
   for (final failure in ['timeout', 'unavailable', 'invalid-response']) {
     test(
       'startup preserves credentials after $failure and can recover',
@@ -515,7 +550,12 @@ AppController _controller(
   return AppController(
     storage: storage,
     dioFactory: (baseUrl) {
-      final dio = Dio(BaseOptions(baseUrl: baseUrl));
+      final dio = Dio(
+        BaseOptions(
+          baseUrl: baseUrl,
+          receiveTimeout: const Duration(seconds: 20),
+        ),
+      );
       dio.interceptors.add(InterceptorsWrapper(onRequest: onRequest));
       return dio;
     },

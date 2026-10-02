@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.35"
+PANEL_VERSION="0.39.36"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -25,14 +25,14 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="5070a68d095f6712de661f628cfb49c54aaa94473af592290bc3e4730bfd153d"
+PANEL_SHA256="8ade7e5d676f2edc353e818a2ec5a14ea86052e9c1c15279575da1b13aec17d3"
 OFFSITE_BACKUP_SHA256="98abdcb396d8e28a24ca7398a36951f2e7c21e3048dbeb59572220a658a08cf5"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="24c8bd64fccceebb1883526c7a7c9049ee3520bfd9eabbe0f7fac42a6e5e500d"
+HY2PANEL_VERSION_SHA256="01b134106a7d1eb9ced89fea70227ebc9a4b938d0a8ac1e8a7ef779ff5c4afcf"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
-HY2PANEL_WEB_ASSETS_SHA256="54d0d602c785925e5d21f6a1454caa996af2b0cc7a1f50e8be3701052cfffcbf"
+HY2PANEL_WEB_ASSETS_SHA256="5404114bdb81dddbcd5e7318bf235580948030669a80a3d50146b331cf96f0c9"
 HY2PANEL_OPERATIONS_SHA256="d081cea0fbfa3aa47de13fe3156ce9cc0238d68d99ac7a9cf155d2afff6c2a15"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
@@ -42,8 +42,8 @@ HY2PANEL_NODES_SHA256="098fd6a4dc2d421c858aeabd4da4edc4165099309ee427c79144e489d
 HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce588ab18bb0b327"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="285327ccef230ffdb96f2790f98e6d53f0f89252302a6777311b0404b88b42b1"
-HY2PANEL_MOBILE_API_SHA256="9f7090cc6b1162b5b024db1eb701a6038852951dc956d47f7e4352b4cc68ec12"
-NODE_AGENT_SHA256="fc72e92270cb29c3750cd4b1d164309c4d27d0af12b9c119d224ebd937a44146"
+HY2PANEL_MOBILE_API_SHA256="d412be91aacd152d14724b39eddeabd3e59989f9f3f816cc9f477cc17901f21e"
+NODE_AGENT_SHA256="87fecc26e2255546e6839f8b34fff41a6bb695897271ca2e8282f8c698e2dc63"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1797,6 +1797,8 @@ uninstall_node() {
   restore_data_plane_network_snapshot \
     || fail "无法恢复对接前的网络参数；卸载将在 30 秒后重试"
   for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}"; do
+    # ACK retries still need this secret to upload the already settled queue.
+    [[ "${path}" != "${NODE_AGENT_CONFIG_DIR}/stats.env" ]] || continue
     rm -f -- "${path}" \
       || fail "无法删除受管节点文件：${path}；卸载将在 30 秒后重试"
   done
@@ -5781,7 +5783,9 @@ remove_managed_firewall_entry() {
       ! ufw_rule_is_recorded "${rule}"
       ;;
     runtime)
-      if ! firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+      if firewall-cmd --quiet --zone="${zone}" --query-port="${rule}"; then
+        :
+      else
         query_status=$?
         (( query_status == 1 )) && return 0
         return 1
@@ -5795,7 +5799,9 @@ remove_managed_firewall_entry() {
       fi
       ;;
     permanent)
-      if ! firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"; then
+      if firewall-cmd --quiet --permanent --zone="${zone}" --query-port="${rule}"; then
+        :
+      else
         query_status=$?
         (( query_status == 1 )) && return 0
         return 1
@@ -7643,8 +7649,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/etc/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/etc/hysteria2-panel /var/lib/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
 TasksMax=32
 MemoryMax=192M
 EOF
@@ -7675,8 +7681,8 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/etc/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/etc/hysteria2-panel /var/lib/hysteria2-panel ${MAINTENANCE_RUNTIME_DIR}
 TasksMax=32
 MemoryMax=192M
 EOF

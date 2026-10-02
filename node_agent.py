@@ -1894,7 +1894,7 @@ def start_node_data_plane():
 
 
 def _socket_is_listening(kind, port):
-    if kind not in {"tcp", "udp"} or port not in {443, 19999}:
+    if kind not in {"tcp", "udp"} or type(port) is not int or not 1 <= port <= 65535:
         return False
     flag = "-ltn" if kind == "tcp" else "-lun"
     try:

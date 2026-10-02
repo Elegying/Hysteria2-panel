@@ -38,8 +38,10 @@ class DistributedControlCase(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "panel.db"
         self.db = Database(self.db_path, b"d" * 32)
-        self.db.initialize()
         self.now = [2_000_000_000]
+        # Initialize the monthly state with the same clock as signed requests.
+        with mock.patch("hysteria2_panel.time.time", return_value=self.now[0]):
+            self.db.initialize()
         self.local_online = {}
         self.local_available = True
         self.service = DistributedControlService(

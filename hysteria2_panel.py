@@ -121,6 +121,7 @@ SCRYPT_R = 8
 SCRYPT_P = 1
 PBKDF2_ITERATIONS = 600000
 NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
+ASCII_NOCASE_TRANSLATION = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 LOGGER = logging.getLogger("hysteria2-panel")
 DOMAIN_USAGE_MAX_DOMAINS_PER_ORIGIN_USER = 500
 DOMAIN_USAGE_RETENTION_MONTHS = 3
@@ -169,6 +170,7 @@ TRAFFIC_BATCH_MAX_ROWS = 100000
 LEGACY_USAGE_ORIGIN_ID = "legacy-unattributed"
 LEGACY_USAGE_ORIGIN_NAME = "升级前历史（未归属）"
 MAINTENANCE_LOCK_PATH = Path("/run/hysteria2-panel-maintenance/lock")
+EGRESS_SWITCH_ACTIVE_MARKER = MAINTENANCE_LOCK_PATH.with_name("egress-switch-active")
 RESTORE_ACTIVE_MARKER = Path("/etc/hysteria2-panel/.restore-active")
 RESTORE_TRANSACTION_VERSION = 1
 RESTORE_ENV_FILE = Path("/etc/hysteria2-panel/panel.env")
@@ -227,6 +229,10 @@ class UserUsageRateLimiter:
 
 class ConflictError(Exception):
     """Raised when an administrator submits a stale user mutation."""
+
+
+class MaintenanceBusyError(RuntimeError):
+    """Root maintenance owns the traffic journal and destructive stats reads."""
 
 
 class TrafficSyncError(RuntimeError):
@@ -3105,7 +3111,7 @@ class Database:
                 )
                 return {"id": cursor.lastrowid, "name": name, "token": token}
         except sqlite3.IntegrityError as exc:
-            raise ValueError("user name or token already exists") from exc
+            raise ValueError("用户名或认证密钥已存在，请检查后重试") from exc
 
     def authenticate_token(self, token, require_udp_443=False):
         if not isinstance(token, str) or not 1 <= len(token) <= 512:
@@ -4140,12 +4146,14 @@ class Database:
         if usage_month != _usage_month(updated_at):
             return
         known_users = {
-            row["name"].lower(): row
+            row["name"].translate(ASCII_NOCASE_TRANSLATION): row
             for row in connection.execute("SELECT name, domain_usage_reset_at FROM proxy_users")
         }
         touched_users = set()
         for record in records:
-            user = known_users.get(record["user"].lower())
+            user = known_users.get(record["user"].translate(
+                ASCII_NOCASE_TRANSLATION
+            ))
             if user is None or (
                 not fresh_local_collection
                 and user["domain_usage_reset_at"] is not None
@@ -4262,6 +4270,7 @@ class Database:
         domain_usage=None,
         observed_at=None,
         fresh_local_collection=False,
+        accounting_at=None,
     ):
         if not isinstance(batch_id, str) or not re.fullmatch(r"[0-9a-f]{32}", batch_id):
             raise ValueError("traffic batch id is invalid")
@@ -4296,6 +4305,9 @@ class Database:
         has_observation_time = observed_at is not None
         observed_at = now if observed_at is None else int(observed_at)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if accounting_at is not None:
+                self._reset_monthly_traffic_if_due(connection, accounting_at)
             if connection.execute(
                 "SELECT 1 FROM applied_traffic_batches WHERE batch_id = ?", (batch_id,)
             ).fetchone():
@@ -4315,7 +4327,9 @@ class Database:
                     (name,),
                 ).fetchone()
                 account_traffic = user is not None and (
-                    (origin_kind == "local" and fresh_local_collection)
+                    (origin_kind == "local" and fresh_local_collection
+                     and (accounting_at is None or user_traffic_month(observed_at)
+                          == user_traffic_month(accounting_at)))
                     or not has_observation_time
                     or user["traffic_adjusted_at"] is None
                     or observed_at > user["traffic_adjusted_at"]
@@ -4428,37 +4442,39 @@ class Database:
             self._reset_all_traffic(connection, int(time.time()))
 
     def reset_monthly_traffic_if_due(self, now):
-        period = user_traffic_month(now)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT period FROM user_traffic_reset_state WHERE singleton = 1"
-            ).fetchone()
-            if row is None:
-                connection.execute(
-                    "INSERT INTO user_traffic_reset_state(singleton, period) VALUES (1, ?)",
-                    (period,),
-                )
-                return False
-            if row["period"] >= period:
-                return False
-            boundary = datetime.datetime.strptime(period + "-01", "%Y-%m-%d").replace(
-                tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-            ).timestamp()
-            # A delayed reset must accept this month's pending samples, while
-            # retaining any later explicit user adjustment's cutoff.
-            self._reset_all_traffic(
-                connection, int(now), clear_domains=False,
-                traffic_cutoff=int(boundary) - 1,
-            )
-            connection.execute("DELETE FROM user_traffic_hourly WHERE usage_day < ?", (period + "-01",))
-            connection.execute("DELETE FROM domain_usage_monthly WHERE usage_month < ?", (period,))
-            connection.execute("DELETE FROM audit_log WHERE created_at < ?", (int(boundary),))
+            return self._reset_monthly_traffic_if_due(connection, now)
+
+    def _reset_monthly_traffic_if_due(self, connection, now):
+        period = user_traffic_month(now)
+        row = connection.execute(
+            "SELECT period FROM user_traffic_reset_state WHERE singleton = 1"
+        ).fetchone()
+        if row is None:
             connection.execute(
-                "UPDATE user_traffic_reset_state SET period = ?, reset_at = ? WHERE singleton = 1",
-                (period, int(now)),
+                "INSERT INTO user_traffic_reset_state(singleton, period) VALUES (1, ?)",
+                (period,),
             )
-        LOGGER.info("monthly user traffic reset completed for %s (Asia/Shanghai)", period)
+            return False
+        if row["period"] >= period:
+            return False
+        boundary = datetime.datetime.strptime(period + "-01", "%Y-%m-%d").replace(
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8))
+        ).timestamp()
+        # A delayed reset must accept this month's pending samples, while
+        # retaining any later explicit user adjustment's cutoff.
+        self._reset_all_traffic(
+            connection, int(now), clear_domains=False,
+            traffic_cutoff=int(boundary) - 1,
+        )
+        connection.execute("DELETE FROM user_traffic_hourly WHERE usage_day < ?", (period + "-01",))
+        connection.execute("DELETE FROM domain_usage_monthly WHERE usage_month < ?", (period,))
+        connection.execute("DELETE FROM audit_log WHERE created_at < ?", (int(boundary),))
+        connection.execute(
+            "UPDATE user_traffic_reset_state SET period = ?, reset_at = ? WHERE singleton = 1",
+            (period, int(now)),
+        )
         return True
 
     def create_node_enrollment(
@@ -5677,6 +5693,7 @@ class Database:
                 ).fetchone()
                 if node is None or node["policy_state"] != "protocol_ready":
                     raise sqlite3.IntegrityError("node is not protocol ready")
+                self._reset_monthly_traffic_if_due(connection, accepted_at)
                 existing = connection.execute(
                     """SELECT unknown_users FROM node_traffic_batches
                     WHERE node_id = ? AND batch_id = ?""",
@@ -7800,20 +7817,22 @@ class PanelHandler(JsonHandler):
                 self._handle_mobile_user_create(session, payload)
                 return
             if route == "reboot":
+                self.server.begin_maintenance_request(self.connection)
                 def queue_reboot():
                     self._audit_safely(
                         self._mobile_actor(session), "server_reboot_queued", "system"
                     )
                     return self.app.reboot_controller.queue()
 
-                self.app.usage_manager.run_after_collect(queue_reboot)
+                self.app.usage_manager.run_after_collect(queue_reboot, quiesce=True, resume_auth=False)
                 self._mobile_response(202, {"accepted": True})
                 return
             if route == "service-action":
+                self.server.begin_maintenance_request(self.connection)
                 action = parameters[0]
                 if action in {"stop", "restart"}:
                     state = self.app.usage_manager.run_after_collect(
-                        lambda: self.app.service_controller.action(action)
+                        lambda: self.app.service_controller.action(action), quiesce=True
                     )
                 else:
                     state = self.app.service_controller.action(action)
@@ -7825,11 +7844,12 @@ class PanelHandler(JsonHandler):
                 self._mobile_response(200, {"status": state, "action": action})
                 return
             if route == "local-node-action":
+                self.server.begin_maintenance_request(self.connection)
                 action = parameters[0]
                 service_action = "start" if action == "enable" else "stop"
                 if action == "disable":
                     state = self.app.usage_manager.run_after_collect(
-                        lambda: self.app.service_controller.action(service_action)
+                        lambda: self.app.service_controller.action(service_action), quiesce=True
                     )
                 else:
                     state = self.app.service_controller.action(service_action)
@@ -8690,8 +8710,8 @@ class PanelHandler(JsonHandler):
             else:
                 self._send_html(200, self._login_page())
             return
-        history_match = re.fullmatch(r"/api/v1/users/(\d{1,18})/traffic-history", path)
-        if history_match:
+        history_match = re.fullmatch(r"/api/v1/users/(\d{1,19})/traffic-history", path)
+        if history_match and valid_user_id(history_match.group(1)):
             if not self._require_session():
                 return
             try:
@@ -8715,7 +8735,7 @@ class PanelHandler(JsonHandler):
                 self.send_json(404, {"error": "未找到该用户，请检查完整用户名"})
                 return
             self.send_json(200, {
-                "id": user["id"], "name": user["name"], "generation": user["generation"],
+                "id": str(user["id"]), "name": user["name"], "generation": user["generation"],
                 "device_limit": user["device_limit"],
                 "traffic_limit_gb": max(1, user["traffic_limit_bytes"] // 1024**3),
                 "used_traffic_gib": format((user["tx_bytes"] + user["rx_bytes"]) / 1024**3, ".9f").rstrip("0").rstrip(".") or "0",
@@ -9312,10 +9332,11 @@ class PanelHandler(JsonHandler):
             self._error_page(500, "流量重置失败，请检查服务日志")
 
     def _handle_service_action(self, session, action):
+        self.server.begin_maintenance_request(self.connection)
         try:
             if action in {"stop", "restart"}:
                 state = self.app.usage_manager.run_after_collect(
-                    lambda: self.app.service_controller.action(action)
+                    lambda: self.app.service_controller.action(action), quiesce=True
                 )
             else:
                 state = self.app.service_controller.action(action)
@@ -9347,6 +9368,7 @@ class PanelHandler(JsonHandler):
             self._error_page(500, "出站策略切换失败；未执行切换或旧策略已恢复，请刷新状态并检查服务日志")
 
     def _handle_reboot(self, session):
+        self.server.begin_maintenance_request(self.connection)
         try:
             def queue_reboot():
                 self._audit_safely(
@@ -9354,7 +9376,7 @@ class PanelHandler(JsonHandler):
                 )
                 return self.app.reboot_controller.queue()
 
-            self.app.usage_manager.run_after_collect(queue_reboot)
+            self.app.usage_manager.run_after_collect(queue_reboot, quiesce=True, resume_auth=False)
         except RuntimeError:
             LOGGER.exception("server reboot queue failed")
             self._error_page(500, "服务器重启任务启动失败，请检查服务日志")
@@ -9630,9 +9652,13 @@ class UsageManager:
         wall_clock=time.time,
         local_origin_id="local:" + "0" * 32,
         local_origin_name="面板本机",
+        maintenance_lock_path=None,
+        quiesce=None,
     ):
         self.database = database
         self.stats_client = stats_client
+        self.maintenance_lock_path = maintenance_lock_path
+        self.quiesce = quiesce
         self.pending_ttl = max(1, int(pending_ttl))
         self.clock = clock
         self.wall_clock = wall_clock
@@ -9646,6 +9672,7 @@ class UsageManager:
         )
         self.database.fold_placeholder_local_usage_origin(self.local_origin_id)
         self.lock = threading.Lock()
+        self._quiescing = threading.Event()
         self._user_usage_lock = threading.Lock()
         self._user_usage_checkpoint = None
         self._user_usage_traffic_at = None
@@ -9700,6 +9727,7 @@ class UsageManager:
                 domain_usage=[] if domain_usage is None else domain_usage,
                 observed_at=observed_at,
                 fresh_local_collection=fresh_local_collection,
+                accounting_at=int(self.wall_clock()),
             )
         except TypeError as exc:
             if "unexpected keyword argument" not in str(exc):
@@ -9857,6 +9885,16 @@ class UsageManager:
         self.pending_fresh_local_collection = False
 
     def _collect_locked(self):
+        if self.maintenance_lock_path is None:
+            return self._collect_traffic_locked()
+        # Root egress maintenance owns the exclusive slot. It must never race
+        # the live collector over destructive stats reads or the shared journal.
+        with maintenance_upload_slot(
+            self.maintenance_lock_path, expected_gid=os.getgid(),
+        ):
+            return self._collect_traffic_locked()
+
+    def _collect_traffic_locked(self):
         self._auth_stats_at = None
         try:
             self._flush_pending_traffic_locked()
@@ -9885,6 +9923,9 @@ class UsageManager:
                 traffic, domain_usage, observed_at, fresh_local_collection=True
             )
             self._flush_pending_traffic_locked()
+            # Empty successful samples still advance the quota month. Nonempty
+            # batches reset and settle atomically inside the database transaction.
+            self.database.reset_monthly_traffic_if_due(self.wall_clock())
         except Exception:
             self._record_health(False)
             raise
@@ -9913,7 +9954,6 @@ class UsageManager:
     def collect_once(self):
         with self.lock:
             traffic = self._collect_locked()
-            self.database.reset_monthly_traffic_if_due(self.wall_clock())
             try:
                 blocked = self._blocked_online_names_locked()
             except Exception:
@@ -9935,10 +9975,22 @@ class UsageManager:
                 self._record_health(False)
             return traffic
 
-    def run_after_collect(self, action):
+    def run_after_collect(self, action, *, quiesce=False, resume_auth=True):
         with self.lock:
-            self._collect_locked()
-            return action()
+            previously_quiescing = self._quiescing.is_set()
+            if quiesce:
+                self._quiescing.set()
+            completed = False
+            try:
+                if quiesce:
+                    (self.quiesce or quiesce_stats_client)(self.stats_client)
+                self._collect_locked()
+                result = action()
+                completed = True
+                return result
+            finally:
+                if quiesce and not previously_quiescing and (resume_auth or not completed):
+                    self._quiescing.clear()
 
     def forget_user(self, name):
         with self._user_usage_lock:
@@ -9970,17 +10022,21 @@ class UsageManager:
         return dict(self._auth_online)
 
     def authorize(self, name):
-        with self.lock:
-            online = self._authorization_online_locked()
-        if online is None:
+        if self._quiescing.is_set() or EGRESS_SWITCH_ACTIVE_MARKER.exists():
             return False
-        return self.database.authorize_local_participant(
-            name,
-            online,
-            now=int(self.wall_clock()),
-            freshness_seconds=MAX_STATE_AGE_SECONDS,
-            lease_seconds=self.pending_ttl,
-        )
+        with self.lock:
+            if self._quiescing.is_set() or EGRESS_SWITCH_ACTIVE_MARKER.exists():
+                return False
+            online = self._authorization_online_locked()
+            if online is None:
+                return False
+            return self.database.authorize_local_participant(
+                name,
+                online,
+                now=int(self.wall_clock()),
+                freshness_seconds=MAX_STATE_AGE_SECONDS,
+                lease_seconds=self.pending_ttl,
+            )
 
     def distributed_local_state(self):
         """Return a fresh local participant checkpoint for central authorization."""
@@ -10408,6 +10464,27 @@ def make_stats_client(settings, primary_only=False, secondary_only=False):
     return stats_client
 
 
+@contextlib.contextmanager
+def egress_auth_gate(path=EGRESS_SWITCH_ACTIVE_MARKER):
+    path = Path(path)
+    created = False
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                             | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except FileExistsError:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0:
+            raise RuntimeError("egress maintenance marker is unsafe")
+    else:
+        os.close(descriptor)
+        created = True
+    try:
+        yield
+    finally:
+        if created:
+            _durable_unlink(path)
+
+
 def quiesce_stats_client(
     stats_client,
     attempts=30,
@@ -10543,7 +10620,7 @@ def maintenance_upload_slot(
         try:
             fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise RuntimeError("已有维护任务正在运行") from exc
+            raise MaintenanceBusyError("已有维护任务正在运行") from exc
         try:
             yield
         finally:
@@ -10776,6 +10853,13 @@ def run_supervised_services(
                         LOGGER.exception(
                             "final traffic sync failed during service shutdown"
                         )
+                except MaintenanceBusyError as exc:
+                    if termination_requested[0] and primary_error is None:
+                        LOGGER.info("root maintenance owns final traffic settlement")
+                    elif primary_error is None and cleanup_error is None:
+                        cleanup_error = exc
+                    else:
+                        LOGGER.exception("final traffic sync deferred to root maintenance")
                 except BaseException as exc:
                     if primary_error is None and cleanup_error is None:
                         cleanup_error = exc
@@ -10811,6 +10895,7 @@ def run_service(settings):
         stats_client,
         local_origin_id=settings.local_origin_id,
         local_origin_name=settings.node_name,
+        maintenance_lock_path=MAINTENANCE_LOCK_PATH,
     )
     backup_manager = BackupManager(
         database=database,
@@ -11139,6 +11224,21 @@ def make_restore_stats_client(settings, runner=subprocess.run):
     if secondary_state == "active":
         return make_stats_client(settings, secondary_only=True)
     raise RuntimeError("restore has no active Hysteria stats endpoint")
+
+
+def settle_egress_traffic(settings, runner=subprocess.run):
+    states = [
+        _systemd_unit_state(unit, runner=runner)[1]
+        for unit in (EgressPolicyManager.SERVER, EgressPolicyManager.SECONDARY_SERVER)
+    ]
+    if any(state not in {"active", "inactive", "failed"} for state in states):
+        raise RuntimeError("egress traffic service state is not stable")
+    if "active" not in states:
+        return
+    sync_traffic(
+        settings, primary_only=states[1] != "active",
+        secondary_only=states[0] != "active", quiesce=True,
+    )
 
 
 def settle_restore_traffic(settings, runner=subprocess.run, quiesce=quiesce_stats_client):
@@ -11887,7 +11987,9 @@ def main(argv=None):
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("apply-egress-policy must run as root")
             with exclusive_maintenance_lock(blocking=False), defer_termination_signals():
-                EgressPolicyManager().apply(args.policy, settings.panel_port)
+                with egress_auth_gate():
+                    settle_egress_traffic(settings)
+                    EgressPolicyManager().apply(args.policy, settings.panel_port)
             print(json.dumps({"status": "ok", "policy": args.policy}, separators=(",", ":")))
             return 0
         if args.command == "reconcile-node-dns":

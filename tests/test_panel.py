@@ -2454,10 +2454,16 @@ class OperationsTests(unittest.TestCase):
             hysteria2_panel,
             "defer_termination_signals",
             return_value=contextlib.nullcontext(),
-        ), mock.patch("builtins.print"):
+        ), mock.patch.object(
+            hysteria2_panel, "egress_auth_gate", return_value=contextlib.nullcontext()
+        ) as auth_gate, mock.patch.object(
+            hysteria2_panel, "settle_egress_traffic"
+        ) as settle, mock.patch("builtins.print"):
             self.assertEqual(0, hysteria2_panel.main(["apply-egress-policy", "full"]))
 
         maintenance_lock.assert_called_once_with(blocking=False)
+        auth_gate.assert_called_once_with()
+        settle.assert_called_once_with(settings)
         manager.apply.assert_called_once_with("full", 19998)
 
         with mock.patch.object(
@@ -3793,6 +3799,12 @@ class OperationsTests(unittest.TestCase):
         self.assertTrue(auth_server.closed)
 
     def test_sigterm_tolerates_partial_final_traffic_sync(self):
+        self._assert_sigterm_final_sync(hysteria2_panel.PartialTrafficCollectionError({"user": 1024}))
+
+    def test_sigterm_defers_final_traffic_to_root_maintenance_without_crashing(self):
+        self._assert_sigterm_final_sync(hysteria2_panel.MaintenanceBusyError("maintenance owns settlement"))
+
+    def _assert_sigterm_final_sync(self, error):
         class FakeServer:
             def __init__(self):
                 self.stopped = threading.Event()
@@ -3818,7 +3830,7 @@ class OperationsTests(unittest.TestCase):
 
             def collect_once(self):
                 self.final_collections += 1
-                raise hysteria2_panel.PartialTrafficCollectionError({"user": 1024})
+                raise error
 
         panel_server = FakeServer()
         auth_server = FakeServer()
@@ -6148,13 +6160,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class DrainingHttpStatsClient(FakeStatsClient):
+    """Model the upstream session removal needed by destructive HTTP actions."""
+    drained = False
+
+    def online(self):
+        return {} if self.drained else super().online()
+
+    def kick_many(self, names):
+        super().kick_many(names)
+        self.drained = True
+
+
 class PanelHttpTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.temp_dir.name) / "panel.db", b"c" * 32)
         self.db.initialize()
         self.admin_id = self.db.upsert_admin("Elegy", "admin-password")
-        self.stats = FakeStatsClient()
+        self.stats = DrainingHttpStatsClient()
         self.service_controller = FakeServiceController()
         self.egress_policy_controller = FakeEgressPolicyController()
         self.restore_controller = FakeRestoreController()
@@ -6212,6 +6236,9 @@ class PanelHttpTests(unittest.TestCase):
             ),
             offsite_backup_status_path=Path(self.temp_dir.name)
             / "offsite-backup-status.json",
+        )
+        self.application.usage_manager.quiesce = lambda stats: hysteria2_panel.quiesce_stats_client(
+            stats, sleeper=lambda _: None,
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

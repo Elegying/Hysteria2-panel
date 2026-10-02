@@ -120,7 +120,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ],
         ),
       );
-      if (confirmed != true) return;
+      if (confirmed != true || !mounted) return;
     }
     setState(() => _acting = true);
     try {
@@ -158,7 +158,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
     setState(() => _acting = true);
     try {
       await ref
@@ -786,7 +786,8 @@ class _BudgetsCard extends StatelessWidget {
                               : const Color(0xFF16764E),
                         ),
                       ),
-                      if ((budget?['forecastText']?.toString() ?? '').isNotEmpty)
+                      if ((budget?['forecastText']?.toString() ?? '')
+                          .isNotEmpty)
                         Text(
                           budget!['forecastText'].toString(),
                           style: Theme.of(context).textTheme.bodySmall,
