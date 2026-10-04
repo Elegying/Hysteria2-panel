@@ -6408,6 +6408,44 @@ class PanelHttpTests(unittest.TestCase):
             payload,
         )
 
+    def test_dashboard_online_total_is_global_while_rows_remain_filtered_and_sorted(self):
+        headers, _csrf = self.authenticated_headers()
+        self.db.create_proxy_user("alice", allow_udp_443=True)
+        self.db.create_proxy_user("bob")
+        self.db.create_proxy_user("carol")
+        live = {
+            "online": {"alice": 2, "bob": 1},
+            "online_complete": True,
+            "observed_at": 1_700_000_200,
+            "machines": [{
+                "origin_id": "local:test", "online_devices": 3,
+                "last_known_online_devices": 3, "online_state": "fresh",
+                "observed_at": 1_700_000_200,
+            }],
+        }
+        cases = [
+            ("q=carol", ["carol"]),
+            ("q=missing", []),
+            ("q=alice", ["alice"]),
+            ("online=inactive", ["carol"]),
+            ("status=disabled", []),
+            ("udp443=allowed", ["alice"]),
+            ("sort=online&order=desc", ["alice", "bob", "carol"]),
+            ("online=active&sort=online&order=asc", ["bob", "alice"]),
+        ]
+        with mock.patch.object(self.application.usage_manager, "online_snapshot",
+                               return_value=live):
+            for query, names in cases:
+                with self.subTest(query=query):
+                    with self.request("/api/v1/dashboard-online?" + query,
+                                      headers=headers) as response:
+                        payload = json.load(response)
+                    self.assertEqual(3, payload["onlineDevices"])
+                    self.assertEqual(3, payload["machines"][0]["onlineDevices"])
+                    self.assertEqual(names, [user["name"] for user in payload["users"]])
+                    self.assertEqual([live["online"].get(name, 0) for name in names],
+                                     [user["onlineDevices"] for user in payload["users"]])
+
     def test_mobile_api_login_overview_users_and_service_control(self):
         status, capabilities = self.mobile_json_request(
             "GET", "/api/v1/mobile/capabilities"

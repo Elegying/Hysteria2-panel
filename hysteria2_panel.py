@@ -8768,8 +8768,12 @@ class PanelHandler(JsonHandler):
                     query.get("udp443", [""])[0],
                 )
                 payload = dashboard_online_payload(
-                    [user["name"] for user in selected["users"]], snapshot
+                    [user["name"] for user in users], snapshot
                 )
+                online_users = {user["name"]: user for user in payload["users"]}
+                payload["users"] = [
+                    online_users[user["name"]] for user in selected["users"]
+                ]
                 nodes = self.app.database.list_nodes()
                 payload["activeNodeIds"] = [
                     node["node_id"] for node in nodes if node["status"] != "revoked"
