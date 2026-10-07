@@ -20,17 +20,28 @@ class Hysteria2ManagerApp extends ConsumerStatefulWidget {
 
 class _ManagerAppState extends ConsumerState<Hysteria2ManagerApp> {
   var _navigatorKey = GlobalKey<NavigatorState>();
-  int? _contextRevision;
+  Object? _navigationIdentity;
 
   @override
   Widget build(BuildContext context) {
     final appState = ref.watch(appControllerProvider);
-    if (_contextRevision != appState.contextRevision) {
-      _contextRevision = appState.contextRevision;
+    final identity = (
+      appState.contextRevision,
+      appState.session?.baseUrl,
+      appState.session?.username,
+      appState.session?.deviceId,
+    );
+    if (_navigationIdentity != identity) {
+      _navigationIdentity = identity;
       _navigatorKey = GlobalKey<NavigatorState>();
     }
     final themeSettings = ref.watch(themeControllerProvider);
     return MaterialApp(
+      key: ValueKey((
+        appState.session?.baseUrl,
+        appState.session?.username,
+        appState.session?.deviceId,
+      )),
       navigatorKey: _navigatorKey,
       title: 'Hysteria2管理',
       debugShowCheckedModeBanner: false,

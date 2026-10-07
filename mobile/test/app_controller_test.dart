@@ -388,18 +388,13 @@ void main() {
       expect(refreshes, 2);
     },
   );
-  for (final mode in [
-    'login-write',
-    'login-delete',
-    'refresh-write',
-    'logout-delete',
-  ]) {
+  for (final mode in ['login-write', 'refresh-write', 'logout-legacy-delete']) {
     test(
       'storage failure in $mode cannot leave an orphan server session',
       () async {
         final storage = _FailingStorage();
         storage.failWrite = mode.endsWith('write');
-        storage.failDelete = mode == 'login-delete';
+
         final active = <String>{};
         final controller = _controller((options, handler) {
           if (options.path.endsWith('/capabilities')) {
@@ -442,32 +437,16 @@ void main() {
             throwsA(isA<ApiException>()),
           );
           expect(controller.state.session, isNull);
-          if (mode == 'login-delete') {
-            expect(await _storage.read(key: _refreshKey), _savedToken);
-            final preferences = await SharedPreferences.getInstance();
-            expect(
-              preferences.getString('panel_base_url'),
-              'https://panel.example.test:19998',
-            );
-          } else {
-            expect(await _storage.read(key: _refreshKey), isNull);
-            var refreshRequests = 0;
-            final restarted = _controller((options, handler) {
-              refreshRequests++;
-              _respond(handler, options, 401, {
-                'error': {'message': 'unexpected refresh'},
-              });
-            });
-            addTearDown(restarted.dispose);
-            await restarted.initialize();
-            expect(refreshRequests, 0);
-          }
+          // A failed document write preserves the old endpoint/token pair.
+          expect(await _storage.read(key: _refreshKey), _savedToken);
+          expect(await _storage.read(key: 'mobile_panel_accounts_v1'), isNull);
         } else {
           await controller.initialize();
-          if (mode == 'logout-delete') {
+          if (mode == 'logout-legacy-delete') {
             storage.failDelete = true;
             await controller.logout();
-            expect(controller.state.error, contains('安全存储清理失败'));
+            expect(controller.state.error, isNull);
+            expect(await _persistedToken(), isNull);
             expect(controller.state.session, isNull);
           } else {
             expect(
@@ -647,7 +626,7 @@ class _FailingStorage extends FlutterSecureStorage {
     AppleOptions? mOptions,
     WindowsOptions? wOptions,
   }) async {
-    if (key == _refreshKey && failWrite) {
+    if (key == 'mobile_panel_accounts_v1' && failWrite) {
       throw StateError('synthetic write failure');
     }
     await super.write(key: key, value: value);

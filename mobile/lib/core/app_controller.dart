@@ -472,7 +472,7 @@ class AppController extends StateNotifier<AppState> {
         state = previousState.copyWith(working: false);
       }
       if (issuedSession != null) {
-        unawaited(_revokeSession(dio, issuedSession.accessToken));
+        await _revokeSession(dio, issuedSession.accessToken);
       }
       throw const ApiException('登录信息未能保存，请重试');
     }
