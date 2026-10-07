@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -32,20 +33,88 @@ class AppSession {
       );
 }
 
+class PanelAccount {
+  const PanelAccount({
+    required this.name,
+    this.baseUrl = '',
+    this.username = '',
+    this.password = '',
+    this.session,
+  });
+  final String name;
+  final String baseUrl;
+  final String username;
+  final String password;
+  final AppSession? session;
+
+  PanelAccount copyWith({
+    String? name,
+    AppSession? session,
+    bool clearSession = false,
+  }) => PanelAccount(
+    name: name ?? this.name,
+    baseUrl: baseUrl,
+    username: username,
+    password: password,
+    session: clearSession ? null : session ?? this.session,
+  );
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'baseUrl': baseUrl,
+    'username': username,
+    'password': password,
+    if (session != null) 'refreshToken': session!.refreshToken,
+    if (session != null) 'deviceId': session!.deviceId,
+  };
+
+  factory PanelAccount.fromJson(Map<String, dynamic> json) {
+    final baseUrl = json['baseUrl'] as String;
+    final username = json['username'] as String;
+    final token = json['refreshToken'] as String?;
+    return PanelAccount(
+      name: json['name'] as String,
+      baseUrl: baseUrl,
+      username: username,
+      password: json['password'] as String? ?? '',
+      session: token == null
+          ? null
+          : AppSession(
+              baseUrl: baseUrl,
+              username: username,
+              accessToken: '',
+              refreshToken: token,
+              deviceId: json['deviceId'] as String,
+            ),
+    );
+  }
+}
+
+const emptyPanels = [PanelAccount(name: '面板1'), PanelAccount(name: '面板2')];
+
 class AppState {
   const AppState({
     this.initializing = true,
     this.working = false,
     this.session,
     this.error,
+    this.panels = emptyPanels,
+    this.activePanel = 0,
+    this.contextRevision = 0,
   });
 
+  final List<PanelAccount> panels;
+  final int activePanel;
+  final int contextRevision;
   final bool initializing;
   final bool working;
   final AppSession? session;
   final String? error;
 
   AppState copyWith({
+    List<PanelAccount>? panels,
+    int? activePanel,
+    int? contextRevision,
     bool? initializing,
     bool? working,
     AppSession? session,
@@ -53,6 +122,9 @@ class AppState {
     String? error,
     bool clearError = false,
   }) => AppState(
+    panels: panels ?? this.panels,
+    activePanel: activePanel ?? this.activePanel,
+    contextRevision: contextRevision ?? this.contextRevision,
     initializing: initializing ?? this.initializing,
     working: working ?? this.working,
     session: clearSession ? null : session ?? this.session,
@@ -89,6 +161,7 @@ class AppController extends StateNotifier<AppState> {
        super(const AppState());
 
   final FlutterSecureStorage _storage;
+  static const _panelsKey = 'mobile_panel_accounts_v1';
   static const _refreshKey = 'mobile_refresh_token';
   static const _deviceKey = 'mobile_device_id';
   static const _baseUrlKey = 'panel_base_url';
@@ -126,6 +199,30 @@ class AppController extends StateNotifier<AppState> {
     final generation = ++_sessionGeneration;
     try {
       final preferences = await SharedPreferences.getInstance();
+      final saved = await _storage.read(key: _panelsKey);
+      if (!_isCurrent(generation)) return;
+      if (saved != null) {
+        final document = jsonDecode(saved) as Map<String, dynamic>;
+        final panels = (document['panels'] as List)
+            .map(
+              (value) => PanelAccount.fromJson(
+                Map<String, dynamic>.from(value as Map),
+              ),
+            )
+            .toList();
+        if (panels.length != 2) throw const FormatException();
+        final active = document['active'] as int;
+        final session = panels[active].session;
+        _dio = session == null ? null : _dioFactory(session.baseUrl);
+        state = AppState(
+          initializing: false,
+          panels: panels,
+          activePanel: active,
+          session: session,
+        );
+        if (session != null) await _refreshTokens();
+        return;
+      }
       final baseUrl = preferences.getString(_baseUrlKey) ?? '';
       final username = preferences.getString(_usernameKey) ?? '';
       var deviceId = await _storage.read(key: _deviceKey);
@@ -147,9 +244,27 @@ class AppController extends StateNotifier<AppState> {
             deviceId: deviceId,
           ),
         );
+        final panels = [...emptyPanels];
+        panels[0] = PanelAccount(
+          name: '面板1',
+          baseUrl: baseUrl,
+          username: username,
+          session: state.session,
+        );
+        state = state.copyWith(panels: panels);
         if (await _refreshTokens() || !_isCurrent(generation)) return;
       }
-      state = const AppState(initializing: false);
+      if (baseUrl.isNotEmpty &&
+          username.isNotEmpty &&
+          state.panels[0].baseUrl.isEmpty) {
+        state = state.copyWith(
+          panels: [
+            PanelAccount(name: '面板1', baseUrl: baseUrl, username: username),
+            emptyPanels[1],
+          ],
+        );
+      }
+      state = state.copyWith(initializing: false, clearSession: true);
     } on ApiException catch (error) {
       if (_isCurrent(generation)) {
         state = state.copyWith(initializing: false, error: error.message);
@@ -164,6 +279,16 @@ class AppController extends StateNotifier<AppState> {
   /// Remember only connection details; authentication stays in secure storage.
   Future<({String address, String port, String username})?>
   rememberedLogin() async {
+    final panel = state.panels[state.activePanel];
+    if (panel.baseUrl.isNotEmpty) {
+      final uri = Uri.parse(panel.baseUrl);
+      return (
+        address: Uri(scheme: uri.scheme, host: uri.host).toString(),
+        port: uri.port.toString(),
+        username: panel.username,
+      );
+    }
+    if (await _storage.read(key: _panelsKey) != null) return null;
     final preferences = await SharedPreferences.getInstance();
     final uri = Uri.tryParse(preferences.getString(_baseUrlKey) ?? '');
     final username = preferences.getString(_usernameKey) ?? '';
@@ -225,16 +350,39 @@ class AppController extends StateNotifier<AppState> {
     required int port,
     required String username,
     required String password,
+    int? panelIndex,
+    bool rememberPassword = true,
   }) async {
     if (username.trim().isEmpty) throw const ApiException('请输入面板账号');
     if (password.isEmpty) throw const ApiException('请输入面板密码');
     final baseUrl = normalizeBaseUrl(address, port);
+    final target = panelIndex ?? state.activePanel;
+    if (target < 0 || target > 1) throw const ApiException('面板位置无效');
+    if (state.working) throw const ApiException('请等待当前操作完成');
+    final other = state.panels[1 - target];
+    if (other.baseUrl == baseUrl &&
+        other.username == username.trim() &&
+        other.session != null) {
+      throw ApiException('此账号已在${other.name}登录，请直接切换');
+    }
+    state = state.copyWith(working: true);
+    // A retained panel must finish token rotation before another login begins.
+    if (panelIndex != null && _refreshFuture != null) {
+      try {
+        await _refreshFuture;
+      } on ApiException {
+        /* Keep recoverable session. */
+      }
+    }
+    if (!mounted) return;
+    final previousState = state;
+    final previousDio = _dio;
     final generation = ++_sessionGeneration;
-    _dio = null;
     _refreshFuture = null;
-    state = state.copyWith(working: true, clearError: true, clearSession: true);
+    state = state.copyWith(working: true, clearError: true);
+    final dio = _dioFactory(baseUrl);
+    AppSession? issuedSession;
     try {
-      final dio = _dioFactory(baseUrl);
       final capabilities = await dio.get('/api/v1/mobile/capabilities');
       if (capabilities.statusCode == 404) {
         throw const ApiException('面板版本暂不支持 App，请先将面板升级到 v0.38.0 或更高版本');
@@ -276,54 +424,214 @@ class AppController extends StateNotifier<AppState> {
         refreshToken: data['refreshToken'] as String,
         deviceId: deviceId,
       );
+      issuedSession = session;
+      final panels = [...state.panels];
+      final replaced = panels[target].session;
+      panels[target] = PanelAccount(
+        name: panels[target].name,
+        baseUrl: baseUrl,
+        username: username.trim(),
+        password: rememberPassword ? password : '',
+        session: session,
+      );
       await _persistSession(generation, () async {
-        // Never pair a previous panel's token with newly saved connection hints.
-        await _storage.delete(key: _refreshKey);
-        final preferences = await SharedPreferences.getInstance();
-        if (!await preferences.setString(_baseUrlKey, baseUrl) ||
-            !await preferences.setString(_usernameKey, username.trim())) {
-          throw StateError('Connection hints could not be saved');
-        }
-        await _storage.write(key: _refreshKey, value: session.refreshToken);
-      }, onFailure: () => _revokeSession(dio, session.accessToken));
+        await _savePanels(panels, target);
+      });
       if (!_isCurrent(generation)) {
         await _revokeSession(dio, session.accessToken);
         throw const ApiException('登录操作已结束');
       }
       _dio = dio;
-      state = AppState(initializing: false, session: session);
+      state = AppState(
+        initializing: false,
+        session: session,
+        panels: panels,
+        activePanel: target,
+        contextRevision: state.contextRevision + 1,
+      );
+      if (replaced != null && replaced.accessToken != session.accessToken) {
+        unawaited(
+          _revokeSession(_dioFactory(replaced.baseUrl), replaced.accessToken),
+        );
+      }
     } on DioException catch (error) {
-      if (_isCurrent(generation)) state = state.copyWith(working: false);
+      if (_isCurrent(generation)) {
+        _dio = previousDio;
+        state = previousState.copyWith(working: false);
+      }
       throw ApiException(_networkMessage(error));
     } on ApiException {
-      if (_isCurrent(generation)) state = state.copyWith(working: false);
+      if (_isCurrent(generation)) {
+        _dio = previousDio;
+        state = previousState.copyWith(working: false);
+      }
       rethrow;
     } catch (_) {
-      if (_isCurrent(generation)) state = state.copyWith(working: false);
-      throw const ApiException('登录失败，请稍后重试');
+      if (_isCurrent(generation)) {
+        _dio = previousDio;
+        state = previousState.copyWith(working: false);
+      }
+      if (issuedSession != null) {
+        await _revokeSession(dio, issuedSession.accessToken);
+      }
+      throw const ApiException('登录信息未能保存，请重试');
     }
   }
 
   Future<void> logout() async {
+    final previous = state;
     final session = state.session;
     final dio = _dio;
     final generation = ++_sessionGeneration;
     _dio = null;
     _refreshFuture = null;
-    state = const AppState(initializing: false);
+    final panels = [...state.panels];
+    panels[state.activePanel] = panels[state.activePanel].copyWith(
+      clearSession: true,
+    );
+    state = state.copyWith(
+      initializing: false,
+      working: false,
+      clearSession: true,
+      panels: panels,
+      contextRevision: state.contextRevision + 1,
+    );
     try {
       await _persistSession(generation, () async {
-        await _storage.delete(key: _refreshKey);
-        // Connection hints survive logout, but never authorize a session.
+        await _savePanels(panels, previous.activePanel);
+        // The new document is authoritative even if obsolete key cleanup fails.
+        try {
+          await _storage.delete(key: _refreshKey);
+        } catch (_) {}
       });
     } catch (_) {
       if (_isCurrent(generation)) {
-        state = state.copyWith(error: '本机安全存储清理失败，请重新登录后重试退出');
+        _dio = dio;
+        state = previous.copyWith(
+          working: false,
+          contextRevision: state.contextRevision + 1,
+        );
       }
-    } finally {
-      if (session != null && dio != null) {
-        await _revokeSession(dio, session.accessToken);
+      throw const ApiException('无法清除本机登录状态，请重试');
+    }
+    if (session != null && dio != null) {
+      await _revokeSession(dio, session.accessToken);
+    }
+  }
+
+  Future<void> _savePanels(List<PanelAccount> panels, int active) =>
+      _storage.write(
+        key: _panelsKey,
+        value: jsonEncode({
+          'active': active,
+          'panels': panels.map((panel) => panel.toJson()).toList(),
+        }),
+      );
+
+  Future<void> selectPanel(int index) async {
+    if (index < 0 || index > 1 || state.working || index == state.activePanel) {
+      return;
+    }
+    state = state.copyWith(working: true);
+    try {
+      final refresh = _refreshFuture;
+      if (refresh != null) {
+        try {
+          await refresh;
+        } on ApiException {
+          /* Offline panel remains saved. */
+        }
       }
+      if (!mounted) return;
+      final generation = _sessionGeneration;
+      await _persistSession(generation, () => _savePanels(state.panels, index));
+      if (!_isCurrent(generation)) return;
+      ++_sessionGeneration;
+      _refreshFuture = null;
+      final session = state.panels[index].session;
+      _dio = session == null ? null : _dioFactory(session.baseUrl);
+      state = state.copyWith(
+        activePanel: index,
+        session: session,
+        clearSession: session == null,
+        working: false,
+        clearError: true,
+        contextRevision: state.contextRevision + 1,
+      );
+    } catch (_) {
+      if (mounted) state = state.copyWith(working: false);
+      throw const ApiException('无法保存面板切换，请重试');
+    }
+  }
+
+  Future<void> renamePanel(int index, String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty || trimmed.length > 24) {
+      throw const ApiException('面板名称请输入 1 至 24 个字符');
+    }
+    await _editPanel(index, (panel) => panel.copyWith(name: trimmed));
+  }
+
+  Future<void> forgetPanel(int index) async {
+    final old = state.panels[index].session;
+    await _editPanel(
+      index,
+      (_) => PanelAccount(name: '面板${index + 1}'),
+      forget: true,
+    );
+    if (old != null) {
+      unawaited(_revokeSession(_dioFactory(old.baseUrl), old.accessToken));
+    }
+  }
+
+  Future<void> _editPanel(
+    int index,
+    PanelAccount Function(PanelAccount) edit, {
+    bool forget = false,
+  }) async {
+    if (state.working) throw const ApiException('请等待当前操作完成');
+    state = state.copyWith(working: true);
+    try {
+      if (_refreshFuture != null) {
+        try {
+          await _refreshFuture;
+        } on ApiException {
+          /* Keep other panel usable. */
+        }
+      }
+      final generation = _sessionGeneration;
+      final panels = [...state.panels];
+      panels[index] = edit(panels[index]);
+      await _persistSession(generation, () async {
+        await _savePanels(panels, state.activePanel);
+        if (forget) {
+          // Remove legacy hints too, so a deleted account cannot reappear.
+          try {
+            final preferences = await SharedPreferences.getInstance();
+            await preferences.remove(_baseUrlKey);
+            await preferences.remove(_usernameKey);
+            await _storage.delete(key: _refreshKey);
+          } catch (_) {
+            /* The secure document remains authoritative. */
+          }
+        }
+      });
+      if (!_isCurrent(generation)) return;
+      final clear = forget && index == state.activePanel;
+      if (clear) {
+        ++_sessionGeneration;
+        _dio = null;
+        _refreshFuture = null;
+      }
+      state = state.copyWith(
+        panels: panels,
+        working: false,
+        clearSession: clear,
+        contextRevision: state.contextRevision + (clear ? 1 : 0),
+      );
+    } catch (_) {
+      if (mounted) state = state.copyWith(working: false);
+      throw const ApiException('无法保存面板信息，请重试');
     }
   }
 
@@ -364,6 +672,7 @@ class AppController extends StateNotifier<AppState> {
     Map<String, dynamic>? data,
     bool retryAfterRefresh = true,
   }) async {
+    if (state.working) throw const ApiException('正在更新面板，请稍后重试');
     final session = state.session;
     final dio = _dio;
     final generation = _sessionGeneration;
@@ -437,19 +746,21 @@ class AppController extends StateNotifier<AppState> {
         accessToken: data['accessToken'] as String,
         refreshToken: data['refreshToken'] as String,
       );
-      await _persistSession(
-        generation,
-        () => _storage.write(key: _refreshKey, value: updated.refreshToken),
-        onFailure: () => _revokeSession(dio, updated.accessToken),
+      final panels = [...state.panels];
+      panels[state.activePanel] = panels[state.activePanel].copyWith(
+        session: updated,
       );
+      await _persistSession(generation, () async {
+        await _savePanels(panels, state.activePanel);
+      }, onFailure: () => _revokeSession(dio, updated.accessToken));
       if (!_isCurrent(generation)) {
         await _revokeSession(dio, updated.accessToken);
         return false;
       }
       state = state.copyWith(
         session: updated,
+        panels: panels,
         initializing: false,
-        working: false,
         clearError: true,
       );
       return true;

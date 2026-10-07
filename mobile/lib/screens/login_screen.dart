@@ -5,9 +5,12 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../core/app_controller.dart';
 import '../core/glass.dart';
+import 'panel_switcher.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
-  const LoginScreen({super.key});
+  const LoginScreen({this.panelIndex, super.key});
+
+  final int? panelIndex;
 
   @override
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
@@ -20,12 +23,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _username = TextEditingController();
   final _password = TextEditingController();
   bool _obscure = true;
+  bool _rememberPassword = true;
   String? _error;
 
   @override
   void initState() {
     super.initState();
-    _restoreLoginHint();
+    final state = ref.read(appControllerProvider);
+    final panel = state.panels[widget.panelIndex ?? state.activePanel];
+    if (panel.baseUrl.isNotEmpty) {
+      _fillPanel(panel);
+    } else if (widget.panelIndex == null) {
+      _restoreLoginHint();
+    }
+  }
+
+  void _fillPanel(PanelAccount panel) {
+    final uri = Uri.tryParse(panel.baseUrl);
+    if (uri == null || uri.host.isEmpty) return;
+    _address.text = Uri(scheme: uri.scheme, host: uri.host).toString();
+    _port.text = uri.port.toString();
+    _username.text = panel.username;
+    _password.text = panel.password;
   }
 
   Future<void> _restoreLoginHint() async {
@@ -37,7 +56,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           hint == null ||
           _address.text.isNotEmpty ||
           _port.text.isNotEmpty ||
-          _username.text.isNotEmpty) {
+          _username.text.isNotEmpty ||
+          _password.text.isNotEmpty) {
         return;
       }
       _address.text = hint.address;
@@ -68,6 +88,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             port: int.parse(_port.text),
             username: _username.text,
             password: _password.text,
+            panelIndex: widget.panelIndex,
+            rememberPassword: _rememberPassword,
           );
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -81,6 +103,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final error = _error ?? appState.error;
     final theme = Theme.of(context);
     return Scaffold(
+      appBar: widget.panelIndex == null
+          ? null
+          : AppBar(
+              title: Text(
+                '登录${ref.watch(appControllerProvider).panels[widget.panelIndex!].name}',
+              ),
+            ),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -94,6 +123,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      if (widget.panelIndex == null) ...[
+                        const PanelSwitcher(),
+                        const SizedBox(height: 20),
+                      ],
                       Align(
                         alignment: Alignment.centerLeft,
                         child: SvgPicture.asset(
@@ -223,6 +256,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                       : null,
                                 ),
                               ),
+                              CheckboxListTile(
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('记住登录信息'),
+                                subtitle: const Text('密码仅保存在本机安全存储，可随时删除'),
+                                value: _rememberPassword,
+                                onChanged: working
+                                    ? null
+                                    : (value) => setState(
+                                        () =>
+                                            _rememberPassword = value ?? false,
+                                      ),
+                              ),
                               if (error != null) ...[
                                 Semantics(
                                   liveRegion: true,
@@ -261,7 +306,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              '密码不会保存在本机，设备会话使用系统安全存储。',
+                              '登录信息仅用于你选择的面板，密码与会话使用系统安全存储。',
                               style: theme.textTheme.bodySmall,
                             ),
                           ),

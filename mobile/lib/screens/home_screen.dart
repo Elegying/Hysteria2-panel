@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
 import '../core/glass.dart';
+import 'panel_switcher.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -351,18 +352,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
-              toolbarHeight: 64,
               pinned: false,
-              title: const Text('首页'),
-              actions: [
-                GlassControlSurface(
-                  child: IconButton(
-                    onPressed: _loading ? null : _load,
-                    tooltip: '刷新',
-                    icon: const Icon(Icons.refresh_rounded),
-                  ),
-                ),
-              ],
+              toolbarHeight: 80,
+              title: const Row(
+                children: [
+                  Text('首页'),
+                  SizedBox(width: 16),
+                  Expanded(child: PanelSwitcher()),
+                ],
+              ),
             ),
             if (_loading && data == null)
               const SliverFillRemaining(

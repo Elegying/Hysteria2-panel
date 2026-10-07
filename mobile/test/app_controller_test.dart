@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -94,12 +95,12 @@ void main() {
         await controller.initialize();
         expect(controller.state.initializing, isFalse);
         expect(controller.state.session?.refreshToken, _savedToken);
-        expect(await _storage.read(key: _refreshKey), _savedToken);
+        expect(await _persistedToken(), _savedToken);
 
         recovered = true;
         expect(await controller.getJson('/test'), {'healthy': true});
         expect(refreshes, 2);
-        expect(await _storage.read(key: _refreshKey), 'new-refresh');
+        expect(await _persistedToken(), 'new-refresh');
         expect(controller.state.error, isNull);
       },
     );
@@ -108,10 +109,15 @@ void main() {
   test(
     'logout retains connection hints while removing authentication',
     () async {
-      final controller = AppController();
+      final controller = _controller((options, handler) {
+        _respond(handler, options, 200, {
+          'data': {'accessToken': 'access', 'refreshToken': 'refresh'},
+        });
+      });
       addTearDown(controller.dispose);
+      await controller.initialize();
       await controller.logout();
-      expect(await _storage.read(key: _refreshKey), isNull);
+      expect(await _persistedToken(), isNull);
       expect(controller.state.session, isNull);
       expect(await controller.rememberedLogin(), (
         address: 'https://panel.example.test',
@@ -131,7 +137,7 @@ void main() {
 
     await controller.initialize();
     expect(controller.state.session, isNull);
-    expect(await _storage.read(key: _refreshKey), isNull);
+    expect(await _persistedToken(), isNull);
   });
 
   test(
@@ -183,7 +189,7 @@ void main() {
       ]);
       expect(refreshes, 2);
       expect(controller.state.session?.refreshToken, 'refresh-1');
-      expect(await _storage.read(key: _refreshKey), 'refresh-1');
+      expect(await _persistedToken(), 'refresh-1');
 
       unavailable = false;
       expect(await controller.getJson('/test'), {'healthy': true});
@@ -213,7 +219,7 @@ void main() {
     });
     await Future.wait([initialization, logout]);
     expect(controller.state.session, isNull);
-    expect(await _storage.read(key: _refreshKey), isNull);
+    expect(await _persistedToken(), isNull);
   });
 
   for (final status in [200, 401]) {
@@ -300,7 +306,7 @@ void main() {
           controller.state.session?.baseUrl,
           'https://new-panel.example.test:19998',
         );
-        expect(await _storage.read(key: _refreshKey), 'new-login-refresh');
+        expect(await _persistedToken(), 'new-login-refresh');
       },
     );
   }
@@ -336,7 +342,7 @@ void main() {
       expect(controller.state.session, isNull);
       storage.release.complete();
       await Future.wait([initialization, logout]);
-      expect(await _storage.read(key: _refreshKey), isNull);
+      expect(await _persistedToken(), isNull);
     },
   );
 
@@ -382,18 +388,13 @@ void main() {
       expect(refreshes, 2);
     },
   );
-  for (final mode in [
-    'login-write',
-    'login-delete',
-    'refresh-write',
-    'logout-delete',
-  ]) {
+  for (final mode in ['login-write', 'refresh-write', 'logout-legacy-delete']) {
     test(
       'storage failure in $mode cannot leave an orphan server session',
       () async {
         final storage = _FailingStorage();
         storage.failWrite = mode.endsWith('write');
-        storage.failDelete = mode == 'login-delete';
+
         final active = <String>{};
         final controller = _controller((options, handler) {
           if (options.path.endsWith('/capabilities')) {
@@ -436,32 +437,16 @@ void main() {
             throwsA(isA<ApiException>()),
           );
           expect(controller.state.session, isNull);
-          if (mode == 'login-delete') {
-            expect(await _storage.read(key: _refreshKey), _savedToken);
-            final preferences = await SharedPreferences.getInstance();
-            expect(
-              preferences.getString('panel_base_url'),
-              'https://panel.example.test:19998',
-            );
-          } else {
-            expect(await _storage.read(key: _refreshKey), isNull);
-            var refreshRequests = 0;
-            final restarted = _controller((options, handler) {
-              refreshRequests++;
-              _respond(handler, options, 401, {
-                'error': {'message': 'unexpected refresh'},
-              });
-            });
-            addTearDown(restarted.dispose);
-            await restarted.initialize();
-            expect(refreshRequests, 0);
-          }
+          // A failed document write preserves the old endpoint/token pair.
+          expect(await _storage.read(key: _refreshKey), _savedToken);
+          expect(await _storage.read(key: 'mobile_panel_accounts_v1'), isNull);
         } else {
           await controller.initialize();
-          if (mode == 'logout-delete') {
+          if (mode == 'logout-legacy-delete') {
             storage.failDelete = true;
             await controller.logout();
-            expect(controller.state.error, contains('安全存储清理失败'));
+            expect(controller.state.error, isNull);
+            expect(await _persistedToken(), isNull);
             expect(controller.state.session, isNull);
           } else {
             expect(
@@ -577,7 +562,7 @@ class _DelayedStorage extends FlutterSecureStorage {
     AppleOptions? mOptions,
     WindowsOptions? wOptions,
   }) async {
-    if (key == _refreshKey && value == 'late-refresh') {
+    if (key == 'mobile_panel_accounts_v1' && value!.contains('late-refresh')) {
       started.complete();
       await release.future;
     }
@@ -641,7 +626,7 @@ class _FailingStorage extends FlutterSecureStorage {
     AppleOptions? mOptions,
     WindowsOptions? wOptions,
   }) async {
-    if (key == _refreshKey && failWrite) {
+    if (key == 'mobile_panel_accounts_v1' && failWrite) {
       throw StateError('synthetic write failure');
     }
     await super.write(key: key, value: value);
@@ -662,4 +647,11 @@ class _FailingStorage extends FlutterSecureStorage {
     }
     await super.delete(key: key);
   }
+}
+
+Future<String?> _persistedToken() async {
+  final saved = await _storage.read(key: 'mobile_panel_accounts_v1');
+  if (saved == null) return _storage.read(key: _refreshKey);
+  final data = jsonDecode(saved);
+  return data['panels'][data['active']]['refreshToken'] as String?;
 }

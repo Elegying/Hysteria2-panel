@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_controller.dart';
+
 class ThemeSettings {
   const ThemeSettings({
     this.mode = ThemeMode.system,
@@ -21,16 +23,21 @@ class ThemeSettings {
 
 final themeControllerProvider =
     StateNotifierProvider<ThemeController, ThemeSettings>((ref) {
-      final controller = ThemeController();
+      final panel = ref.watch(
+        appControllerProvider.select((state) => state.activePanel),
+      );
+      final controller = ThemeController(panelIndex: panel);
       controller.load();
       return controller;
     });
 
 class ThemeController extends StateNotifier<ThemeSettings> {
-  ThemeController() : super(const ThemeSettings());
+  ThemeController({this.panelIndex = 0}) : super(const ThemeSettings());
 
-  static const _modeKey = 'theme_mode';
-  static const _seedKey = 'theme_seed';
+  final int panelIndex;
+
+  String get _modeKey => panelIndex == 0 ? 'theme_mode' : 'theme_mode_panel_2';
+  String get _seedKey => panelIndex == 0 ? 'theme_seed' : 'theme_seed_panel_2';
 
   Future<void> load() async {
     final preferences = await SharedPreferences.getInstance();
@@ -39,6 +46,7 @@ class ThemeController extends StateNotifier<ThemeSettings> {
       (value) => value.name == modeName,
       orElse: () => ThemeMode.system,
     );
+    if (!mounted) return;
     state = ThemeSettings(
       mode: mode,
       seedValue: preferences.getInt(_seedKey) ?? 0xFF5F91F7,
