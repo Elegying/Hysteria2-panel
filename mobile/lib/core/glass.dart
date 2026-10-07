@@ -100,7 +100,21 @@ class GlassControlSurface extends StatelessWidget {
       child: child is TextField || child is TextFormField
           ? Padding(
               padding: const EdgeInsets.only(top: 10, bottom: 2),
-              child: control,
+              child: Theme(
+                data: Theme.of(context).copyWith(
+                  inputDecorationTheme: Theme.of(context).inputDecorationTheme
+                      .copyWith(
+                        filled: false,
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        disabledBorder: InputBorder.none,
+                        errorBorder: InputBorder.none,
+                        focusedErrorBorder: InputBorder.none,
+                      ),
+                ),
+                child: control,
+              ),
             )
           : control,
     );

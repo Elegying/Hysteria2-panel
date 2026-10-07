@@ -11,20 +11,27 @@ import 'core/app_theme.dart';
 import 'screens/home_shell.dart';
 import 'screens/login_screen.dart';
 
-class Hysteria2ManagerApp extends ConsumerWidget {
+class Hysteria2ManagerApp extends ConsumerStatefulWidget {
   const Hysteria2ManagerApp({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<Hysteria2ManagerApp> createState() => _ManagerAppState();
+}
+
+class _ManagerAppState extends ConsumerState<Hysteria2ManagerApp> {
+  var _navigatorKey = GlobalKey<NavigatorState>();
+  int? _contextRevision;
+
+  @override
+  Widget build(BuildContext context) {
     final appState = ref.watch(appControllerProvider);
+    if (_contextRevision != appState.contextRevision) {
+      _contextRevision = appState.contextRevision;
+      _navigatorKey = GlobalKey<NavigatorState>();
+    }
     final themeSettings = ref.watch(themeControllerProvider);
     return MaterialApp(
-      // Session changes clear protected routes; token refresh keeps open forms.
-      key: ValueKey((
-        appState.session?.baseUrl,
-        appState.session?.username,
-        appState.session?.deviceId,
-      )),
+      navigatorKey: _navigatorKey,
       title: 'Hysteria2管理',
       debugShowCheckedModeBanner: false,
       themeMode: themeSettings.mode,

@@ -151,7 +151,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       context: context,
       builder: (context) => GlassDialog(
         title: const Text('退出登录'),
-        content: const Text('退出后会撤销当前手机的设备会话，需要重新输入面板账号和密码。'),
+        content: const Text('仅退出当前面板，另一个面板保持登录。已记住的登录信息会保留，可在面板菜单中删除。'),
         actions: [
           GlassControlSurface(
             child: TextButton(
@@ -169,7 +169,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       ),
     );
     if (confirmed == true && mounted) {
-      await ref.read(appControllerProvider.notifier).logout();
+      final messenger = ScaffoldMessenger.of(context);
+      try {
+        await ref.read(appControllerProvider.notifier).logout();
+      } on ApiException catch (error) {
+        if (messenger.mounted) {
+          messenger.showSnackBar(SnackBar(content: Text(error.message)));
+        }
+      }
     }
   }
 

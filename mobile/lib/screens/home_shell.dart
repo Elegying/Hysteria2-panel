@@ -35,10 +35,7 @@ class _HomeShellState extends State<HomeShell> {
           index: _index,
           children: [
             for (var i = 0; i < _pages.length; i++)
-              TickerMode(
-                enabled: _index == i,
-                child: _pages[i],
-              ),
+              TickerMode(enabled: _index == i, child: _pages[i]),
           ],
         ),
         bottomBar: AppBottomDock(
