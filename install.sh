@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.39"
+PANEL_VERSION="0.39.40"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,7 +30,7 @@ OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="136be9bc7d74e2137099ebb8e50e65a5b07fab2b3e15d9cbf2e0da17efdb9c5b"
+HY2PANEL_VERSION_SHA256="ee5a739285bfaa6b5e396d5846b9f62cea3c96727900e6d77dec1e2d291f26d3"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
 HY2PANEL_WEB_ASSETS_SHA256="5404114bdb81dddbcd5e7318bf235580948030669a80a3d50146b331cf96f0c9"
 HY2PANEL_OPERATIONS_SHA256="d081cea0fbfa3aa47de13fe3156ce9cc0238d68d99ac7a9cf155d2afff6c2a15"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce5
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="285327ccef230ffdb96f2790f98e6d53f0f89252302a6777311b0404b88b42b1"
 HY2PANEL_MOBILE_API_SHA256="d412be91aacd152d14724b39eddeabd3e59989f9f3f816cc9f477cc17901f21e"
-NODE_AGENT_SHA256="0272358509beb51d32c342dca70beb050378a743b4d5951b3a0931453349f28a"
+NODE_AGENT_SHA256="a340801c07685cef3f75bfad348a753d4c4462feb9e503577c461648073c3904"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -2554,7 +2554,7 @@ configure_data_plane_firewall() {
     (( status == 1 )) \
       || fail "无法完整检查 nftables/iptables；数据面已安排回滚"
   fi
-  echo "主机未启用 UFW/firewalld 且无自定义入站限制；数据面未修改防火墙。"
+  echo "主机未启用 UFW/firewalld；已核验现有入站策略，数据面未修改防火墙。"
 }
 
 validate_data_plane_firewall_state() {
@@ -5424,6 +5424,73 @@ has_unmanaged_firewall_restrictions() {
 import json
 import sys
 
+def verified_default_host_guard(entries):
+    # Preserve only this complete default-port policy. A familiar table name
+    # alone must never hide missing allows, extra drops, jumps or changed limits.
+    if sys.argv[3] != "19998" or any(port not in {"19999", "443"} for port in sys.argv[1:3]):
+        return False
+    family, table, chain = "inet", "hy2_host_guard", "input"
+    def match(left, right, op="=="):
+        return {"match": {"op": op, "left": left, "right": right}}
+    def port(protocol, field, right):
+        return match({"payload": {"protocol": protocol, "field": field}}, right)
+    accept, drop = {"accept": None}, {"drop": None}
+    counter = {"counter": {"packets": 0, "bytes": 0}}
+    expressions = [
+        [match({"meta": {"key": "iifname"}}, "lo"), accept],
+        [match({"ct": {"key": "state"}}, ["established", "related"], "in"), accept],
+        [match({"ct": {"key": "state"}}, "invalid", "in"), drop],
+        [match({"meta": {"key": "l4proto"}}, {"set": ["icmp", "ipv6-icmp"]}), accept],
+        [port("udp", "sport", 67), port("udp", "dport", 68), accept],
+        [port("udp", "sport", 547), port("udp", "dport", 546), accept],
+        [port("tcp", "dport", 22), accept],
+        [port("tcp", "dport", {"set": [80, 443, 19999]}), accept],
+        [port("udp", "dport", {"set": [443, 19999]}), accept],
+    ]
+    for protocol, name in [("ip", "panel4"), ("ip6", "panel6")]:
+        expressions.append([port("tcp", "dport", 19998), {"meter": {
+            "key": {"elem": {"val": {"payload": {"protocol": protocol, "field": "saddr"}}, "timeout": 60}},
+            "stmt": {"limit": {"rate": 20, "burst": 100, "per": "second", "inv": True}},
+            "size": 65535, "name": name}}, counter, drop])
+    expressions.extend([[port("tcp", "dport", 19998), accept], [counter, drop]])
+    expected = [
+        {"table": {"family": family, "name": table}},
+        {"chain": {"family": family, "table": table, "name": chain,
+                   "type": "filter", "hook": "input", "prio": 10, "policy": "drop"}},
+    ]
+    expected.extend({"rule": {"family": family, "table": table, "chain": chain, "expr": expr}}
+                    for expr in expressions)
+    actual = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return False
+        for kind, row in entry.items():
+            if not isinstance(row, dict) or row.get("family") != family:
+                continue
+            if row.get("table") != table and not (kind == "table" and row.get("name") == table):
+                continue
+            if len(entry) != 1:
+                return False
+            normalized = dict(row)
+            normalized.pop("handle", None)
+            if "expr" in normalized:
+                if not isinstance(normalized["expr"], list):
+                    return False
+                normalized["expr"] = []
+                for expression in row["expr"]:
+                    if not isinstance(expression, dict):
+                        return False
+                    if "counter" in expression:
+                        counts = expression["counter"]
+                        if (set(expression) != {"counter"} or not isinstance(counts, dict)
+                                or set(counts) != {"packets", "bytes"}
+                                or any(type(value) is not int or value < 0 for value in counts.values())):
+                            return False
+                        expression = counter
+                    normalized["expr"].append(expression)
+            actual.append({kind: normalized})
+    return json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
 def isolated_sshd_ban(rule):
     # Preserve a narrowly proven Fail2Ban SSH rule. Unknown expressions still
     # fail closed, and port 22 cannot be exempted when this install needs it.
@@ -5455,6 +5522,7 @@ if not isinstance(payload, dict):
 entries = payload.get("nftables")
 if not isinstance(entries, list):
     raise SystemExit(2)
+host_guard = ("inet", "hy2_host_guard", "input") if verified_default_host_guard(entries) else None
 inbound_chains = set()
 sshd_chains = set()
 for entry in entries:
@@ -5467,6 +5535,8 @@ for entry in entries:
     if not all(isinstance(value, str) and value for value in key):
         raise SystemExit(2)
     inbound_chains.add(key)
+    if key == host_guard:
+        continue
     if chain.get("policy", "accept") != "accept":
         raise SystemExit(0)
     if (key == ("inet", "f2b-table", "f2b-chain")
@@ -5480,6 +5550,8 @@ for entry in entries:
     if not all(isinstance(value, str) and value for value in key):
         raise SystemExit(2)
     if key in inbound_chains:
+        if key == host_guard:
+            continue
         if key in sshd_chains and isolated_sshd_ban(rule):
             continue
         raise SystemExit(0)
@@ -6117,7 +6189,7 @@ configure_firewall() {
         (( query_status == 1 )) \
           || fail "安装结束时无法复查主机防火墙；未修改规则"
       fi
-      FIREWALL_RESULT="未检测到正在生效的主机防火墙，未修改规则"
+      FIREWALL_RESULT="入站策略已核验；未修改现有防火墙规则"
       echo "${FIREWALL_RESULT}"
       ;;
     ufw)
