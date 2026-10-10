@@ -43,6 +43,7 @@ cleanup() {
     wait "${LISTENER_PID}" >/dev/null 2>&1
   fi
   iptables -D INPUT -p tcp --dport 29999 -j DROP >/dev/null 2>&1
+  nft delete table inet hy2_host_guard >/dev/null 2>&1
   if [[ -s "${TEST_TMP}/before.rules" ]]; then
     cp -a "${TEST_TMP}/before.rules" /etc/ufw/before.rules
   fi
@@ -214,5 +215,48 @@ firewall-cmd --direct --remove-rule ipv4 filter INPUT 0 -p tcp --dport 29999 -j 
 firewall-cmd --direct --passthrough ipv4 -I INPUT 1 -p tcp --dport 29999 -j DROP >/dev/null
 expect_prepare_failure "firewalld untracked passthrough"
 firewall-cmd --direct --passthrough ipv4 -D INPUT -p tcp --dport 29999 -j DROP >/dev/null
+
+# Preserve the real kernel representation of the known native policy, including
+# its default deny and both per-source panel rate limits. No manager owns it.
+systemctl stop firewalld.service
+nft flush ruleset
+nft -f "${ROOT}/tests/fixtures/host_guard.nft"
+nft -j list table inet hy2_host_guard > "${TEST_TMP}/guard-before.json"
+# These globals are read indirectly by the extracted installer functions.
+# shellcheck disable=SC2034
+(
+  HYSTERIA_PORT=19999
+  PANEL_PORT=19998
+  FIREWALL_MANAGER=unprepared
+  MANAGED_FIREWALL_STATE_FILE="${TEST_TMP}/guard-owned.rules"
+  FIREWALL_TRANSACTION_FILE="${TEST_TMP}/guard-transaction"
+  FIREWALL_OWNED=()
+  prepare_firewall
+  [[ "${FIREWALL_MANAGER}" == "none" ]]
+  configure_firewall
+  [[ ! -e "${MANAGED_FIREWALL_STATE_FILE}" && ! -e "${FIREWALL_TRANSACTION_FILE}" ]]
+  nft -j list table inet hy2_host_guard > "${TEST_TMP}/guard-after.json"
+  python3 - "${TEST_TMP}/guard-before.json" "${TEST_TMP}/guard-after.json" <<'PY'
+import json
+import pathlib
+import sys
+
+def normalized(path):
+    data = json.loads(pathlib.Path(path).read_text())
+    for entry in data["nftables"]:
+        for expression in entry.get("rule", {}).get("expr", []):
+            if "counter" in expression:
+                expression["counter"] = {"packets": 0, "bytes": 0}
+    return data
+
+assert normalized(sys.argv[1]) == normalized(sys.argv[2])
+PY
+  HYSTERIA_PORT=29999
+  expect_prepare_failure "native host guard missing a required port"
+  HYSTERIA_PORT=19999
+  nft insert rule inet hy2_host_guard input tcp dport 19999 drop
+  expect_prepare_failure "native host guard with an additional blocking rule"
+)
+nft delete table inet hy2_host_guard
 
 echo "managed firewall integration checks passed"

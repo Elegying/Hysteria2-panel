@@ -1483,7 +1483,7 @@ printf 'accepted\\n'
         self.assertIn("configure_firewall\n", source)
         self.assertNotIn("ufw enable", source)
         self.assertNotIn("systemctl enable --now firewalld", source)
-        self.assertIn("未检测到正在生效的主机防火墙", source)
+        self.assertIn("入站策略已核验；未修改现有防火墙规则", source)
         self.assertIn("未受支持的自定义 nftables/iptables/ip6tables", source)
         self.assertIn(".managed-by-installer", source)
 
@@ -1613,7 +1613,7 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual([], calls)
-        self.assertIn("未检测到正在生效的主机防火墙", result.stdout)
+        self.assertIn("入站策略已核验；未修改现有防火墙规则", result.stdout)
 
     def test_unmanaged_restrictive_input_firewall_fails_without_mutation(self):
         result, calls = self.run_firewall_function(
@@ -2291,7 +2291,7 @@ ip6tables-save() { printf '%s\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual([], calls)
-        self.assertIn("未检测到正在生效的主机防火墙", result.stdout)
+        self.assertIn("入站策略已核验；未修改现有防火墙规则", result.stdout)
 
     def test_mangle_only_iptables_compatibility_view_is_clean(self):
         result, calls = self.run_firewall_function(
@@ -2309,7 +2309,7 @@ ip6tables-save() { :; }
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual([], calls)
-        self.assertIn("未检测到正在生效的主机防火墙", result.stdout)
+        self.assertIn("入站策略已核验；未修改现有防火墙规则", result.stdout)
 
     def test_nonempty_malformed_iptables_output_fails_closed(self):
         result, calls = self.run_firewall_function(

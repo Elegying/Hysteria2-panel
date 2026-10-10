@@ -1,0 +1,18 @@
+table inet hy2_host_guard {
+    chain input {
+        type filter hook input priority 10; policy drop;
+        iifname "lo" accept
+        ct state established,related accept
+        ct state invalid drop
+        meta l4proto { icmp, ipv6-icmp } accept
+        udp sport 67 udp dport 68 accept
+        udp sport 547 udp dport 546 accept
+        tcp dport 22 accept
+        tcp dport { 80, 443, 19999 } accept
+        udp dport { 443, 19999 } accept
+        tcp dport 19998 meter panel4 size 65535 { ip saddr timeout 1m limit rate over 20/second burst 100 packets } counter drop
+        tcp dport 19998 meter panel6 size 65535 { ip6 saddr timeout 1m limit rate over 20/second burst 100 packets } counter drop
+        tcp dport 19998 accept
+        counter drop
+    }
+}
