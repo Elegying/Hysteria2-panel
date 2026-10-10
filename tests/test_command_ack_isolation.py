@@ -25,6 +25,11 @@ class CommandAckIsolationTests(unittest.TestCase):
             fixture.fixture.nodes[0], "KICK_USERS", {"users": [name]},
             fixture.fixture.now[0] + index) for index, name in enumerate(("alice", "bob"))]
         fixture.fixture.now[0] += 2
+        fixture.cycle.run_once()
+        self.assertTrue(all(not fixture.state.command_completed(c["commandId"]) for c in commands))
+        fixture.protocol.ack_command.assert_not_called()
+        fixture.fixture.now[0] += 10
+        fixture.stats.kick.reset_mock()
         if first_state == "completed":
             fixture.state.record_command_completed(commands[0]["commandId"], fixture.fixture.now[0])
         elif first_state == "execution-failed":
@@ -55,6 +60,10 @@ class CommandAckIsolationTests(unittest.TestCase):
         fixture.cycle.run_once()
         # Successful effects are never repeated after restarting before re-ACK.
         if first_state == "execution-failed":
+            expected.append(mock.call(["alice"]))
+            self.assertFalse(fixture.state.command_completed(commands[0]["commandId"]))
+            fixture.fixture.now[0] += 10
+            fixture.cycle.run_once()
             expected.append(mock.call(["alice"]))
         self.assertEqual(expected, fixture.stats.kick.call_args_list)
         with fixture.fixture.db._connect() as connection:

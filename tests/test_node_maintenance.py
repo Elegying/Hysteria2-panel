@@ -259,6 +259,8 @@ sync() { :; }
                 config = root / "config"
                 backup.mkdir()
                 config.mkdir()
+                (root / "old-agent").mkdir()
+                (root / "old-agent" / "node_agent.py").write_text("raise SystemExit(2)\n")
                 (config / "stats.env").write_text("HY2PANEL_STATS_SECRET=synthetic-stats-secret\n")
                 states = {
                     "hysteria2-panel-node-" + name + ".service": "active"

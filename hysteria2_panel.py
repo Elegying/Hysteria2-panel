@@ -2409,6 +2409,7 @@ class Database:
                     allow_udp_443 INTEGER NOT NULL DEFAULT 0 CHECK (allow_udp_443 IN (0, 1)),
                     traffic_adjusted_at INTEGER,
                     domain_usage_reset_at INTEGER,
+                    local_drain_started_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
@@ -2673,6 +2674,7 @@ class Database:
                 "allow_udp_443": "ALTER TABLE proxy_users ADD COLUMN allow_udp_443 INTEGER NOT NULL DEFAULT 0",
                 "traffic_adjusted_at": "ALTER TABLE proxy_users ADD COLUMN traffic_adjusted_at INTEGER",
                 "domain_usage_reset_at": "ALTER TABLE proxy_users ADD COLUMN domain_usage_reset_at INTEGER",
+                "local_drain_started_at": "ALTER TABLE proxy_users ADD COLUMN local_drain_started_at INTEGER",
             }
             for column, statement in migrations.items():
                 if column not in columns:
@@ -2976,6 +2978,7 @@ class Database:
             )
         return {
             "sessionId": session_id,
+            "revocationToken": self._mobile_revocation_token(session_id),
             "accessToken": access_token,
             "refreshToken": refresh_token,
             "accessExpiresAt": now + access_ttl_seconds,
@@ -3045,6 +3048,7 @@ class Database:
                 return None
         return {
             "sessionId": row["session_id"],
+            "revocationToken": self._mobile_revocation_token(row["session_id"]),
             "accessToken": new_access_token,
             "refreshToken": new_refresh_token,
             "accessExpiresAt": now + access_ttl_seconds,
@@ -3053,15 +3057,32 @@ class Database:
             "deviceName": row["device_name"],
         }
 
-    def revoke_mobile_session(self, access_token):
-        if not isinstance(access_token, str) or not access_token:
-            return False
+    def _mobile_revocation_token(self, session_id):
+        # Purpose-separated, session-bound capability: it can only revoke and
+        # stays valid across refresh rotation without another stored secret.
+        digest = hmac.new(
+            self.hmac_key, ("mobile-revoke:" + session_id).encode("ascii"), hashlib.sha256
+        ).hexdigest()
+        return "hy2x_{}_{}".format(session_id, digest)
+
+    def revoke_mobile_session(self, access_token, refresh_token=None, revocation_token=None):
+        session_id = ""
+        if isinstance(revocation_token, str):
+            match = re.fullmatch(r"hy2x_([0-9a-f]{32})_[0-9a-f]{64}", revocation_token)
+            if match and hmac.compare_digest(
+                self._mobile_revocation_token(match.group(1)), revocation_token
+            ):
+                session_id = match.group(1)
+        access_token = access_token if isinstance(access_token, str) else ""
+        refresh_token = refresh_token if isinstance(refresh_token, str) else ""
         with self._connect() as connection:
             cursor = connection.execute(
-                "DELETE FROM mobile_sessions WHERE access_token_hash = ?",
-                (self._mobile_token_hash(access_token),),
+                """DELETE FROM mobile_sessions WHERE access_token_hash = ?
+                    OR refresh_token_hash = ? OR session_id = ?""",
+                (self._mobile_token_hash(access_token),
+                 self._mobile_token_hash(refresh_token), session_id),
             )
-        return cursor.rowcount == 1
+        return cursor.rowcount > 0
 
     def create_proxy_user(
         self,
@@ -3349,24 +3370,26 @@ class Database:
             (tx, rx, user["id"]),
         )
 
-    def rotate_proxy_token(self, user_id, token=None, expected_generation=None):
+    def rotate_proxy_token(self, user_id, token=None, expected_generation=None, drain_local=False):
         token_seed = None
         if token is None:
             token_seed = secrets.token_bytes(32)
             token = self._token_from_seed(token_seed)
         token = _validate_token(token)
-        now = int(time.time())
         try:
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                now = int(time.time())
                 row = self._get_proxy_user(user_id, connection)
                 generation = row["generation"] if expected_generation is None else int(expected_generation)
                 if generation != row["generation"]:
                     raise ConflictError("proxy user changed; refresh and try again")
                 cursor = connection.execute(
                     """UPDATE proxy_users
-                    SET token_fingerprint = ?, token_seed = ?, generation = generation + 1, updated_at = ?
+                    SET token_fingerprint = ?, token_seed = ?, generation = generation + 1, updated_at = ?,
+                        local_drain_started_at = CASE WHEN ? THEN ? ELSE local_drain_started_at END
                     WHERE id = ? AND generation = ?""",
-                    (self._fingerprint(token), token_seed, now, row["id"], generation),
+                    (self._fingerprint(token), token_seed, now, drain_local, now, row["id"], generation),
                 )
                 if cursor.rowcount != 1:
                     raise ConflictError("proxy user changed; refresh and try again")
@@ -3433,11 +3456,19 @@ class Database:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
-                allow_udp_443,
+                allow_udp_443, local_drain_started_at,
                 tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users ORDER BY name COLLATE NOCASE"""
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def finish_local_user_drain(self, user_id, generation, started_at):
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE proxy_users SET local_drain_started_at = NULL
+                    WHERE id = ? AND generation = ? AND local_drain_started_at = ?""",
+                (user_id, generation, started_at),
+            )
 
     def add_traffic(self, traffic_by_user):
         self.apply_traffic_batch(uuid.uuid4().hex, traffic_by_user)
@@ -5401,6 +5432,19 @@ class Database:
                 )
             }
 
+    @staticmethod
+    def _pending_security_kick(connection, node_id, user_name):
+        # The upstream kick API addresses an account, not a connection. Keep
+        # fresh sessions out of that account's drain until its command is ACKed.
+        return any(
+            user_name in json.loads(row["payload"])["users"]
+            for row in connection.execute(
+                """SELECT payload FROM node_commands WHERE node_id = ?
+                    AND kind = 'KICK_USERS' AND quota_generations IS NULL
+                    AND acked_at IS NULL""", (node_id,),
+            )
+        )
+
     def authorize_distributed_node(
         self,
         node_id,
@@ -5436,13 +5480,6 @@ class Database:
                     WHERE node_id = ? AND request_id = ? AND expires_at >= ?""",
                     (node_id, request_id, int(now)),
                 ).fetchone()
-                if existing is not None:
-                    return {
-                        "ok": bool(existing["allowed"]),
-                        "id": existing["user_name"] or "",
-                        "decisionId": existing["decision_id"],
-                        "expiresAt": existing["expires_at"],
-                    }
                 canary_grant = connection.execute(
                     """SELECT expires_at FROM node_data_plane_bootstrap_grants
                     WHERE node_id = ? AND token_digest = ?
@@ -5520,12 +5557,36 @@ class Database:
                         online_count = int(local_online.get(user_name, 0)) + int(
                             remote_online
                         )
+                        reserved_retry = (
+                            existing is not None and existing["allowed"]
+                            and existing["user_name"] == user_name
+                        )
+                        # An allowed retry already reserved a slot. Recheck
+                        # current policy without reserving a second one.
+                        capacity = online_count + pending + local_pending
+                        capacity_allowed = (
+                            capacity <= user["device_limit"] if reserved_retry
+                            else capacity < user["device_limit"]
+                        )
                         allowed = bool(
                             user["tx_bytes"] + user["rx_bytes"]
                             < user["traffic_limit_bytes"]
-                            and online_count + pending + local_pending
-                            < user["device_limit"]
+                            and capacity_allowed
+                            and not self._pending_security_kick(connection, node_id, user_name)
                         )
+                if existing is not None:
+                    # Stable IDs do not preserve revoked credentials, grants,
+                    # entrypoint access, quota or stale global observations.
+                    allowed = bool(
+                        existing["allowed"] and allowed
+                        and existing["user_name"] == user_name
+                    )
+                    return {
+                        "ok": allowed,
+                        "id": existing["user_name"] if allowed else "",
+                        "decisionId": existing["decision_id"],
+                        "expiresAt": existing["expires_at"],
+                    }
                 decision_id = uuid.uuid4().hex
                 expires_at = int(now) + MAX_STATE_AGE_SECONDS
                 if canary_grant is not None:
@@ -5568,7 +5629,8 @@ class Database:
             return None
 
     def authorize_local_participant(
-        self, name, local_online, now, freshness_seconds=5, lease_seconds=5
+        self, name, local_online, now, freshness_seconds=5, lease_seconds=5,
+        require_udp_443=False,
     ):
         if (
             not isinstance(name, str)
@@ -5605,8 +5667,10 @@ class Database:
                 user = connection.execute(
                     """SELECT name, enabled, device_limit, traffic_limit_bytes,
                         tx_bytes, rx_bytes FROM proxy_users
-                    WHERE name = ? COLLATE NOCASE AND enabled = 1""",
-                    (name,),
+                    WHERE name = ? COLLATE NOCASE AND enabled = 1
+                        AND local_drain_started_at IS NULL
+                        AND (? = 0 OR allow_udp_443 = 1)""",
+                    (name, int(bool(require_udp_443))),
                 ).fetchone()
                 if user is None:
                     return False
@@ -6398,7 +6462,7 @@ class Database:
                 rows = connection.execute(
                     """SELECT command_id, kind, payload, attempts, quota_generations FROM node_commands
                     WHERE node_id = ? AND acked_at IS NULL AND next_attempt_at <= ?
-                    ORDER BY created_at, command_id LIMIT 32""",
+                    ORDER BY next_attempt_at, created_at, command_id LIMIT 32""",
                     (node_id, int(accepted_at)),
                 ).fetchall()
                 commands = []
@@ -6446,7 +6510,10 @@ class Database:
                         break
                     commands.append(command)
                     attempt = min(10, int(row["attempts"]) + 1)
-                    delay = min(300, 2 ** min(attempt, 8))
+                    # Pending kicks need one marker for each live connection.
+                    # Re-poll centrally instead of retaining a stale quota
+                    # decision in the agent after a reset or limit increase.
+                    delay = 2 if row["kind"] == "KICK_USERS" else min(300, 2 ** min(attempt, 8))
                     connection.execute(
                         """UPDATE node_commands SET attempts = ?, delivered_at = ?,
                             next_attempt_at = ?
@@ -6615,8 +6682,9 @@ def handle_auth_payload(database, raw_body, usage_manager=None, require_udp_443=
     user_id = database.authenticate_token(
         payload["auth"], require_udp_443=require_udp_443
     )
-    if user_id and usage_manager is not None and not usage_manager.authorize(user_id):
-        user_id = None
+    if user_id and usage_manager is not None:
+        if not usage_manager.authorize(user_id, require_udp_443=require_udp_443):
+            user_id = None
     return 200, {"ok": bool(user_id), "id": user_id or ""}
 
 
@@ -7758,7 +7826,7 @@ class PanelHandler(JsonHandler):
                     return
                 if action == "rotate-secret":
                     credentials = self.app.database.rotate_proxy_token(
-                        user_id, expected_generation=generation
+                        user_id, expected_generation=generation, drain_local=True
                     )
                     self._kick_safely(credentials["name"])
                     self._audit_safely(
@@ -7801,15 +7869,23 @@ class PanelHandler(JsonHandler):
         if route == "refresh":
             self._handle_mobile_refresh(payload)
             return
+        if route == "logout":
+            # Revocation never grants access; expired access and current refresh
+            # credentials remain usable here, as does the rotation-stable token.
+            session = self._mobile_session()
+            revoked = self.app.database.revoke_mobile_session(
+                self._bearer_token(), payload.get("refreshToken", ""),
+                payload.get("revocationToken", ""),
+            )
+            if revoked:
+                self._audit_safely(
+                    self._mobile_actor(session) if session else "mobile:revocation",
+                    "mobile_logout", session["device_id"] if session else "",
+                )
+            self._mobile_response(200, {"revoked": revoked})
+            return
         session = self._require_mobile_session()
         if not session:
-            return
-        if route == "logout":
-            revoked = self.app.database.revoke_mobile_session(self._bearer_token())
-            self._audit_safely(
-                self._mobile_actor(session), "mobile_logout", session["device_id"]
-            )
-            self._mobile_response(200, {"revoked": revoked})
             return
         if not self._mobile_mutation_started():
             return
@@ -9251,7 +9327,7 @@ class PanelHandler(JsonHandler):
                     return
                 if action == "rotate":
                     credentials = self.app.database.rotate_proxy_token(
-                        user_id, expected_generation=generation
+                        user_id, expected_generation=generation, drain_local=True
                     )
                     self._kick_safely(credentials["name"])
                     self._audit_safely(
@@ -9741,7 +9817,7 @@ class UsageManager:
             # maintenance adapters that still expose the original two-argument API.
             return self.database.apply_traffic_batch(batch_id, traffic)
 
-    def _load_pending_traffic(self):
+    def _read_pending_traffic(self):
         try:
             raw = self.pending_traffic_path.read_bytes()
         except FileNotFoundError:
@@ -9763,6 +9839,13 @@ class UsageManager:
             isinstance(observed_at, bool) or not isinstance(observed_at, int)
         ):
             raise ValueError("pending traffic observation time is invalid")
+        return batch_id, traffic, domains, observed_at
+
+    def _load_pending_traffic(self):
+        pending = self._read_pending_traffic()
+        if pending is None:
+            return
+        batch_id, traffic, domains, observed_at = pending
         self.pending_traffic_batch_id = batch_id
         self.pending_traffic = traffic
         self.pending_domain_usage = domains
@@ -9856,6 +9939,11 @@ class UsageManager:
             self.pending_fresh_local_collection = False
 
     def _remove_pending_traffic_locked(self):
+        pending = self._read_pending_traffic()
+        if pending is None or pending[0] != self.pending_traffic_batch_id:
+            # Maintenance may have replaced this live manager's cached batch.
+            # Its newer journal must survive cleanup of the older batch.
+            return
         try:
             self.pending_traffic_path.unlink()
         except FileNotFoundError:
@@ -9873,21 +9961,27 @@ class UsageManager:
             os.close(descriptor)
 
     def _flush_pending_traffic_locked(self):
-        if not self.pending_traffic and not self.pending_domain_usage:
-            return
-        self._apply_local_traffic_batch(
-            self.pending_traffic_batch_id,
-            self.pending_traffic,
-            self.pending_domain_usage,
-            self.pending_observed_at,
-            fresh_local_collection=self.pending_fresh_local_collection,
-        )
-        self._remove_pending_traffic_locked()
-        self.pending_traffic_batch_id = None
-        self.pending_traffic = {}
-        self.pending_domain_usage = []
-        self.pending_observed_at = None
-        self.pending_fresh_local_collection = False
+        while True:
+            if self.pending_traffic_batch_id is None:
+                # Reload after maintenance even when this manager never stopped.
+                # The caller's collection lock excludes another journal writer.
+                self._load_pending_traffic()
+            if self.pending_traffic_batch_id is None:
+                return
+            if self.pending_traffic or self.pending_domain_usage:
+                self._apply_local_traffic_batch(
+                    self.pending_traffic_batch_id,
+                    self.pending_traffic,
+                    self.pending_domain_usage,
+                    self.pending_observed_at,
+                    fresh_local_collection=self.pending_fresh_local_collection,
+                )
+            self._remove_pending_traffic_locked()
+            self.pending_traffic_batch_id = None
+            self.pending_traffic = {}
+            self.pending_domain_usage = []
+            self.pending_observed_at = None
+            self.pending_fresh_local_collection = False
 
     def _collect_locked(self):
         if self.maintenance_lock_path is None:
@@ -9951,9 +10045,18 @@ class UsageManager:
             if count > 0 and (
                 not user
                 or not user["enabled"]
+                or user.get("local_drain_started_at") is not None
                 or user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]
             ):
                 blocked.append(name)
+        for user in users.values():
+            started_at = user.get("local_drain_started_at")
+            if (started_at is not None and observed_at >= started_at + 11
+                    and online.get(user["name"], 0) == 0):
+                # Whole-second timestamps need an extra second to cover the
+                # core's complete 10s HTTP auth window. A generation CAS keeps
+                # this observation from clearing a concurrent second rotation.
+                self.database.finish_local_user_drain(user["id"], user["generation"], started_at)
         return sorted(blocked)
 
     def collect_once(self):
@@ -10026,7 +10129,7 @@ class UsageManager:
         self._auth_stats_at = self.clock()
         return dict(self._auth_online)
 
-    def authorize(self, name):
+    def authorize(self, name, require_udp_443=False):
         if self._quiescing.is_set() or EGRESS_SWITCH_ACTIVE_MARKER.exists():
             return False
         with self.lock:
@@ -10041,6 +10144,9 @@ class UsageManager:
                 now=int(self.wall_clock()),
                 freshness_seconds=MAX_STATE_AGE_SECONDS,
                 lease_seconds=self.pending_ttl,
+                # The initial token lookup can precede a slow stats collection.
+                # Check current entrypoint access in the lease transaction too.
+                require_udp_443=require_udp_443,
             )
 
     def distributed_local_state(self):
@@ -11955,7 +12061,8 @@ def main(argv=None):
                         local_origin_id=settings.local_origin_id,
                         work_dir=OFFSITE_BACKUP_WORK_DIR,
                     )
-                    sync_traffic(settings)
+                    # The running panel owns destructive collection and its journal.
+                    # A daily backup captures committed SQLite state without another collector.
                     return manager.create_archive()
 
                 result = OffsiteBackupRunner(

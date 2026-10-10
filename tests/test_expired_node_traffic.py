@@ -71,12 +71,16 @@ class ExpiredNodeTrafficTests(unittest.TestCase):
                 self.fixture.nodes[0], 'KICK_USERS', {'users': ['alice']}, self.fixture.now[0])
             with self.assertRaises(node_agent.ExpiredTrafficError):
                 self.cycle.run_once()
+            self.assertFalse(self.state.command_completed(command['commandId']))
+            self.fixture.now[0] += 10
+            with self.assertRaises(node_agent.ExpiredTrafficError):
+                self.cycle.run_once()
             self.assertTrue(self.state.command_completed(command['commandId']))
             with self.fixture.db._connect() as db:
                 self.assertIsNotNone(db.execute('SELECT acked_at FROM node_commands WHERE command_id=?',
                     (command['commandId'],)).fetchone()[0])
             self.fixture.now[0] += 31
-        self.assertEqual(2, self.stats.kick.call_count)
+        self.assertEqual(4, self.stats.kick.call_count)
         self.protocol.send_online.assert_not_called()
         self.assertEqual([self.expired], self.spool.pending())
         self.cycle.stop_data_plane = mock.Mock()
@@ -97,7 +101,13 @@ class ExpiredNodeTrafficTests(unittest.TestCase):
         with mock.patch.object(self.spool, 'ack', side_effect=OSError('unlink unavailable')):
             with self.assertRaises(OSError):
                 self.cycle.run_once()
-        self.stats.kick.assert_called_once_with(['alice'])
+            self.assertFalse(self.state.command_completed(command['commandId']))
+            self.assertEqual(1, len(self.spool.pending()))
+            self.spool.max_entries = 1
+            self.fixture.now[0] += 10
+            with self.assertRaises(OSError):
+                self.cycle.run_once()
+        self.assertEqual([mock.call(['alice'])] * 2, self.stats.kick.call_args_list)
         self.assertTrue(self.state.command_completed(command['commandId']))
         self.assertEqual(1, len(self.spool.pending()))
         self.protocol.poll_commands.assert_not_called()
@@ -106,6 +116,10 @@ class ExpiredNodeTrafficTests(unittest.TestCase):
         self.connect_commands()
         command = self.fixture.db.queue_node_command(
             self.fixture.nodes[0], 'KICK_USERS', {'users': ['alice']}, self.fixture.now[0])
+        with self.assertRaises(node_agent.ExpiredTrafficError):
+            self.cycle.run_once()
+        self.assertFalse(self.state.command_completed(command['commandId']))
+        self.fixture.now[0] += 10
         acknowledge = self.protocol.ack_command.side_effect
         self.protocol.ack_command.side_effect = OSError('lost command acknowledgement')
         with self.assertRaises(OSError):
@@ -116,7 +130,7 @@ class ExpiredNodeTrafficTests(unittest.TestCase):
         self.cycle.state = node_agent.ProtocolState(self.state.path)
         with self.assertRaises(node_agent.ExpiredTrafficError):
             self.cycle.run_once()
-        self.stats.kick.assert_called_once_with(['alice'])
+        self.assertEqual([mock.call(['alice'])] * 2, self.stats.kick.call_args_list)
         with self.fixture.db._connect() as db:
             self.assertIsNotNone(db.execute('SELECT acked_at FROM node_commands WHERE command_id=?',
                 (command['commandId'],)).fetchone()[0])
@@ -130,8 +144,12 @@ class ExpiredNodeTrafficTests(unittest.TestCase):
              mock.patch.object(self.cycle, 'refresh_snapshot', side_effect=OSError('snapshot unavailable')) as refresh:
             with self.assertRaises(OSError):
                 self.cycle.run_once()
-        refresh.assert_called_once()
-        self.stats.kick.assert_called_once_with(['alice'])
+            self.assertFalse(self.state.command_completed(command['commandId']))
+            self.fixture.now[0] += 10
+            with self.assertRaises(OSError):
+                self.cycle.run_once()
+        self.assertEqual(2, refresh.call_count)
+        self.assertEqual([mock.call(['alice'])] * 2, self.stats.kick.call_args_list)
         self.assertTrue(self.state.command_completed(command['commandId']))
         self.assertEqual([], self.spool.pending())
         self.protocol.poll_commands.assert_not_called()

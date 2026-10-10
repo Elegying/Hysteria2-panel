@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -15,7 +16,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'support/design_fixture.dart';
 
 class TwoPanels extends DesignFixtureController {
-  TwoPanels() {
+  TwoPanels()
+    : super(
+        dioFactory: (base) => Dio(BaseOptions(baseUrl: base))
+          ..interceptors.add(
+            InterceptorsWrapper(
+              onRequest: (options, handler) => handler.resolve(
+                Response(
+                  requestOptions: options,
+                  statusCode: 200,
+                  data: {
+                    'data': {'revoked': true},
+                  },
+                ),
+              ),
+            ),
+          ),
+      ) {
     state = AppState(
       initializing: false,
       session: accounts[0].session,
@@ -149,8 +166,9 @@ void main() {
     (tester) async {
       final c = TwoPanels();
       await mount(tester, c);
-      await c.logout();
+      final logout = c.logout();
       await tester.pumpAndSettle();
+      await logout;
       final fields = tester
           .widgetList<TextFormField>(find.byType(TextFormField))
           .toList();
@@ -243,8 +261,9 @@ void main() {
         matchesGoldenFile('../../.codex-artifacts/multi-panel/home.png'),
       );
     }
-    await c.logout();
+    final logout = c.logout();
     await tester.pumpAndSettle();
+    await logout;
     if (const bool.fromEnvironment('CAPTURE_PANEL_UI')) {
       await expectLater(
         find.byType(MaterialApp),

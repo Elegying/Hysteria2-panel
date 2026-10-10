@@ -1,7 +1,7 @@
 import 'package:hysteria2_manager/core/app_controller.dart';
 
 class DesignFixtureController extends AppController {
-  DesignFixtureController({bool loggedIn = true}) {
+  DesignFixtureController({bool loggedIn = true, super.dioFactory}) {
     state = AppState(
       initializing: false,
       session: loggedIn

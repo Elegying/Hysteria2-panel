@@ -50,6 +50,12 @@ ADR 记录“为什么这样设计”，不是操作教程。编号重复的两�
 - [ADR-017：简化节点对接](decisions/ADR-017-streamlined-node-onboarding.md)
 - [ADR-018：分机器流量归属](decisions/ADR-018-per-machine-usage-attribution.md)
 - [ADR-019：节点生命周期与异地备份](decisions/ADR-019-node-operations-and-offsite-backup.md)
+- [ADR-021：节点累计流量与可恢复检查点](decisions/ADR-021-cumulative-node-accounting.md)
+- [ADR-022：移动会话撤销与离线恢复](decisions/ADR-022-mobile-session-revocation.md)
+- [ADR-023：本机改密后的持久化清退](decisions/ADR-023-local-security-drain.md)
+- [ADR-024：异地备份与计量进程隔离](decisions/ADR-024-offsite-backup-accounting-isolation.md)
+- [ADR-025：维护结算与面板日志交接](decisions/ADR-025-maintenance-journal-handoff.md)
+- [ADR-026：认证重试与当前权限复核](decisions/ADR-026-current-policy-auth-revalidation.md)
 
 ## 设计规格
 
@@ -74,12 +80,18 @@ ADR 记录“为什么这样设计”，不是操作教程。编号重复的两�
 
 这些文件是某个时间点的审计记录，不代表最新版本的长期承诺。
 
+- [认证并发与旧决策重试后续审查](reviews/2026-10-10-auth-concurrency-audit.md)
+- [维护结算与日志交接后续审查](reviews/2026-10-10-maintenance-audit.md)
+- [备份与恢复后续审查](reviews/2026-10-10-backup-recovery-audit.md)
 - [v0.11.0 多维审查](reviews/2026-08-11-v0.11.0-multidirectional-review.md)
 - [v0.13.0 生产审计](reviews/2026-08-12-v0.13.0-production-audit.md)
 - [v0.14.1 生产验证](reviews/2026-08-12-v0.14.1-production-validation.md)
 - [v0.21.1 最终生产审计](reviews/2026-08-22-v0.21.1-final-production-audit.md)
 - [v0.35.0 稳定化审计](reviews/2026-08-30-v0.35.0-stabilization-audit.md)
 - [v0.39.17 可靠性修复复审](reviews/2026-09-08-reliability-repair.md)
+- [2026-10-10 全项目审查](reviews/2026-10-10-project-audit.md)
+- [2026-10-10 首轮修复与复审](reviews/2026-10-10-audit-fixes.md)
+- [2026-10-10 后续审查与修复](reviews/2026-10-10-followup-audit.md)
 - [全站界面专业化审查](UI_AUDIT_2026-08-30.md)
 - [界面设计验收记录](../design-qa.md)
 - [当前界面截图](screenshots/)
