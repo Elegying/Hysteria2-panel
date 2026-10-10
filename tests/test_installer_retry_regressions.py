@@ -54,8 +54,12 @@ def run_reproductions():
             (root / "units" / name).touch()
         (root / "work/node_agent.py").touch()
         runner = root / "runner"
+        runner_probe = (
+            '#!/usr/bin/env bash\n'
+            'if [[ "$2" == accounting-mode ]]; then printf "cumulative-v1\\n"; exit 0; fi\n'
+        )
         runner.write_text(
-            '#!/usr/bin/env bash\nfor item in "$@"; do [[ "$item" != ack-command ]] || exit 1; done\nexit 0\n'
+            runner_probe + 'for item in "$@"; do [[ "$item" != ack-command ]] || exit 1; done\nexit 0\n'
         )
         runner.chmod(0o755)
         preamble = """set -eu
@@ -123,7 +127,7 @@ def run_reproductions():
             for row in outputs
         )
         assert outputs[1]["command_present"]
-        runner.write_text("#!/usr/bin/env bash\nexit 0\n")
+        runner.write_text(runner_probe + "exit 0\n")
         confirmed = subprocess.run(
             ["bash", "-c", body, "isolated-installer", str(root)],
             capture_output=True,

@@ -605,9 +605,16 @@ try:
     before_zip = set(OUT.glob('*.zip'))
     browser.click('form[action="/backup"] button')
     until = time.monotonic()+10
-    while time.monotonic()<until and not set(OUT.glob('*.zip'))-before_zip:
+    backup_path = None
+    while time.monotonic()<until:
+        # Chrome may expose the final filename before writing the ZIP footer.
+        # Wait for a complete archive, then keep the full integrity check below.
+        backup_path = next((path for path in set(OUT.glob('*.zip'))-before_zip
+                            if zipfile.is_zipfile(path)), None)
+        if backup_path is not None:
+            break
         time.sleep(.1)
-    backup_path = next(iter(set(OUT.glob('*.zip'))-before_zip))
+    assert backup_path is not None, 'backup download did not complete as a ZIP'
     with zipfile.ZipFile(backup_path) as package:
         assert package.testzip() is None
         assert 'manifest.json' in package.namelist()

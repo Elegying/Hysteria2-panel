@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.38"
+PANEL_VERSION="0.39.39"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -25,12 +25,12 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="b77aedc3b88fce4f01139c68dd3a2d38d7067342ea0df54681144f50c69ac3d3"
-OFFSITE_BACKUP_SHA256="98abdcb396d8e28a24ca7398a36951f2e7c21e3048dbeb59572220a658a08cf5"
+PANEL_SHA256="e36e080ca65dc34b6480d9a04b76dee10342577fe27d883040971145409186b4"
+OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="f4c1924bb515d32e1896ed2ac9ce3d5fc51b91763a5a28639375fd75e4f4b672"
+HY2PANEL_VERSION_SHA256="136be9bc7d74e2137099ebb8e50e65a5b07fab2b3e15d9cbf2e0da17efdb9c5b"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
 HY2PANEL_WEB_ASSETS_SHA256="5404114bdb81dddbcd5e7318bf235580948030669a80a3d50146b331cf96f0c9"
 HY2PANEL_OPERATIONS_SHA256="d081cea0fbfa3aa47de13fe3156ce9cc0238d68d99ac7a9cf155d2afff6c2a15"
@@ -43,7 +43,7 @@ HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce5
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="285327ccef230ffdb96f2790f98e6d53f0f89252302a6777311b0404b88b42b1"
 HY2PANEL_MOBILE_API_SHA256="d412be91aacd152d14724b39eddeabd3e59989f9f3f816cc9f477cc17901f21e"
-NODE_AGENT_SHA256="799666e793b455b956744004b058ef9d5fb96af464c7c5aed4eb20dc03041896"
+NODE_AGENT_SHA256="0272358509beb51d32c342dca70beb050378a743b4d5951b3a0931453349f28a"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -2670,7 +2670,7 @@ rollback_new_data_plane_firewall_rules() {
 }
 
 settle_existing_node_traffic() {
-  local active_state helper mode="${1:-preserve}" unit port
+  local active_state helper mode="${1:-preserve}" unit port accounting_mode mode_status
   local -a stats_options=()
   # With authentication and the periodic collector stopped, only this process
   # can clear the counters. Existing QUIC sessions are kicked by the helper.
@@ -2703,7 +2703,20 @@ settle_existing_node_traffic() {
     helper="${NODE_AGENT_OPT_DIR}/node_agent.py"
   fi
   require_node_agent_file "${helper}" 755
+  require_node_agent_file "${NODE_AGENT_OPT_DIR}/node_agent.py" 755
   require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/stats.env" 600
+  # A failed drain resumes the installed control service on the same core.
+  # Keep its accounting contract until that core has actually been stopped.
+  if accounting_mode="$("${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" \
+    accounting-mode 2>/dev/null)"; then
+    [[ "${accounting_mode}" == cumulative-v1 ]] || return 1
+  else
+    mode_status=$?
+    # Old agents reject this parser command with status 2. Other failures are
+    # not proof that it is safe to clear a cumulative collector's counters.
+    (( mode_status == 2 )) || return 1
+    stats_options+=(--legacy-traffic)
+  fi
   (
     set -a
     # shellcheck disable=SC1090,SC1091
@@ -7830,7 +7843,7 @@ cat > /etc/systemd/system/hysteria2-panel-offsite-backup.service <<EOF
 [Unit]
 Description=Create and upload the daily Hysteria2-panel backup
 After=network-online.target hysteria2-panel.service hysteria2-panel-server.service
-Requires=hysteria2-panel.service hysteria2-panel-server.service
+Requires=hysteria2-panel.service
 Wants=network-online.target
 
 [Service]

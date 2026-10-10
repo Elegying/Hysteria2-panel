@@ -13,6 +13,7 @@ fi
 
 PANEL_UNIT="hysteria2-panel-ci-panel.service"
 SERVER_UNIT="hysteria2-panel-ci-server.service"
+OFFSITE_UNIT="hysteria2-panel-ci-offsite.service"
 RECOVER_UNIT="hysteria2-panel-ci-restore-recover.service"
 RESUME_UNIT="hysteria2-panel-ci-restore-resume.service"
 LEGACY_RESTORE_UNIT="hysteria2-panel-ci-legacy-restore.service"
@@ -22,6 +23,7 @@ EGRESS_SWITCH_UNIT="hysteria2-panel-ci-egress-switch.service"
 EGRESS_RECOVER_UNIT="hysteria2-panel-ci-egress-recover.service"
 PANEL_PATH="/etc/systemd/system/${PANEL_UNIT}"
 SERVER_PATH="/etc/systemd/system/${SERVER_UNIT}"
+OFFSITE_PATH="/etc/systemd/system/${OFFSITE_UNIT}"
 RECOVER_PATH="/etc/systemd/system/${RECOVER_UNIT}"
 RESUME_PATH="/etc/systemd/system/${RESUME_UNIT}"
 LEGACY_RESTORE_PATH="/etc/systemd/system/${LEGACY_RESTORE_UNIT}"
@@ -46,6 +48,7 @@ report_error() {
   set +e
   echo "systemd integration failed at line ${line} (status ${status})" >&2
   systemctl --no-pager --full status \
+    "${OFFSITE_UNIT}" \
     "${RECOVER_UNIT}" "${PANEL_UNIT}" "${SERVER_UNIT}" "${RESUME_UNIT}" \
     "${LEGACY_RESTORE_UNIT}" "${EGRESS_PANEL_UNIT}" "${EGRESS_SERVER_UNIT}" \
     "${EGRESS_SWITCH_UNIT}" "${EGRESS_RECOVER_UNIT}" >&2
@@ -63,10 +66,10 @@ cleanup() {
   trap - EXIT
   set +e
   systemctl disable "${RESUME_UNIT}" >/dev/null 2>&1
-  systemctl stop "${RESUME_UNIT}" "${SERVER_UNIT}" "${PANEL_UNIT}" "${RECOVER_UNIT}" \
+  systemctl stop "${OFFSITE_UNIT}" "${RESUME_UNIT}" "${SERVER_UNIT}" "${PANEL_UNIT}" "${RECOVER_UNIT}" \
     "${LEGACY_RESTORE_UNIT}" "${EGRESS_SWITCH_UNIT}" "${EGRESS_SERVER_UNIT}" \
     "${EGRESS_PANEL_UNIT}" "${EGRESS_RECOVER_UNIT}" >/dev/null 2>&1
-  rm -f -- "${SERVER_PATH}" "${PANEL_PATH}" "${RECOVER_PATH}" "${RESUME_PATH}" \
+  rm -f -- "${OFFSITE_PATH}" "${SERVER_PATH}" "${PANEL_PATH}" "${RECOVER_PATH}" "${RESUME_PATH}" \
     "${LEGACY_RESTORE_PATH}" "${LEGACY_RESTORE_GUARD_DROPIN}" \
     "${EGRESS_PANEL_PATH}" "${EGRESS_SERVER_PATH}" "${EGRESS_SWITCH_PATH}" \
     "${EGRESS_RECOVER_PATH}" "${LEGACY_RESTORE_CAPTURE}" "${RESUME_MARKER}" \
@@ -186,7 +189,26 @@ Type=oneshot
 ExecStart=/bin/bash -c 'exec 9>${EGRESS_LOCK}; flock 9; printf recovered >${EGRESS_RECOVER_CAPTURE}; rm -f ${EGRESS_TRANSACTION}'
 EOF
 
-chmod 0644 "${PANEL_PATH}" "${SERVER_PATH}" "${RECOVER_PATH}" "${RESUME_PATH}" \
+# Exercise the installer's actual backup dependencies with harmless fixture services.
+INSTALLER_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/install.sh"
+{
+  awk -v panel="${PANEL_UNIT}" -v server="${SERVER_UNIT}" '
+    /^cat > \/etc\/systemd\/system\/hysteria2-panel-offsite-backup[.]service <<EOF$/ { emitting=1; next }
+    emitting && /^\[Service\]$/ { exit }
+    emitting {
+      gsub(/hysteria2-panel-server[.]service/, server)
+      gsub(/hysteria2-panel[.]service/, panel)
+      print
+    }
+  ' "${INSTALLER_PATH}"
+  cat <<'EOF'
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+EOF
+} >"${OFFSITE_PATH}"
+
+chmod 0644 "${OFFSITE_PATH}" "${PANEL_PATH}" "${SERVER_PATH}" "${RECOVER_PATH}" "${RESUME_PATH}" \
   "${EGRESS_PANEL_PATH}" "${EGRESS_SERVER_PATH}" "${EGRESS_SWITCH_PATH}" \
   "${EGRESS_RECOVER_PATH}"
 chmod 0600 "${LEGACY_RESTORE_PATH}"
@@ -199,6 +221,12 @@ systemctl enable "${RESUME_UNIT}"
 systemctl start "${SERVER_UNIT}"
 systemctl is-active --quiet "${PANEL_UNIT}"
 systemctl is-active --quiet "${SERVER_UNIT}"
+
+# A daily backup must leave a deliberately stopped proxy stopped.
+systemctl stop "${SERVER_UNIT}"
+systemctl start "${OFFSITE_UNIT}"
+[[ "$(systemctl is-active "${SERVER_UNIT}" || true)" == "inactive" ]]
+systemctl start "${SERVER_UNIT}"
 
 # A live egress switch writes its durable transaction while holding the shared
 # maintenance lock. Restarting the data plane must not re-enter recovery and

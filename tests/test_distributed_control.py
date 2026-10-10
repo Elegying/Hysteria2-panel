@@ -1565,7 +1565,7 @@ class NodeAgentProtocolTests(unittest.TestCase):
             flush_traffic=lambda: calls.append(("durable-flush",)),
         )
         self.assertEqual(
-            [("kick", ["alice"]), ("snapshot",), ("durable-flush",)], calls
+            [("kick", ["alice"]), ("online",), ("snapshot",), ("durable-flush",)], calls
         )
         with self.assertRaises(node_agent.ProtocolError):
             node_agent.execute_control_command(
@@ -1875,16 +1875,18 @@ class NodeAgentProtocolTests(unittest.TestCase):
             clock=lambda: 2_000_000_000,
         )
         cycle.run_once()
+        cycle.clock = lambda: 2_000_000_010
+        cycle.run_once()
         restarted = node_agent.NodeControlCycle(
             Protocol(),
             Stats(),
             node_agent.DurableTrafficSpool(root / "command-spool"),
             node_agent.ProtocolState(state_path),
-            clock=lambda: 2_000_000_001,
+            clock=lambda: 2_000_000_011,
         )
         restarted.run_once()
 
-        self.assertEqual([("kick", ["alice"])], [call for call in calls if call[0] == "kick"])
+        self.assertEqual([("kick", ["alice"])] * 2, [call for call in calls if call[0] == "kick"])
         self.assertEqual(2, len([call for call in calls if call[0] == "ack"]))
 
     def test_protocol_state_survives_a_full_command_history_and_restart(self):
@@ -2328,7 +2330,9 @@ class NodeAgentProtocolTests(unittest.TestCase):
         with mock.patch.object(node_agent, "NodeProtocolClient") as protocol_client:
             with mock.patch.object(node_agent, "LocalStatsClient") as stats_client:
                 with mock.patch.object(node_agent, "DurableTrafficSpool") as spool:
-                    with mock.patch.object(node_agent, "ProtocolState") as state:
+                    with mock.patch.object(node_agent, "ProtocolState") as state, mock.patch.object(
+                        node_agent, "CumulativeTrafficCollector"
+                    ):
                         with mock.patch.object(
                             node_agent, "NodeControlCycle", return_value=cycle
                         ):

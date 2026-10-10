@@ -15,6 +15,7 @@ class AppSession {
     required this.accessToken,
     required this.refreshToken,
     required this.deviceId,
+    this.revocationToken = '',
   });
 
   final String baseUrl;
@@ -22,15 +23,20 @@ class AppSession {
   final String accessToken;
   final String refreshToken;
   final String deviceId;
+  final String revocationToken;
 
-  AppSession copyWith({String? accessToken, String? refreshToken}) =>
-      AppSession(
-        baseUrl: baseUrl,
-        username: username,
-        accessToken: accessToken ?? this.accessToken,
-        refreshToken: refreshToken ?? this.refreshToken,
-        deviceId: deviceId,
-      );
+  AppSession copyWith({
+    String? accessToken,
+    String? refreshToken,
+    String? revocationToken,
+  }) => AppSession(
+    baseUrl: baseUrl,
+    username: username,
+    accessToken: accessToken ?? this.accessToken,
+    refreshToken: refreshToken ?? this.refreshToken,
+    deviceId: deviceId,
+    revocationToken: revocationToken ?? this.revocationToken,
+  );
 }
 
 class PanelAccount {
@@ -66,6 +72,7 @@ class PanelAccount {
     'password': password,
     if (session != null) 'refreshToken': session!.refreshToken,
     if (session != null) 'deviceId': session!.deviceId,
+    if (session != null) 'revocationToken': session!.revocationToken,
   };
 
   factory PanelAccount.fromJson(Map<String, dynamic> json) {
@@ -85,6 +92,7 @@ class PanelAccount {
               accessToken: '',
               refreshToken: token,
               deviceId: json['deviceId'] as String,
+              revocationToken: json['revocationToken'] as String? ?? '',
             ),
     );
   }
@@ -170,7 +178,12 @@ class AppController extends StateNotifier<AppState> {
   final Dio Function(String) _dioFactory;
   Dio? _dio;
   Future<bool>? _refreshFuture;
+  Future<void>? _logoutFuture;
   int _sessionGeneration = 0;
+  List<Map<String, dynamic>> _pendingRevocations = [];
+  Future<void>? _revocationFuture;
+  Timer? _revocationTimer;
+  int _revocationDelay = 30;
   Future<void> _storageFuture = Future<void>.value();
 
   bool _isCurrent(int generation) =>
@@ -203,6 +216,10 @@ class AppController extends StateNotifier<AppState> {
       if (!_isCurrent(generation)) return;
       if (saved != null) {
         final document = jsonDecode(saved) as Map<String, dynamic>;
+        _pendingRevocations = (document['pendingRevocations'] as List? ?? [])
+            .map((value) => Map<String, dynamic>.from(value as Map))
+            .toList();
+        if (_pendingRevocations.length > 32) throw const FormatException();
         final panels = (document['panels'] as List)
             .map(
               (value) => PanelAccount.fromJson(
@@ -273,6 +290,8 @@ class AppController extends StateNotifier<AppState> {
       if (_isCurrent(generation)) {
         state = const AppState(initializing: false, error: '无法读取本机安全存储，请重新登录');
       }
+    } finally {
+      if (_isCurrent(generation)) unawaited(_retryPendingRevocations());
     }
   }
 
@@ -356,9 +375,17 @@ class AppController extends StateNotifier<AppState> {
     if (username.trim().isEmpty) throw const ApiException('请输入面板账号');
     if (password.isEmpty) throw const ApiException('请输入面板密码');
     final baseUrl = normalizeBaseUrl(address, port);
+    final logout = _logoutFuture;
+    if (logout != null) await logout;
     final target = panelIndex ?? state.activePanel;
     if (target < 0 || target > 1) throw const ApiException('面板位置无效');
-    if (state.working) throw const ApiException('请等待当前操作完成');
+    if (state.working || _logoutFuture != null) {
+      throw const ApiException('请等待当前操作完成');
+    }
+    // Reserve room to revoke an issued session if saving this login fails.
+    if (_pendingRevocations.length >= 32) {
+      throw const ApiException('待撤销登录过多，请联网后重试');
+    }
     final other = state.panels[1 - target];
     if (other.baseUrl == baseUrl &&
         other.username == username.trim() &&
@@ -422,6 +449,7 @@ class AppController extends StateNotifier<AppState> {
         username: username.trim(),
         accessToken: data['accessToken'] as String,
         refreshToken: data['refreshToken'] as String,
+        revocationToken: data['revocationToken'] as String? ?? '',
         deviceId: deviceId,
       );
       issuedSession = session;
@@ -435,10 +463,9 @@ class AppController extends StateNotifier<AppState> {
         session: session,
       );
       await _persistSession(generation, () async {
-        await _savePanels(panels, target);
+        await _savePanels(panels, target, revoke: replaced);
       });
       if (!_isCurrent(generation)) {
-        await _revokeSession(dio, session.accessToken);
         throw const ApiException('登录操作已结束');
       }
       _dio = dio;
@@ -449,11 +476,8 @@ class AppController extends StateNotifier<AppState> {
         activePanel: target,
         contextRevision: state.contextRevision + 1,
       );
-      if (replaced != null && replaced.accessToken != session.accessToken) {
-        unawaited(
-          _revokeSession(_dioFactory(replaced.baseUrl), replaced.accessToken),
-        );
-      }
+      issuedSession = null;
+      unawaited(_retryPendingRevocations());
     } on DioException catch (error) {
       if (_isCurrent(generation)) {
         _dio = previousDio;
@@ -471,14 +495,26 @@ class AppController extends StateNotifier<AppState> {
         _dio = previousDio;
         state = previousState.copyWith(working: false);
       }
-      if (issuedSession != null) {
-        await _revokeSession(dio, issuedSession.accessToken);
-      }
       throw const ApiException('登录信息未能保存，请重试');
+    } finally {
+      if (issuedSession != null) await _revokeSession(dio, issuedSession);
     }
   }
 
   Future<void> logout() async {
+    var work = _logoutFuture;
+    if (work == null) {
+      late final Future<void> removal;
+      removal = _persistLogout().whenComplete(() {
+        if (identical(_logoutFuture, removal)) _logoutFuture = null;
+      });
+      work = _logoutFuture = removal;
+    }
+    await work;
+    await _retryPendingRevocations();
+  }
+
+  Future<void> _persistLogout() async {
     final previous = state;
     final session = state.session;
     final dio = _dio;
@@ -491,19 +527,20 @@ class AppController extends StateNotifier<AppState> {
     );
     state = state.copyWith(
       initializing: false,
-      working: false,
+      working: true,
       clearSession: true,
       panels: panels,
       contextRevision: state.contextRevision + 1,
     );
     try {
       await _persistSession(generation, () async {
-        await _savePanels(panels, previous.activePanel);
+        await _savePanels(panels, previous.activePanel, revoke: session);
         // The new document is authoritative even if obsolete key cleanup fails.
         try {
           await _storage.delete(key: _refreshKey);
         } catch (_) {}
       });
+      if (_isCurrent(generation)) state = state.copyWith(working: false);
     } catch (_) {
       if (_isCurrent(generation)) {
         _dio = dio;
@@ -514,19 +551,44 @@ class AppController extends StateNotifier<AppState> {
       }
       throw const ApiException('无法清除本机登录状态，请重试');
     }
-    if (session != null && dio != null) {
-      await _revokeSession(dio, session.accessToken);
-    }
   }
 
-  Future<void> _savePanels(List<PanelAccount> panels, int active) =>
-      _storage.write(
-        key: _panelsKey,
-        value: jsonEncode({
-          'active': active,
-          'panels': panels.map((panel) => panel.toJson()).toList(),
-        }),
-      );
+  static Map<String, dynamic> _revocationRecord(AppSession session) => {
+    'baseUrl': session.baseUrl,
+    'accessToken': session.accessToken,
+    'refreshToken': session.refreshToken,
+    'revocationToken': session.revocationToken,
+  };
+
+  static String _revocationId(Map<String, dynamic> item) =>
+      '${item['baseUrl']}|${item['revocationToken'] == '' ? item['refreshToken'] : item['revocationToken']}';
+
+  Future<void> _savePanels(
+    List<PanelAccount> panels,
+    int active, {
+    AppSession? revoke,
+  }) async {
+    final pending = [..._pendingRevocations];
+    if (revoke != null) {
+      final record = _revocationRecord(revoke);
+      if (!pending.any(
+        (item) => _revocationId(item) == _revocationId(record),
+      )) {
+        pending.add(record);
+      }
+    }
+    if (pending.length > 32) throw const ApiException('待撤销登录过多，请联网后重试');
+    // Clearing a profile and retaining its revocation credential are one write.
+    await _storage.write(
+      key: _panelsKey,
+      value: jsonEncode({
+        'active': active,
+        'panels': panels.map((panel) => panel.toJson()).toList(),
+        'pendingRevocations': pending,
+      }),
+    );
+    _pendingRevocations = pending;
+  }
 
   Future<void> selectPanel(int index) async {
     if (index < 0 || index > 1 || state.working || index == state.activePanel) {
@@ -573,15 +635,12 @@ class AppController extends StateNotifier<AppState> {
   }
 
   Future<void> forgetPanel(int index) async {
-    final old = state.panels[index].session;
     await _editPanel(
       index,
       (_) => PanelAccount(name: '面板${index + 1}'),
       forget: true,
     );
-    if (old != null) {
-      unawaited(_revokeSession(_dioFactory(old.baseUrl), old.accessToken));
-    }
+    await _retryPendingRevocations();
   }
 
   Future<void> _editPanel(
@@ -601,9 +660,10 @@ class AppController extends StateNotifier<AppState> {
       }
       final generation = _sessionGeneration;
       final panels = [...state.panels];
+      final revoked = forget ? panels[index].session : null;
       panels[index] = edit(panels[index]);
       await _persistSession(generation, () async {
-        await _savePanels(panels, state.activePanel);
+        await _savePanels(panels, state.activePanel, revoke: revoked);
         if (forget) {
           // Remove legacy hints too, so a deleted account cannot reappear.
           try {
@@ -635,18 +695,145 @@ class AppController extends StateNotifier<AppState> {
     }
   }
 
-  static Future<void> _revokeSession(Dio dio, String accessToken) async {
-    if (accessToken.isNotEmpty) {
-      try {
-        await dio.post(
+  static Future<bool> _tryRevoke(Dio dio, Map<String, dynamic> record) async {
+    try {
+      var response = await dio.post(
+        '/api/v1/mobile/auth/logout',
+        data: {
+          'refreshToken': record['refreshToken'],
+          'revocationToken': record['revocationToken'],
+        },
+        options: Options(
+          headers: {'Authorization': 'Bearer ${record['accessToken']}'},
+        ),
+      );
+      if (response.statusCode == 401) {
+        // Older panels require an unexpired access token. Keep this fallback
+        // bound to the original panel and never install it as an active login.
+        late final Map<String, dynamic> refreshed;
+        try {
+          refreshed = _unwrap(
+            await dio.post(
+              '/api/v1/mobile/auth/refresh',
+              data: {'refreshToken': record['refreshToken']},
+            ),
+          );
+        } on ApiException catch (error) {
+          if (error.statusCode == 401 &&
+              error.code == 'REFRESH_EXPIRED' &&
+              record['revocationToken'] == '') {
+            // Both stored legacy credentials are unusable. Do not retain an
+            // impossible retry forever and eventually block local sign-out.
+            return true;
+          }
+          rethrow;
+        }
+        record['accessToken'] = refreshed['accessToken'];
+        record['refreshToken'] = refreshed['refreshToken'];
+        record['revocationToken'] = refreshed['revocationToken'] ?? '';
+        response = await dio.post(
           '/api/v1/mobile/auth/logout',
-          data: const <String, Object?>{},
-          options: Options(headers: {'Authorization': 'Bearer $accessToken'}),
+          data: {
+            'refreshToken': record['refreshToken'],
+            'revocationToken': record['revocationToken'],
+          },
+          options: Options(
+            headers: {'Authorization': 'Bearer ${record['accessToken']}'},
+          ),
         );
-      } catch (_) {
-        // Local logout must still complete when the panel is unreachable.
+      }
+      _unwrap(response);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _revokeSession(Dio dio, AppSession session) async {
+    final record = _revocationRecord(session);
+    if (await _tryRevoke(dio, record)) return;
+    try {
+      await _persistSession(_sessionGeneration, () async {
+        final saved = await _storage.read(key: _panelsKey);
+        if (saved == null) throw const FormatException();
+        final document = jsonDecode(saved) as Map<String, dynamic>;
+        final pending = [..._pendingRevocations];
+        if (!pending.any(
+          (item) => _revocationId(item) == _revocationId(record),
+        )) {
+          pending.add(record);
+        }
+        if (pending.length > 32) throw const FormatException();
+        document['pendingRevocations'] = pending;
+        await _storage.write(key: _panelsKey, value: jsonEncode(document));
+        _pendingRevocations = pending;
+      });
+    } catch (_) {
+      if (mounted) state = state.copyWith(error: '服务端退出尚未确认，请联网后重试');
+    }
+    _scheduleRevocationRetry();
+  }
+
+  Future<void> _retryPendingRevocations() {
+    if (_revocationFuture != null) return _revocationFuture!;
+    if (!mounted || _pendingRevocations.isEmpty) return Future<void>.value();
+    _revocationTimer?.cancel();
+    late final Future<void> work;
+    work = _drainRevocations().whenComplete(() {
+      if (identical(_revocationFuture, work)) _revocationFuture = null;
+      _scheduleRevocationRetry();
+    });
+    _revocationFuture = work;
+    return work;
+  }
+
+  Future<void> _drainRevocations() async {
+    final completed = <String>{};
+    final changed = <String, Map<String, dynamic>>{};
+    for (final original in [..._pendingRevocations]) {
+      if (!mounted) return;
+      final record = Map<String, dynamic>.from(original);
+      final id = _revocationId(original);
+      if (await _tryRevoke(_dioFactory(record['baseUrl'] as String), record)) {
+        completed.add(id);
+      } else {
+        changed[id] = record;
       }
     }
+    try {
+      await _persistSession(_sessionGeneration, () async {
+        final saved = await _storage.read(key: _panelsKey);
+        if (saved == null) return;
+        final document = jsonDecode(saved) as Map<String, dynamic>;
+        final pending = _pendingRevocations
+            .where((item) => !completed.contains(_revocationId(item)))
+            .map((item) => changed[_revocationId(item)] ?? item)
+            .toList();
+        document['pendingRevocations'] = pending;
+        await _storage.write(key: _panelsKey, value: jsonEncode(document));
+        _pendingRevocations = pending;
+      });
+    } catch (_) {
+      /* Retain the durable queue until a confirmed cleanup. */
+    }
+  }
+
+  void _scheduleRevocationRetry() {
+    _revocationTimer?.cancel();
+    if (!mounted || _pendingRevocations.isEmpty) {
+      _revocationDelay = 30;
+      return;
+    }
+    _revocationTimer = Timer(Duration(seconds: _revocationDelay), () {
+      unawaited(_retryPendingRevocations());
+    });
+    _revocationDelay = (_revocationDelay * 2).clamp(30, 300);
+  }
+
+  @override
+  void dispose() {
+    _revocationTimer?.cancel();
+    super.dispose();
   }
 
   Future<Map<String, dynamic>> getJson(String path) => _request('GET', path);
@@ -745,6 +932,7 @@ class AppController extends StateNotifier<AppState> {
       final updated = session.copyWith(
         accessToken: data['accessToken'] as String,
         refreshToken: data['refreshToken'] as String,
+        revocationToken: data['revocationToken'] as String?,
       );
       final panels = [...state.panels];
       panels[state.activePanel] = panels[state.activePanel].copyWith(
@@ -752,9 +940,9 @@ class AppController extends StateNotifier<AppState> {
       );
       await _persistSession(generation, () async {
         await _savePanels(panels, state.activePanel);
-      }, onFailure: () => _revokeSession(dio, updated.accessToken));
+      }, onFailure: () => _revokeSession(dio, updated));
       if (!_isCurrent(generation)) {
-        await _revokeSession(dio, updated.accessToken);
+        await _revokeSession(dio, updated);
         return false;
       }
       state = state.copyWith(

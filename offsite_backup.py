@@ -29,9 +29,44 @@ MAX_ARCHIVE_BYTES = 131 * 1024 * 1024
 
 class OffsiteBackupConfig:
     def __init__(self, endpoint, username, password):
-        self.endpoint = endpoint
+        self.endpoint = self._normalize_endpoint(endpoint)
         self.username = username
         self.password = password
+
+    @staticmethod
+    def _normalize_endpoint(endpoint):
+        error = "offsite backup endpoint must be an HTTPS directory"
+        if (
+            not isinstance(endpoint, str)
+            or not 1 <= len(endpoint) <= 2048
+            or endpoint[0].isspace()
+            or any(ord(character) < 32 or ord(character) == 127 for character in endpoint)
+        ):
+            raise ValueError(error)
+        try:
+            parsed = urllib.parse.urlsplit(endpoint)
+            port = parsed.port
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or not parsed.path.endswith("/")
+                or (port is not None and not 1 <= port <= 65535)
+                or any(character.isspace() for character in parsed.netloc)
+            ):
+                raise ValueError(error)
+            host = parsed.hostname.encode("idna").decode("ascii")
+            authority = "[{}]".format(host) if ":" in host else host
+            if port is not None:
+                authority += ":{}".format(port)
+            # Preserve existing escapes, especially %2F, instead of changing resource identity.
+            path = urllib.parse.quote(parsed.path, safe="/%:@!$&'()*+,;=")
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError(error) from exc
+        return urllib.parse.urlunsplit(("https", authority, path, "", ""))
 
     @classmethod
     def load(cls, path, expected_uid=0):
@@ -78,17 +113,6 @@ class OffsiteBackupConfig:
             or not 1 <= len(password) <= 4096
         ):
             raise ValueError("offsite backup config is invalid")
-        parsed = urllib.parse.urlsplit(endpoint)
-        if (
-            parsed.scheme != "https"
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or parsed.query
-            or parsed.fragment
-            or not parsed.path.endswith("/")
-        ):
-            raise ValueError("offsite backup endpoint must be an HTTPS directory")
         return cls(endpoint, username, password)
 
 

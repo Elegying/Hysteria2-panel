@@ -24,10 +24,12 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 - `GET /api/v1/mobile/capabilities`：无需登录，返回面板版本、API 版本和功能能力。
 - `POST /api/v1/mobile/auth/login`：提交管理员账号、密码、设备 ID 和设备名称；沿用网页登录限流。
 - `POST /api/v1/mobile/auth/refresh`：一次性轮换访问令牌与刷新令牌。
-- `POST /api/v1/mobile/auth/logout`：撤销当前设备会话。
+- `POST /api/v1/mobile/auth/logout`：幂等撤销设备会话，返回 `data.revoked`。接受 Bearer 访问令牌（可已过期），或 JSON 中的 `refreshToken`、`revocationToken`；这些凭证只能撤销其绑定的会话，不能指定任意账号或设备。已撤销或凭证不匹配时返回 200 与 `revoked: false`。
 - `GET /api/v1/mobile/auth/session`：返回当前管理员和设备会话摘要。
 
-除 capabilities、login 和 refresh 外，请求必须使用 `Authorization: Bearer <access-token>`。访问令牌默认 15 分钟有效，刷新令牌默认 30 天有效；服务端数据库只保存令牌 SHA-256 摘要。修改管理员账号或密码会撤销全部浏览器与移动设备会话。
+除 capabilities、login、refresh 和上述 logout 外，请求必须使用 `Authorization: Bearer <access-token>`。访问令牌默认 15 分钟有效，刷新令牌默认 30 天有效；服务端数据库只保存访问与刷新令牌的 SHA-256 摘要。login 和 refresh 额外返回 `revocationToken`，它绑定会话、刷新时不变，仅能用于退出，不能读取数据或换取访问令牌。修改管理员账号或密码会撤销全部浏览器与移动设备会话。
+
+App 将未确认撤销的凭证与本地登录清除一起写入系统安全存储，最多保留 32 项，按原面板重试，间隔从 30 秒退避至 5 分钟；重启后继续。旧面板只支持访问令牌退出时，兼容流程会刷新后立即撤销，不把所得会话安装成当前登录。完整的并发刷新撤销保证需要面板支持 `revocationToken`。
 
 ### 管理接口
 
@@ -103,17 +105,23 @@ Android 客户端使用独立的 `/api/v1/mobile/*` JSON 接口。它不复用�
 {"error": {"code": "INVALID_REQUEST", "message": "Invalid request"}}
 ```
 
+管理员改密会原子设置该账号的本机清退标记。主入口和 UDP `443` 的旧连接持续清退，在全部离线且在途认证窗口结束之前，新认证暂时拒绝；其他账号继续正常认证。标记保存在数据库中，面板重启后继续，详见[本机安全清退决策](decisions/ADR-023-local-security-drain.md)。
+
 参考：[Hysteria 2 官方 HTTP Authentication 文档](https://v2.hysteria.network/docs/advanced/Full-Server-Config/#http-authentication)。
 
 ### `POST /auth/udp-443`
 
 仅供本机 UDP `443` Hysteria 进程调用，请求和响应结构与 `/auth` 相同。除了启用状态、流量和客户端实例限制外，还要求账号的 `allow_udp_443` 为真；未开放的账号返回 HTTP 200 与 `{"ok": false, "id": ""}`。主端口认证不检查该字段，因此开放 UDP `443` 不会停止原端口。
 
+入口权限在最终设备名额预留事务中再次检查。认证等待统计采样或使用缓存统计期间，网页或 App 已关闭该权限的请求会被拒绝，不创建新的本机认证租约；重新开放权限后沿用原 token 正常认证。
+
 ## 签名节点控制协议
 
 仅在独立面板 HTTPS 启用后开放。每个请求都包含自动确认的 `nodeId`、服务端时间窗内的 `sentAt`、32 字节 URL-safe `nonce` 与 Ed25519 `signature`；各接口使用不同签名域，来源 IP 必须与一次性对接码绑定的公网 IP 一致。除自动 bootstrap claim 外，节点还必须已经进入 `protocol_ready`。稳定错误只返回 `error.code`，不回显 token、nonce、签名或完整请求。
 
 这里的 ACK 指中央已经把状态或流量持久化，不只是“HTTP 请求已收到”。节点自动删除 spool 批次必须先确认 ACK。
+认证 `requestId` 重试保留原 `decisionId`、到期时间和预留名额，但重新核对当前凭据、账号、入口权限、额度、全局快照时效及安全清退状态；自动验收凭据还必须仍属于有效的初始化授权。旧允许结果不能绕过撤销或转给其他账号，旧拒绝结果不会因策略放宽变成允许。状态过期沿用协议拒绝，当前策略不允许则返回拒绝决策，不续期或新增设备预留。详见 [ADR 026](decisions/ADR-026-current-policy-auth-revalidation.md)。
+`KICK_USERS` 在目标账号仍在线时延后 ACK，并保持短周期重试。安全清退期间中央暂缓目标节点上该账号的新认证（包括复用旧的允许决策）；节点须再次观察到空列表且跨过 10 秒在途认证窗口后才确认完成。空闲旧连接在产生后续流量时才消费上游清退标记，不能把命令已送达当作连接已关闭。配额任务每次轮询复核用户代际和当前用量，额度恢复后取消；其他账号、其他节点的新认证继续沿用原规则。
 采样超过 7 天的批次仍被中央拒绝；节点保留过期记录并继续上传有效批次，所有未结算记录处理前禁止刷新在线快照。
 过期记录的显式人工对账与归档流程见[运维指南](OPERATIONS.md#流量暂时不增长)，归档不会自动补账或改变协议时间窗。
 

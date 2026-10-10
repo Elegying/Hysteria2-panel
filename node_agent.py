@@ -29,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.38"
+AGENT_VERSION = "0.39.39"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -74,6 +74,7 @@ CONTROL_LOOP_MAX_BACKOFF_SECONDS = 30
 CONTROL_TLS_SESSION_SECONDS = 600
 CONTROL_CYCLE_PAYLOAD_BUDGET_BYTES = 480 * 1024
 LOCAL_TRAFFIC_RESPONSE_MAX_BYTES = 512 * 1024
+LOCAL_CUMULATIVE_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
 LOCAL_STREAM_RESPONSE_MAX_BYTES = 4 * 1024 * 1024
 DOMAIN_STREAM_INTERVAL_SECONDS = 10
 MAX_DOMAIN_RECORDS = 1000
@@ -2433,7 +2434,7 @@ class LocalStatsClient:
         self.opener = opener
 
     def _request(self, path, payload=None):
-        if path not in {"/online", "/traffic?clear=1", "/dump/streams", "/kick"}:
+        if path not in {"/online", "/traffic", "/traffic?clear=1", "/dump/streams", "/kick"}:
             raise ProtocolError("traffic stats path is invalid")
         data = None
         if payload is not None:
@@ -2452,6 +2453,7 @@ class LocalStatsClient:
                     response.getcode() if hasattr(response, "getcode") else 0,
                 )
                 maximum = (
+                    LOCAL_CUMULATIVE_RESPONSE_MAX_BYTES if path == "/traffic" else
                     LOCAL_STREAM_RESPONSE_MAX_BYTES
                     if path == "/dump/streams"
                     else LOCAL_TRAFFIC_RESPONSE_MAX_BYTES
@@ -2483,6 +2485,11 @@ class LocalStatsClient:
 
     def collect_and_clear(self):
         result = self._request("/traffic?clear=1")
+        DurableTrafficSpool._validate_traffic(result, maximum_users=None)
+        return result
+
+    def cumulative_traffic(self):
+        result = self._request("/traffic")
         DurableTrafficSpool._validate_traffic(result, maximum_users=None)
         return result
 
@@ -2549,6 +2556,137 @@ class LocalStatsClient:
         users = [user for user in users if online.get(user, 0) > 0]
         if users:
             self._request("/kick", users)
+
+
+def _stats_service_epoch(client):
+    units = {19997: "main", 19995: "udp443"}
+    suffix = units.get(urllib.parse.urlsplit(client.base_url).port)
+    if suffix is None:
+        raise ProtocolError("traffic stats service is unknown")
+    unit = "hysteria2-panel-node-hysteria-{}.service".format(suffix)
+    try:
+        result = subprocess.run(  # nosec B603 -- fixed executable, property and units.
+            ["/bin/systemctl", "show", "--property=InvocationID", "--value", unit],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=2, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProtocolError("traffic stats service identity unavailable") from exc
+    value = result.stdout.strip()
+    if result.returncode or not re.fullmatch(rb"[0-9a-f]{32}", value):
+        raise ProtocolError("traffic stats service identity invalid")
+    return value.decode("ascii")
+
+
+class CumulativeTrafficCollector:
+    """Journal non-destructive samples and stable batch IDs before advancing cursors."""
+
+    MAX_JOURNAL_BYTES = 6 * LOCAL_CUMULATIVE_RESPONSE_MAX_BYTES
+
+    def __init__(self, clients, spool, epoch_reader=_stats_service_epoch):
+        self.clients = clients
+        self.spool = spool
+        self.epoch_reader = epoch_reader
+        self.path = spool.path.with_name(spool.path.name + ".cumulative")
+        self.domains_committed = False
+        self.document = {"version": 1, "endpoints": {}, "pending": []}
+        if self.path.exists() or self.path.is_symlink():
+            # Check size before allocating, and reject symlink/owner/mode changes.
+            if self.path.lstat().st_size > self.MAX_JOURNAL_BYTES:
+                raise ProtocolError("cumulative traffic journal too large")
+            try:
+                self.document = json.loads(_read_root_only_file(self.path, "traffic journal"))
+                self._validate()
+            except (ValueError, KeyError, TypeError, HeartbeatError) as exc:
+                raise ProtocolError("cumulative traffic journal invalid") from exc
+
+    def _validate(self):
+        document = self.document
+        if (not isinstance(document, dict) or set(document) != {"version", "endpoints", "pending"}
+                or document["version"] != 1 or not isinstance(document["endpoints"], dict)
+                or len(document["endpoints"]) > 2 or not isinstance(document["pending"], list)):
+            raise ProtocolError("cumulative traffic journal invalid")
+        for url, snapshot in document["endpoints"].items():
+            if (url not in {"http://127.0.0.1:19997", "http://127.0.0.1:19995",
+                               "http://[::1]:19997", "http://[::1]:19995"}
+                    or not isinstance(snapshot, dict) or set(snapshot) != {"epoch", "traffic"}
+                    or not isinstance(snapshot["epoch"], str)
+                    or not re.fullmatch(r"[0-9a-f]{32}", snapshot["epoch"])):
+                raise ProtocolError("cumulative traffic endpoint invalid")
+            DurableTrafficSpool._validate_traffic(snapshot["traffic"], maximum_users=None)
+        for batch in document["pending"]:
+            DurableTrafficSpool._validate_batch(batch)
+
+    def _save(self, document):
+        encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > self.MAX_JOURNAL_BYTES:
+            raise ProtocolError("cumulative traffic journal too large")
+        if shutil.disk_usage(str(self.spool.path)).free < len(encoded) + self.spool.reserve_bytes:
+            raise TrafficSpoolFullError("traffic journal has insufficient capacity")
+        descriptor, staged = tempfile.mkstemp(prefix=".cumulative-", dir=str(self.path.parent))
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(staged, self.path)
+            # If directory fsync fails, keep the now-visible stable IDs in memory.
+            self.document = document
+            _fsync_directory(self.path.parent)
+        finally:
+            if os.path.exists(staged):
+                os.unlink(staged)
+
+    def recover(self):
+        pending = self.document["pending"]
+        if not pending:
+            return 0
+        self.spool.persist_collections([(batch, self.spool._encode_batch(batch)) for batch in pending])
+        total = sum(c["tx"] + c["rx"] for b in pending for c in b["traffic"].values())
+        self._save(dict(self.document, pending=[]))
+        return total
+
+    def collect(self, observed_at, domains, domain_observed_at=None):
+        self.domains_committed = False
+        if self.document["pending"]:
+            return self.recover()
+        endpoints = dict(self.document["endpoints"])
+        collections = []
+        failure = None
+        for client in self.clients:
+            try:
+                epoch = self.epoch_reader(client)
+                traffic = client.cumulative_traffic()
+                if epoch != self.epoch_reader(client):
+                    raise ProtocolError("traffic service restarted during collection")
+                previous = endpoints.get(client.base_url, {})
+                baseline = previous.get("traffic", {}) if previous.get("epoch") == epoch else {}
+                if any(name not in traffic or any(traffic[name][key] < old[key] for key in ("tx", "rx"))
+                       for name, old in baseline.items()):
+                    raise ProtocolError("traffic counters cleared outside the collector")
+                delta = {name: {key: counters[key] - baseline.get(name, {}).get(key, 0)
+                                for key in ("tx", "rx")} for name, counters in traffic.items()}
+                collections.append({name: c for name, c in delta.items() if c["tx"] or c["rx"]})
+                endpoints[client.base_url] = {"epoch": epoch, "traffic": traffic}
+            except (OSError, ProtocolError) as exc:
+                failure = exc
+        prepared = self.spool.prepare_collections(collections, observed_at)
+        prepared.extend(self.spool.prepare_collections(
+            [], observed_at if domain_observed_at is None else domain_observed_at, domains
+        ))
+        if prepared:
+            document = {"version": 1, "endpoints": endpoints,
+                        "pending": [batch for batch, _encoded in prepared]}
+            try:
+                self._save(document)
+            finally:
+                self.domains_committed = self.document is document
+            result = self.recover()
+        else:
+            result = 0
+        if failure is not None:
+            raise failure
+        return result
 
 
 class DomainStreamAccumulator:
@@ -2701,6 +2839,12 @@ def execute_control_command(
     payload = command["payload"]
     if kind == "KICK_USERS" and isinstance(payload, dict) and set(payload) == {"users"}:
         stats_client.kick(payload["users"])
+        # Hysteria consumes one kick marker per connection traffic event. Keep
+        # the command leased until every targeted connection has disappeared;
+        # the next central poll also revalidates superseded quota commands.
+        online = stats_client.online()
+        if any(online.get(user, 0) > 0 for user in payload["users"]):
+            return "deferred-ack"
         return
     if kind == "REFRESH_SNAPSHOT" and payload == {}:
         if refresh_snapshot is None:
@@ -3000,6 +3144,7 @@ class NodeControlCycle:
         stop_data_plane=stop_node_data_plane,
         start_data_plane=start_node_data_plane,
         queue_uninstall=queue_node_uninstall,
+        traffic_collector=None,
     ):
         self.protocol_client = protocol_client
         self.stats_client = stats_client
@@ -3009,6 +3154,9 @@ class NodeControlCycle:
         self.stop_data_plane = stop_data_plane
         self.start_data_plane = start_data_plane
         self.queue_uninstall = queue_uninstall
+        self.traffic_collector = traffic_collector
+        self._cumulative_sample = None
+        self._kick_quiet_since = {}
         self._combined_supported = hasattr(protocol_client, "send_control_cycle")
         self.domain_usage_collector = DomainStreamAccumulator()
         self._next_domain_collection_at = 0
@@ -3046,6 +3194,8 @@ class NodeControlCycle:
         return endpoint_count * LOCAL_TRAFFIC_RESPONSE_MAX_BYTES
 
     def _can_collect(self):
+        if self.traffic_collector is not None:
+            return True  # Non-destructive reads remain recoverable when the spool is full.
         if self._unpersisted_collection is not None:
             return True  # Retry the retained response without clearing counters again.
         return self.spool.can_collect(self._collection_capacity())
@@ -3072,15 +3222,42 @@ class NodeControlCycle:
         return traffic_bytes
 
     def _collect_to_spool(self):
+        try:
+            return self._collect_local_sample()
+        except (OSError, ProtocolError):
+            if self.traffic_collector is not None:
+                # Source or capacity failures must not prevent durable backlog
+                # from draining. Never replay a failed combined network POST.
+                try:
+                    self._upload_pending()
+                except (OSError, ProtocolError):
+                    pass
+            raise
+
+    def _collect_local_sample(self):
+        collector = self.traffic_collector
+        if collector is not None and collector.document["pending"]:
+            return collector.recover()
         if self._unpersisted_collection is not None:
             return self._persist_retained_collection()
         observed_at = int(self.clock())
         domains = []
-        if observed_at >= self._next_domain_collection_at:
+        if self._cumulative_sample is None and observed_at >= self._next_domain_collection_at:
             domains = self.domain_usage_collector.collect(self.stats_client)
             self._next_domain_collection_at = (
                 observed_at + DOMAIN_STREAM_INTERVAL_SECONDS
             )
+        if collector is not None:
+            if self._cumulative_sample is None and domains:
+                self._cumulative_sample = (observed_at, domains)
+            domain_observed_at = observed_at
+            if self._cumulative_sample is not None:
+                domain_observed_at, domains = self._cumulative_sample
+            try:
+                return collector.collect(observed_at, domains, domain_observed_at)
+            finally:
+                if collector.domains_committed:
+                    self._cumulative_sample = None
         try:
             if hasattr(self.stats_client, "collect_and_clear_batches"):
                 batches = self.stats_client.collect_and_clear_batches()
@@ -3142,6 +3319,8 @@ class NodeControlCycle:
         return self._upload_pending()
 
     def refresh_snapshot(self):
+        if self.traffic_collector is not None and self.traffic_collector.document["pending"]:
+            raise ProtocolError("traffic collection has not been persisted")
         if self._unpersisted_collection is not None:
             raise ProtocolError("traffic collection has not been persisted")
         pending, expired = self._uploadable_pending()
@@ -3299,10 +3478,25 @@ class NodeControlCycle:
                         quiesce_traffic=self.quiesce_traffic,
                     )
                 except Exception:
+                    self._kick_quiet_since.pop(command_id, None)
                     ok, error_code = False, "EXECUTION_FAILED"
                 else:
                     if outcome == "deferred-ack":
+                        self._kick_quiet_since.pop(command_id, None)
                         continue
+                    if command.get("kind") == "KICK_USERS":
+                        now = self.clock()
+                        if command_id not in self._kick_quiet_since:
+                            # Bounded transient observations: a restart or
+                            # eviction only restarts the quiet window safely.
+                            if len(self._kick_quiet_since) >= 4096:
+                                self._kick_quiet_since.pop(next(iter(self._kick_quiet_since)))
+                            self._kick_quiet_since[command_id] = now
+                        # Hysteria bounds an already-issued HTTP auth at 10s.
+                        # Observe another empty list after that in-flight window.
+                        if now - self._kick_quiet_since[command_id] < 10:
+                            continue
+                        self._kick_quiet_since.pop(command_id, None)
                     self.state.record_command_completed(command_id, int(self.clock()))
             try:
                 self.protocol_client.ack_command(command_id, ok, error_code)
@@ -3491,6 +3685,7 @@ def _parser():
     command.add_argument("--batch-id", required=True)
     command.add_argument("--sha256", required=True)
     command.add_argument("--confirm-accounted", action="store_true", required=True)
+    subcommands.add_parser("accounting-mode")
     for name in ("control-once", "control-loop", "quiesce-traffic"):
         command = subcommands.add_parser(name)
         command.add_argument("--private-key", required=True)
@@ -3502,6 +3697,7 @@ def _parser():
         if name == "quiesce-traffic":
             command.add_argument("--require-ack", action="store_true")
             command.add_argument("--upload-only", action="store_true")
+            command.add_argument("--legacy-traffic", action="store_true")
     return parser
 
 
@@ -3523,7 +3719,15 @@ def _make_control_cycle(options):
         stats_client = CombinedLocalStatsClient(*stats_clients)
     spool = DurableTrafficSpool(pathlib.Path(options.spool_dir))
     state = ProtocolState(pathlib.Path(options.protocol_state))
-    return NodeControlCycle(protocol_client, stats_client, spool, state)
+    # An aborted upgrade can resume the installed clearing collector. Its
+    # maintenance helper must use the same contract until the core is stopped.
+    collector = None
+    if not getattr(options, "legacy_traffic", False):
+        collector = CumulativeTrafficCollector(stats_clients, spool)
+    return NodeControlCycle(
+        protocol_client, stats_client, spool, state,
+        traffic_collector=collector,
+    )
 
 
 def main(arguments=None):
@@ -3531,6 +3735,9 @@ def main(arguments=None):
         options = _parser().parse_args(arguments)
     except SystemExit as exc:
         return int(exc.code)
+    if options.command == "accounting-mode":
+        print("cumulative-v1")
+        return 0
     if options.command == "reconcile-traffic":
         try:
             DurableTrafficSpool(options.spool_dir).reconcile(
