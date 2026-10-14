@@ -1,0 +1,12 @@
+[Unit]
+Description=Panel OSS backup every Monday 09:00 Asia/Shanghai
+
+[Timer]
+OnCalendar=Mon *-*-* 09:00:00 Asia/Shanghai
+AccuracySec=1s
+RandomizedDelaySec=0
+Persistent=true
+Unit=hy2-oss-backup.service
+
+[Install]
+WantedBy=timers.target

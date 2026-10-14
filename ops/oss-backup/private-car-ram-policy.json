@@ -1,0 +1,42 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "oss:PutObject",
+        "oss:GetObject",
+        "oss:GetObjectAcl",
+        "oss:PutObjectAcl",
+        "oss:DeleteObject"
+      ],
+      "Resource": [
+        "acs:oss:*:*:nikuaimobi/私家车备份/hy2-backup-*"
+      ],
+      "Condition": {
+        "Bool": {
+          "acs:SecureTransport": "true"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "oss:ListObjects"
+      ],
+      "Resource": [
+        "acs:oss:*:*:nikuaimobi"
+      ],
+      "Condition": {
+        "StringLike": {
+          "oss:Prefix": [
+            "私家车备份/hy2-backup-*"
+          ]
+        },
+        "Bool": {
+          "acs:SecureTransport": "true"
+        }
+      }
+    }
+  ]
+}

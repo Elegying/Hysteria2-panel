@@ -1,0 +1,25 @@
+[Unit]
+Description=Prune only generated OSS backups older than 30 days
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=hy2panel
+ExecStart=/opt/hy2-oss-backup/venv/bin/python /opt/hy2-oss-backup/backup.py --prune-only
+TimeoutStartSec=20min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/backups/hysteria2-panel/oss-staging /var/lib/hysteria2-panel
+MemoryMax=256M
+TasksMax=32
