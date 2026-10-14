@@ -1,0 +1,8 @@
+{
+  "bucket": "nikuaimobi",
+  "region": "cn-qingdao",
+  "prefix": "私家车备份/",
+  "retention_days": 30,
+  "access_key_id": "",
+  "access_key_secret": ""
+}

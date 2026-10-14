@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily 30-day OSS backup retention check
+
+[Timer]
+OnCalendar=*-*-* 09:45:00 Asia/Shanghai
+AccuracySec=1min
+Persistent=true
+Unit=hy2-oss-retention.service
+
+[Install]
+WantedBy=timers.target

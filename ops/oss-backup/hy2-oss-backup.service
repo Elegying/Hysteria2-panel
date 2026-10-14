@@ -1,0 +1,29 @@
+[Unit]
+Description=Validated panel backup to private Alibaba Cloud OSS object
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=2h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=root
+Group=hy2panel
+ExecStart=/opt/hy2-oss-backup/venv/bin/python /opt/hy2-oss-backup/backup.py
+Restart=on-failure
+RestartSec=5min
+TimeoutStartSec=20min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/backups/hysteria2-panel/oss-staging /var/lib/hysteria2-panel /run/hysteria2-panel-maintenance
+MemoryMax=512M
+TasksMax=48
