@@ -207,6 +207,7 @@ Hysteria 支持用 ACL 将 IPv6 目标交给 SOCKS5 出站，但中转必须具�
 | 理解组件、数据流与安全边界 | [架构说明](docs/ARCHITECTURE.md) |
 | 对接内部 HTTP 契约 | [HTTP 接口契约](docs/API.md) |
 | 发布正式版本或滚动升级多节点 | [发布与回滚](docs/DEPLOYMENT.md) |
+| 重装开发电脑后恢复维护与 APK 签名 | [开发与发布恢复](docs/DEVELOPER_RECOVERY.md) |
 | 查找 ADR、规格、审计与历史材料 | [完整文档索引](docs/README.md) |
 | 查看版本变化 | [变更日志](CHANGELOG.md) |
 
