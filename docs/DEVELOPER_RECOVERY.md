@@ -21,15 +21,17 @@
 brew install git gh age python@3.13 openjdk@17
 export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"
 export PATH="$JAVA_HOME/bin:$(brew --prefix python@3.13)/libexec/bin:$PATH"
-gh auth login --hostname github.com --git-protocol https --web
+gh auth login --hostname github.com --git-protocol https --web --scopes workflow
 gh auth setup-git
 mkdir -p "$HOME/Developer"
 gh repo clone Elegying/Hysteria2-panel "$HOME/Developer/Hysteria2-panel"
 cd "$HOME/Developer/Hysteria2-panel"
+git config user.name "$(gh api user --jq '.name // .login')"
+git config user.email "$(gh api user --jq '(.id | tostring) + "+" + .login + "@users.noreply.github.com"')"
 git status --short --branch
 ```
 
-把上述 `JAVA_HOME` 与 PATH 配置保存到新电脑的 shell 配置中。不要把密码、GitHub token 或恢复私钥放入 shell 历史。Linux 可使用发行版包管理器安装 Git、GitHub CLI、age、Python 3.8+ 和 JDK 17；正式面板完整部署、systemd 与防火墙测试需要 Linux。
+把上述 `JAVA_HOME` 与 PATH 配置保存到新电脑的 shell 配置中。`workflow` 权限用于以后提交工作流变更；提交身份使用当前账号的 GitHub noreply 邮箱，仅配置本仓库。不要把密码、GitHub token 或恢复私钥放入 shell 历史。Linux 可使用发行版包管理器安装 Git、GitHub CLI、age、Python 3.8+ 和 JDK 17；正式面板完整部署、systemd 与防火墙测试需要 Linux。
 
 ## 3. 一条命令恢复正式签名
 
