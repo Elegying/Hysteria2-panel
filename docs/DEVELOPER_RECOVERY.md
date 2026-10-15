@@ -69,7 +69,7 @@ flutter config --jdk-dir "$JAVA_HOME"
 brew install --cask android-studio
 ```
 
-打开 Android Studio 完成首次设置，在 SDK Manager 安装 Android SDK、Command-line Tools 和 Build-Tools。默认 SDK 目录为 `~/Library/Android/sdk`。执行以下命令并阅读、接受 SDK 许可：
+打开 Android Studio 完成首次设置，在 SDK Manager 安装 Android SDK、Command-line Tools 和 Build-Tools。当前固定 Flutter 对应 Android Platform `36`、Build-Tools `36.x` 和 NDK `28.2.13676358`；以固定 SDK 的配置为准。默认 SDK 目录为 `~/Library/Android/sdk`。执行以下命令并阅读、接受 SDK 许可：
 
 ```bash
 export ANDROID_HOME="$HOME/Library/Android/sdk"
