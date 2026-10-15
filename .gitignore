@@ -6,6 +6,11 @@ __pycache__/
 .env
 *.pem
 *.key
+*.jks
+*.keystore
+*.agekey
+*age-identity*.txt
+**/signing.properties
 .DS_Store
 .codebase-memory/
 .venv-audit/
