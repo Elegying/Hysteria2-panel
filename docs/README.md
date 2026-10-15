@@ -21,6 +21,7 @@
 | [架构说明](ARCHITECTURE.md) | 组件、认证流、流量账本、节点身份和故障边界 |
 | [HTTP 接口契约](API.md) | Hysteria 回调、签名节点协议与管理路由 |
 | [发布与回滚](DEPLOYMENT.md) | 正式 Release、发布门禁、多节点滚动升级和中断恢复 |
+| [重装后的开发与发布恢复](DEVELOPER_RECOVERY.md) | 恢复开发环境、从 GitHub 安全恢复原 Android 签名、继续维护与发布 |
 | [稳定化与发布质量](STABILIZATION.md) | 允许的变更范围、必过检查和发布判定 |
 | [贡献指南](../CONTRIBUTING.md) | 开发流程、验证要求和提交说明 |
 | [安全政策](../SECURITY.md) | 私密报告漏洞和支持版本 |
