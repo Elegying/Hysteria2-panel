@@ -85,7 +85,7 @@ def exercise(engine, output):
                 page.locator("#name").fill("core-created")
                 page.locator("[data-create-user-form] button").click()
                 expect(page.locator("[data-create-user-form] button")).to_be_enabled()
-                assert len([u for u in fixture.db.list_proxy_users() if u["name"] == "core-created"]) == 1
+                assert len([u for u in fixture.db.list_proxy_users()["users"] if u["name"] == "core-created"]) == 1
                 page.keyboard.press("Escape")
                 report["passed"].append("duplicate-create-recovers")
 

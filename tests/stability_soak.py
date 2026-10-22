@@ -132,7 +132,7 @@ def main():
     import node_agent
     from hy2panel.distributed import canonical_node_request
     db = panel.Database(Path(values["HY2PANEL_DB"]), bytes.fromhex(values["HY2PANEL_HMAC_KEY"]))
-    if db.list_proxy_users(limit=1) or db.list_nodes():
+    if db.list_proxy_users(limit=1)["total"] or db.list_nodes():
         raise SystemExit("Fixture must start with an empty user/node dataset")
     # Enable HTTPS with a fixture-only CA, retaining the separate Hysteria identity.
     import grp
@@ -184,6 +184,7 @@ def main():
                  now, now, now, now, now, now))
         nodes.append((node_id, key))
     stop = threading.Event()
+    streams_ready = threading.Semaphore(0)
     errors = []
     latencies = deque(maxlen=20000)
     lock = threading.Lock()
@@ -253,10 +254,14 @@ def main():
     def stream(port):
         with connect_stream(port) as sock:
             body = b"isolated-hysteria-acceptance\n" * 40
+            ready = False
             while not stop.is_set():
                 sock.sendall(body)
                 if receive(sock, len(body)) != body:
                     raise RuntimeError("echo payload changed")
+                if not ready:
+                    streams_ready.release()
+                    ready = True
                 stop.wait(1)
 
     admin = db.upsert_admin("soak-admin", secrets.token_urlsafe(32))
@@ -304,6 +309,9 @@ def main():
                 start(lambda index=index: stream(33000 + index))
         for _ in range(10):
             start(management)
+        for _ in range(100):
+            if not streams_ready.acquire(timeout=15):
+                raise RuntimeError("all 100 real data streams must be active before observation")
         # Start the observation clock only after the complete load is running.
         started, started_at = time.monotonic(), time.time()
         report["startedAt"] = started_at
