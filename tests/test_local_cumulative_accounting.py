@@ -162,6 +162,32 @@ manager.collect_once()
         self.manager().collect_once()
         self.assertEqual(330, self.total())
 
+    def test_real_sqlite_writer_lock_retains_cumulative_sample_for_recovery(self):
+        manager = self.manager()
+        with self.db._connect() as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+                manager.collect_once()
+            self.assertEqual(0, self.total())
+            self.assertEqual(100, self.traffic[0]["alice"]["tx"])
+        self.manager().collect_once()
+        self.assertEqual(330, self.total())
+        self.manager().collect_once()
+        self.assertEqual(330, self.total())
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory write permissions")
+    def test_real_read_only_directory_preserves_core_counters(self):
+        manager = self.manager()
+        self.root.chmod(0o500)
+        try:
+            with self.assertRaises(PermissionError):
+                manager.collect_once()
+            self.assertEqual(100, self.traffic[0]["alice"]["tx"])
+        finally:
+            self.root.chmod(0o700)
+        self.manager().collect_once()
+        self.assertEqual(330, self.total())
+
     def test_partial_failure_commits_healthy_entrypoint_without_double_counting(self):
         self.fail_endpoints.add(1)
         with self.assertRaises(OSError):

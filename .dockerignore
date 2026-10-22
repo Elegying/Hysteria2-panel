@@ -1,0 +1,3 @@
+# The installer test image has no COPY steps. Do not send local builds or keys.
+**
+!tests/installer_e2e.Dockerfile

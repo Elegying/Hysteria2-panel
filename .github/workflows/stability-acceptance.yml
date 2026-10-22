@@ -1,0 +1,98 @@
+name: Stability acceptance
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [firefox, webkit]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Install pinned browser engines
+        run: |
+          python -m pip install playwright==1.61.0
+          python -m playwright install --with-deps ${{ matrix.engine }}
+      - name: Run isolated core flows
+        run: python tests/browser_core_flows.py --engine ${{ matrix.engine }} --output "$RUNNER_TEMP/browser-core"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: browser-${{ matrix.engine }}-${{ github.sha }}
+          path: ${{ runner.temp }}/browser-core
+          retention-days: 14
+
+  android-native:
+    name: Android API ${{ matrix.api }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api: 24
+            target: default
+          - api: 36
+            target: google_apis
+    env:
+      ORG_GRADLE_PROJECT_previewBuild: 'true'
+      ORG_GRADLE_PROJECT_stabilityTestBuild: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install exact Flutter SDK revision
+        run: |
+          flutter_dir="$RUNNER_TEMP/flutter"
+          git init "$flutter_dir"
+          git -C "$flutter_dir" remote add origin https://github.com/flutter/flutter.git
+          git -C "$flutter_dir" fetch --depth=1 origin refs/tags/3.47.2:refs/tags/3.47.2
+          git -C "$flutter_dir" checkout --detach refs/tags/3.47.2
+          test "$(git -C "$flutter_dir" rev-parse HEAD)" = d3b14c876900e553bc736ca19295fc09e3853e8e
+          printf '%s/bin\n' "$flutter_dir" >> "$GITHUB_PATH"
+      - name: Start an isolated emulator and HTTPS fixtures
+        env:
+          IMAGE: system-images;android-${{ matrix.api }};${{ matrix.target }};x86_64
+        run: |
+          sudo chmod a+rw /dev/kvm
+          sdkmanager "$IMAGE" emulator
+          echo no | avdmanager create avd --force --name hy2-acceptance --package "$IMAGE"
+          "$ANDROID_HOME/emulator/emulator" -avd hy2-acceptance -no-window -no-audio \
+            -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb wait-for-device
+          for attempt in $(seq 1 180); do
+            test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 && break
+            sleep 2
+          done
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1
+          adb shell input keyevent 82
+          python3 tests/mobile_fixture.py --defines "$RUNNER_TEMP/acceptance-defines.json" > "$RUNNER_TEMP/fixture.log" 2>&1 &
+          for attempt in $(seq 1 30); do
+            test -s "$RUNNER_TEMP/acceptance-defines.json" && break
+            sleep 1
+          done
+          test -s "$RUNNER_TEMP/acceptance-defines.json"
+          adb reverse tcp:31888 tcp:31888
+          adb reverse tcp:31889 tcp:31889
+      - name: Exercise native plugins and existing application flows
+        working-directory: mobile
+        run: |
+          flutter pub get
+          git diff --exit-code -- pubspec.lock
+          flutter test integration_test/native_acceptance_test.dart -d emulator-5554 \
+            --dart-define-from-file="$RUNNER_TEMP/acceptance-defines.json"
+      - name: Print failure diagnostics without app data
+        if: failure()
+        run: |
+          tail -n 80 "$RUNNER_TEMP/emulator.log" || true
+          tail -n 80 "$RUNNER_TEMP/fixture.log" || true

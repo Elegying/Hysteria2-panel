@@ -1,0 +1,55 @@
+# 稳定性候选验收记录
+
+本轮目标为现有功能不变的稳定性验收。完整合同见 [182 项功能基线](FUNCTION_ACCEPTANCE_BASELINE.md)，逐项记录见 [验收矩阵 CSV](STABILITY_ACCEPTANCE.csv)。矩阵中的测试文件只是执行入口；没有当前候选的充分证据时保持“未测”，不能把历史报告或文件存在视为通过。
+
+## 候选与证据
+
+- 测试分支：`codex/local-accounting-read-snapshots-20261022`。
+- [草稿 PR #163](https://github.com/Elegying/Hysteria2-panel/pull/163)，不合并、不正式发布。
+- 基线提交：`6d14976a44bdda112314407ed94a2a50e1c71316`。
+- 第一检查点：`fe0c002`，累计计量恢复与展示查询去结算。
+- 运行时修复：`7c21903b39f97f78f3cb9585f0333015a0638685`，展示在线 HTTP 移出认证锁、同一 SQLite 快照读取流量与时间、App 按节点样本计算速率。
+- [该运行时提交的 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39788046162)：Python 3.8/3.12/3.13、Flutter、Chromium 36 组交互、静态检查、依赖矩阵、systemd、防火墙及现有五组完整安装检查通过。后续测试基础设施变更仍需绑定新提交重跑。
+- 本机证据目录由执行环境保留，不向仓库上传私钥、会话、测试 APK、完整备份或原始面板配置。公开结果只记录源码 SHA、时间、构建摘要、错误分类及资源统计。
+
+## 新增可重复入口
+
+### 浏览器
+
+保留 `tests/browser_controls.py` 的 Chromium 完整交互。`tests/browser_core_flows.py` 为 Firefox/WebKit 增加真实 HTTP 往返、键盘登录、弹窗焦点、窄屏、200% CSS 缩放、创建失败恢复、操作取消/确认、备份下载和退出。CSS 缩放检查不等同于所有桌面浏览器原生缩放设置的人工验收。
+
+```sh
+python -m pip install playwright==1.61.0
+python -m playwright install firefox webkit
+python tests/browser_core_flows.py --engine firefox --output /tmp/hy2-firefox
+python tests/browser_core_flows.py --engine webkit --output /tmp/hy2-webkit
+```
+
+### Android
+
+`stabilityTestBuild` 必须同时设置 `previewBuild`，只允许 debug。使用独立包名 `vip.ssrvpn.hysteria2manager.preview.stability`，支持测试用 x86_64/arm64；普通发行构建仍只有 arm64。正式 App 和已有预览 App 的存储不受影响。
+
+`tests/mobile_fixture.py` 提供两套临时 HTTPS 测试面板。仅集成测试入口信任这次生成的测试证书；产品连接器、证书验证和 HTTPS 限制保持不变。`mobile/integration_test/native_acceptance_test.dart` 覆盖真实安全存储、HTTPS、双面板、控制器重建、注入网络错误后的恢复、四个模块及退出。控制器重建不等同于操作系统强杀进程、真实网络切换和后台驻留，这些项目需另记实机证据。
+
+| 状态 | 预期反馈与恢复 |
+|---|---|
+| 读取节点新样本 | 按该节点的采样间隔计算速率 |
+| 重复样本 | 保留速率与基线，等待新样本 |
+| 时间倒退或计数下降 | 速率归零并重建基线 |
+| 旧服务缺少有效样本时间 | 使用原响应时间口径 |
+| 迟到响应或离开页面 | 原有请求代次保护继续生效 |
+| 请求失败 | 保留可信数据，提示错误，允许重试 |
+
+### Linux 持续观察
+
+`tests/stability_soak.py` 只接受明确标记的独立 Docker/systemd 测试环境，必须使用测试端口、空白用户/节点数据以及与安装目录一致的源码。它保留原 Hysteria TLS 身份与全部 ACL，在隔离网络中使用 `198.18.0.2` 作为数据面回显目标。
+
+负载为 1,000 用户、10 个持 Ed25519 身份的合成节点报告器、10 个真实 Hysteria 客户端、双入口合计 100 条持续 TCP 流、10 个管理查询客户端及 64 路认证突发。合成节点报告器不等同于 10 台独立物理服务器或各自运行完整代理的节点。
+
+默认观察 172,800 秒，记录每 30 秒的 RSS、线程、文件句柄、CPU ticks、监听队列和认证 p95。远端每批核对累计值，结束时核对双入口实际累计值与本机账本。运行不足 48 小时只标记 `short-run-only`；异常终止、服务/客户端退出、账本不符、RSS 或资源增长超限均失败，并保留原目录与数据库。
+
+首次预热 10 分钟后，比较首末一小时 RSS 中位数，允许增长为 `max(10%, 16 MiB)`。运行时代码改变后必须重新计时。仅文档调整可以继续，但必须保留源码哈希对应关系。
+
+## 收敛前仍需核对
+
+六平台 nightly 矩阵须绑定最终候选。新增浏览器与 Android 原生工作流、真实手机生命周期、连续 48 小时结果、故障注入与性能前后对比尚不能由上述 CI 自动推定通过。HTTPS/ACME 和 WebDAV 的生产接入、真实公网证书签发仍为独立部署验收。
