@@ -18,6 +18,11 @@ commands
   thread apply all backtrace 12
   info sharedlibrary
   x/8i $pc
+  # Scalar-only diagnosis of the captured x86-64 glInvalidateFramebuffer trap.
+  # No memory, frame arguments, pointer dereferences or application data.
+  if $_siginfo.si_signo == 4
+    printf "fault-ebx=%u fault-r14d=%u\n", $ebx, $r14d
+  end
   set logging enabled off
   # Pass the signal to the original handler, including recoverable probes.
   continue
