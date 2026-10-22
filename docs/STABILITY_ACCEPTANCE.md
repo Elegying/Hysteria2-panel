@@ -86,7 +86,7 @@ Python 分配剖析完成后仅约 14.9 MB 活跃分配，手动 GC 没有回收
 
 - 本机完整 Python 3.13.15 回归曾有一个总截止测试失败：请求子进程在到达 HTTP 服务前已被取消；截止与回收断言通过，服务端收到请求数的断言失败。保留原日志，不放宽产品超时。Linux CI 的三个 Python 版本结果单独记录。
 - 首轮浏览器测试的 HTTP Secure Cookie、CSS zoom 视口模拟、用户列表返回类型错误属于测试配置问题，修正前日志保留。Linux Firefox/WebKit 核心流程通过；本机 WebKit 曾有导航阶段 access-control 报错，增加窗口异常诊断后的运行未复现，仍不能据此断言间歇问题已根除。
-- Android API 24 原生集成通过。API 36 完成构建和启动后，Dart 测试驱动报告 `0 tests passed / No tests were found`，退出 79；日志尚不足以区分原生退出和驱动异常，新增阶段标记、结构化测试事件及隔离模拟器 logcat 保留入口，仍视为失败。本机预览构建为错峰执行已停止，手机 API 37 尚未验收；不得把控制器重建或模拟网络错误当作系统进程重建和真实网络切换。
+- Android API 24 原生集成通过。API 36 完成 HTTPS/双面板/安全存储后设备离线，Dart 驱动报告 `0 tests passed / No tests were found`。进一步记录确认宿主模拟器退出码 139；宿主仍有约 10.5 GiB 可用内存、swap 为 0，未记录 OOM。为区分模拟器图形后端，API 36 改用 Android 官方支持的 `swangle`（SwiftShader + ANGLE），保留产品 Impeller、玻璃效果及全部断言；原 `swiftshader` 崩溃日志保留，尚不能视为已解决或通过。选项见 [Android 官方图形加速说明](https://developer.android.com/studio/run/emulator-acceleration)。手机 API 37 尚未验收；不得把控制器重建或模拟网络错误当作系统进程重建和真实网络切换。
 - Android CI 的首轮模拟器启动失败已定位到 AVD 创建与查找目录不一致；固定独立目录，并在启动前检查 AVD 名称。安装容量回归在恢复 HTTP 配置后误用了 HTTPS Cookie，导致 303；测试按实际协议选择现有 Cookie 名称，产品会话规则不变。两类失败原始日志均保留。
 - `41119ed` 的混合负载启动阶段出现一次固定服务 InvocationID 查询超过既有 2 秒时限，认证按失败关闭规则拒绝连接。同期本机存在其他构建负载；稍后 20 次只读查询为 11–61 毫秒。尚未证明根因，不放宽超时、不将本次记录计入 48 小时通过证据。
 - 182 项矩阵保留正式发布阶段的“不适用”条目。`SEC-09` 与 `APP-03` 对可选记住密码的文字存在冲突：本轮保持现有可选安全存储行为，不能为了符合旧文字而删除功能。

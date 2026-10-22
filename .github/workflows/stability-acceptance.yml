@@ -48,8 +48,10 @@ jobs:
         include:
           - api: 24
             target: default
+            gpu: swiftshader
           - api: 36
             target: google_apis
+            gpu: swangle
     env:
       ORG_GRADLE_PROJECT_previewBuild: 'true'
       ORG_GRADLE_PROJECT_stabilityTestBuild: 'true'
@@ -89,7 +91,7 @@ jobs:
           (
             set +e
             "$ANDROID_HOME/emulator/emulator" -avd hy2-acceptance -no-window -no-audio \
-              -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1
+              -no-boot-anim -no-snapshot -gpu ${{ matrix.gpu }} -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1
             printf '%s\n' "$?" > "$RUNNER_TEMP/emulator-exit-code.txt"
           ) &
           timeout 120 adb wait-for-device
