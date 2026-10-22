@@ -11095,6 +11095,15 @@ def run_supervised_services(
 def run_service(settings):
     database = Database(settings.database_path, settings.hmac_key)
     database.initialize()
+    # Root backup readers must never recreate live WAL files with root-only
+    # permissions. Keep the service-owned sidecars open without a transaction;
+    # other connections can still write and checkpoint while workers run.
+    with database._connect() as wal_keeper:
+        wal_keeper.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
+        _run_service_with_database(settings, database)
+
+
+def _run_service_with_database(settings, database):
     if not database.has_admin():
         raise RuntimeError("no administrator exists; run init-admin first")
     # Runtime leases and online snapshots describe one live panel process. A

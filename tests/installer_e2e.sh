@@ -317,3 +317,4 @@ echo "fresh-install/upgrade SIGKILL recovery, watchdog restart and health verifi
 
 python3 /workspace/tests/installer_https_usage.py
 python3 /workspace/tests/installer_dashboard_capacity.py
+python3 /workspace/tests/installer_wal_backup.py
