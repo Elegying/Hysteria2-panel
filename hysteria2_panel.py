@@ -3547,11 +3547,14 @@ class Database:
 
     def list_usage_origins(self, machine_totals=False):
         with self._connect() as connection:
+            # Keep the committed sample time and its totals in one WAL snapshot.
+            connection.execute("BEGIN")
             rows = [
                 dict(row)
                 for row in connection.execute(
                     """SELECT o.origin_id, o.kind, o.node_id, o.display_name,
                         o.created_at, o.last_traffic_at,
+                        o.last_traffic_at AS traffic_observed_at,
                         COALESCE(SUM(u.tx_bytes), 0) AS tx_bytes,
                         COALESCE(SUM(u.rx_bytes), 0) AS rx_bytes
                     FROM usage_origins AS o
@@ -10221,19 +10224,21 @@ class UsageManager:
     def snapshot(self):
         # Display requests never collect or settle traffic. Mutations and the
         # background collector retain the existing mandatory settlement path.
+        # A slow display-only HTTP read must not hold the authorization lock.
+        online_available = True
+        try:
+            online = self.stats_client.online()
+        except Exception:
+            LOGGER.exception("online snapshot failed during dashboard snapshot")
+            online = {}
+            online_available = False
+        online_observed_at = int(self.wall_clock()) if online_available else None
         with self.lock:
             available = bool(
-                self._last_collection_ok and self._last_collection_at is not None
+                online_available and self._last_collection_ok
+                and self._last_collection_at is not None
                 and 0 <= self.clock() - self._last_collection_at <= 30
             )
-            online_available = True
-            try:
-                online = self.stats_client.online()
-            except Exception:
-                LOGGER.exception("online snapshot failed during dashboard snapshot")
-                online = {}
-                available = False
-                online_available = False
             users = self.database.list_proxy_users_for_usage()
             now = int(self.wall_clock())
             node_states = self.database.list_node_online_states(
@@ -10271,7 +10276,8 @@ class UsageManager:
                 "online_state": (
                     "fresh" if online_available else "unavailable"
                 ),
-                "observed_at": now if online_available else None,
+                "observed_at": online_observed_at,
+                "traffic_observed_at": traffic_observed_at,
             }
         )
         current_node_ids = set()

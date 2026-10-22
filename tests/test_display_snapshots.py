@@ -1,8 +1,11 @@
 """Display reads do no accounting writes and share data without stale mutations."""
 
+import concurrent.futures
+import contextlib
 import json
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -86,6 +89,86 @@ class DisplaySnapshotTests(unittest.TestCase):
         self.db.set_proxy_user_enabled(self.user["id"], False)
         user = next(item for item in mobile_api.users_payload(self.app)["items"] if item["name"] == "alice")
         self.assertFalse(user["enabled"])
+
+    def test_slow_display_online_read_does_not_block_authentication(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def online():
+            if threading.current_thread().name.startswith("display"):
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("display fixture was not released")
+            return {"alice": 1}
+
+        self.stats.online.side_effect = online
+        with concurrent.futures.ThreadPoolExecutor(thread_name_prefix="display") as display, \
+                concurrent.futures.ThreadPoolExecutor(thread_name_prefix="auth") as auth:
+            snapshot = display.submit(self.usage.snapshot)
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(auth.submit(self.usage.authorize, "alice").result(timeout=1))
+            finally:
+                release.set()
+            self.assertTrue(snapshot.result(timeout=2)["available"])
+
+    def test_node_traffic_timestamp_does_not_advance_with_online_refresh(self):
+        now = [int(time.time())]
+        self.usage.wall_clock = lambda: now[0]
+        self.usage.collect_once()
+        sampled_at = now[0]
+        now[0] += 5
+        node = mobile_api.nodes_payload(self.app)["items"][0]
+        self.assertEqual(sampled_at, node["trafficObservedAt"])
+        self.assertEqual(sampled_at, node["lastTrafficAckAt"])
+        self.assertEqual(now[0], node["lastSnapshotAt"])
+
+    def test_remote_traffic_timestamp_uses_acked_sample_not_online_receipt(self):
+        now = int(time.time())
+        state = {"node_id": "a" * 32, "name": "node", "status": "pending_verification",
+                 "policy_state": "protocol_ready", "data_plane_state": "dns_admitted",
+                 "lifecycle_state": "active", "observed_at": now - 2,
+                 "traffic_acked_at": now - 9, "accepted_at": now,
+                 "online": {"alice": 2}}
+        states = self.db.project_node_online_states([state], now, 43)
+        origin = {"origin_id": "node:" + state["node_id"], "kind": "remote",
+                  "node_id": state["node_id"], "created_at": now - 100,
+                  "display_name": "node", "traffic_observed_at": now - 12,
+                  "tx_bytes": 120, "rx_bytes": 0}
+        with mock.patch.object(self.db, "list_node_online_states", return_value=states), \
+                mock.patch.object(self.db, "list_usage_origins", return_value=[origin]):
+            snapshot = self.usage.snapshot()
+        origin = next(item for item in snapshot["machine_stats"]["origins"] if item["kind"] == "remote")
+        self.assertEqual(now - 12, mobile_api._traffic_fields(origin)["trafficObservedAt"])
+
+    def test_origin_sample_time_and_totals_share_one_database_snapshot(self):
+        self.stats.collect_and_clear.return_value = {"alice": {"tx": 10, "rx": 20}}
+        self.usage.collect_once()
+        connect = self.db._connect
+        committed = []
+
+        def commit_between_reads(sql):
+            if "FROM origin_traffic_daily GROUP BY" not in sql or committed:
+                return
+            committed.append(True)
+            with connect() as writer:
+                writer.execute("UPDATE usage_origins SET last_traffic_at = last_traffic_at + 10")
+                writer.execute("UPDATE origin_traffic_daily SET tx_bytes = tx_bytes + 100")
+
+        @contextlib.contextmanager
+        def interleaved_connection():
+            with connect() as reader:
+                reader.set_trace_callback(commit_between_reads)
+                yield reader
+
+        before = self.db.list_usage_origins(machine_totals=True)[0]
+        with mock.patch.object(self.db, "_connect", side_effect=interleaved_connection):
+            during = self.db.list_usage_origins(machine_totals=True)[0]
+        after = self.db.list_usage_origins(machine_totals=True)[0]
+        self.assertTrue(committed)
+        self.assertEqual(before, during)
+        self.assertEqual(before["traffic_observed_at"] + 10, after["traffic_observed_at"])
+        self.assertEqual(before["tx_bytes"] + 100, after["tx_bytes"])
 
     def test_mutations_and_authorization_retain_mandatory_settlement(self):
         self.stats.collect_and_clear.return_value = {"alice": {"tx": 11, "rx": 13}}

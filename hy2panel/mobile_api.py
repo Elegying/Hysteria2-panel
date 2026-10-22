@@ -248,7 +248,7 @@ def _traffic_fields(origin):
         "rxBytes": rx_bytes,
         "totalBytes": tx_bytes + rx_bytes,
         "trafficObservedAt": _non_negative_int(
-            origin.get("observed_at") or origin.get("last_traffic_at")
+            origin.get("traffic_observed_at", origin.get("last_traffic_at"))
         ),
     }
 
@@ -302,7 +302,7 @@ def nodes_payload(application, snapshot=None, nodes=None, service_status=None):
             "registeredAt": 0,
             "lastHeartbeatAt": _non_negative_int(local_origin.get("observed_at")),
             "lastSnapshotAt": _non_negative_int(local_origin.get("observed_at")),
-            "lastTrafficAckAt": _non_negative_int(local_origin.get("observed_at")),
+            "lastTrafficAckAt": _traffic_fields(local_origin)["trafficObservedAt"],
             "onlineState": local_origin.get("online_state", "unavailable"),
             "onlineDevices": local_origin.get("online_devices"),
             "lastKnownOnlineDevices": _non_negative_int(

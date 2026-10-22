@@ -21,7 +21,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   Map<String, dynamic> _summary = {};
   final Map<String, int> _trafficTotals = {};
   final Map<String, double> _trafficRates = {};
-  int? _trafficObservedAt;
+  final Map<String, int> _trafficObservedAt = {};
   bool _loading = true;
   bool _refreshing = false;
   int _loadGeneration = 0;
@@ -75,19 +75,30 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList();
       final observedAt = (data['observedAt'] as num? ?? 0).toInt();
-      final elapsed = _trafficObservedAt == null
-          ? 0
-          : observedAt - _trafficObservedAt!;
       final nextRates = <String, double>{};
       for (final node in items) {
         final id = node['nodeId'].toString();
         final total = (node['totalBytes'] as num? ?? 0).toInt();
         final previous = _trafficTotals[id];
+        final sample = node['trafficObservedAt'];
+        // Older panels have only the response timestamp. Keep that fallback.
+        final sampledAt = sample is num && sample.isFinite && sample > 0
+            ? sample.toInt()
+            : observedAt;
+        final previousAt = _trafficObservedAt[id];
+        final elapsed = previousAt == null ? 0 : sampledAt - previousAt;
+        if (previous != null && total >= previous && elapsed == 0) {
+          nextRates[id] = _trafficRates[id] ?? 0;
+          continue;
+        }
         nextRates[id] = previous == null || elapsed <= 0 || total < previous
             ? 0
             : (total - previous) / elapsed;
         _trafficTotals[id] = total;
+        _trafficObservedAt[id] = sampledAt;
       }
+      _trafficTotals.removeWhere((id, _) => !nextRates.containsKey(id));
+      _trafficObservedAt.removeWhere((id, _) => !nextRates.containsKey(id));
       if (mounted && generation == _loadGeneration) {
         setState(() {
           _summary = data;
@@ -95,7 +106,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           _trafficRates
             ..clear()
             ..addAll(nextRates);
-          _trafficObservedAt = observedAt;
           _loading = false;
           _error = null;
         });
