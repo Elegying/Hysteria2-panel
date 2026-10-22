@@ -7467,6 +7467,8 @@ WatchdogSec=30s
 User=hy2panel
 Group=hy2panel
 EnvironmentFile=/etc/hysteria2-panel/panel.env
+# Return large dashboard buffers to the OS instead of retaining them per arena.
+Environment=MALLOC_MMAP_THRESHOLD_=131072
 ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py serve
 Restart=on-failure
 RestartSec=3s

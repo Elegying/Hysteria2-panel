@@ -80,7 +80,7 @@ jobs:
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --force --name hy2-acceptance --package "$IMAGE"
           "$ANDROID_HOME/emulator/emulator" -avd hy2-acceptance -no-window -no-audio \
             -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
-          adb wait-for-device
+          timeout 120 adb wait-for-device
           for attempt in $(seq 1 180); do
             test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 && break
             sleep 2
