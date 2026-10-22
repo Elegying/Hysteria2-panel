@@ -30,6 +30,10 @@
 
 实际回读 GitHub 的 `Protect main` 规则集确认 `mobile-tests` 仍为必需检查。当前提交的发布输入扫描与本地隐私回归通过；独立临时 Git 仓库同时验证忽略的本地证据不进入扫描、不被改写。上述新增内容仅为测试与证据，运行时仍固定为 `b3d9509`，不重置当前 48 小时观察。
 
+`98293f3217bf79e4a4bdb6da157c28455f817eb5` 的[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39844286458)与[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39844372033)均已通过，Python 各 1,063 项（6 跳过）、Flutter 149 项、Chromium 36 组及 root/WAL 并发检查与前述一致。[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39844286782)确认 Linux Firefox/WebKit 各 15 组及 API 24 通过；API 36 受控 SIGILL 自检成功，随后实际模拟器仍失败。GDB 捕获 RenderThread 的 SIGILL，停止在 `libgfxstream_backend.so` 的 `ud2` 指令，调用者为 `gfxstream::gles2_decoder_context_t::decode`；继续传递原信号后宿主确实终止。该轮调试器退出码是 255，不当作模拟器退出码；没有将其归为应用 Dart 异常或 DDS 启动失败。完整栈、原生日志和 artifact（SHA-256 `ebdb2848c82c14a240b740012b2c9f5509ea2d73b640ac1044817ab0fd588954`）已保留。
+
+后续仅把 Linux API 36 测试环境从 SwiftShader/ANGLE 改为 [Android 官方支持的 Mesa Lavapipe](https://developer.android.com/studio/run/emulator-acceleration) 做驱动对照，并记录模拟器版本、图形库哈希及设备图形能力；仍保留宿主栈诊断、Flutter 3.47.2、Impeller 和全部应用断言。这是有已知崩溃位置的环境对照，尚无通过结果，也不声称原 SwiftShader/ANGLE 路径已修复。服务端和 App 运行时代码未变。
+
 ```sh
 python -m pip install playwright==1.61.0
 python -m playwright install firefox webkit
