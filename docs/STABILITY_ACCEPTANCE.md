@@ -44,7 +44,11 @@
 
 `89923a9` 的失败 artifact 摘要为 `780cc586b1b8a4f0a3b68184a90a79d961bc5297bb10255fd575ed979777d1a9`。从官方安装包取出图形库，与 CI 上述哈希完全一致；离线 LLVM 分析把停止位置对应到库内 `0x7c3bed`，调用返回位置为 `0x739d89`。字符串引用和解码入口明确为 `glInvalidateFramebuffer`。该函数的附件数为零时跳转至 `ud2`；另一个数组越界分支也进入同一指令，因此旧堆栈本身尚不能判定具体参数。官方 gfxstream 对应实现对 `std::vector` 使用 `&emulatedAttachments[0]`，而固定 Flutter 3.47.2 的 GLES 渲染入口允许零附件调用。新增只记录两个整数寄存器的 GDB 诊断，以及[独立 GLES 探针](../tests/android_gles_probe/GlesProbe.java)，按一个附件、零附件依次执行真实 EGL/GLES 调用，不包含 Flutter、网络、会话或 App 数据。
 
-探针在两个独立 API 36 runner 中对照默认驱动与 Android 15+ 自带的 guest ANGLE。后者只按[Android 官方设置](https://developer.android.com/games/develop/vulkan/overview#about-angle)为独立探针包选择 GLES-on-Vulkan；不修改正式 App、Flutter、Impeller 或全局渲染规则。这是定位实验，尚未获得运行结果，不计作产品修复或原生验收通过。
+`87da9475916c8f601429727a277394e6f062db36` 的[独立复现](https://github.com/Elegying/Hysteria2-panel/actions/runs/39863482421)确认：默认驱动执行一个附件成功，零附件时模拟器宿主在同一 `0x7c3bed` 触发 SIGILL；GDB 捕获 `ebx=0`、`r14d=36160`（`GL_FRAMEBUFFER`）。同提交[原 App 的失败](https://github.com/Elegying/Hysteria2-panel/actions/runs/39863482247)也捕获相同参数。因此本次根因是模拟器 host GLES translator 对合法空附件数组取首元素，已用不含 Flutter 的程序独立复现。两个完整 artifact 摘要分别为 `955e7d0cdec65be708c64352efc8ce3e6e6d698149c4ad7cdeab9c7fa20b220e` 和 `d8956c3c0ff9f99b4726e65e44cfd07a720088d416e41f9a630032f6ff2ef895`，失败证据保留。
+
+同一独立实验中，按[Android 官方设置](https://developer.android.com/games/develop/vulkan/overview#about-angle)选择 Android 15+ 自带的 guest ANGLE 后，一个及零个附件均返回 `GL_NO_ERROR`，实际渲染器显示 ANGLE/Mesa Vulkan；artifact 摘要为 `224a0b8e298ebb3e09277756e232d09ddf5f0669bfaec209b1c9a6586e506c9c`。修复只配置 API 36 CI 内两个独立测试包的 GLES-on-Vulkan 驱动，正式 App、Flutter、Impeller 和其他包的选择规则不变。探针进一步断言自身加载 `libGLESv2_angle.so` 且使用 ANGLE/Vulkan，App 原生回归也独立核对本进程加载的 guest ANGLE 库；仅写设置或渲染器名称含 ANGLE 不足以满足断言。完整原生回归尚待该修复候选的实际结果。
+
+原始默认驱动的已知失败保留在手动诊断工作流中，不声称上游图形库已经修复；每次 API 36 正式验收则必须先通过实际驱动与一/零附件探针，再执行原有完整 App 断言。
 
 `4deea60d91b8e0f5cfe43ba8d7d3e1bbc8b25c1e` 的[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39851417074)在新加的 `emulator -version` 环境采集处退出 127：命令加载图形版 QEMU，runner 缺少 `libpulse.so.0`，两个 Android 任务均未启动模拟器或应用测试。因此该轮不能用于判断 Lavapipe 结果。两个失败 artifact 已保留；版本改为直接读取安装包的 `source.properties`，继续记录二进制哈希，实际模拟器仍沿用已有 `-no-window -no-audio` 启动命令。
 

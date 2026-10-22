@@ -3,6 +3,7 @@
 set -euo pipefail
 test "${GITHUB_ACTIONS:-}" = true
 test "${1:-}" = emulator-5554
+test "${2:-}" = default || test "${2:-}" = guest-angle
 test "$(adb -s "$1" shell getprop ro.kernel.qemu | tr -d '\r')" = 1
 probe_dir="$(cd "$(dirname "$0")" && pwd)"
 probe_out="$RUNNER_TEMP/gles-probe"
@@ -20,7 +21,7 @@ keytool -genkeypair -keystore "$probe_out/probe.jks" -storepass android -keypass
 "$sdk_tools/apksigner" sign --ks "$probe_out/probe.jks" --ks-pass pass:android "$probe_out/probe.apk"
 sha256sum "$probe_out/probe.apk" > "$RUNNER_TEMP/gles-probe-apk-sha256.txt"
 adb -s "$1" install -r "$probe_out/probe.apk"
-adb -s "$1" shell am start -W -n test.hy2.glesprobe/.GlesProbe
+adb -s "$1" shell am start -W -n test.hy2.glesprobe/.GlesProbe --es driver "$2"
 for _attempt in $(seq 1 30); do
   test "$(adb -s "$1" get-state)" = device
   adb -s "$1" logcat -d -s 'Hy2GlesProbe:I' '*:S' > "$RUNNER_TEMP/gles-probe-log.txt"

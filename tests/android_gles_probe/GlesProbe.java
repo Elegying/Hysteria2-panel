@@ -9,6 +9,8 @@ import android.opengl.EGLSurface;
 import android.opengl.GLES30;
 import android.os.Bundle;
 import android.util.Log;
+import java.io.BufferedReader;
+import java.io.FileReader;
 
 /** Standalone emulator diagnostic: no Flutter, network, storage or app data. */
 public final class GlesProbe extends Activity {
@@ -35,7 +37,24 @@ public final class GlesProbe extends Activity {
                 EGLSurface surface = EGL14.eglCreatePbufferSurface(display, configs[0],
                     new int[]{EGL14.EGL_WIDTH, 16, EGL14.EGL_HEIGHT, 16, EGL14.EGL_NONE}, 0);
                 check(EGL14.eglMakeCurrent(display, surface, surface, context), "make current");
-                Log.i("Hy2GlesProbe", "renderer=" + GLES30.glGetString(GLES30.GL_RENDERER));
+                String renderer = GLES30.glGetString(GLES30.GL_RENDERER);
+                boolean guestAngle = false;
+                try (BufferedReader maps = new BufferedReader(new FileReader("/proc/self/maps"))) {
+                    String line;
+                    while ((line = maps.readLine()) != null) {
+                        guestAngle |= line.endsWith("/libGLESv2_angle.so");
+                    }
+                }
+                Log.i("Hy2GlesProbe", "renderer=" + renderer);
+                Log.i("Hy2GlesProbe", "guestANGLELibraryLoaded=" + guestAngle);
+                String expectedDriver = getIntent().getStringExtra("driver");
+                check("default".equals(expectedDriver) || "guest-angle".equals(expectedDriver),
+                    "missing expected driver");
+                check(guestAngle == "guest-angle".equals(expectedDriver), "driver selection mismatch");
+                if (guestAngle) {
+                    check(renderer.contains("ANGLE") && renderer.contains("Vulkan"),
+                        "expected guest ANGLE Vulkan renderer");
+                }
                 for (int attachments : new int[]{1, 0}) {
                     Log.i("Hy2GlesProbe", "begin numAttachments=" + attachments);
                     GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, attachments,

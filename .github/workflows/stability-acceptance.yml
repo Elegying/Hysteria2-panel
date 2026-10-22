@@ -51,7 +51,7 @@ jobs:
             gpu: swiftshader
           - api: 36
             target: google_apis
-            # Compare Mesa against the captured SwiftShader/ANGLE host SIGILL.
+            # Guest ANGLE uses the emulator's Mesa Vulkan path (see setup below).
             gpu: lavapipe
     env:
       ORG_GRADLE_PROJECT_previewBuild: 'true'
@@ -101,6 +101,9 @@ jobs:
           printf 'ANDROID_USER_HOME=%s\nANDROID_EMULATOR_HOME=%s\nANDROID_AVD_HOME=%s\n' \
             "$ANDROID_USER_HOME" "$ANDROID_EMULATOR_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMAGE" emulator platform-tools
+          if test "$API_LEVEL" = 36; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0'
+          fi
           {
             # Read version metadata without starting the GUI-linked QEMU binary.
             # The headless runner intentionally has no libpulse.so.0.
@@ -141,6 +144,14 @@ jobs:
             adb shell pm list features | grep -E 'opengles|vulkan' || true
           } >> "$RUNNER_TEMP/emulator-environment.txt" 2>&1
           adb shell input keyevent 82
+          if test "$API_LEVEL" = 36; then
+            # The host GLES translator traps on legal zero-attachment calls.
+            # Use Android's guest ANGLE GLES-on-Vulkan driver for test packages
+            # only; keep Flutter, Impeller and the release application unchanged.
+            adb shell settings put global angle_gl_driver_selection_pkgs \
+              test.hy2.glesprobe,vip.ssrvpn.hysteria2manager.preview.stability
+            adb shell settings put global angle_gl_driver_selection_values angle,angle
+          fi
           python3 tests/mobile_fixture.py --defines "$RUNNER_TEMP/acceptance-defines.json" > "$RUNNER_TEMP/fixture.log" 2>&1 &
           for _attempt in $(seq 1 30); do
             test -s "$RUNNER_TEMP/acceptance-defines.json" && break
@@ -153,8 +164,11 @@ jobs:
           # native crashes visible when the Dart test channel closes early.
           adb logcat -c
           adb logcat -v threadtime 'AndroidRuntime:E' 'DEBUG:E' 'libc:F' \
-            'ActivityManager:I' 'flutter:I' '*:S' 2>&1 \
+            'ActivityManager:I' 'GraphicsEnvironment:V' 'flutter:I' '*:S' 2>&1 \
             | sed -u '/The Dart VM service is listening/d' > "$RUNNER_TEMP/native-logcat.log" &
+      - name: Verify API 36 guest driver and empty framebuffer calls
+        if: matrix.api == 36
+        run: bash tests/android_gles_probe/run.sh emulator-5554 guest-angle
       - name: Exercise native plugins and existing application flows
         working-directory: mobile
         run: |
@@ -162,6 +176,7 @@ jobs:
           git diff --exit-code -- pubspec.lock
           flutter test integration_test/native_acceptance_test.dart -d emulator-5554 \
             --no-uninstall \
+            --dart-define=ACCEPTANCE_GUEST_ANGLE=${{ matrix.api == 36 }} \
             --dart-define-from-file="$RUNNER_TEMP/acceptance-defines.json" \
             --reporter expanded --file-reporter "json:$RUNNER_TEMP/native-results.json"
       - name: Print failure diagnostics without app data
@@ -188,4 +203,6 @@ jobs:
             ${{ runner.temp }}/emulator-debugger-exit-code.txt
             ${{ runner.temp }}/emulator-debugger-selftest.txt
             ${{ runner.temp }}/emulator-environment.txt
+            ${{ runner.temp }}/gles-probe-log.txt
+            ${{ runner.temp }}/gles-probe-apk-sha256.txt
           retention-days: 14

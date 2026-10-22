@@ -24,6 +24,16 @@ void main() {
       package.packageName,
       'vip.ssrvpn.hysteria2manager.preview.stability',
     );
+    if (const bool.fromEnvironment('ACCEPTANCE_GUEST_ANGLE')) {
+      final mappings = await File('/proc/self/maps').readAsLines();
+      expect(
+        mappings.any((line) => line.endsWith('/libGLESv2_angle.so')),
+        isTrue,
+        reason:
+            'The API 36 CI process must load the selected guest ANGLE driver',
+      );
+      debugPrint('ACCEPTANCE: guest ANGLE library loaded in the App process');
+    }
     const encodedCa = String.fromEnvironment('ACCEPTANCE_CA');
     expect(
       encodedCa,
