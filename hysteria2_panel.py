@@ -10987,7 +10987,8 @@ def run_supervised_services(
             next_watchdog = time.monotonic() + watchdog_interval
         while not termination_requested[0]:
             if next_watchdog is not None and time.monotonic() >= next_watchdog:
-                if watchdog_is_healthy():
+                healthy = watchdog_is_healthy()
+                if healthy:
                     notifier.watchdog()
                     watchdog_unhealthy_reported[0] = False
                 elif not watchdog_unhealthy_reported[0]:
@@ -10995,7 +10996,11 @@ def run_supervised_services(
                         "systemd watchdog withheld: a local worker is not responsive"
                     )
                     watchdog_unhealthy_reported[0] = True
-                next_watchdog = time.monotonic() + watchdog_interval
+                # A failed 2s local probe must get another chance inside the
+                # unchanged systemd window. Never ping until every check passes.
+                next_watchdog = time.monotonic() + (
+                    watchdog_interval if healthy else min(1.0, watchdog_interval)
+                )
             try:
                 failed_worker, error = failures.get(timeout=0.2)
                 break
