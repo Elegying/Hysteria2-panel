@@ -103,15 +103,30 @@ jobs:
           test -s "$RUNNER_TEMP/acceptance-defines.json"
           adb reverse tcp:31888 tcp:31888
           adb reverse tcp:31889 tcp:31889
+          # This emulator contains only disposable acceptance accounts. Keep
+          # native crashes visible when the Dart test channel closes early.
+          adb logcat -c
+          adb logcat -v threadtime 'AndroidRuntime:E' 'DEBUG:E' 'libc:F' \
+            'ActivityManager:I' 'flutter:I' '*:S' > "$RUNNER_TEMP/native-logcat.log" 2>&1 &
       - name: Exercise native plugins and existing application flows
         working-directory: mobile
         run: |
           flutter pub get
           git diff --exit-code -- pubspec.lock
           flutter test integration_test/native_acceptance_test.dart -d emulator-5554 \
-            --dart-define-from-file="$RUNNER_TEMP/acceptance-defines.json"
+            --dart-define-from-file="$RUNNER_TEMP/acceptance-defines.json" \
+            --reporter expanded --file-reporter "json:$RUNNER_TEMP/native-results.json"
       - name: Print failure diagnostics without app data
         if: failure()
         run: |
           tail -n 80 "$RUNNER_TEMP/emulator.log" || true
           tail -n 80 "$RUNNER_TEMP/fixture.log" || true
+          tail -n 200 "$RUNNER_TEMP/native-logcat.log" || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: android-native-api-${{ matrix.api }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/native-results.json
+            ${{ runner.temp }}/native-logcat.log
+          retention-days: 14

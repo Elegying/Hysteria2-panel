@@ -106,6 +106,7 @@ void main() {
       ),
       isFalse,
     );
+    debugPrint('ACCEPTANCE: HTTPS, two panels and native storage verified');
     controller.dispose();
 
     // A new controller has no in-memory tokens and restores through native storage.
@@ -128,6 +129,9 @@ void main() {
       'acceptance-panel-1',
     );
 
+    debugPrint(
+      'ACCEPTANCE: controller recreation and request recovery verified',
+    );
     await LiquidGlassWidgets.initialize(enablePerformanceMonitor: false);
     await tester.pumpWidget(
       ProviderScope(
@@ -142,6 +146,7 @@ void main() {
       await tester.tap(find.text(label).hitTestable().last);
       await tester.pump(const Duration(milliseconds: 500));
       expect(tester.takeException(), isNull);
+      debugPrint('ACCEPTANCE: navigation verified: $label');
     }
     await restored.logout();
     expect(restored.state.session, isNull);
@@ -150,5 +155,6 @@ void main() {
     await afterLogout.initialize();
     expect(afterLogout.state.session, isNull);
     afterLogout.dispose();
+    debugPrint('ACCEPTANCE: logout persisted and all assertions completed');
   });
 }

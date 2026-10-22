@@ -31,6 +31,7 @@ import time
 import uuid
 
 TLS_CONTEXT = None
+SOCKS_BASE_PORT = 18080  # Below Linux's ephemeral source-port range.
 
 
 def command(*args):
@@ -39,8 +40,11 @@ def command(*args):
 
 def request(port, path, data=None, cookie=None):
     started = time.monotonic()
-    connection = (http.client.HTTPSConnection("127.0.0.1", port, timeout=9, context=TLS_CONTEXT)
-                  if port == 31998 else http.client.HTTPConnection("127.0.0.1", port, timeout=9))
+    # Match the existing clients: node protocol 8s, management receive 20s.
+    # Auth retains a 9s transport cutoff plus the core's total 10s assertion.
+    timeout = 9 if port == 31996 else (20 if data is None else 8)
+    connection = (http.client.HTTPSConnection("127.0.0.1", port, timeout=timeout, context=TLS_CONTEXT)
+                  if port == 31998 else http.client.HTTPConnection("127.0.0.1", port, timeout=timeout))
     try:
         headers = {"Content-Type": "application/json"}
         if cookie is not None:
@@ -313,7 +317,7 @@ def main():
             path = args.output / ("client-{}.json".format(index))
             path.write_text(json.dumps({"server": "127.0.0.1:{}".format(31999 if index % 2 == 0 else 443),
                                        "auth": users[index]["token"], "tls": {"insecure": True, "pinSHA256": pin},
-                                       "socks5": {"listen": "127.0.0.1:{}".format(33000 + index)}}))
+                                       "socks5": {"listen": "127.0.0.1:{}".format(SOCKS_BASE_PORT + index)}}))
             handle = (args.output / ("client-{}.log".format(index))).open("wb")
             handles.append(handle)
             children.append(subprocess.Popen(["/opt/hysteria2-panel/bin/hysteria", "client", "-c", str(path)],
@@ -321,7 +325,7 @@ def main():
             deadline = time.monotonic() + 20
             while True:
                 try:
-                    with socket.create_connection(("127.0.0.1", 33000 + index), timeout=1):
+                    with socket.create_connection(("127.0.0.1", SOCKS_BASE_PORT + index), timeout=1):
                         break
                 except OSError:
                     if errors:
@@ -333,7 +337,7 @@ def main():
                         raise RuntimeError("client {} did not start; see client-{}.log".format(index, index))
                     time.sleep(.2)
             for _ in range(10):
-                start(lambda index=index: stream(33000 + index))
+                start(lambda index=index: stream(SOCKS_BASE_PORT + index))
         for _ in range(10):
             start(management)
         for _ in range(100):
