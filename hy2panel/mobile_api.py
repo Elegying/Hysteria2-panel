@@ -135,7 +135,10 @@ def _user_items(application, snapshot):
     traffic_by_user = snapshot.get("traffic", {})
     online_by_user = snapshot.get("online", {})
     items = []
-    for user in application.database.list_proxy_users_for_usage():
+    users = snapshot.get("_users")
+    if users is None:
+        users = application.database.list_proxy_users_for_usage()
+    for user in users:
         traffic = traffic_by_user.get(user["name"], {})
         tx_bytes = _non_negative_int(traffic.get("tx", user.get("tx_bytes", 0)))
         rx_bytes = _non_negative_int(traffic.get("rx", user.get("rx_bytes", 0)))
@@ -175,6 +178,7 @@ def users_payload(application):
         "available": bool(snapshot.get("available")),
         "onlineComplete": bool(snapshot.get("online_complete", True)),
         "observedAt": int(time.time()),
+        "trafficObservedAt": snapshot.get("traffic_observed_at"),
     }
 
 
@@ -249,20 +253,22 @@ def _traffic_fields(origin):
     }
 
 
-def nodes_payload(application, snapshot=None):
+def nodes_payload(application, snapshot=None, nodes=None, service_status=None):
     now = int(time.time())
     snapshot = _safe_snapshot(application) if snapshot is None else snapshot
     origins = _machine_origin_map(snapshot)
-    online_states = {
-        state["node_id"]: state
-        for state in application.database.list_node_online_states(
-            now, NODE_FRESHNESS_SECONDS
-        )
-    }
-    try:
-        service_status = application.service_controller.status()
-    except Exception:
-        service_status = "unknown"
+    states = snapshot.get("_node_states")
+    if states is None:
+        states = application.database.list_node_online_states(now, NODE_FRESHNESS_SECONDS)
+    else:
+        # Management uses a 150s display threshold; authorization retains 43s.
+        states = application.database.project_node_online_states(states, now, NODE_FRESHNESS_SECONDS)
+    online_states = {state["node_id"]: state for state in states}
+    if service_status is None:
+        try:
+            service_status = application.service_controller.status()
+        except Exception:
+            service_status = "unknown"
     local_origin_id = getattr(application.usage_manager, "local_origin_id", "")
     local_origin = origins.get(local_origin_id, {})
     local_status = {
@@ -312,7 +318,9 @@ def nodes_payload(application, snapshot=None):
             **_traffic_fields(local_origin),
         }
     ]
-    for node in application.database.list_nodes():
+    if nodes is None:
+        nodes = application.database.list_nodes()
+    for node in nodes:
         if node.get("status") == "revoked":
             continue
         online_state = online_states.get(node["node_id"], {})
@@ -388,7 +396,7 @@ def nodes_payload(application, snapshot=None):
     }
 
 
-def _traffic_budgets(application, snapshot, service_status=None):
+def _traffic_budgets(application, snapshot, service_status=None, nodes=None):
     origins = snapshot.get("machine_stats", {}).get("origins", [])
     budget_origin_ids = [
         origin.get("origin_id")
@@ -401,7 +409,8 @@ def _traffic_budgets(application, snapshot, service_status=None):
             budget_origin_ids, int(time.time())
         )
     }
-    nodes = application.database.list_nodes()
+    if nodes is None:
+        nodes = application.database.list_nodes()
     node_by_origin = {"node:" + node["node_id"]: node for node in nodes}
     forecasts = machine_forecasts(application, nodes, budgets, service_status)
     local_id = getattr(application.usage_manager, "local_origin_id", "")
@@ -452,11 +461,14 @@ def _traffic_budgets(application, snapshot, service_status=None):
 def overview_payload(application, panel_version):
     snapshot = _safe_snapshot(application)
     users = _user_items(application, snapshot)
-    nodes = nodes_payload(application, snapshot=snapshot)
     try:
         service_status = application.service_controller.status()
     except Exception:
         service_status = "unknown"
+    node_rows = application.database.list_nodes()
+    nodes = nodes_payload(
+        application, snapshot=snapshot, nodes=node_rows, service_status=service_status,
+    )
     try:
         resources = application.system_metrics.snapshot()
     except Exception:
@@ -474,6 +486,7 @@ def overview_payload(application, panel_version):
         "statsAvailable": bool(snapshot.get("available")),
         "onlineComplete": bool(snapshot.get("online_complete", True)),
         "refreshedAt": int(time.time()),
+        "trafficObservedAt": snapshot.get("traffic_observed_at"),
         "users": {
             "total": len(users),
             "inactive": sum(1 for user in users if user["usedBytes"] == 0),
@@ -490,7 +503,7 @@ def overview_payload(application, panel_version):
             "online": nodes["online"],
             "statusCounts": nodes["statusCounts"],
         },
-        "trafficBudgets": _traffic_budgets(application, snapshot, service_status),
+        "trafficBudgets": _traffic_budgets(application, snapshot, service_status, nodes=node_rows),
         "resources": {
             "cpuPercent": resources.get("cpu_percent"),
             "memoryPercent": resources.get("memory_percent"),

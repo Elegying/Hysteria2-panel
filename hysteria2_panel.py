@@ -52,6 +52,7 @@ from pathlib import Path
 
 from qrcodegen import DataTooLongError, QrCode
 
+from hy2panel.accounting import LocalCumulativeCollector, LOCAL_STATS_UNITS, service_epoch
 from hy2panel.dashboard import (
     DashboardContext,
     machine_forecasts,
@@ -4134,9 +4135,16 @@ class Database:
                 counts.setdefault(row["node_id"], {})[row["user_name"]] = int(
                     row["count"]
                 )
-        results = []
         for node in nodes:
-            online = counts.get(node["node_id"], {})
+            node["online"] = counts.get(node["node_id"], {})
+        return self.project_node_online_states(nodes, now, freshness_seconds)
+
+    @staticmethod
+    def project_node_online_states(nodes, now, freshness_seconds):
+        results = []
+        for source in nodes:
+            node = dict(source)
+            online = node["online"]
             fresh = bool(
                 node["policy_state"] == "protocol_ready"
                 and node["status"] == "pending_verification"
@@ -9519,7 +9527,7 @@ def make_panel_server(address, application):
 
 
 class HysteriaStatsClient:
-    def __init__(self, base_url, secret, timeout=2):
+    def __init__(self, base_url, secret, timeout=2, service_unit=None):
         self.base_url = base_url.rstrip("/")
         parsed = urllib.parse.urlsplit(self.base_url)
         try:
@@ -9539,6 +9547,17 @@ class HysteriaStatsClient:
             raise ValueError("Hysteria stats API must use plaintext loopback HTTP")
         self.secret = secret
         self.timeout = timeout
+        if service_unit is not None and service_unit not in LOCAL_STATS_UNITS:
+            raise ValueError("unknown local traffic service")
+        self.service_unit = service_unit
+
+    def service_epoch(self):
+        return service_epoch(self.service_unit)
+
+    def cumulative_traffic(self):
+        traffic = self._request("/traffic")
+        self._validate_traffic(traffic)
+        return traffic
 
     def _request(self, path, data=None):
         body = json.dumps(data).encode("utf-8") if data is not None else None
@@ -9758,6 +9777,8 @@ class UsageManager:
         self._user_usage_checkpoint = None
         self._user_usage_traffic_at = None
         self._user_usage_online = None
+        self._last_collection_at = None
+        self._last_collection_ok = False
         self._live_snapshot_lock = threading.Lock()
         self._live_snapshot_cached_at = None
         self._live_snapshot_cache = None
@@ -9774,6 +9795,19 @@ class UsageManager:
         self.pending_observed_at = None
         self.pending_fresh_local_collection = False
         self.domain_usage_collector = DomainStreamAccumulator()
+        clients = (
+            stats_client.clients
+            if isinstance(stats_client, CombinedHysteriaStatsClient)
+            else (stats_client,)
+        )
+        self.cumulative_collector = (
+            LocalCumulativeCollector(
+                database.path, clients, self._apply_local_traffic_batch,
+                maximum_bytes=3 * MAX_PENDING_TRAFFIC_BYTES,
+            )
+            if all(getattr(client, "service_unit", None) in LOCAL_STATS_UNITS for client in clients)
+            else None
+        )
         self._load_pending_traffic()
         self.last_online = {}
         self.health_monitor = health_monitor
@@ -9786,6 +9820,9 @@ class UsageManager:
             return self._user_usage_checkpoint
 
     def _record_health(self, success):
+        self._last_collection_ok = bool(success)
+        if success:
+            self._last_collection_at = self.clock()
         if not success:
             with self._user_usage_lock:
                 self._user_usage_checkpoint = None
@@ -9986,7 +10023,7 @@ class UsageManager:
     def _collect_locked(self):
         if self.maintenance_lock_path is None:
             return self._collect_traffic_locked()
-        # This slot only protects destructive stats reads and their journal.
+        # This slot protects accounting samples and their durable checkpoints.
         # The installer keeps its separate transaction lock through readiness.
         with maintenance_upload_slot(
             self.maintenance_lock_path, expected_gid=os.getgid(),
@@ -9995,6 +10032,26 @@ class UsageManager:
 
     def _collect_traffic_locked(self):
         self._auth_stats_at = None
+        if self.cumulative_collector is not None:
+            try:
+                self._flush_pending_traffic_locked()
+                checkpoint = self.cumulative_collector.recover()
+                observed_at = int(self.wall_clock())
+                # Keep the existing bounded domain journal and its failure/retry
+                # semantics. It is derived data, independent of byte accounting.
+                domains = self.domain_usage_collector.collect(self.stats_client)
+                self._persist_pending_traffic_locked(
+                    {}, domains, observed_at, fresh_local_collection=True,
+                )
+                self._flush_pending_traffic_locked()
+                traffic = self.cumulative_collector.collect(observed_at, checkpoint)
+                self.database.reset_monthly_traffic_if_due(self.wall_clock())
+            except Exception:
+                self._record_health(False)
+                raise
+            self._user_usage_traffic_at = observed_at
+            self._record_health(True)
+            return traffic
         try:
             self._flush_pending_traffic_locked()
             observed_at = int(self.wall_clock())
@@ -10162,14 +10219,14 @@ class UsageManager:
             }
 
     def snapshot(self):
+        # Display requests never collect or settle traffic. Mutations and the
+        # background collector retain the existing mandatory settlement path.
         with self.lock:
-            available = True
+            available = bool(
+                self._last_collection_ok and self._last_collection_at is not None
+                and 0 <= self.clock() - self._last_collection_at <= 30
+            )
             online_available = True
-            try:
-                self._collect_locked()
-            except Exception:
-                LOGGER.exception("traffic sync failed during dashboard snapshot")
-                available = False
             try:
                 online = self.stats_client.online()
             except Exception:
@@ -10183,6 +10240,7 @@ class UsageManager:
                 now, MAX_STATE_AGE_SECONDS
             )
             origin_rows = self.database.list_usage_origins(machine_totals=True)
+            traffic_observed_at = self._user_usage_traffic_at
         global_online = dict(online)
         for node in node_states:
             if node["online_state"] != "fresh":
@@ -10287,6 +10345,9 @@ class UsageManager:
             and node["status"] == "pending_verification"
         )
         return {
+            "_users": users,
+            "_node_states": node_states,
+            "traffic_observed_at": traffic_observed_at,
             "traffic": {
                 user["name"]: {"tx": user["tx_bytes"], "rx": user["rx_bytes"]}
                 for user in users
@@ -10559,18 +10620,27 @@ def initialize_admin(settings, username, password, if_missing=False):
     return True
 
 
-def make_stats_client(settings, primary_only=False, secondary_only=False):
+def make_stats_client(settings, primary_only=False, secondary_only=False, legacy_traffic=False):
     if primary_only and secondary_only:
         raise ValueError("traffic maintenance endpoint selection is ambiguous")
     if secondary_only:
         if settings.hysteria_port == 443:
             raise ValueError("the secondary Hysteria stats endpoint is not enabled")
-        return HysteriaStatsClient(settings.stats_443_url, settings.stats_secret)
-    stats_client = HysteriaStatsClient(settings.stats_url, settings.stats_secret)
+        return HysteriaStatsClient(
+            settings.stats_443_url, settings.stats_secret,
+            service_unit=None if legacy_traffic else LOCAL_STATS_UNITS[1],
+        )
+    stats_client = HysteriaStatsClient(
+        settings.stats_url, settings.stats_secret,
+        service_unit=None if legacy_traffic else LOCAL_STATS_UNITS[0],
+    )
     if settings.hysteria_port != 443 and not primary_only:
         stats_client = CombinedHysteriaStatsClient(
             stats_client,
-            HysteriaStatsClient(settings.stats_443_url, settings.stats_secret),
+            HysteriaStatsClient(
+                settings.stats_443_url, settings.stats_secret,
+                service_unit=None if legacy_traffic else LOCAL_STATS_UNITS[1],
+            ),
         )
     return stats_client
 
@@ -10745,11 +10815,14 @@ def sync_traffic(
     primary_only=False,
     secondary_only=False,
     quiesce=False,
+    legacy_traffic=False,
 ):
+    options = {"legacy_traffic": True} if legacy_traffic else {}
     stats_client = make_stats_client(
         settings,
         primary_only=primary_only,
         secondary_only=secondary_only,
+        **options,
     )
     if quiesce:
         quiesce_stats_client(stats_client)
@@ -11977,6 +12050,7 @@ def main(argv=None):
     init_parser.add_argument("--username", required=True)
     init_parser.add_argument("--if-missing", action="store_true")
     subcommands.add_parser("serve", help="run the authentication service and panel")
+    subcommands.add_parser("accounting-mode", help=argparse.SUPPRESS)
     subcommands.add_parser(
         "reconcile-node-dns",
         help="observe manually managed DNS and admit fresh canary-passed nodes",
@@ -11988,6 +12062,7 @@ def main(argv=None):
     sync_endpoints.add_argument("--primary-only", action="store_true")
     sync_endpoints.add_argument("--secondary-only", action="store_true")
     sync_parser.add_argument("--quiesce", action="store_true")
+    sync_parser.add_argument("--legacy-traffic", action="store_true", help=argparse.SUPPRESS)
     subcommands.add_parser("restore-pending", help="apply the staged backup as root")
     subcommands.add_parser(
         "offsite-backup", help="create and upload the daily configured WebDAV backup"
@@ -12009,6 +12084,9 @@ def main(argv=None):
     egress_parser.add_argument("policy", choices=("web", "full"))
     args = parser.parse_args(argv)
     try:
+        if args.command == "accounting-mode":
+            print("cumulative-v1")
+            return 0
         if args.command == "recover-restore-files":
             if hasattr(os, "geteuid") and os.geteuid() != 0:
                 raise RuntimeError("recover-restore-files must run as root")
@@ -12084,6 +12162,7 @@ def main(argv=None):
                     primary_only=args.primary_only,
                     secondary_only=args.secondary_only,
                     quiesce=args.quiesce,
+                    **({"legacy_traffic": True} if args.legacy_traffic else {}),
                 )
             return 0
         if args.command == "apply-update":

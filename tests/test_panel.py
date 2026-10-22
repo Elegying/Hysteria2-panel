@@ -1869,7 +1869,7 @@ class UsageManagerTests(unittest.TestCase):
         record = self.db.get_proxy_user(user["id"])
         self.assertEqual((10, 20), (record["tx_bytes"], record["rx_bytes"]))
 
-    def test_snapshot_and_resets_include_pending_hysteria_traffic(self):
+    def test_snapshot_reads_collected_traffic_and_resets_still_settle_pending_traffic(self):
         alice = self.db.create_proxy_user("alice")
         bob = self.db.create_proxy_user("bob")
         stats = PolicyStatsClient(
@@ -1878,6 +1878,10 @@ class UsageManagerTests(unittest.TestCase):
         )
         manager = UsageManager(self.db, stats)
 
+        # The background collector owns settlement; display requests are read-only.
+        self.assertEqual({"tx": 0, "rx": 0}, manager.snapshot()["traffic"]["alice"])
+        self.assertFalse(manager.snapshot()["available"])
+        manager.collect_once()
         snapshot = manager.snapshot()
         self.assertEqual({"tx": 100, "rx": 200}, snapshot["traffic"]["alice"])
         self.assertEqual({"alice": 1}, snapshot["online"])

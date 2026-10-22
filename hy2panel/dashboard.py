@@ -155,7 +155,9 @@ def render_dashboard(
     except Exception:
         LOGGER.exception("stats snapshot failed")
         snapshot = {"traffic": {}, "online": {}, "available": False}
-    all_users = self.app.database.list_proxy_users_for_usage()
+    all_users = snapshot.get("_users")
+    if all_users is None:
+        all_users = self.app.database.list_proxy_users_for_usage()
     user_selection = select_dashboard_users(
         all_users,
         snapshot,

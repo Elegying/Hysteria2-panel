@@ -755,6 +755,7 @@ restore_upgrade_runtime_state
             "hy2panel/health.py": "HY2PANEL_HEALTH_SHA256",
             "hy2panel/certificate.py": "HY2PANEL_CERTIFICATE_SHA256",
             "hy2panel/systemd.py": "HY2PANEL_SYSTEMD_SHA256",
+            "hy2panel/accounting.py": "HY2PANEL_ACCOUNTING_SHA256",
             "hy2panel/nodes.py": "HY2PANEL_NODES_SHA256",
             "hy2panel/distributed.py": "HY2PANEL_DISTRIBUTED_SHA256",
             "hy2panel/domain_usage.py": "HY2PANEL_DOMAIN_USAGE_SHA256",
