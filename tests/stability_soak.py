@@ -208,6 +208,7 @@ def main():
               "users": 1000, "syntheticSignedNodes": 10, "hysteriaClients": 10, "tcpStreams": 100,
               "managementClients": 10, "authBurst": 64, "result": "running",
               "python": sys.version, "platform": platform.platform(), "cpuCount": os.cpu_count(),
+              "cpuClockTicksPerSecond": os.sysconf("SC_CLK_TCK"),
               "sourceSha256": {str(path.relative_to("/opt/hysteria2-panel")):
                                hashlib.sha256(path.read_bytes()).hexdigest()
                                for path in Path("/opt/hysteria2-panel").rglob("*.py")},
@@ -302,7 +303,7 @@ def main():
                 raise RuntimeError("management read HTTP {}".format(status))
             stop.wait(5)
 
-    first_hour, last_hour = [], deque(maxlen=120)
+    first_hour, last_hour = [], deque()
     echo = None
     try:
         command("ip", "address", "replace", "198.18.0.2/32", "dev", "lo")
@@ -371,7 +372,8 @@ def main():
                 metrics = {"elapsed": elapsed, "at": time.time(), "rssKiB": int(fields["VmRSS"].split()[0]),
                            "threads": int(fields["Threads"]), "fds": len(list((proc / "fd").iterdir())),
                            "cpuTicks": [int(v) for v in (proc / "stat").read_text().split()[13:15]],
-                           "authP95Seconds": sorted(latencies)[int((len(latencies) - 1) * .95)]}
+                           "authP95Seconds": sorted(latencies)[int((len(latencies) - 1) * .95)],
+                           "authMaxSeconds": max(latencies)}
                 queues = [int(row.split()[4].split(":")[1], 16)
                           for row in (proc / "net/tcp").read_text().splitlines()[1:]
                           if row.split()[3] == "0A"]
@@ -379,6 +381,10 @@ def main():
                 if 600 <= elapsed < 4200:
                     first_hour.append(metrics)
                 last_hour.append(metrics)
+                # Auth/probe time makes sample intervals longer than 30s. Select
+                # the actual last hour, rather than assuming 120 samples = 1h.
+                while last_hour and last_hour[0]["elapsed"] < elapsed - 3600:
+                    last_hour.popleft()
                 log.write(json.dumps(metrics) + "\n")
                 log.flush()
                 report["elapsedSeconds"] = elapsed
@@ -410,6 +416,8 @@ def main():
             time.sleep(1)
         report["localLedgerBytes"] = actual_local
         if args.seconds >= 48 * 3600:
+            while last_hour and last_hour[0]["elapsed"] < args.seconds - 3600:
+                last_hour.popleft()
             initial = statistics.median(row["rssKiB"] for row in first_hour)
             final = statistics.median(row["rssKiB"] for row in last_hour)
             report["rssGrowthKiB"] = final - initial
