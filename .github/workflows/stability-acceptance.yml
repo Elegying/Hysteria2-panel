@@ -119,6 +119,7 @@ jobs:
           flutter pub get
           git diff --exit-code -- pubspec.lock
           flutter test integration_test/native_acceptance_test.dart -d emulator-5554 \
+            --no-uninstall \
             --dart-define-from-file="$RUNNER_TEMP/acceptance-defines.json" \
             --reporter expanded --file-reporter "json:$RUNNER_TEMP/native-results.json"
       - name: Print failure diagnostics without app data

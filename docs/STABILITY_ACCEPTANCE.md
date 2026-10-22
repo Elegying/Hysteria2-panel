@@ -37,6 +37,8 @@ python tests/browser_core_flows.py --engine webkit --output /tmp/hy2-webkit
 
 `tests/mobile_fixture.py` 提供两套临时 HTTPS 测试面板。仅集成测试入口信任这次生成的测试证书；产品连接器、证书验证和 HTTPS 限制保持不变。`mobile/integration_test/native_acceptance_test.dart` 覆盖真实安全存储、HTTPS、双面板、控制器重建、注入网络错误后的恢复、四个模块及退出。控制器重建不等同于操作系统强杀进程、真实网络切换和后台驻留，这些项目需另记实机证据。
 
+原生测试命令固定添加 `--no-uninstall`。Flutter 首次构建前可能缓存源码中的基础包名，失败清理曾尝试卸载该基础包名；不能让测试驱动自动卸载正式 App。测试代码先断言独立包名，再清理该测试包自身存储。手机首次测试前也应核对包名、ABI 和现有安装状态，任何清理只针对独立测试包。
+
 | 状态 | 预期反馈与恢复 |
 |---|---|
 | 读取节点新样本 | 按该节点的采样间隔计算速率 |
