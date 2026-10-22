@@ -34,6 +34,8 @@
 
 后续仅把 Linux API 36 测试环境从 SwiftShader/ANGLE 改为 [Android 官方支持的 Mesa Lavapipe](https://developer.android.com/studio/run/emulator-acceleration) 做驱动对照，并记录模拟器版本、图形库哈希及设备图形能力；仍保留宿主栈诊断、Flutter 3.47.2、Impeller 和全部应用断言。这是有已知崩溃位置的环境对照，尚无通过结果，也不声称原 SwiftShader/ANGLE 路径已修复。服务端和 App 运行时代码未变。
 
+`4deea60d91b8e0f5cfe43ba8d7d3e1bbc8b25c1e` 的[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39851417074)在新加的 `emulator -version` 环境采集处退出 127：命令加载图形版 QEMU，runner 缺少 `libpulse.so.0`，两个 Android 任务均未启动模拟器或应用测试。因此该轮不能用于判断 Lavapipe 结果。两个失败 artifact 已保留；版本改为直接读取安装包的 `source.properties`，继续记录二进制哈希，实际模拟器仍沿用已有 `-no-window -no-audio` 启动命令。
+
 ```sh
 python -m pip install playwright==1.61.0
 python -m playwright install firefox webkit

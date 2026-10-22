@@ -102,7 +102,8 @@ jobs:
             "$ANDROID_USER_HOME" "$ANDROID_EMULATOR_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMAGE" emulator platform-tools
           {
-            "$ANDROID_HOME/emulator/emulator" -version
+            # Read version metadata without starting the GUI-linked QEMU binary.
+            # The headless runner intentionally has no libpulse.so.0.
             cat "$ANDROID_HOME/emulator/source.properties"
             printf 'requested-gpu=%s\n' '${{ matrix.gpu }}'
             sha256sum "$ANDROID_HOME/emulator/emulator" \
