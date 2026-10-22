@@ -76,8 +76,16 @@ jobs:
           sudo chmod a+rw /dev/kvm
           export PATH="$ANDROID_HOME/platform-tools:$PATH"
           printf '%s\n' "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
+          export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd"
+          mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME"
+          printf 'ANDROID_USER_HOME=%s\nANDROID_EMULATOR_HOME=%s\nANDROID_AVD_HOME=%s\n' \
+            "$ANDROID_USER_HOME" "$ANDROID_EMULATOR_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMAGE" emulator platform-tools
-          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --force --name hy2-acceptance --package "$IMAGE"
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --force \
+            --name hy2-acceptance --package "$IMAGE" --path "$ANDROID_AVD_HOME/hy2-acceptance.avd"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fxq hy2-acceptance
           "$ANDROID_HOME/emulator/emulator" -avd hy2-acceptance -no-window -no-audio \
             -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
           timeout 120 adb wait-for-device

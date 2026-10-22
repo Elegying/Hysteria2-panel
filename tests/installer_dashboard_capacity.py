@@ -56,6 +56,7 @@ def main():
 
     tls = (ssl.create_default_context(cafile=values["HY2PANEL_PANEL_TLS_CERT"])
            if values["HY2PANEL_PANEL_SCHEME"] == "https" else None)
+    cookie_name = "hy2panel_session" if tls else "hy2panel_http_session"
 
     def fetch(_index):
         before = time.monotonic()
@@ -67,10 +68,11 @@ def main():
         else:
             connection = http.client.HTTPConnection("127.0.0.1", 31998, timeout=10)
         try:
-            connection.request("GET", "/", headers={"Cookie": "hy2panel_session=" + token})
+            connection.request("GET", "/", headers={"Cookie": cookie_name + "=" + token})
             response = connection.getresponse()
             body = response.read(8 * 1024 * 1024 + 1)
-            assert response.status == 200 and body.count(b"<tr data-user-name=") == 1000
+            assert response.status == 200, "dashboard HTTP {}".format(response.status)
+            assert body.count(b"<tr data-user-name=") == 1000
             assert len(body) <= 8 * 1024 * 1024
             return time.monotonic() - before
         finally:

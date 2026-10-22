@@ -15,6 +15,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import platform
 import secrets
 import shlex
 import signal
@@ -131,6 +132,7 @@ def main():
     import hysteria2_panel as panel
     import node_agent
     from hy2panel.distributed import canonical_node_request
+    from hy2panel.nodes import canonical_heartbeat
     db = panel.Database(Path(values["HY2PANEL_DB"]), bytes.fromhex(values["HY2PANEL_HMAC_KEY"]))
     if db.list_proxy_users(limit=1)["total"] or db.list_nodes():
         raise SystemExit("Fixture must start with an empty user/node dataset")
@@ -195,7 +197,13 @@ def main():
     started, started_at = time.monotonic(), time.time()
     report = {"candidate": args.candidate, "startedAt": started_at, "requestedSeconds": args.seconds,
               "users": 1000, "syntheticSignedNodes": 10, "hysteriaClients": 10, "tcpStreams": 100,
-              "managementClients": 10, "authBurst": 64, "result": "running"}
+              "managementClients": 10, "authBurst": 64, "result": "running",
+              "python": sys.version, "platform": platform.platform(), "cpuCount": os.cpu_count(),
+              "sourceSha256": {str(path.relative_to("/opt/hysteria2-panel")):
+                               hashlib.sha256(path.read_bytes()).hexdigest()
+                               for path in Path("/opt/hysteria2-panel").rglob("*.py")},
+              "serviceUnitSha256": hashlib.sha256(Path(
+                  "/etc/systemd/system/hysteria2-panel.service").read_bytes()).hexdigest()}
     (args.output / "status.json").write_text(json.dumps(report, indent=2))
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
@@ -216,6 +224,14 @@ def main():
     def node_cycle(index, sequence):
         node_id, key = nodes[index]
         observed = int(time.time())
+        if sequence % 3 == 1:
+            heartbeat = {"nodeId": node_id, "sentAt": observed, "nonce": secrets.token_urlsafe(32),
+                         "hostname": "fixture", "agentVersion": panel.PANEL_VERSION}
+            heartbeat["signature"] = base64.b64encode(node_agent._openssl_sign(
+                key, canonical_heartbeat(heartbeat))).decode()
+            status, body = request(31998, "/api/v1/node-heartbeats", heartbeat)
+            if status != 200 or json.loads(body).get("status") != "ONLINE":
+                raise RuntimeError("signed node heartbeat HTTP {}".format(status))
         payload = {"nodeId": node_id, "sentAt": observed, "nonce": secrets.token_urlsafe(32),
                    "cycleId": uuid.uuid4().hex,
                    "trafficBatches": [{"batchId": uuid.uuid4().hex, "observedAt": observed,
@@ -280,7 +296,7 @@ def main():
     first_hour, last_hour = [], deque(maxlen=120)
     echo = None
     try:
-        command("ip", "address", "add", "198.18.0.2/32", "dev", "lo")
+        command("ip", "address", "replace", "198.18.0.2/32", "dev", "lo")
         echo = EchoServer(("198.18.0.2", 32080), Echo)
         threading.Thread(target=echo.serve_forever, daemon=True).start()
         for index in range(10):
@@ -303,8 +319,13 @@ def main():
                     with socket.create_connection(("127.0.0.1", 33000 + index), timeout=1):
                         break
                 except OSError:
+                    if errors:
+                        raise RuntimeError(errors[0])
+                    if children[-1].poll() is not None:
+                        raise RuntimeError("client {} exited with {}; see client-{}.log".format(
+                            index, children[-1].returncode, index))
                     if time.monotonic() >= deadline:
-                        raise RuntimeError("client did not start")
+                        raise RuntimeError("client {} did not start; see client-{}.log".format(index, index))
                     time.sleep(.2)
             for _ in range(10):
                 start(lambda index=index: stream(33000 + index))
