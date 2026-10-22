@@ -9,6 +9,8 @@ import subprocess  # nosec B404 -- fixed systemctl executable, property and unit
 import tempfile
 import uuid
 
+from .operations import _systemctl_environment
+
 
 LOCAL_STATS_UNITS = (
     "hysteria2-panel-server.service",
@@ -22,7 +24,7 @@ def service_epoch(unit):
     result = subprocess.run(  # nosec B603 -- unit is restricted to the fixed allowlist.
         ["/bin/systemctl", "show", "--property=InvocationID", "--value", unit],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        timeout=2, check=False,
+        timeout=2, check=False, env=_systemctl_environment(),
     )
     value = result.stdout.strip()
     if result.returncode or not re.fullmatch(rb"[0-9a-f]{32}", value):

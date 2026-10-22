@@ -1828,6 +1828,13 @@ def _read_private_regular_file(path, maximum):
     return value
 
 
+def _systemctl_environment():
+    environment = os.environ.copy()
+    for name in ("NOTIFY_SOCKET", "WATCHDOG_PID", "WATCHDOG_USEC"):
+        environment.pop(name, None)
+    return environment
+
+
 def _systemd_service_active(unit):
     if unit not in {
         "hysteria2-panel-node-auth.service",
@@ -1846,6 +1853,7 @@ def _systemd_service_active(unit):
             stderr=subprocess.DEVNULL,
             timeout=5,
             check=False,
+            env=_systemctl_environment(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -1863,9 +1871,6 @@ DATA_PLANE_UNITS = (
 def _set_fixed_data_plane_running(running):
     if not isinstance(running, bool):
         raise ProtocolError("data-plane action is invalid")
-    environment = os.environ.copy()
-    for name in ("NOTIFY_SOCKET", "WATCHDOG_PID", "WATCHDOG_USEC"):
-        environment.pop(name, None)
     action = "start" if running else "stop"
     try:
         completed = subprocess.run(  # nosec B603 -- fixed executable and unit allowlist.
@@ -1873,7 +1878,7 @@ def _set_fixed_data_plane_running(running):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env=environment,
+            env=_systemctl_environment(),
             timeout=30,
             check=False,
         )
@@ -2568,7 +2573,7 @@ def _stats_service_epoch(client):
         result = subprocess.run(  # nosec B603 -- fixed executable, property and units.
             ["/bin/systemctl", "show", "--property=InvocationID", "--value", unit],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            timeout=2, check=False,
+            timeout=2, check=False, env=_systemctl_environment(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProtocolError("traffic stats service identity unavailable") from exc
@@ -2962,6 +2967,7 @@ def queue_node_uninstall(
             stderr=subprocess.DEVNULL,
             timeout=5,
             check=False,
+            env=_systemctl_environment(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProtocolError("cannot start the node uninstall worker") from exc

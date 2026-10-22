@@ -316,6 +316,7 @@ def main():
         # Start the observation clock only after the complete load is running.
         started, started_at = time.monotonic(), time.time()
         report["startedAt"] = started_at
+        previous_sample_at = started_at
         with ThreadPoolExecutor(max_workers=64) as executor, (args.output / "metrics.jsonl").open("a") as log:
             while not stop.is_set() and time.monotonic() - started < args.seconds:
                 if time.monotonic() - session_created >= 6 * 3600:
@@ -332,6 +333,11 @@ def main():
                 proc = Path("/proc", str(pid))
                 fields = dict(line.split(":", 1) for line in (proc / "status").read_text().splitlines() if ":" in line)
                 elapsed = time.monotonic() - started
+                sample_at = time.time()
+                if (sample_at - previous_sample_at > 90
+                        or abs(sample_at - started_at - elapsed) > 90):
+                    raise RuntimeError("observation lost continuity or the host clock changed")
+                previous_sample_at = sample_at
                 metrics = {"elapsed": elapsed, "at": time.time(), "rssKiB": int(fields["VmRSS"].split()[0]),
                            "threads": int(fields["Threads"]), "fds": len(list((proc / "fd").iterdir())),
                            "cpuTicks": [int(v) for v in (proc / "stat").read_text().split()[13:15]],
