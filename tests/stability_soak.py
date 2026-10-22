@@ -38,6 +38,7 @@ def command(*args):
 
 
 def request(port, path, data=None, cookie=None):
+    started = time.monotonic()
     connection = (http.client.HTTPSConnection("127.0.0.1", port, timeout=9, context=TLS_CONTEXT)
                   if port == 31998 else http.client.HTTPConnection("127.0.0.1", port, timeout=9))
     try:
@@ -51,6 +52,10 @@ def request(port, path, data=None, cookie=None):
         if len(body) > 8 * 1024 * 1024:
             raise RuntimeError("oversized fixture response")
         return response.status, body
+    except OSError as error:
+        raise RuntimeError("{} {} after {:.3f}s: {}".format(
+            "GET" if data is None else "POST", path, time.monotonic() - started,
+            type(error).__name__)) from error
     finally:
         connection.close()
 

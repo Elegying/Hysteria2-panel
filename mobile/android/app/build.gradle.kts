@@ -9,10 +9,8 @@ plugins {
 val previewBuild = providers.gradleProperty("previewBuild").orNull == "true"
 val stabilityTestBuild = providers.gradleProperty("stabilityTestBuild").orNull == "true"
 require(!stabilityTestBuild || previewBuild) { "稳定性测试必须使用独立预览包" }
-gradle.taskGraph.whenReady {
-    require(!stabilityTestBuild || allTasks.none {
-        it.name.contains("Release", ignoreCase = true) || it.name.contains("Profile", ignoreCase = true)
-    }) { "稳定性测试配置只允许 debug 构建" }
+androidComponents.beforeVariants {
+    if (stabilityTestBuild && it.buildType != "debug") it.enable = false
 }
 
 android {
