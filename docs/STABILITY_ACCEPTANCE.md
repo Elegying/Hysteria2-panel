@@ -16,7 +16,7 @@
 
 ### 浏览器
 
-保留 `tests/browser_controls.py` 的 Chromium 完整交互。`tests/browser_core_flows.py` 为 Firefox/WebKit 增加真实 HTTP 往返、键盘登录、弹窗焦点、窄屏、200% CSS 缩放、创建失败恢复、操作取消/确认、备份下载和退出。CSS 缩放检查不等同于所有桌面浏览器原生缩放设置的人工验收。
+保留 `tests/browser_controls.py` 的 Chromium 完整交互。`tests/browser_core_flows.py` 为 Firefox/WebKit 增加真实 HTTP 往返、键盘登录、弹窗焦点、窄屏、200% 等效缩放视口、创建失败恢复、操作取消/确认、备份下载和退出。等效视口同时将 CSS 宽高减半、设备像素比例设为 2；仅设置 CSS zoom 不会触发相应媒体查询，首轮相关失败日志保留。浏览器菜单中原生缩放仍需人工验收。
 
 ```sh
 python -m pip install playwright==1.61.0

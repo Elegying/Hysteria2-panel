@@ -17,6 +17,7 @@ from tests.test_panel import PanelHttpTests  # noqa: E402
 def exercise(engine, output):
     fixture = PanelHttpTests("runTest")
     fixture.setUp()
+    fixture.application.secure_cookies = False  # This fixture serves explicit HTTP.
     report = {"engine": engine, "passed": [], "result": "failed"}
     page = None
     try:
@@ -35,10 +36,20 @@ def exercise(engine, output):
                 expect(page.locator("[data-egress-form]")).to_be_visible()
                 report["passed"].append("keyboard-login")
 
-                for label, width, zoom in (("desktop", 1380, 1), ("narrow", 375, 1),
-                                           ("zoom-200", 1380, 2)):
-                    page.set_viewport_size({"width": width, "height": 900})
-                    page.evaluate("zoom => document.documentElement.style.zoom = zoom", str(zoom))
+                for label, width, scale in (("desktop", 1380, 1), ("narrow", 375, 1),
+                                            ("zoom-200", 690, 2)):
+                    original_page = page
+                    zoom_context = None
+                    if scale == 2:
+                        # Browser zoom halves the CSS viewport and doubles DPR.
+                        # CSS `zoom` alone does not update media queries.
+                        zoom_context = browser.new_context(
+                            viewport={"width": width, "height": 450}, device_scale_factor=2,
+                            storage_state=context.storage_state())
+                        page = zoom_context.new_page()
+                        page.goto(fixture.base_url + "/")
+                    else:
+                        page.set_viewport_size({"width": width, "height": 900})
                     button = page.locator('[data-dialog-open="create-user-dialog"]')
                     button.focus()
                     button.press("Enter")
@@ -48,9 +59,17 @@ def exercise(engine, output):
                     page.keyboard.press("Escape")
                     expect(page.locator("#create-user-dialog")).not_to_be_visible()
                     expect(button).to_be_focused()
-                    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+                    dimensions = page.evaluate("""({width: innerWidth,
+                        scrollWidth: document.documentElement.scrollWidth,
+                        overflowing: [...document.querySelectorAll('main *')]
+                          .filter(e => e.getBoundingClientRect().right > innerWidth + 1)
+                          .slice(0, 12).map(e => ({tag: e.tagName, class: e.className,
+                            right: e.getBoundingClientRect().right}))})""")
+                    assert dimensions["scrollWidth"] <= dimensions["width"] + 1, dimensions
                     report["passed"].append(label + "-dialog-keyboard-focus")
-                page.evaluate("document.documentElement.style.zoom = '1'")
+                    if zoom_context is not None:
+                        zoom_context.close()
+                        page = original_page
 
                 page.locator('[data-dialog-open="create-user-dialog"]').click()
                 page.locator("#name").fill("core-created")

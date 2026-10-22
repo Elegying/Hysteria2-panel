@@ -127,6 +127,7 @@ def main():
     args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
     os.umask(0o077)
     sys.path.insert(0, "/opt/hysteria2-panel")
+    sys.path.insert(1, "/workspace")
     import hysteria2_panel as panel
     import node_agent
     from hy2panel.distributed import canonical_node_request
@@ -144,6 +145,7 @@ def main():
             "-keyout", str(key), "-out", str(certificate))
     key.chmod(0o640)
     os.chown(key, 0, grp.getgrnam("hy2panel").gr_gid)
+    certificate.chmod(0o644)
     replacements = {"HY2PANEL_PANEL_SCHEME": "https", "HY2PANEL_PANEL_PUBLIC_HOST": "localhost",
                     "HY2PANEL_PANEL_TLS_CERT": str(certificate), "HY2PANEL_PANEL_TLS_KEY": str(key)}
     original = env_path.read_text()

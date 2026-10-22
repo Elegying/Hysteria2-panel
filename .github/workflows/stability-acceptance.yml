@@ -49,8 +49,13 @@ jobs:
     env:
       ORG_GRADLE_PROJECT_previewBuild: 'true'
       ORG_GRADLE_PROJECT_stabilityTestBuild: 'true'
+      GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx2G -Dorg.gradle.workers.max=2'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: Install exact Flutter SDK revision
         run: |
           flutter_dir="$RUNNER_TEMP/flutter"
@@ -65,8 +70,8 @@ jobs:
           IMAGE: system-images;android-${{ matrix.api }};${{ matrix.target }};x86_64
         run: |
           sudo chmod a+rw /dev/kvm
-          sdkmanager "$IMAGE" emulator
-          echo no | avdmanager create avd --force --name hy2-acceptance --package "$IMAGE"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMAGE" emulator
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --force --name hy2-acceptance --package "$IMAGE"
           "$ANDROID_HOME/emulator/emulator" -avd hy2-acceptance -no-window -no-audio \
             -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
           adb wait-for-device

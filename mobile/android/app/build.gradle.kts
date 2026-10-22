@@ -9,9 +9,11 @@ plugins {
 val previewBuild = providers.gradleProperty("previewBuild").orNull == "true"
 val stabilityTestBuild = providers.gradleProperty("stabilityTestBuild").orNull == "true"
 require(!stabilityTestBuild || previewBuild) { "稳定性测试必须使用独立预览包" }
-require(!stabilityTestBuild || gradle.startParameter.taskNames.none {
-    it.contains("Release", ignoreCase = true) || it.contains("Profile", ignoreCase = true)
-}) { "稳定性测试配置只允许 debug 构建" }
+gradle.taskGraph.whenReady {
+    require(!stabilityTestBuild || allTasks.none {
+        it.name.contains("Release", ignoreCase = true) || it.name.contains("Profile", ignoreCase = true)
+    }) { "稳定性测试配置只允许 debug 构建" }
+}
 
 android {
     namespace = "vip.ssrvpn.hysteria2manager"
@@ -82,7 +84,8 @@ android {
         }
         release {
             signingConfig = signingConfigs.findByName("release")
-                ?: error("缺少 android/signing.properties，不能生成正式签名 APK")
+                ?: if (stabilityTestBuild) null
+                else error("缺少 android/signing.properties，不能生成正式签名 APK")
             isMinifyEnabled = true
             isShrinkResources = true
         }
