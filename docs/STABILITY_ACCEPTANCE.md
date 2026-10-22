@@ -15,8 +15,9 @@
 - 当前运行时候选：`b3d9509ff8615c2de942d56dd9b76467d35ff1bf`。在前述修复上，服务入口保留无活动事务的 SQLite 连接，防止 root 每日备份创建服务账号不可访问的 WAL。安装的 19 个 Python 文件与提交源码逐一一致。PR 测试合并提交 `f7b2e0453e760e14de38637fcae71f92dc256efe` 与该候选的树均为 `ad35b0e78cf108792e3ad86c34d19b14be335459`。
 - [运行时 b3d9509 完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271265)：Python 3.8.18/3.12.15/3.13.16 各执行 1,063 项，1,057 通过、6 项因加密工具/JDK 或 locale 条件跳过；Flutter 3.47.2 的 149 项及 analyze、Chromium 36 组交互、静态/隐私/哈希、依赖矩阵、systemd、防火墙及五组安装检查通过。该候选在本机补测签名恢复 9 项和证书 4 项全部通过，覆盖 CI 的六项跳过；不把跳过本身记为通过。
 - [六平台完整安装](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836264237)全部通过，包括新增的实际 root 备份期间服务账号读写、WAL 属主/0600/inode 和 checkpoint 检查。[附加原生/浏览器工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271353)的 Firefox 151、WebKit 26.5 各九组核心流程和 Android API 24 通过；API 36 测试执行约 49 秒后通道结束，原始 artifact 确认宿主模拟器退出码 132，保留失败。
-- 最新已核对的测试候选为 `dd8c03145e3c425f70774f312d9d89d1ea63c99e`，产品运行时仍为 `b3d9509`。[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865561769)为 22 项成功、1 项 tag 条件跳过：Python 3.8/3.12/3.13 各执行 1,069 项（1,063 通过、6 条件跳过），Flutter 149 项/analyze、Chromium 36 组及其余既有检查通过；[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865586195)全部通过，六组实际 root/WAL 并发均通过。[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865561736)的 WebKit 15 组、API 24（21 秒）和修复后的 API 36（18 秒）原生断言通过。Firefox 在下载 Ubuntu 依赖时耗尽 15 分钟，未执行测试，不能记通过；原日志已保留。PR 合并测试提交 `87a0cca1a26f98f7a277ddbfef3ff323c5c41bb4` 与该提交同树 `8312d6d758cac23d39b345fc8d85f96496e88b24`。
-- 北京时间 10 月 23 日手机 USB 实机检查已完成，原生回归及实际进程/网络恢复结果见 Android 小节。第二轮 48 小时观察在约 90 分钟断流后失败，原预计完成时间失效；旧失败实例停止保留，随后两小时诊断在 3,346.491 秒遇到节点控制请求 403；此次最先失败的是节点请求，100 条流均在停测后关闭。新实例只增加拒绝来源行和既有 Hysteria debug 日志继续定位。所有诊断均不能续算旧轮或转记 48 小时通过。
+- 已核对的测试候选 `dd8c03145e3c425f70774f312d9d89d1ea63c99e`，产品运行时仍为 `b3d9509`。[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865561769)为 22 项成功、1 项 tag 条件跳过：Python 3.8/3.12/3.13 各执行 1,069 项（1,063 通过、6 条件跳过），Flutter 149 项/analyze、Chromium 36 组及其余既有检查通过；[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865586195)全部通过，六组实际 root/WAL 并发均通过。[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865561736)的 WebKit 15 组、API 24（21 秒）和修复后的 API 36（18 秒）原生断言通过。Firefox 在下载 Ubuntu 依赖时耗尽 15 分钟，未执行测试，不能记通过；原日志已保留。PR 合并测试提交 `87a0cca1a26f98f7a277ddbfef3ff323c5c41bb4` 与该提交同树 `8312d6d758cac23d39b345fc8d85f96496e88b24`。
+- 后续测试候选 `7764a0a9fbb5d54e01ca09bf64caff6be03df822` 的[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39867856546)为 22 项成功、1 项 tag 条件跳过，[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39868209434)六项全部成功，数量与上述 Python/Flutter/Chromium 检查一致。[附加回归](https://github.com/Elegying/Hysteria2-panel/actions/runs/39867856526)中 API 24（17 秒）、API 36（15 秒）和 Firefox 15 组通过；WebKit 再次在 Ubuntu 依赖下载阶段超时，未执行测试。PR 合并测试提交 `724d3bde039b11813e1a7d7926e5bb300b088288` 与该提交同树 `4d1f2643d815f4293a7d2722e968a5787c93efb3`，产品运行时没有变化。
+- 北京时间 10 月 23 日手机 USB 实机检查已完成，原生回归及实际进程/网络恢复结果见 Android 小节。第二轮 48 小时观察在约 90 分钟断流后失败，原预计完成时间失效；旧失败实例停止保留。随后两小时诊断在 3,346.491 秒遇到节点控制请求 403，100 条流均在停测后关闭；再一次私有诊断于 592.504 秒失败，首个错误为流读取超时，随后出现节点握手和认证超时及一次 watchdog 重启。两次诊断均保留完整现场，不作为原 EOF 已定位或正式 48 小时通过证据。
 - 182 项逐条登记：75 项达到所列自动化/隔离测试合同，102 项尚缺完整实际验收证据，1 项连续观察失败待新候选重验，4 项属于后续正式发布而不适用。单条通过不等于各系统实机、部署和 48 小时整体门禁通过。
 - 本机证据目录由执行环境保留，不向仓库上传私钥、会话、测试 APK、完整备份或原始面板配置。公开结果只记录源码 SHA、时间、构建摘要、错误分类及资源统计。
 
@@ -50,7 +51,9 @@
 
 原始默认驱动的已知失败保留在手动诊断工作流中，不声称上游图形库已经修复；每次 API 36 正式验收则必须先通过实际驱动与一/零附件探针，再执行原有完整 App 断言。
 
-同轮 Firefox 未执行测试：Azure HTTP 软件源下载 7.5 MB 字体约耗时 156 秒、9 MB 编解码库约耗时 190 秒，最终在依赖安装阶段达到任务期限。此前 WebKit 也曾出现同类环境取消。仅将这两个临时浏览器 runner 的 Ubuntu 源改为官方 HTTPS archive，保留原发行版、签名验证、依赖、Playwright 版本、15 分钟任务边界和全部断言；须由新提交的实际 CI 验证，不能把取消视作产品测试通过。
+同轮 Firefox 未执行测试：Azure HTTP 软件源下载 7.5 MB 字体约耗时 156 秒、9 MB 编解码库约耗时 190 秒，最终在依赖安装阶段达到任务期限。`7764a0a` 中只替换直接 URI 没有生效：实际 runner 通过 `mirror+file:/etc/apt/apt-mirrors.txt` 选择 Azure，Firefox 的下载提速和 15 项通过不能归因于这处修改，WebKit 仍约 47 KB/s 并超时。对应 [runner 镜像的配置源码](https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/scripts/build/configure-apt-sources.sh)也确认了这层间接选择。后续修正实际镜像列表入口，并在安装前输出和断言生效 URI；保留原发行版、签名验证、依赖、Playwright 版本、15 分钟任务边界和全部断言。新修正仍须实际 CI 验证，不能把取消视作产品测试通过。
+
+`7764a0a` 的 API 36 探针和 App 各自确认加载 guest ANGLE，原生全部断言 15 秒通过；完整 artifact 摘要为 `d25fcf06712386d6c9ca52ae800035d554ccaa41b73137bdcdc690a1199a2e74`。API 24 摘要为 `b63a0ec2afa8a3de3091875317ebe9d51d979e3ce7f6f43ede2492f832bd5f21`，Firefox 为 `383c8742401e0dbf8954198621ef033e6e414bfdcb1a8a6e8baf849972fa7666`，均已校验归档。
 
 `4deea60d91b8e0f5cfe43ba8d7d3e1bbc8b25c1e` 的[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39851417074)在新加的 `emulator -version` 环境采集处退出 127：命令加载图形版 QEMU，runner 缺少 `libpulse.so.0`，两个 Android 任务均未启动模拟器或应用测试。因此该轮不能用于判断 Lavapipe 结果。两个失败 artifact 已保留；版本改为直接读取安装包的 `source.properties`，继续记录二进制哈希，实际模拟器仍沿用已有 `-no-window -no-audio` 启动命令。
 
@@ -94,7 +97,9 @@ Android 17 / API 37 的 USB 真机（2509FPN0BC）已在用户解锁后完成原
 
 在两份独立数据库副本上，使用原签名密钥与真实 OpenSSL 验签器做一次串行/同步对照：串行 10/10 接受；10 路同步时实际验签峰值为 8，其中一个请求在 `_verify` 第 245 行的非阻塞槽位门控处拒绝，另九个通过。该实验没有改运行中的服务、原数据库、8 路上限或返回语义；它确认了门控拒绝路径，仍不能代替旧现场缺失的分支证据。真实节点已有持久化批次与抖动退避，当前合成报告器则固定 10 秒且遇任意 403 停止全部负载，二者的恢复行为不能混同。
 
-新的空白诊断实例仍运行原 1,000/10/100/10/64 负载，只在私有启动器记录拒绝函数/源码行/时间，并打开现有 Hysteria debug 关闭日志；无权限信息、payload 或密钥输出，不更改拒绝分支、负载、超时或产品源文件。该包装器仅用于定位，不属于最终候选或 48 小时验收环境。
+随后空白诊断实例运行原 1,000/10/100/10/64 负载，只在私有启动器记录拒绝函数/源码行/时间，并打开现有 Hysteria debug 关闭日志。它于 592.504 秒失败，最终报认证超时；事件按单调时钟排序后，第一条为 `client-1-stream-1` 读取超时，接着多节点 TLS 握手超时。约 3.52 秒后 systemd 的原 30 秒 watchdog 触发一次重启，没有拒绝分支事件；唯一回显 15.054 秒闲置超时发生在停测标志之后。不能把最后的认证错误当成第一起故障，也不能归为上一轮 403。
+
+同一窗口宿主负载升至 31.97，交换区使用约 8.35 GiB，采样记录明显换入、换出及压缩活动。它们是已测相关性，尚不足以证明唯一根因或归责其他任务。已保留 49 个原始文件、UID 997 一致数据库副本和失败容器，quick check 为 ok、仍为 1,000 用户/10 节点；本轮专用 VM 停止释放资源，未停止其他任务。下一次诊断准备记录独立调度迟到、健康探测/采集心跳和 SIGABRT 线程栈，以区分进程阻塞与虚拟机调度停顿。私有诊断均不属于最终候选或 48 小时验收环境，现有超时与安全边界保持不变。
 
 `tests/stability_soak.py` 只接受明确标记的独立 Docker/systemd 测试环境，必须使用测试端口、空白用户/节点数据以及与安装目录一致的源码。它保留原 Hysteria TLS 身份与全部 ACL，在隔离网络中使用 `198.18.0.2` 作为数据面回显目标。
 
@@ -157,7 +162,7 @@ API 36 的 `swangle` 对照也在首个测试完成前退出，宿主进程退�
 
 ## 收敛前仍需核对
 
-后续若修改运行时代码，完整 CI、六平台矩阵和持续观察必须绑定新候选重新执行。Linux x86_64 的 Android API 36 失败、第二轮真实断流的根因、连续 48 小时及剩余逐项实际验收仍未完成。API 37 已完成的原生/生命周期/网络恢复不覆盖全部 App 验收点。HTTPS/ACME 和 WebDAV 的生产接入、真实公网证书签发仍为独立部署验收。
+后续若修改运行时代码，完整 CI、六平台矩阵和持续观察必须绑定新候选重新执行。API 36 已定位并通过包级驱动修正后的完整原生断言；第二轮真实断流的根因、连续 48 小时及剩余逐项实际验收仍未完成。API 37 已完成的原生/生命周期/网络恢复不覆盖全部 App 验收点。HTTPS/ACME 和 WebDAV 的生产接入、真实公网证书签发仍为独立部署验收。
 
 ## 当前连续观察
 
@@ -181,25 +186,25 @@ API 36 的 `swangle` 对照也在首个测试完成前退出，宿主进程退�
 
 ## 当前兼容性矩阵
 
-以下远端自动化结果绑定 `b4a6849673356191de4ff459b3f2f7c8fabdf212`，运行时仍为 `b3d9509`；各 Linux 行为独立 systemd 部署环境，不能等同于全部云厂商或物理硬件。原始日志已归档。
+以下远端自动化结果绑定 `7764a0a9fbb5d54e01ca09bf64caff6be03df822`，运行时仍为 `b3d9509`；各 Linux 行为独立 systemd 部署环境，不能等同于全部云厂商或物理硬件。原始日志已归档。
 
 | 环境 | 当前证据 | 结论与边界 |
 |---|---|---|
-| Ubuntu 24.04 / amd64 | 六平台 job 120082822513 | 完整安装、升级、中断恢复、双入口、容量与 WAL 备份回归通过 |
-| Ubuntu 24.04 / arm64 | 六平台 job 120082822091 | 同上；本机独立 2 vCPU/2 GiB 持续负载另记 |
-| Debian stable / amd64 | 六平台 job 120082822420 | 完整部署回归通过 |
-| Debian stable / arm64 | 六平台 job 120082822378 | 完整部署回归通过 |
-| Rocky 9 / amd64 | 六平台 job 120082821778 | 完整部署回归通过 |
-| Rocky 9 / arm64 | 六平台 job 120082822277 | 完整部署回归通过 |
+| Ubuntu 24.04 / amd64 | 六平台 job 120135688460 | 完整安装、升级、中断恢复、双入口、容量与 WAL 备份回归通过 |
+| Ubuntu 24.04 / arm64 | 六平台 job 120135688974 | 同上；本机独立 2 vCPU/2 GiB 持续负载另记 |
+| Debian stable / amd64 | 六平台 job 120135688737 | 完整部署回归通过 |
+| Debian stable / arm64 | 六平台 job 120135688937 | 完整部署回归通过 |
+| Rocky 9 / amd64 | 六平台 job 120135689198 | 完整部署回归通过 |
+| Rocky 9 / arm64 | 六平台 job 120135688740 | 完整部署回归通过 |
 | Debian 12、13 | 完整 CI 对应安装 job | 两个既有安装检查通过 |
 | Debian 11/12/13、Ubuntu 20.04/22.04/24.04、Rocky 8/9 | 完整 CI 八发行版依赖 job | 首次与重复依赖安装通过 |
-| Python 3.8 / 3.12 / 3.13 | 完整 CI 三组各 1,066 项 | 每组 1,060 通过、6 跳过；本机 13 项加密/证书补测通过 |
+| Python 3.8 / 3.12 / 3.13 | 完整 CI 三组各 1,069 项 | 每组 1,063 通过、6 跳过；本机 13 项加密/证书补测通过 |
 | Flutter 3.47.2 | 固定 SDK `d3b14c876900e553bc736ca19295fc09e3853e8e` | 149 项及 analyze 通过 |
 | Chromium | 完整 CI browser-smoke | 完整 36 组交互及 JS 失败路径通过 |
-| Firefox 151 / WebKit 26.5 | 附加工作流两个 browser-core job | 各 15 组流程通过；原生菜单 200% 缩放仍未测 |
-| Android API 24 / x86_64 | 附加工作流 job 120082639021 | 独立包原生测试通过，固定 `--no-uninstall` |
-| Android API 36 / x86_64 | 附加工作流 job 120082639122 | 失败；Lavapipe 对照仍为 gfxstream SIGILL，未完成全部断言 |
-| Android API 36 / arm64 | 先前本机固定 Flutter/应用源码测试 | 原生断言通过；属于独立架构证据，不覆盖 x86_64 失败 |
+| Firefox 151 / WebKit 26.5 | Firefox job 120134487600；WebKit job 120134487108 | Firefox 15 组通过；本提交 WebKit 依赖安装超时未测，dd8c031 的独立 15 组通过不能覆盖本次未执行；原生菜单 200% 缩放仍未测 |
+| Android API 24 / x86_64 | 附加工作流 job 120134487581 | 独立包原生测试 17 秒通过，固定 `--no-uninstall` |
+| Android API 36 / x86_64 | 附加工作流 job 120134487441 | 包级 guest ANGLE 探针与实际库断言、全部原生测试 15 秒通过；默认 host GLES 的合法零附件 SIGILL 另行保留 |
+| Android API 36 / arm64 | 先前本机固定 Flutter/应用源码测试 | 原生断言通过；属于独立架构证据，不替代 x86_64 的驱动复现与回归 |
 | Android 17 / API 37 手机 | USB 独立包原生 22 秒通过；真实生命周期/切网另有逐步记录 | 强停恢复、令牌轮换、前后台、双面板、真实网络失败/恢复及退出通过；正式 App 元数据未变；剩余逐项 UI 合同仍未测 |
 | 连续 48 小时 | 首轮 2,651.449 秒和第二轮 5,417.062 秒失败现场均保留 | 尚未通过；第二轮意外断流待定位，不续算；专用 VM 已停止 |
 

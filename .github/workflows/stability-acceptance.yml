@@ -27,10 +27,15 @@ jobs:
           python-version: '3.13'
       - name: Install pinned browser engines
         run: |
-          # Azure's HTTP mirror stalled this job before any browser test ran.
-          # Keep Ubuntu's signed package metadata and the existing dependencies.
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+          # The runner selects Azure through a mirror list, not a direct URI.
+          # Keep Ubuntu's signed metadata, suites and existing dependencies.
+          sudo sed -i \
+            -e 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://archive.ubuntu.com/ubuntu/|g' \
+            -e 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
             /etc/apt/sources.list.d/ubuntu.sources
+          grep '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
+          grep -Eq '^URIs: https://archive\.ubuntu\.com/ubuntu/?$' /etc/apt/sources.list.d/ubuntu.sources
+          ! grep -Eq '^URIs:.*(mirror\+file:|azure\.archive\.ubuntu\.com)' /etc/apt/sources.list.d/ubuntu.sources
           python -m pip install playwright==1.61.0
           python -m playwright install --with-deps ${{ matrix.engine }}
       - name: Run isolated core flows
