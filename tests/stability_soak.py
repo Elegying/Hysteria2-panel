@@ -186,6 +186,8 @@ def main():
             raise RuntimeError("HTTPS fixture did not become ready")
         time.sleep(1)
     command("ip", "address", "replace", "198.18.0.2/32", "dev", "lo")
+    service_unit_sha = hashlib.sha256(Path(
+        "/etc/systemd/system/hysteria2-panel.service").read_bytes()).hexdigest()
     # All privileged setup is complete before any load threads are started.
     become_database_owner(db.path, args.output)
     users = [db.create_proxy_user("soak-{:04d}".format(i), device_limit=100,
@@ -225,8 +227,7 @@ def main():
               "sourceSha256": {str(path.relative_to("/opt/hysteria2-panel")):
                                hashlib.sha256(path.read_bytes()).hexdigest()
                                for path in Path("/opt/hysteria2-panel").rglob("*.py")},
-              "serviceUnitSha256": hashlib.sha256(Path(
-                  "/etc/systemd/system/hysteria2-panel.service").read_bytes()).hexdigest()}
+              "serviceUnitSha256": service_unit_sha}
     (args.output / "status.json").write_text(json.dumps(report, indent=2))
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
