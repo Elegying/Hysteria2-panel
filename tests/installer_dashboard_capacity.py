@@ -25,7 +25,10 @@ def main():
     if values["HY2PANEL_PANEL_PORT"] != "31998":
         raise SystemExit("Refusing a non-fixture panel")
     sys.path.insert(0, "/opt/hysteria2-panel")
+    sys.path.insert(1, "/workspace")
     import hysteria2_panel as panel
+    from tests.installer_fixture import become_database_owner
+    become_database_owner(values["HY2PANEL_DB"])
     db = panel.Database(Path(values["HY2PANEL_DB"]), bytes.fromhex(values["HY2PANEL_HMAC_KEY"]))
     total = db.list_proxy_users(limit=1)["total"]
     if total > 1000:
@@ -89,6 +92,7 @@ def main():
     assert int(property_value("MainPID")) == pid
     assert property_value("NRestarts") == restarts
     print(json.dumps({"result": "passed", "users": 1000, "clients": 10, "requests": 30,
+                      "fixtureUid": os.geteuid(), "databaseUid": db.path.stat().st_uid,
                       "peakRssKiB": max(samples, default=0),
                       "medianSeconds": statistics.median(timings), "maxSeconds": max(timings)}))
 

@@ -142,8 +142,17 @@ def main():
     import node_agent
     from hy2panel.distributed import canonical_node_request
     from hy2panel.nodes import canonical_heartbeat
+    from tests.installer_fixture import become_database_owner
     db = panel.Database(Path(values["HY2PANEL_DB"]), bytes.fromhex(values["HY2PANEL_HMAC_KEY"]))
-    if db.list_proxy_users(limit=1)["total"] or db.list_nodes():
+    # Even a read can create WAL sidecars. Never race the service as root.
+    populated = command(
+        "runuser", "-u", "hy2panel", "--", sys.executable, "-c",
+        "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); "
+        "print(c.execute('SELECT EXISTS(SELECT 1 FROM proxy_users) "
+        "OR EXISTS(SELECT 1 FROM nodes)').fetchone()[0]); c.close()",
+        str(db.path),
+    )
+    if populated != "0":
         raise SystemExit("Fixture must start with an empty user/node dataset")
     # Enable HTTPS with a fixture-only CA, retaining the separate Hysteria identity.
     import grp
@@ -176,6 +185,9 @@ def main():
         if time.monotonic() >= deadline:
             raise RuntimeError("HTTPS fixture did not become ready")
         time.sleep(1)
+    command("ip", "address", "replace", "198.18.0.2/32", "dev", "lo")
+    # All privileged setup is complete before any load threads are started.
+    become_database_owner(db.path, args.output)
     users = [db.create_proxy_user("soak-{:04d}".format(i), device_limit=100,
                                   allow_udp_443=True) for i in range(1000)]
     now = int(time.time())
@@ -208,6 +220,7 @@ def main():
               "users": 1000, "syntheticSignedNodes": 10, "hysteriaClients": 10, "tcpStreams": 100,
               "managementClients": 10, "authBurst": 64, "result": "running",
               "python": sys.version, "platform": platform.platform(), "cpuCount": os.cpu_count(),
+              "fixtureUid": os.geteuid(), "databaseUid": db.path.stat().st_uid,
               "cpuClockTicksPerSecond": os.sysconf("SC_CLK_TCK"),
               "sourceSha256": {str(path.relative_to("/opt/hysteria2-panel")):
                                hashlib.sha256(path.read_bytes()).hexdigest()
@@ -306,7 +319,6 @@ def main():
     first_hour, last_hour = [], deque()
     echo = None
     try:
-        command("ip", "address", "replace", "198.18.0.2/32", "dev", "lo")
         echo = EchoServer(("198.18.0.2", 32080), Echo)
         threading.Thread(target=echo.serve_forever, daemon=True).start()
         for index in range(10):
