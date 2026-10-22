@@ -5315,6 +5315,23 @@ class Database:
                 )
             return updated.rowcount == 1
 
+    @staticmethod
+    def _node_report_users(connection, names):
+        # A sparse report must not scan all accounts while holding the writer
+        # lock. Use the existing NOCASE index, then preserve exact report names.
+        names = set(names)
+        ordered = list(names)
+        users = {}
+        for offset in range(0, len(ordered), 100):
+            chunk = ordered[offset:offset + 100]
+            rows = connection.execute(
+                """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes, traffic_adjusted_at
+                FROM proxy_users WHERE name IN ({})""".format(  # nosec B608 -- placeholders only.
+                    ",".join("?" for _ in chunk)), chunk,
+            ).fetchall()
+            users.update((row["name"], row) for row in rows if row["name"] in names)
+        return users
+
     def accept_node_online_snapshot(
         self,
         node_id,
@@ -5350,10 +5367,7 @@ class Database:
                 ).fetchone()
                 if previous_snapshot is not None and sequence <= previous_snapshot["sequence"]:
                     raise sqlite3.IntegrityError("snapshot sequence is not monotonic")
-                known_names = {
-                    row["name"]
-                    for row in connection.execute("SELECT name FROM proxy_users")
-                }
+                known_names = set(self._node_report_users(connection, online))
                 unknown_names = set(online) - known_names
                 if unknown_names:
                     retired_names = {
@@ -5822,13 +5836,7 @@ class Database:
                         )""",
                         (node_id, rows_to_evict),
                     )
-                users = {
-                    row["name"]: row
-                    for row in connection.execute(
-                        """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes, traffic_adjusted_at
-                        FROM proxy_users"""
-                    )
-                }
+                users = self._node_report_users(connection, traffic)
                 unknown_users = 0
                 exhausted_users = set()
                 origin_id = "node:" + node_id

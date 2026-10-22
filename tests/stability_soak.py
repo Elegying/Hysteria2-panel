@@ -53,7 +53,7 @@ def request(port, path, data=None, cookie=None):
             raise RuntimeError("oversized fixture response")
         return response.status, body
     except OSError as error:
-        raise RuntimeError("{} {} after {:.3f}s: {}".format(
+        raise OSError("{} {} after {:.3f}s: {}".format(
             "GET" if data is None else "POST", path, time.monotonic() - started,
             type(error).__name__)) from error
     finally:
