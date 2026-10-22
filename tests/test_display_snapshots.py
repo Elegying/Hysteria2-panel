@@ -123,6 +123,42 @@ class DisplaySnapshotTests(unittest.TestCase):
         self.assertEqual(sampled_at, node["lastTrafficAckAt"])
         self.assertEqual(now[0], node["lastSnapshotAt"])
 
+    def test_slow_display_database_read_keeps_one_snapshot_without_blocking_auth(self):
+        now = [int(time.time())]
+        self.usage.wall_clock = lambda: now[0]
+        self.stats.collect_and_clear.return_value = {"alice": {"tx": 11, "rx": 13}}
+        self.usage.collect_once()
+        observed_at = now[0]
+        entered, release = threading.Event(), threading.Event()
+        read_users = self.db.list_proxy_users_for_usage
+
+        def slow_users(*args, **kwargs):
+            if threading.current_thread().name.startswith("display"):
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("display database fixture was not released")
+            return read_users(*args, **kwargs)
+
+        with mock.patch.object(self.db, "list_proxy_users_for_usage", side_effect=slow_users), \
+                concurrent.futures.ThreadPoolExecutor(thread_name_prefix="display") as display, \
+                concurrent.futures.ThreadPoolExecutor(thread_name_prefix="auth") as auth:
+            reading = display.submit(self.usage.snapshot)
+            try:
+                self.assertTrue(entered.wait(2))
+                now[0] += 5
+                self.stats.collect_and_clear.return_value = {"alice": {"tx": 100, "rx": 200}}
+                self.assertTrue(auth.submit(self.usage.authorize, "alice").result(timeout=2))
+            finally:
+                release.set()
+            snapshot = reading.result(timeout=2)
+        self.assertEqual(111, self.db.get_proxy_user(self.user["id"])["tx_bytes"])
+        self.assertEqual(11, snapshot["traffic"]["alice"]["tx"])
+        self.assertEqual(11, snapshot["_users"][0]["tx_bytes"])
+        local = next(item for item in snapshot["machine_stats"]["origins"]
+                     if item["origin_id"] == self.usage.local_origin_id)
+        self.assertEqual(11, local["tx_bytes"])
+        self.assertEqual(observed_at, local["traffic_observed_at"])
+
     def test_remote_traffic_timestamp_uses_acked_sample_not_online_receipt(self):
         now = int(time.time())
         state = {"node_id": "a" * 32, "name": "node", "status": "pending_verification",

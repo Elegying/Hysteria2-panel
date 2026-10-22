@@ -3453,8 +3453,8 @@ class Database:
             ).fetchall()
         return [row["name"] for row in rows]
 
-    def list_proxy_users_for_usage(self):
-        with self._connect() as connection:
+    def list_proxy_users_for_usage(self, *, connection=None):
+        with self._connect() if connection is None else contextlib.nullcontext(connection) as connection:
             rows = connection.execute(
                 """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
                 allow_udp_443, local_drain_started_at,
@@ -3545,10 +3545,12 @@ class Database:
             (tx + rx, origin_id, observed_at),
         )
 
-    def list_usage_origins(self, machine_totals=False):
-        with self._connect() as connection:
+    def list_usage_origins(self, machine_totals=False, *, connection=None):
+        owns_connection = connection is None
+        with self._connect() if owns_connection else contextlib.nullcontext(connection) as connection:
             # Keep the committed sample time and its totals in one WAL snapshot.
-            connection.execute("BEGIN")
+            if owns_connection:
+                connection.execute("BEGIN")
             rows = [
                 dict(row)
                 for row in connection.execute(
@@ -4112,10 +4114,10 @@ class Database:
                 "timezone": "Asia/Shanghai", "totalBytes": total, "days": days,
                 "percentBasis": "day/month;hour/day", "retention": "current-calendar-month"}
 
-    def list_node_online_states(self, now, freshness_seconds):
+    def list_node_online_states(self, now, freshness_seconds, *, connection=None):
         now = int(now)
         freshness_seconds = max(1, int(freshness_seconds))
-        with self._connect() as connection:
+        with self._connect() if connection is None else contextlib.nullcontext(connection) as connection:
             nodes = [
                 dict(row)
                 for row in connection.execute(
@@ -10241,19 +10243,26 @@ class UsageManager:
             online = {}
             online_available = False
         online_observed_at = int(self.wall_clock()) if online_available else None
-        with self.lock:
-            available = bool(
-                online_available and self._last_collection_ok
-                and self._last_collection_at is not None
-                and 0 <= self.clock() - self._last_collection_at <= 30
-            )
-            users = self.database.list_proxy_users_for_usage()
-            now = int(self.wall_clock())
+        with self.database._connect() as connection:
+            with self.lock:
+                # Pin the WAL snapshot while its local sample time is stable,
+                # then let authorization settle while we read this older view.
+                connection.execute("BEGIN")
+                connection.execute("SELECT 1 FROM proxy_users LIMIT 1").fetchone()
+                available = bool(
+                    online_available and self._last_collection_ok
+                    and self._last_collection_at is not None
+                    and 0 <= self.clock() - self._last_collection_at <= 30
+                )
+                now = int(self.wall_clock())
+                traffic_observed_at = self._user_usage_traffic_at
+            users = self.database.list_proxy_users_for_usage(connection=connection)
             node_states = self.database.list_node_online_states(
-                now, MAX_STATE_AGE_SECONDS
+                now, MAX_STATE_AGE_SECONDS, connection=connection
             )
-            origin_rows = self.database.list_usage_origins(machine_totals=True)
-            traffic_observed_at = self._user_usage_traffic_at
+            origin_rows = self.database.list_usage_origins(
+                machine_totals=True, connection=connection
+            )
         global_online = dict(online)
         for node in node_states:
             if node["online_state"] != "fresh":
