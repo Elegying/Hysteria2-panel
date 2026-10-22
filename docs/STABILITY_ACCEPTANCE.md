@@ -15,7 +15,7 @@
 - 当前运行时候选：`b3d9509ff8615c2de942d56dd9b76467d35ff1bf`。在前述修复上，服务入口保留无活动事务的 SQLite 连接，防止 root 每日备份创建服务账号不可访问的 WAL。安装的 19 个 Python 文件与提交源码逐一一致。PR 测试合并提交 `f7b2e0453e760e14de38637fcae71f92dc256efe` 与该候选的树均为 `ad35b0e78cf108792e3ad86c34d19b14be335459`。
 - [当前完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271265)：Python 3.8.18/3.12.15/3.13.16 各执行 1,063 项，1,057 通过、6 项因加密工具/JDK 或 locale 条件跳过；Flutter 3.47.2 的 149 项及 analyze、Chromium 36 组交互、静态/隐私/哈希、依赖矩阵、systemd、防火墙及五组安装检查通过。该候选在本机补测签名恢复 9 项和证书 4 项全部通过，覆盖 CI 的六项跳过；不把跳过本身记为通过。
 - [六平台完整安装](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836264237)全部通过，包括新增的实际 root 备份期间服务账号读写、WAL 属主/0600/inode 和 checkpoint 检查。[附加原生/浏览器工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271353)的 Firefox 151、WebKit 26.5 各九组核心流程和 Android API 24 通过；API 36 测试执行约 49 秒后通道结束，原始 artifact 确认宿主模拟器退出码 132，保留失败。
-- 182 项逐条登记：72 项达到所列自动化/隔离测试合同，105 项尚缺完整实际验收证据，1 项连续观察失败待新候选重验，4 项属于后续正式发布而不适用。单条通过不等于各系统实机、部署和 48 小时整体门禁通过。
+- 182 项逐条登记：74 项达到所列自动化/隔离测试合同，103 项尚缺完整实际验收证据，1 项连续观察失败待新候选重验，4 项属于后续正式发布而不适用。单条通过不等于各系统实机、部署和 48 小时整体门禁通过。
 - 本机证据目录由执行环境保留，不向仓库上传私钥、会话、测试 APK、完整备份或原始面板配置。公开结果只记录源码 SHA、时间、构建摘要、错误分类及资源统计。
 
 ## 新增可重复入口
@@ -23,6 +23,12 @@
 ### 浏览器
 
 保留 `tests/browser_controls.py` 的 Chromium 完整交互。`tests/browser_core_flows.py` 为 Firefox/WebKit 增加真实 HTTP 往返、键盘登录、弹窗焦点、窄屏、200% 等效缩放视口、创建失败恢复、操作取消/确认、备份下载和退出。等效视口同时将 CSS 宽高减半、设备像素比例设为 2；仅设置 CSS zoom 不会触发相应媒体查询，首轮相关失败日志保留。浏览器菜单中原生缩放仍需人工验收。
+
+补充验收将每个引擎从 9 组扩展到 15 组：三个视口均实际用键盘提交添加用户，逐一导航到备份、文件选择和恢复按钮，核对焦点位于视口内且未被固定标题遮挡；再验证 404、CSRF 403、错误登录后的恢复及退出。本机 Firefox 151 和 WebKit 26.5 均通过，截图已检查。首次补测的用户名选择器同时命中排行榜与用户表，已限定为用户表；另一首次失败确认是 macOS WebKit 的默认 Tab 仅经过文本输入，Option-Tab 才包括按钮，已使用 [Apple 文档中的平台按键](https://support.apple.com/guide/safari/keyboard-shortcuts-and-gestures-cpsh003/mac)，未修改系统键盘设置。两次夹具失败均保留，不能计为产品缺陷。缩放上下文使用独立会话，避免退出验收撤销另一个视口的会话。
+
+纯文档提交 `18a26460b754c1360d0595142d5a2783d3b57b88` 的[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39841565551)与[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39841554382)均通过，Python/Flutter/Chromium 数量与运行时候选一致；六平台的真实 root 备份并发检查也全部通过。[原生工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39841565604)的 API 24 通过，API 36 在原生测试约 58 秒后再次失败，artifact 确认宿主模拟器退出码 132，尚未定位具体崩溃帧。为下一轮 CI 增加仅作用于 API 36 宿主的 GDB 调用栈诊断，先用受控 SIGILL 自检；关闭栈参数和局部变量输出，不收集进程内存。调试器退出码单独记录，不冒充模拟器退出码，也不把调试运行当作故障已解决。渲染器、SDK 和应用断言保持原样。
+
+实际回读 GitHub 的 `Protect main` 规则集确认 `mobile-tests` 仍为必需检查。当前提交的发布输入扫描与本地隐私回归通过；独立临时 Git 仓库同时验证忽略的本地证据不进入扫描、不被改写。上述新增内容仅为测试与证据，运行时仍固定为 `b3d9509`，不重置当前 48 小时观察。
 
 ```sh
 python -m pip install playwright==1.61.0
