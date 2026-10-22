@@ -141,20 +141,21 @@ def main():
     if certificate.exists() or key.exists():
         raise SystemExit("Retain the earlier fixture evidence; use a clean test container")
     command("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "7",
-            "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            "-subj", "/CN=panel.stability.test", "-addext",
+            "subjectAltName=DNS:panel.stability.test,IP:127.0.0.1",
             "-keyout", str(key), "-out", str(certificate))
     key.chmod(0o640)
     os.chown(key, 0, grp.getgrnam("hy2panel").gr_gid)
     certificate.chmod(0o644)
-    replacements = {"HY2PANEL_PANEL_SCHEME": "https", "HY2PANEL_PANEL_PUBLIC_HOST": "localhost",
+    replacements = {"HY2PANEL_PANEL_SCHEME": "https", "HY2PANEL_PANEL_PUBLIC_HOST": "panel.stability.test",
                     "HY2PANEL_PANEL_TLS_CERT": str(certificate), "HY2PANEL_PANEL_TLS_KEY": str(key)}
     original = env_path.read_text()
     (args.output / "original-panel.env").write_text(original)
     lines = [line for line in original.splitlines() if line.split("=", 1)[0] not in replacements]
     env_path.write_text("\n".join(lines + [key + "=" + value for key, value in replacements.items()]) + "\n")
     TLS_CONTEXT = ssl.create_default_context(cafile=str(certificate))
-    command("systemctl", "restart", "hysteria2-panel.service")
-    deadline = time.monotonic() + 30
+    command("systemctl", "--no-block", "restart", "hysteria2-panel.service")
+    deadline = time.monotonic() + 60  # Installed unit's TimeoutStartSec.
     while True:
         try:
             if request(31998, "/readyz")[0] == 200:

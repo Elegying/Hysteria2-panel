@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: stability-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   browser-core:
     runs-on: ubuntu-24.04
@@ -70,7 +74,9 @@ jobs:
           IMAGE: system-images;android-${{ matrix.api }};${{ matrix.target }};x86_64
         run: |
           sudo chmod a+rw /dev/kvm
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMAGE" emulator
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          printf '%s\n' "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMAGE" emulator platform-tools
           echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --force --name hy2-acceptance --package "$IMAGE"
           "$ANDROID_HOME/emulator/emulator" -avd hy2-acceptance -no-window -no-audio \
             -no-boot-anim -no-snapshot -gpu swiftshader -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
