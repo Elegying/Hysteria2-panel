@@ -15,8 +15,8 @@
 - 当前运行时候选：`b3d9509ff8615c2de942d56dd9b76467d35ff1bf`。在前述修复上，服务入口保留无活动事务的 SQLite 连接，防止 root 每日备份创建服务账号不可访问的 WAL。安装的 19 个 Python 文件与提交源码逐一一致。PR 测试合并提交 `f7b2e0453e760e14de38637fcae71f92dc256efe` 与该候选的树均为 `ad35b0e78cf108792e3ad86c34d19b14be335459`。
 - [运行时 b3d9509 完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271265)：Python 3.8.18/3.12.15/3.13.16 各执行 1,063 项，1,057 通过、6 项因加密工具/JDK 或 locale 条件跳过；Flutter 3.47.2 的 149 项及 analyze、Chromium 36 组交互、静态/隐私/哈希、依赖矩阵、systemd、防火墙及五组安装检查通过。该候选在本机补测签名恢复 9 项和证书 4 项全部通过，覆盖 CI 的六项跳过；不把跳过本身记为通过。
 - [六平台完整安装](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836264237)全部通过，包括新增的实际 root 备份期间服务账号读写、WAL 属主/0600/inode 和 checkpoint 检查。[附加原生/浏览器工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271353)的 Firefox 151、WebKit 26.5 各九组核心流程和 Android API 24 通过；API 36 测试执行约 49 秒后通道结束，原始 artifact 确认宿主模拟器退出码 132，保留失败。
-- 最新已核对的完整测试提交为 `89923a9f6ff781ab8f59cd1ca4e0069f478b2671`，运行时仍为 `b3d9509`。[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39858734211)的三个 Python 版本各 1,069 项（1,063 通过、6 跳过），Flutter 149 项/analyze、Chromium 36 组及其余既有门禁通过；[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39858759230)六组部署和实际 root/WAL 并发均通过。[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39858733852)的 Firefox/WebKit 各 15 组与 API 24 通过，API 36 Lavapipe 对照仍在原生测试约 47 秒后以相同宿主 SIGILL 失败。PR 合并测试提交 `00a7c9186cee4f6f8cdf1096910feb02f907beda` 与该提交同树 `d8ea747af055f0ad091207c4cc5267876e03dc50`。
-- 北京时间 10 月 23 日手机 USB 实机检查已完成，原生回归及实际进程/网络恢复结果见 Android 小节。第二轮 48 小时观察在约 90 分钟断流后失败，原预计完成时间失效；旧失败实例停止保留，专用 VM 上另一个全新实例执行两小时诊断。诊断不是正式观察，不得续算旧轮或转记 48 小时通过。
+- 最新已核对的测试候选为 `dd8c03145e3c425f70774f312d9d89d1ea63c99e`，产品运行时仍为 `b3d9509`。[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865561769)为 22 项成功、1 项 tag 条件跳过：Python 3.8/3.12/3.13 各执行 1,069 项（1,063 通过、6 条件跳过），Flutter 149 项/analyze、Chromium 36 组及其余既有检查通过；[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865586195)全部通过，六组实际 root/WAL 并发均通过。[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39865561736)的 WebKit 15 组、API 24（21 秒）和修复后的 API 36（18 秒）原生断言通过。Firefox 在下载 Ubuntu 依赖时耗尽 15 分钟，未执行测试，不能记通过；原日志已保留。PR 合并测试提交 `87a0cca1a26f98f7a277ddbfef3ff323c5c41bb4` 与该提交同树 `8312d6d758cac23d39b345fc8d85f96496e88b24`。
+- 北京时间 10 月 23 日手机 USB 实机检查已完成，原生回归及实际进程/网络恢复结果见 Android 小节。第二轮 48 小时观察在约 90 分钟断流后失败，原预计完成时间失效；旧失败实例停止保留，随后两小时诊断在 3,346.491 秒遇到节点控制请求 403；此次最先失败的是节点请求，100 条流均在停测后关闭。新实例只增加拒绝来源行和既有 Hysteria debug 日志继续定位。所有诊断均不能续算旧轮或转记 48 小时通过。
 - 182 项逐条登记：75 项达到所列自动化/隔离测试合同，102 项尚缺完整实际验收证据，1 项连续观察失败待新候选重验，4 项属于后续正式发布而不适用。单条通过不等于各系统实机、部署和 48 小时整体门禁通过。
 - 本机证据目录由执行环境保留，不向仓库上传私钥、会话、测试 APK、完整备份或原始面板配置。公开结果只记录源码 SHA、时间、构建摘要、错误分类及资源统计。
 
@@ -46,9 +46,11 @@
 
 `87da9475916c8f601429727a277394e6f062db36` 的[独立复现](https://github.com/Elegying/Hysteria2-panel/actions/runs/39863482421)确认：默认驱动执行一个附件成功，零附件时模拟器宿主在同一 `0x7c3bed` 触发 SIGILL；GDB 捕获 `ebx=0`、`r14d=36160`（`GL_FRAMEBUFFER`）。同提交[原 App 的失败](https://github.com/Elegying/Hysteria2-panel/actions/runs/39863482247)也捕获相同参数。因此本次根因是模拟器 host GLES translator 对合法空附件数组取首元素，已用不含 Flutter 的程序独立复现。两个完整 artifact 摘要分别为 `955e7d0cdec65be708c64352efc8ce3e6e6d698149c4ad7cdeab9c7fa20b220e` 和 `d8956c3c0ff9f99b4726e65e44cfd07a720088d416e41f9a630032f6ff2ef895`，失败证据保留。
 
-同一独立实验中，按[Android 官方设置](https://developer.android.com/games/develop/vulkan/overview#about-angle)选择 Android 15+ 自带的 guest ANGLE 后，一个及零个附件均返回 `GL_NO_ERROR`，实际渲染器显示 ANGLE/Mesa Vulkan；artifact 摘要为 `224a0b8e298ebb3e09277756e232d09ddf5f0669bfaec209b1c9a6586e506c9c`。修复只配置 API 36 CI 内两个独立测试包的 GLES-on-Vulkan 驱动，正式 App、Flutter、Impeller 和其他包的选择规则不变。探针进一步断言自身加载 `libGLESv2_angle.so` 且使用 ANGLE/Vulkan，App 原生回归也独立核对本进程加载的 guest ANGLE 库；仅写设置或渲染器名称含 ANGLE 不足以满足断言。完整原生回归尚待该修复候选的实际结果。
+同一独立实验中，按[Android 官方设置](https://developer.android.com/games/develop/vulkan/overview#about-angle)选择 Android 15+ 自带的 guest ANGLE 后，一个及零个附件均返回 `GL_NO_ERROR`，实际渲染器显示 ANGLE/Mesa Vulkan；artifact 摘要为 `224a0b8e298ebb3e09277756e232d09ddf5f0669bfaec209b1c9a6586e506c9c`。修复只配置 API 36 CI 内两个独立测试包的 GLES-on-Vulkan 驱动，正式 App、Flutter、Impeller 和其他包的选择规则不变。探针进一步断言自身加载 `libGLESv2_angle.so` 且使用 ANGLE/Vulkan，App 原生回归也独立核对本进程加载的 guest ANGLE 库；仅写设置或渲染器名称含 ANGLE 不足以满足断言。`dd8c031` 的实际原生回归现已通过：探针确认 guest 库已加载、两个附件数量都成功，App 进程也独立确认加载同库，原有全部原生断言 18 秒通过。完整 API 36 artifact 摘要为 `d56878d2de19bf9d5d6134ee1bea4c81670cab2f756d0a3ba43457488f83a55e`；API 24 为 `f382077ef34736e19cf0418e6e4681e583d742ab28afbd3090504452737d676b`。
 
 原始默认驱动的已知失败保留在手动诊断工作流中，不声称上游图形库已经修复；每次 API 36 正式验收则必须先通过实际驱动与一/零附件探针，再执行原有完整 App 断言。
+
+同轮 Firefox 未执行测试：Azure HTTP 软件源下载 7.5 MB 字体约耗时 156 秒、9 MB 编解码库约耗时 190 秒，最终在依赖安装阶段达到任务期限。此前 WebKit 也曾出现同类环境取消。仅将这两个临时浏览器 runner 的 Ubuntu 源改为官方 HTTPS archive，保留原发行版、签名验证、依赖、Playwright 版本、15 分钟任务边界和全部断言；须由新提交的实际 CI 验证，不能把取消视作产品测试通过。
 
 `4deea60d91b8e0f5cfe43ba8d7d3e1bbc8b25c1e` 的[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39851417074)在新加的 `emulator -version` 环境采集处退出 127：命令加载图形版 QEMU，runner 缺少 `libpulse.so.0`，两个 Android 任务均未启动模拟器或应用测试。因此该轮不能用于判断 Lavapipe 结果。两个失败 artifact 已保留；版本改为直接读取安装包的 `source.properties`，继续记录二进制哈希，实际模拟器仍沿用已有 `-no-window -no-audio` 启动命令。
 
@@ -87,6 +89,12 @@ Android 17 / API 37 的 USB 真机（2509FPN0BC）已在用户解锁后完成原
 | 请求失败 | 保留可信数据，提示错误，允许重试 |
 
 ### Linux 持续观察
+
+两小时断流诊断 `89923a9` 在 3,346.491 秒失败。新增事件日志确认：`node-1` 的控制周期先返回 HTTP 403，随后所有 100 条回显连接才在 `stopping=true` 下关闭，首个关闭晚 22.162 ms。失败节点本轮流量、快照和命令轮询均未提交；另外九个节点完成了该轮。面板及两个数据面进程没有重启，面板 cgroup 的 OOM 计数均为零。完整事件、原始日志、宿主资源记录和 UID 997 一致数据库副本已保留。这个失败不同于上一轮最初的 `unexpected stream close`，不能混作同一根因。
+
+在两份独立数据库副本上，使用原签名密钥与真实 OpenSSL 验签器做一次串行/同步对照：串行 10/10 接受；10 路同步时实际验签峰值为 8，其中一个请求在 `_verify` 第 245 行的非阻塞槽位门控处拒绝，另九个通过。该实验没有改运行中的服务、原数据库、8 路上限或返回语义；它确认了门控拒绝路径，仍不能代替旧现场缺失的分支证据。真实节点已有持久化批次与抖动退避，当前合成报告器则固定 10 秒且遇任意 403 停止全部负载，二者的恢复行为不能混同。
+
+新的空白诊断实例仍运行原 1,000/10/100/10/64 负载，只在私有启动器记录拒绝函数/源码行/时间，并打开现有 Hysteria debug 关闭日志；无权限信息、payload 或密钥输出，不更改拒绝分支、负载、超时或产品源文件。该包装器仅用于定位，不属于最终候选或 48 小时验收环境。
 
 `tests/stability_soak.py` 只接受明确标记的独立 Docker/systemd 测试环境，必须使用测试端口、空白用户/节点数据以及与安装目录一致的源码。它保留原 Hysteria TLS 身份与全部 ACL，在隔离网络中使用 `198.18.0.2` 作为数据面回显目标。
 
