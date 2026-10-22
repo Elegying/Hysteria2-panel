@@ -13,8 +13,10 @@
 - `41119ed4b9ba483212f43c643e61383b9b34913b`：在面板 unit 中设置 `MALLOC_MMAP_THRESHOLD_=131072`，保留原 `MemoryMax=256M`、请求线程上限、完整用户列表和页面流程。六平台安装回归增加 1,000 用户、10 客户端的真实页面请求。
 - 后续短测 `gate6` 复现单次本地健康探测超时导致 watchdog 重启：健康与采集已经恢复，但失败后仍等待 15 秒才复查，超过剩余 systemd 窗口。失败后的复查间隔改为最多 1 秒，只有全部检查通过才发送心跳，原 30 秒窗口、2 秒探测和采集新鲜度不变。确定性回归在修复前首次恢复心跳为 32.4 秒（失败），修复后早于 30 秒；持续失败时仍不发送心跳。修复已随后续完整 CI、六平台安装和十分钟真实混合负载验证；连续观察仍未完成。
 - 当前运行时候选：`b3d9509ff8615c2de942d56dd9b76467d35ff1bf`。在前述修复上，服务入口保留无活动事务的 SQLite 连接，防止 root 每日备份创建服务账号不可访问的 WAL。安装的 19 个 Python 文件与提交源码逐一一致。PR 测试合并提交 `f7b2e0453e760e14de38637fcae71f92dc256efe` 与该候选的树均为 `ad35b0e78cf108792e3ad86c34d19b14be335459`。
-- [当前完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271265)：Python 3.8.18/3.12.15/3.13.16 各执行 1,063 项，1,057 通过、6 项因加密工具/JDK 或 locale 条件跳过；Flutter 3.47.2 的 149 项及 analyze、Chromium 36 组交互、静态/隐私/哈希、依赖矩阵、systemd、防火墙及五组安装检查通过。该候选在本机补测签名恢复 9 项和证书 4 项全部通过，覆盖 CI 的六项跳过；不把跳过本身记为通过。
+- [运行时 b3d9509 完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271265)：Python 3.8.18/3.12.15/3.13.16 各执行 1,063 项，1,057 通过、6 项因加密工具/JDK 或 locale 条件跳过；Flutter 3.47.2 的 149 项及 analyze、Chromium 36 组交互、静态/隐私/哈希、依赖矩阵、systemd、防火墙及五组安装检查通过。该候选在本机补测签名恢复 9 项和证书 4 项全部通过，覆盖 CI 的六项跳过；不把跳过本身记为通过。
 - [六平台完整安装](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836264237)全部通过，包括新增的实际 root 备份期间服务账号读写、WAL 属主/0600/inode 和 checkpoint 检查。[附加原生/浏览器工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39836271353)的 Firefox 151、WebKit 26.5 各九组核心流程和 Android API 24 通过；API 36 测试执行约 49 秒后通道结束，原始 artifact 确认宿主模拟器退出码 132，保留失败。
+- 最新已核对的完整测试提交为 `b4a6849673356191de4ff459b3f2f7c8fabdf212`，运行时仍为 `b3d9509`。[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39852657128)的三个 Python 版本各 1,066 项（1,060 通过、6 跳过），Flutter 149 项/analyze、Chromium 36 组及其余既有门禁通过；[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39852708356)六组部署和实际 root/WAL 并发均通过。[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39852657187)的 Firefox/WebKit 各 15 组与 API 24 通过，API 36 Lavapipe 对照仍失败。PR 合并测试树 `e6276765ccd738c0bda03de4c9ad26eea0f698e3` 与该提交同树 `8156e94b501955d6cc113d03fb2d630504d1f173`。
+- 北京时间 10 月 23 日手机 USB 实机检查已完成，原生回归及实际进程/网络恢复结果见 Android 小节。第二轮 48 小时观察在约 90 分钟断流后失败，原预计完成时间失效，专用 VM 已停止；不得继续累计该轮时长。
 - 182 项逐条登记：75 项达到所列自动化/隔离测试合同，102 项尚缺完整实际验收证据，1 项连续观察失败待新候选重验，4 项属于后续正式发布而不适用。单条通过不等于各系统实机、部署和 48 小时整体门禁通过。
 - 本机证据目录由执行环境保留，不向仓库上传私钥、会话、测试 APK、完整备份或原始面板配置。公开结果只记录源码 SHA、时间、构建摘要、错误分类及资源统计。
 
@@ -32,11 +34,13 @@
 
 纯文档提交 `18a26460b754c1360d0595142d5a2783d3b57b88` 的[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39841565551)与[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39841554382)均通过，Python/Flutter/Chromium 数量与运行时候选一致；六平台的真实 root 备份并发检查也全部通过。[原生工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39841565604)的 API 24 通过，API 36 在原生测试约 58 秒后再次失败，artifact 确认宿主模拟器退出码 132，尚未定位具体崩溃帧。为下一轮 CI 增加仅作用于 API 36 宿主的 GDB 调用栈诊断，先用受控 SIGILL 自检；关闭栈参数和局部变量输出，不收集进程内存。调试器退出码单独记录，不冒充模拟器退出码，也不把调试运行当作故障已解决。渲染器、SDK 和应用断言保持原样。
 
-实际回读 GitHub 的 `Protect main` 规则集确认 `mobile-tests` 仍为必需检查。当前提交的发布输入扫描与本地隐私回归通过；独立临时 Git 仓库同时验证忽略的本地证据不进入扫描、不被改写。上述新增内容仅为测试与证据，运行时仍固定为 `b3d9509`，不重置当前 48 小时观察。
+实际回读 GitHub 的 `Protect main` 规则集确认 `mobile-tests` 仍为必需检查。当前提交的发布输入扫描与本地隐私回归通过；独立临时 Git 仓库同时验证忽略的本地证据不进入扫描、不被改写。上述新增内容仅为测试与证据，运行时仍固定为 `b3d9509`；当时没有因这些改动重置观察。该轮后来因真实断流失败，见末节。
 
 `98293f3217bf79e4a4bdb6da157c28455f817eb5` 的[完整 CI](https://github.com/Elegying/Hysteria2-panel/actions/runs/39844286458)与[六平台](https://github.com/Elegying/Hysteria2-panel/actions/runs/39844372033)均已通过，Python 各 1,063 项（6 跳过）、Flutter 149 项、Chromium 36 组及 root/WAL 并发检查与前述一致。[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39844286782)确认 Linux Firefox/WebKit 各 15 组及 API 24 通过；API 36 受控 SIGILL 自检成功，随后实际模拟器仍失败。GDB 捕获 RenderThread 的 SIGILL，停止在 `libgfxstream_backend.so` 的 `ud2` 指令，调用者为 `gfxstream::gles2_decoder_context_t::decode`；继续传递原信号后宿主确实终止。该轮调试器退出码是 255，不当作模拟器退出码；没有将其归为应用 Dart 异常或 DDS 启动失败。完整栈、原生日志和 artifact（SHA-256 `ebdb2848c82c14a240b740012b2c9f5509ea2d73b640ac1044817ab0fd588954`）已保留。
 
 后续仅把 Linux API 36 测试环境从 SwiftShader/ANGLE 改为 [Android 官方支持的 Mesa Lavapipe](https://developer.android.com/studio/run/emulator-acceleration) 做驱动对照，并记录模拟器版本、图形库哈希及设备图形能力；仍保留宿主栈诊断、Flutter 3.47.2、Impeller 和全部应用断言。这是有已知崩溃位置的环境对照，尚无通过结果，也不声称原 SwiftShader/ANGLE 路径已修复。服务端和 App 运行时代码未变。
+
+`b4a6849` 的实际 Lavapipe 对照已完成，仍在相同 `0x7fffe97c3bed` 的 `ud2` 指令发生 SIGILL，调用者仍为 gfxstream GLES 解码路径。模拟器为 37.2.12 / build 16428233；二进制 SHA-256 为 `27e9a8cbd545529ba2c1aca973e5bc060f50b36a68d2c03296b0162291a16b83`，图形库为 `56be2b2c9db645d8277893cc7919b16f2862d72f6b98831ac60f334ef08c6d32`。完整 artifact 摘要 `261c84959a5307001b9248772c99e786b9af2170ae1cf0f1e17948c183f8a119` 已核验，原信号继续后宿主终止；调试器返回 255 不作为模拟器退出码。`-gpu lavapipe` 并不证明所有 GLES 路径已独立替换，不能把本次失败扩大为应用渲染缺陷或宣称驱动问题已修复。
 
 `4deea60d91b8e0f5cfe43ba8d7d3e1bbc8b25c1e` 的[附加工作流](https://github.com/Elegying/Hysteria2-panel/actions/runs/39851417074)在新加的 `emulator -version` 环境采集处退出 127：命令加载图形版 QEMU，runner 缺少 `libpulse.so.0`，两个 Android 任务均未启动模拟器或应用测试。因此该轮不能用于判断 Lavapipe 结果。两个失败 artifact 已保留；版本改为直接读取安装包的 `source.properties`，继续记录二进制哈希，实际模拟器仍沿用已有 `-no-window -no-audio` 启动命令。
 
@@ -54,6 +58,16 @@ python tests/browser_core_flows.py --engine webkit --output /tmp/hy2-webkit
 `tests/mobile_fixture.py` 提供两套临时 HTTPS 测试面板。仅集成测试入口信任这次生成的测试证书；产品连接器、证书验证和 HTTPS 限制保持不变。`mobile/integration_test/native_acceptance_test.dart` 覆盖真实安全存储、HTTPS、双面板、控制器重建、注入网络错误后的恢复、四个模块及退出。控制器重建不等同于操作系统强杀进程、真实网络切换和后台驻留，这些项目需另记实机证据。
 
 原生测试命令固定添加 `--no-uninstall`。Flutter 首次构建前可能缓存源码中的基础包名，失败清理曾尝试卸载该基础包名；不能让测试驱动自动卸载正式 App。测试代码先断言独立包名，再清理该测试包自身存储。手机首次测试前也应核对包名、ABI 和现有安装状态，任何清理只针对独立测试包。
+
+Android 17 / API 37 的 USB 真机（2509FPN0BC）已在用户解锁后完成原有全部原生断言，1 passed，22 秒。固定 Flutter 3.47.2、原 Impeller 和界面，测试命令带 `--no-uninstall`；独立 APK SHA-256 为 `f3fa54eaf0f5f86ed5112ac3a5c7ed92055d5c3e9e086ab58a83afe5a10edee9`。正式 App 的版本、路径、首次安装和最后更新时间在检查前后完全一致。
+
+另用仅测试的 [原生生命周期入口](../mobile/integration_test/native_lifecycle_probe.dart)运行现有 App/controller，不注入网络错误：在独立包内建立双面板会话，系统强停后由新 PID 启动，确认安全存储、所选面板和会话恢复，并确认刷新令牌确实轮换。实际 Home/恢复产生 paused/resumed，原 PID 保持不变且管理查询成功；两面板再次切换均与各自 overview 一致。退出后再强停、以第三个 PID 启动，仍为退出状态。
+
+真实切网使用 `tests/mobile_fixture.py --listen-host <本机私有LAN地址> --base-port 31890 --defines <私有文件>`：只监听明确的私有地址，为 LAN 夹具生成一次性随机管理员密码与 CA，USB 不转发这两个端口。实际默认网络从 WIFI 切到 CELLULAR 后，局域网面板不可达，请求在 10.008 秒失败且保留会话；切回 WIFI 后 61 毫秒恢复成功。首次控制脚本在 Wi-Fi 关闭通知先于默认路由变更时提前停止，未执行网络阶段；原失败记录保留，随后在原 35 秒期限内同时等待设备状态和实际默认路由，完整流程通过。没有放宽 App 超时或更改网络处理。
+
+生命周期入口从独立包私有 `files/lifecycle-config.json` 读取夹具定义及 `mode`（seed、restore、logged-out），从 `files/lifecycle-command.json` 读取递增 sequence 的 overview/select/logout 指令，向 `files/lifecycle-report.jsonl` 输出不含凭据的断言和 OS 生命周期事件。宿主通过该 debug 包的 `adb shell run-as` 原子写入控制文件；只有 seed 阶段清理这个测试包的存储。强停/重启使用同一 APK，不重装或清数据。实际测试 APK 摘要为 `68e99c26cae4cdf96be47d39c781b53eeb392a010ce877c6ae5b6315a6e0df43`，入口源码摘要为 `b3db9b71f37475903b5e8ad38673770c90100d21924c9ac7151bf641b2086641`。
+
+测试后恢复手机原先关闭 Wi-Fi 的状态，停止独立包和两个夹具，移除本任务 ADB 映射。LAN 在移动网络下不可达是本次故障条件，不是公网面板在移动网络下可达的证据；未把这些结果扩展为手机整机重启、后台长驻、服务端撤销或全部 24 项 App 交互合同通过。逐项未测项仍保留。
 
 | 状态 | 预期反馈与恢复 |
 |---|---|
@@ -118,7 +132,7 @@ SIGKILL 实际终止了面板主进程，systemd 在约 4 秒内自动恢复。�
 
 - 本机完整 Python 3.13.15 回归曾有一个总截止测试失败：请求子进程在到达 HTTP 服务前已被取消；截止与回收断言通过，服务端收到请求数的断言失败。保留原日志，不放宽产品超时。Linux CI 的三个 Python 版本结果单独记录。
 - 首轮浏览器测试的 HTTP Secure Cookie、CSS zoom 视口模拟、用户列表返回类型错误属于测试配置问题，修正前日志保留。Linux Firefox/WebKit 核心流程通过；本机 WebKit 曾有导航阶段 access-control 报错，增加窗口异常诊断后的运行未复现，仍不能据此断言间歇问题已根除。
-- Android API 24 原生集成通过。API 36 完成 HTTPS/双面板/安全存储后设备离线，Dart 驱动报告 `0 tests passed / No tests were found`。进一步记录确认宿主模拟器退出码 139；宿主仍有约 10.5 GiB 可用内存、swap 为 0，未记录 OOM。为区分模拟器图形后端，API 36 改用 Android 官方支持的 `swangle`（SwiftShader + ANGLE），保留产品 Impeller、玻璃效果及全部断言；原 `swiftshader` 崩溃日志保留，尚不能视为已解决或通过。选项见 [Android 官方图形加速说明](https://developer.android.com/studio/run/emulator-acceleration)。手机 API 37 尚未验收；不得把控制器重建或模拟网络错误当作系统进程重建和真实网络切换。
+- Android API 24 原生集成通过。API 36 完成 HTTPS/双面板/安全存储后设备离线，Dart 驱动报告 `0 tests passed / No tests were found`。进一步记录确认宿主模拟器退出码 139；宿主仍有约 10.5 GiB 可用内存、swap 为 0，未记录 OOM。为区分模拟器图形后端，API 36 改用 Android 官方支持的 `swangle`（SwiftShader + ANGLE），保留产品 Impeller、玻璃效果及全部断言；原 `swiftshader` 崩溃日志保留，尚不能视为已解决或通过。选项见 [Android 官方图形加速说明](https://developer.android.com/studio/run/emulator-acceleration)。该轮尚无手机证据；后续 API 37 实机结果见 Android 小节，不用控制器重建或模拟网络错误替代真实系统操作。
 - Android CI 的首轮模拟器启动失败已定位到 AVD 创建与查找目录不一致；固定独立目录，并在启动前检查 AVD 名称。安装容量回归在恢复 HTTP 配置后误用了 HTTPS Cookie，导致 303；测试按实际协议选择现有 Cookie 名称，产品会话规则不变。两类失败原始日志均保留。
 - `41119ed` 的混合负载启动阶段出现一次固定服务 InvocationID 查询超过既有 2 秒时限，认证按失败关闭规则拒绝连接。同期本机存在其他构建负载；稍后 20 次只读查询为 11–61 毫秒。尚未证明根因，不放宽超时、不将本次记录计入 48 小时通过证据。
 - 182 项矩阵保留正式发布阶段的“不适用”条目。`SEC-09` 与 `APP-03` 对可选记住密码的文字存在冲突：本轮保持现有可选安全存储行为，不能为了符合旧文字而删除功能。
@@ -127,7 +141,7 @@ API 36 的 `swangle` 对照也在首个测试完成前退出，宿主进程退�
 
 ## 收敛前仍需核对
 
-后续若修改运行时代码，完整 CI、六平台矩阵和持续观察必须绑定新候选重新执行。Linux x86_64 的 Android API 36 失败、手机 API 37 生命周期、连续 48 小时、剩余逐项实际验收仍未完成。HTTPS/ACME 和 WebDAV 的生产接入、真实公网证书签发仍为独立部署验收。
+后续若修改运行时代码，完整 CI、六平台矩阵和持续观察必须绑定新候选重新执行。Linux x86_64 的 Android API 36 失败、第二轮真实断流的根因、连续 48 小时及剩余逐项实际验收仍未完成。API 37 已完成的原生/生命周期/网络恢复不覆盖全部 App 验收点。HTTPS/ACME 和 WebDAV 的生产接入、真实公网证书签发仍为独立部署验收。
 
 ## 当前连续观察
 
@@ -151,27 +165,27 @@ API 36 的 `swangle` 对照也在首个测试完成前退出，宿主进程退�
 
 ## 当前兼容性矩阵
 
-以下自动化结果绑定 `b3d9509ff8615c2de942d56dd9b76467d35ff1bf`；各 Linux 行为独立 systemd 部署环境，不能等同于全部云厂商或物理硬件。原始日志已归档。
+以下远端自动化结果绑定 `b4a6849673356191de4ff459b3f2f7c8fabdf212`，运行时仍为 `b3d9509`；各 Linux 行为独立 systemd 部署环境，不能等同于全部云厂商或物理硬件。原始日志已归档。
 
 | 环境 | 当前证据 | 结论与边界 |
 |---|---|---|
-| Ubuntu 24.04 / amd64 | 六平台 job 120025319323 | 完整安装、升级、中断恢复、双入口、容量与 WAL 备份回归通过 |
-| Ubuntu 24.04 / arm64 | 六平台 job 120025319137 | 同上；本机独立 2 vCPU/2 GiB 持续负载另记 |
-| Debian stable / amd64 | 六平台 job 120025319384 | 完整部署回归通过 |
-| Debian stable / arm64 | 六平台 job 120025319476 | 完整部署回归通过 |
-| Rocky 9 / amd64 | 六平台 job 120025319399 | 完整部署回归通过 |
-| Rocky 9 / arm64 | 六平台 job 120025318720 | 完整部署回归通过 |
+| Ubuntu 24.04 / amd64 | 六平台 job 120082822513 | 完整安装、升级、中断恢复、双入口、容量与 WAL 备份回归通过 |
+| Ubuntu 24.04 / arm64 | 六平台 job 120082822091 | 同上；本机独立 2 vCPU/2 GiB 持续负载另记 |
+| Debian stable / amd64 | 六平台 job 120082822420 | 完整部署回归通过 |
+| Debian stable / arm64 | 六平台 job 120082822378 | 完整部署回归通过 |
+| Rocky 9 / amd64 | 六平台 job 120082821778 | 完整部署回归通过 |
+| Rocky 9 / arm64 | 六平台 job 120082822277 | 完整部署回归通过 |
 | Debian 12、13 | 完整 CI 对应安装 job | 两个既有安装检查通过 |
 | Debian 11/12/13、Ubuntu 20.04/22.04/24.04、Rocky 8/9 | 完整 CI 八发行版依赖 job | 首次与重复依赖安装通过 |
-| Python 3.8 / 3.12 / 3.13 | 完整 CI 三组各 1,063 项 | 每组 1,057 通过、6 跳过；本机 13 项加密/证书补测通过 |
+| Python 3.8 / 3.12 / 3.13 | 完整 CI 三组各 1,066 项 | 每组 1,060 通过、6 跳过；本机 13 项加密/证书补测通过 |
 | Flutter 3.47.2 | 固定 SDK `d3b14c876900e553bc736ca19295fc09e3853e8e` | 149 项及 analyze 通过 |
 | Chromium | 完整 CI browser-smoke | 完整 36 组交互及 JS 失败路径通过 |
-| Firefox 151 / WebKit 26.5 | 附加工作流两个 browser-core job | 各九组流程通过；原生菜单 200% 缩放仍未测 |
-| Android API 24 / x86_64 | 附加工作流 job 120025876451 | 独立包原生测试通过，固定 `--no-uninstall` |
-| Android API 36 / x86_64 | 附加工作流 job 120025875807 | 失败；宿主模拟器退出 132，未完成全部断言 |
+| Firefox 151 / WebKit 26.5 | 附加工作流两个 browser-core job | 各 15 组流程通过；原生菜单 200% 缩放仍未测 |
+| Android API 24 / x86_64 | 附加工作流 job 120082639021 | 独立包原生测试通过，固定 `--no-uninstall` |
+| Android API 36 / x86_64 | 附加工作流 job 120082639122 | 失败；Lavapipe 对照仍为 gfxstream SIGILL，未完成全部断言 |
 | Android API 36 / arm64 | 先前本机固定 Flutter/应用源码测试 | 原生断言通过；属于独立架构证据，不覆盖 x86_64 失败 |
-| Android 17 / API 37 手机 | 当前 ADB 无连接；此前锁屏未执行 | 未测，不触碰正式 App 数据 |
-| 连续 48 小时 | 首轮 2,651.449 秒失败现场保留 | 新候选 601 秒混合短测通过；北京时间 10 月 23 日 03:34:26 重新开始，尚未通过 |
+| Android 17 / API 37 手机 | USB 独立包原生 22 秒通过；真实生命周期/切网另有逐步记录 | 强停恢复、令牌轮换、前后台、双面板、真实网络失败/恢复及退出通过；正式 App 元数据未变；剩余逐项 UI 合同仍未测 |
+| 连续 48 小时 | 首轮 2,651.449 秒和第二轮 5,417.062 秒失败现场均保留 | 尚未通过；第二轮意外断流待定位，不续算；专用 VM 已停止 |
 
 同一新运行时的实际过载与故障检查已重新执行：64 个未完成认证占满槽位，额外请求 5.011 秒后被拒绝；释放后线程 70→6、FD 85→21，恢复到该进程测试前基线。确实出现一次 watchdog withheld，19.322 秒内恢复心跳，PID/重启数未变。独立 SIGKILL 检查仅强杀隔离面板主进程，3.570 秒后重新 ready；全部用户业务行摘要、TLS、138,837,728 字节本机账本不变，WAL 恢复为服务账号/0600，root 并发备份再次通过。16 MiB tmpfs 的 ENOSPC、SQLite IOERR 和 EROFS 三项也重新通过，恢复与重复采集都精确为 330 字节。这些故障只作用于已经结束短测的实例，不计入或干扰正式连续观察。
 
@@ -179,6 +193,12 @@ API 36 的 `swangle` 对照也在首个测试完成前退出，宿主进程退�
 
 同一故障验证实例随后经历专用 Linux VM 的完整停止/启动：Docker 自动拉起容器，五个 systemd 服务均 active，1,000 用户完整业务行摘要、10 个节点、Hysteria 证书和 138,837,728 字节账本保持一致，SQLite quick check 通过。旧用户凭据仍可校验，但重启后未重新报告的节点不再被视为新鲜状态，新认证正确拒绝。该实例随后停止保留，正式观察使用新空镜像实例。
 
-## 新候选正式观察
+## 第二轮连续观察失败
 
-候选 `b3d9509ff8615c2de942d56dd9b76467d35ff1bf` 已在全新空镜像实例重新开始真实 172,800 秒观察，完整负载就绪后的起点为北京时间 **2026-10-23 03:34:26**；不中断且所有检查通过时，最早于 **2026-10-25 03:34:26** 完成。固定 2 vCPU / 2 GiB，1,000 用户、10 个签名节点、100 条真实双入口数据流、10 个管理客户端和 64 路认证突发，夹具与数据库 UID 均为 997；安装的 19 份 Python 文件与候选一致。首个完整采样认证最大 0.490 秒、监听队列 0。运行中不记为通过；需最终核对不中断时长、首末小时 RSS、线程/句柄增长和最终账本。所有故障测试实例已停止保留，此实例不再用于故障注入或安装工具；专属防空闲睡眠进程有 174,000 秒时限。
+候选 `b3d9509ff8615c2de942d56dd9b76467d35ff1bf` 在全新空镜像实例于北京时间 **2026-10-23 03:34:26** 开始真实 172,800 秒观察，**05:04:40** 结束，记录总耗时 **5,417.062 秒（约 90 分钟）**。一条真实流收到意外 EOF，错误为 `RuntimeError: unexpected stream close`，整轮已失败；原预计 10 月 25 日 03:34 完成的时间失效。固定 2 vCPU/2 GiB、1,000 用户、10 个签名合成节点、100 条真实双入口流、10 个管理客户端及 64 路认证，未用减载或自动重连掩盖断流。
+
+面板与两个 Hysteria 服务 PID 未变、重启次数均为 0，现有内核日志未见 OOM。最后一次采样为 5,390.862 秒：RSS 80,788 KiB、线程 6、FD 28、队列 0、认证最大 3.099 秒；最大采样间隔 33.292 秒。预热后首小时 RSS 中位数 66,736 KiB 只作失败前基线，不作为首末小时增长合格证据。10 个 Hysteria 客户端日志的优雅退出与服务端断开均发生于清理阶段，不能据此判定它们是初始故障原因。断流先于这次 USB APK 安装和测试连接器启动，也不能把后者当作初始原因。
+
+原状态、指标、10 个客户端日志、服务/数据面/内核日志、进程和容器元数据、完整数据目录及以原数据库 UID 997 创建的一致 SQLite 副本均已保留；quick check 为 ok，仍为 1,000 用户/10 节点。失败容器停机保留并关闭自动重启，专用 VM 于 05:13:28 停止，专属防空闲睡眠进程已停止；没有操作其他任务进程。48 小时必须在根因定位和相关回归后使用新实例从零开始。
+
+现有夹具会吞掉回显服务的 socket 异常，工作线程也只记录异常文本，导致无法从该轮日志区分对端 EOF 与回显闲置超时。新增诊断保留工作线程名称、原堆栈、关闭前累计接收字节/闲置时长、具体错误类型和清理起点；回显仍为原 15 秒期限，客户端和认证边界不变。三个真实 socket 回归已验证部分接收后的 EOF、主动半关闭及实际闲置超时会留下不同证据。这只是诊断缺口修复，尚未解决本次 90 分钟断流，不据此启动新的正式 48 小时观察。

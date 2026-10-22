@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 
 TLS_CONTEXT = None
@@ -69,7 +70,7 @@ def receive(sock, length):
     while len(chunks) < length:
         chunk = sock.recv(length - len(chunks))
         if not chunk:
-            raise RuntimeError("unexpected stream close")
+            raise RuntimeError("unexpected stream close after {}/{} bytes".format(len(chunks), length))
         chunks.extend(chunk)
     return bytes(chunks)
 
@@ -96,21 +97,35 @@ def connect_stream(port):
 
 class Echo(socketserver.BaseRequestHandler):
     def handle(self):
-        self.request.settimeout(15)
+        self.request.settimeout(self.server.read_timeout)
+        received = 0
+        last_read = time.monotonic()
+        reason, error_type, error_number = "eof", None, None
         try:
             while True:
                 body = self.request.recv(4096)
                 if not body:
                     break
+                received += len(body)
+                last_read = time.monotonic()
                 self.request.sendall(body)
-        except OSError:
-            pass
+        except OSError as error:
+            reason, error_type, error_number = "socket-error", type(error).__name__, error.errno
+        finally:
+            self.server.record_event(event="echo-close", peerPort=self.client_address[1],
+                                     reason=reason, errorType=error_type, errno=error_number,
+                                     receivedBytes=received, idleSeconds=time.monotonic() - last_read)
 
 
 class EchoServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
     allow_reuse_address = True
     request_queue_size = 128
+    read_timeout = 15
+
+    def __init__(self, address, handler, record_event=None):
+        self.record_event = record_event or (lambda **event: None)
+        super().__init__(address, handler)
 
 
 def main():
@@ -214,6 +229,7 @@ def main():
     errors = []
     latencies = deque(maxlen=20000)
     lock = threading.Lock()
+    event_lock = threading.Lock()
     children, handles, threads = [], [], []
     initial_pid = int(command("systemctl", "show", "--property=MainPID", "--value", "hysteria2-panel.service"))
     initial_restarts = command("systemctl", "show", "--property=NRestarts", "--value", "hysteria2-panel.service")
@@ -232,16 +248,23 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
 
+    def record_event(**event):
+        event.update(at=time.time(), monotonic=time.monotonic(), stopping=stop.is_set())
+        with event_lock, (args.output / "events.jsonl").open("a") as log:
+            log.write(json.dumps(event) + "\n")
+
     def guard(work):
         try:
             work()
         except Exception as error:
+            record_event(event="worker-failure", worker=threading.current_thread().name,
+                         errorType=type(error).__name__, error=str(error), traceback=traceback.format_exc())
             with lock:
                 errors.append(type(error).__name__ + ": " + str(error))
             stop.set()
 
-    def start(work):
-        thread = threading.Thread(target=guard, args=(work,), daemon=True)
+    def start(work, name):
+        thread = threading.Thread(target=guard, args=(work,), name=name, daemon=True)
         threads.append(thread)
         thread.start()
 
@@ -320,11 +343,11 @@ def main():
     first_hour, last_hour = [], deque()
     echo = None
     try:
-        echo = EchoServer(("198.18.0.2", 32080), Echo)
+        echo = EchoServer(("198.18.0.2", 32080), Echo, record_event)
         threading.Thread(target=echo.serve_forever, daemon=True).start()
         for index in range(10):
             node_cycle(index, 1)
-            start(lambda index=index: reporter(index))
+            start(lambda index=index: reporter(index), "node-{}".format(index))
         cert = Path(values["HY2PANEL_TLS_CERT"])
         pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
         for index in range(10):
@@ -350,10 +373,11 @@ def main():
                     if time.monotonic() >= deadline:
                         raise RuntimeError("client {} did not start; see client-{}.log".format(index, index))
                     time.sleep(.2)
-            for _ in range(10):
-                start(lambda index=index: stream(SOCKS_BASE_PORT + index))
-        for _ in range(10):
-            start(management)
+            for stream_index in range(10):
+                start(lambda index=index: stream(SOCKS_BASE_PORT + index),
+                      "client-{}-stream-{}".format(index, stream_index))
+        for index in range(10):
+            start(management, "management-{}".format(index))
         for _ in range(100):
             if not streams_ready.acquire(timeout=15):
                 raise RuntimeError("all 100 real data streams must be active before observation")
@@ -444,10 +468,13 @@ def main():
                     raise RuntimeError(field + " accumulated during the observation")
         report["result"] = "passed" if args.seconds >= 48 * 3600 else "short-run-only"
     except Exception as error:
+        record_event(event="observation-failure", errorType=type(error).__name__,
+                     error=str(error), traceback=traceback.format_exc())
         report["result"] = "failed"
         report["error"] = str(error)
         raise
     finally:
+        record_event(event="cleanup-start")
         stop.set()
         for thread in threads:
             thread.join(timeout=10)
