@@ -4,6 +4,17 @@ set -euo pipefail
 export NODE_NAME="CI legacy upgrade" PUBLIC_HOST=127.0.0.1
 export HYSTERIA_PORT=31999 PANEL_PORT=31998 AUTH_PORT=31996 STATS_PORT=31997 STATS_443_PORT=31995
 export PANEL_SCHEME=http EGRESS_POLICY=full ADMIN_USER=ci-admin ADMIN_PASSWORD=ci-only-password-42
+wait_ready() {
+  local deadline=$((SECONDS + 30))
+  while (( SECONDS < deadline )); do
+    if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:${PANEL_PORT}/readyz"; then
+      return 0
+    fi
+    sleep 1
+  done
+  journalctl --no-pager -n 80 -u hysteria2-panel.service >&2
+  return 1
+}
 candidate_ref="${PANEL_REF}"
 legacy_ref=6d14976a44bdda112314407ed94a2a50e1c71316
 if ! command -v curl >/dev/null 2>&1; then
@@ -37,7 +48,7 @@ HY2PANEL_AUTO_UPDATE=1 PANEL_REF="${candidate_ref}" bash /workspace/install.sh
 runuser -u hy2panel --preserve-environment -- python3 /workspace/legacy_identity.py verify > /workspace/legacy-after.sha
 cmp /workspace/legacy-before.sha /workspace/legacy-after.sha
 [[ "$(python3 /opt/hysteria2-panel/hysteria2_panel.py accounting-mode)" == cumulative-v1 ]]
-curl -fsS "http://127.0.0.1:${PANEL_PORT}/readyz"
+wait_ready
 old_sha="$(sha256sum /opt/hysteria2-panel/bin/hysteria | cut -d' ' -f1)"
 awk '
   { print }
@@ -54,5 +65,5 @@ fi
 test ! -e /var/backups/hysteria2-panel/.upgrade-active
 runuser -u hy2panel --preserve-environment -- python3 /workspace/legacy_identity.py verify > /workspace/legacy-rollback.sha
 cmp /workspace/legacy-before.sha /workspace/legacy-rollback.sha
-curl -fsS "http://127.0.0.1:${PANEL_PORT}/readyz"
+wait_ready
 echo 'legacy upgrade and failure rollback preserve identities and accounting: PASS'
