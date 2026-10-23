@@ -6,6 +6,10 @@ export HYSTERIA_PORT=31999 PANEL_PORT=31998 AUTH_PORT=31996 STATS_PORT=31997 STA
 export PANEL_SCHEME=http EGRESS_POLICY=full ADMIN_USER=ci-admin ADMIN_PASSWORD=ci-only-password-42
 candidate_ref="${PANEL_REF}"
 legacy_ref=6d14976a44bdda112314407ed94a2a50e1c71316
+if ! command -v curl >/dev/null 2>&1; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates
+fi
 curl -fsSL --retry 3 "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${legacy_ref}/install.sh" -o /workspace/install-legacy.sh
 PANEL_REF="${legacy_ref}" bash /workspace/install-legacy.sh
 systemctl stop hysteria2-panel.service
