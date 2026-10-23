@@ -318,6 +318,28 @@ jobs:
           docker cp . "${container}:/workspace"
           docker exec --env PANEL_REF="${PANEL_REF}" "${container}" \
             bash /workspace/tests/installer_e2e.sh
+      - name: Verify deployed legacy upgrade and automatic rollback
+        if: matrix.check == 'full-installer-e2e'
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="hysteria2-panel-legacy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "${container}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --privileged --cgroupns=host \
+            --name "${container}" \
+            --tmpfs /run --tmpfs /run/lock \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            hysteria2-panel-installer-e2e
+          for _attempt in $(seq 1 60); do
+            docker exec "${container}" systemctl is-system-running --wait >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker cp . "${container}:/workspace"
+          docker exec --env PANEL_REF="${PANEL_REF}" "${container}" \
+            bash /workspace/tests/installer_legacy_upgrade.sh
 
   dependency-bootstrap:
     name: dependency-bootstrap (${{ matrix.image }})
