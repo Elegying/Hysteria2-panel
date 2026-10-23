@@ -57,6 +57,7 @@ ADR 记录“为什么这样设计”，不是操作教程。编号重复的两�
 - [ADR-024：异地备份与计量进程隔离](decisions/ADR-024-offsite-backup-accounting-isolation.md)
 - [ADR-025：维护结算与面板日志交接](decisions/ADR-025-maintenance-journal-handoff.md)
 - [ADR-026：认证重试与当前权限复核](decisions/ADR-026-current-policy-auth-revalidation.md)
+- [ADR-027：本机累计计量与只读展示](decisions/ADR-027-local-cumulative-display-snapshots.md)
 
 ## 设计规格
 

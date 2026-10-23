@@ -7,6 +7,11 @@ plugins {
 }
 
 val previewBuild = providers.gradleProperty("previewBuild").orNull == "true"
+val stabilityTestBuild = providers.gradleProperty("stabilityTestBuild").orNull == "true"
+require(!stabilityTestBuild || previewBuild) { "稳定性测试必须使用独立预览包" }
+androidComponents.beforeVariants {
+    if (stabilityTestBuild && it.buildType != "debug") it.enable = false
+}
 
 android {
     namespace = "vip.ssrvpn.hysteria2manager"
@@ -19,10 +24,18 @@ android {
     }
 
     defaultConfig {
-        applicationId = if (previewBuild) "vip.ssrvpn.hysteria2manager.preview" else "vip.ssrvpn.hysteria2manager"
+        applicationId = when {
+            stabilityTestBuild -> "vip.ssrvpn.hysteria2manager.preview.stability"
+            previewBuild -> "vip.ssrvpn.hysteria2manager.preview"
+            else -> "vip.ssrvpn.hysteria2manager"
+        }
         manifestPlaceholders["appLabel"] = if (previewBuild) "H2 液态玻璃预览" else "Hysteria2管理"
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            if (stabilityTestBuild) {
+                abiFilters += listOf("arm64-v8a", "x86_64")
+            } else {
+                abiFilters += listOf("arm64-v8a")
+            }
         }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
@@ -41,8 +54,8 @@ android {
             excludes += setOf(
                 "lib/armeabi-v7a/**",
                 "lib/x86/**",
-                "lib/x86_64/**",
             )
+            if (!stabilityTestBuild) excludes += "lib/x86_64/**"
         }
     }
 
@@ -69,7 +82,8 @@ android {
         }
         release {
             signingConfig = signingConfigs.findByName("release")
-                ?: error("缺少 android/signing.properties，不能生成正式签名 APK")
+                ?: if (stabilityTestBuild) null
+                else error("缺少 android/signing.properties，不能生成正式签名 APK")
             isMinifyEnabled = true
             isShrinkResources = true
         }

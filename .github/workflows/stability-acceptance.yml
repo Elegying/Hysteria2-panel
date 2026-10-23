@@ -1,0 +1,217 @@
+name: Stability acceptance
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stability-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [firefox, webkit]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Install pinned browser engines
+        run: |
+          # The runner selects Azure through a mirror list, not a direct URI.
+          # Keep Ubuntu's signed metadata, suites and existing dependencies.
+          sudo sed -i \
+            -e 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://archive.ubuntu.com/ubuntu/|g' \
+            -e 's|http://azure\.archive\.ubuntu\.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources
+          grep '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
+          grep -Eq '^URIs: https://archive\.ubuntu\.com/ubuntu/?$' /etc/apt/sources.list.d/ubuntu.sources
+          ! grep -Eq '^URIs:.*(mirror\+file:|azure\.archive\.ubuntu\.com)' /etc/apt/sources.list.d/ubuntu.sources
+          python -m pip install playwright==1.61.0
+          python -m playwright install --with-deps ${{ matrix.engine }}
+      - name: Run isolated core flows
+        run: python tests/browser_core_flows.py --engine ${{ matrix.engine }} --output "$RUNNER_TEMP/browser-core"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: browser-${{ matrix.engine }}-${{ github.sha }}
+          path: ${{ runner.temp }}/browser-core
+          retention-days: 14
+
+  android-native:
+    name: Android API ${{ matrix.api }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api: 24
+            target: default
+            gpu: swiftshader
+          - api: 36
+            target: google_apis
+            # Guest ANGLE uses the emulator's Mesa Vulkan path (see setup below).
+            gpu: lavapipe
+    env:
+      ORG_GRADLE_PROJECT_previewBuild: 'true'
+      ORG_GRADLE_PROJECT_stabilityTestBuild: 'true'
+      GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx2G -Dorg.gradle.workers.max=2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install exact Flutter SDK revision
+        run: |
+          flutter_dir="$RUNNER_TEMP/flutter"
+          git init "$flutter_dir"
+          git -C "$flutter_dir" remote add origin https://github.com/flutter/flutter.git
+          git -C "$flutter_dir" fetch --depth=1 origin refs/tags/3.47.2:refs/tags/3.47.2
+          git -C "$flutter_dir" checkout --detach refs/tags/3.47.2
+          test "$(git -C "$flutter_dir" rev-parse HEAD)" = d3b14c876900e553bc736ca19295fc09e3853e8e
+          printf '%s/bin\n' "$flutter_dir" >> "$GITHUB_PATH"
+      - name: Verify API 36 host crash diagnostics
+        if: matrix.api == 36
+        run: |
+          command -v gdb || { sudo apt-get update && sudo apt-get install -y gdb; }
+          cd "$RUNNER_TEMP"
+          set +e
+          gdb --batch --return-child-result \
+            --command "$GITHUB_WORKSPACE/tests/emulator_host_crash.gdb" \
+            --args python3 -c 'import os, signal; os.kill(os.getpid(), signal.SIGILL)' \
+            > emulator-debugger-selftest.log 2>&1
+          set -e
+          grep -Fxq 'signalNumber=4' emulator-host-stack.txt
+          grep -Eq '^#0 ' emulator-host-stack.txt
+          mv emulator-host-stack.txt emulator-debugger-selftest.txt
+      - name: Start an isolated emulator and HTTPS fixtures
+        env:
+          IMAGE: system-images;android-${{ matrix.api }};${{ matrix.target }};x86_64
+          API_LEVEL: ${{ matrix.api }}
+        run: |
+          sudo chmod a+rw /dev/kvm
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          printf '%s\n' "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
+          export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/android-avd"
+          mkdir -p "$ANDROID_USER_HOME" "$ANDROID_AVD_HOME"
+          printf 'ANDROID_USER_HOME=%s\nANDROID_EMULATOR_HOME=%s\nANDROID_AVD_HOME=%s\n' \
+            "$ANDROID_USER_HOME" "$ANDROID_EMULATOR_HOME" "$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "$IMAGE" emulator platform-tools
+          if test "$API_LEVEL" = 36; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0'
+          fi
+          {
+            # Read version metadata without starting the GUI-linked QEMU binary.
+            # The headless runner intentionally has no libpulse.so.0.
+            cat "$ANDROID_HOME/emulator/source.properties"
+            printf 'requested-gpu=%s\n' '${{ matrix.gpu }}'
+            sha256sum "$ANDROID_HOME/emulator/emulator" \
+              "$ANDROID_HOME/emulator/lib64/libgfxstream_backend.so"
+          } > "$RUNNER_TEMP/emulator-environment.txt" 2>&1
+          echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --force \
+            --name hy2-acceptance --package "$IMAGE" --path "$ANDROID_AVD_HOME/hy2-acceptance.avd"
+          "$ANDROID_HOME/emulator/emulator" -list-avds | grep -Fxq hy2-acceptance
+          (
+            set +e
+            emulator_command=("$ANDROID_HOME/emulator/emulator")
+            exit_record="$RUNNER_TEMP/emulator-exit-code.txt"
+            if test "$API_LEVEL" = 36; then
+              # A debugger exit is not the emulator's exit code. The separate
+              # stack records the actual stop signal without changing rendering.
+              cd "$RUNNER_TEMP" || exit 1
+              emulator_command=(gdb --batch --return-child-result \
+                --command "$GITHUB_WORKSPACE/tests/emulator_host_crash.gdb" \
+                --args "${emulator_command[@]}")
+              exit_record="$RUNNER_TEMP/emulator-debugger-exit-code.txt"
+            fi
+            "${emulator_command[@]}" -avd hy2-acceptance -no-window -no-audio \
+              -no-boot-anim -no-snapshot -gpu ${{ matrix.gpu }} -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1
+            printf '%s\n' "$?" > "$exit_record"
+          ) &
+          timeout 120 adb wait-for-device
+          for _attempt in $(seq 1 180); do
+            test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 && break
+            sleep 2
+          done
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1
+          {
+            adb shell getprop ro.build.fingerprint
+            adb shell getprop ro.hardware.egl
+            adb shell pm list features | grep -E 'opengles|vulkan' || true
+          } >> "$RUNNER_TEMP/emulator-environment.txt" 2>&1
+          adb shell input keyevent 82
+          if test "$API_LEVEL" = 36; then
+            # The host GLES translator traps on legal zero-attachment calls.
+            # Use Android's guest ANGLE GLES-on-Vulkan driver for test packages
+            # only; keep Flutter, Impeller and the release application unchanged.
+            adb shell settings put global angle_gl_driver_selection_pkgs \
+              test.hy2.glesprobe,vip.ssrvpn.hysteria2manager.preview.stability
+            adb shell settings put global angle_gl_driver_selection_values angle,angle
+          fi
+          python3 tests/mobile_fixture.py --defines "$RUNNER_TEMP/acceptance-defines.json" > "$RUNNER_TEMP/fixture.log" 2>&1 &
+          for _attempt in $(seq 1 30); do
+            test -s "$RUNNER_TEMP/acceptance-defines.json" && break
+            sleep 1
+          done
+          test -s "$RUNNER_TEMP/acceptance-defines.json"
+          adb reverse tcp:31888 tcp:31888
+          adb reverse tcp:31889 tcp:31889
+          # This emulator contains only disposable acceptance accounts. Keep
+          # native crashes visible when the Dart test channel closes early.
+          adb logcat -c
+          adb logcat -v threadtime 'AndroidRuntime:E' 'DEBUG:E' 'libc:F' \
+            'ActivityManager:I' 'GraphicsEnvironment:V' 'flutter:I' '*:S' 2>&1 \
+            | sed -u '/The Dart VM service is listening/d' > "$RUNNER_TEMP/native-logcat.log" &
+      - name: Verify API 36 guest driver and empty framebuffer calls
+        if: matrix.api == 36
+        run: bash tests/android_gles_probe/run.sh emulator-5554 guest-angle
+      - name: Exercise native plugins and existing application flows
+        working-directory: mobile
+        run: |
+          flutter pub get
+          git diff --exit-code -- pubspec.lock
+          flutter test integration_test/native_acceptance_test.dart -d emulator-5554 \
+            --no-uninstall \
+            --dart-define=ACCEPTANCE_GUEST_ANGLE=${{ matrix.api == 36 }} \
+            --dart-define-from-file="$RUNNER_TEMP/acceptance-defines.json" \
+            --reporter expanded --file-reporter "json:$RUNNER_TEMP/native-results.json"
+      - name: Print failure diagnostics without app data
+        if: failure()
+        run: |
+          tail -n 80 "$RUNNER_TEMP/emulator.log" | sed '/adb public key/d; /adb.pubkey=/d' || true
+          tail -n 80 "$RUNNER_TEMP/fixture.log" || true
+          tail -n 200 "$RUNNER_TEMP/native-logcat.log" || true
+          cat "$RUNNER_TEMP/emulator-exit-code.txt" || true
+          cat "$RUNNER_TEMP/emulator-host-stack.txt" || true
+          cat "$RUNNER_TEMP/emulator-debugger-exit-code.txt" || true
+          free -m
+          df -h "$RUNNER_TEMP"
+          sudo dmesg --ctime | tail -n 100
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: android-native-api-${{ matrix.api }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/native-results.json
+            ${{ runner.temp }}/native-logcat.log
+            ${{ runner.temp }}/emulator-exit-code.txt
+            ${{ runner.temp }}/emulator-host-stack.txt
+            ${{ runner.temp }}/emulator-debugger-exit-code.txt
+            ${{ runner.temp }}/emulator-debugger-selftest.txt
+            ${{ runner.temp }}/emulator-environment.txt
+            ${{ runner.temp }}/gles-probe-log.txt
+            ${{ runner.temp }}/gles-probe-apk-sha256.txt
+          retention-days: 14

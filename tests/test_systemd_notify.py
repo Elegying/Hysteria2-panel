@@ -1,4 +1,5 @@
 import os
+import queue
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -256,6 +257,62 @@ class SystemdNotifierTests(unittest.TestCase):
                         watchdog_probe=lambda: probe_result,
                     )
                 self.assertEqual(should_ping, notifier.pings > 0)
+
+    def test_transient_probe_failure_can_recover_before_systemd_deadline(self):
+        # A 30s systemd window must survive a single 2s probe timeout while
+        # workers keep making progress. A permanently failing probe never pings.
+        for recovers in (True, False):
+            with self.subTest(recovers=recovers):
+                clock = [0.0]
+                pings, probes = [], []
+                usage = mock.Mock()
+                server = mock.Mock(application=None)
+
+                class Worker:
+                    def __init__(self, **kwargs):
+                        self.name = kwargs["name"]
+
+                    def start(self):
+                        usage.collector_heartbeat()
+
+                    def join(self, timeout):
+                        pass
+
+                    def is_alive(self):
+                        return False
+
+                class Events:
+                    def get(self, timeout):
+                        clock[0] += timeout
+                        usage.collector_heartbeat()
+                        if clock[0] >= 40:
+                            return "panel-http", None
+                        raise queue.Empty
+
+                def probe():
+                    probes.append(clock[0])
+                    if len(probes) == 1 or not recovers:
+                        clock[0] += 2  # Existing local probe transport timeout.
+                        return False
+                    return True
+
+                notifier = mock.Mock(watchdog_interval=15.0)
+                notifier.watchdog.side_effect = lambda: pings.append(clock[0])
+                with mock.patch("hysteria2_panel.time.monotonic", side_effect=lambda: clock[0]), \
+                        mock.patch("hysteria2_panel.threading.Thread", Worker), \
+                        mock.patch("hysteria2_panel.queue.Queue", Events), \
+                        self.assertRaisesRegex(RuntimeError, "panel-http worker exited"):
+                    run_supervised_services(
+                        server, server, usage, "http", notifier=notifier,
+                        watchdog_probe=probe,
+                    )
+                self.assertGreaterEqual(len(probes), 2)
+                if recovers:
+                    self.assertTrue(pings)
+                    self.assertLess(pings[0], 30)
+                    self.assertGreater(pings[0], probes[0] + 2)
+                else:
+                    self.assertEqual([], pings)
 
 
 if __name__ == "__main__":

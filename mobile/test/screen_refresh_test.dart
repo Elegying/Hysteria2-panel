@@ -289,4 +289,100 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
   });
+
+  testWidgets('repeated traffic samples retain the rate baseline', (
+    tester,
+  ) async {
+    final controller = await mountPage(tester, const NodesScreen());
+    Map<String, dynamic> data(int responseAt, int sampledAt, int bytes) {
+      final result = snapshot(
+        'sample-node',
+        observedAt: responseAt,
+        totalBytes: bytes,
+      );
+      (result['items'] as List).single['trafficObservedAt'] = sampledAt;
+      return result;
+    }
+
+    controller.requests.last.complete(data(10, 10, 100));
+    await tester.pumpAndSettle();
+    for (final sample in [
+      data(15, 10, 100),
+      data(20, 20, 200),
+      data(25, 20, 200),
+    ]) {
+      refreshPage(tester);
+      controller.requests.last.complete(sample);
+      await tester.pumpAndSettle();
+    }
+    expect(find.text('10 B/s'), findsOneWidget);
+    refreshPage(tester);
+    controller.requests.last.complete(data(30, 30, 300));
+    await tester.pumpAndSettle();
+    expect(find.text('10 B/s'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('each node uses its own traffic sampling interval', (
+    tester,
+  ) async {
+    final controller = await mountPage(tester, const NodesScreen());
+    Map<String, dynamic> data(
+      int responseAt,
+      int firstAt,
+      int firstBytes,
+      int secondAt,
+      int secondBytes,
+    ) {
+      final first = snapshot(
+        'first-node',
+        observedAt: responseAt,
+        totalBytes: firstBytes,
+      );
+      final second = snapshot('second-node', totalBytes: secondBytes);
+      (first['items'] as List).single['trafficObservedAt'] = firstAt;
+      (second['items'] as List).single['nodeId'] = 'second';
+      (second['items'] as List).single['trafficObservedAt'] = secondAt;
+      (first['items'] as List).addAll(second['items'] as List);
+      return first;
+    }
+
+    controller.requests.last.complete(data(30, 10, 100, 20, 100));
+    await tester.pumpAndSettle();
+    refreshPage(tester);
+    controller.requests.last.complete(data(35, 30, 300, 25, 150));
+    await tester.pumpAndSettle();
+    expect(find.text('10 B/s'), findsNWidgets(2));
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets(
+    'traffic clock reversal and counter reset establish a new baseline',
+    (tester) async {
+      final controller = await mountPage(tester, const NodesScreen());
+      Map<String, dynamic> data(int responseAt, int sampledAt, int bytes) {
+        final result = snapshot(
+          'reset-node',
+          observedAt: responseAt,
+          totalBytes: bytes,
+        );
+        (result['items'] as List).single['trafficObservedAt'] = sampledAt;
+        return result;
+      }
+
+      controller.requests.last.complete(data(30, 20, 100));
+      await tester.pumpAndSettle();
+      for (final sample in [data(35, 10, 200), data(40, 15, 20)]) {
+        refreshPage(tester);
+        controller.requests.last.complete(sample);
+        await tester.pumpAndSettle();
+        expect(find.text('0 B/s'), findsOneWidget);
+      }
+      refreshPage(tester);
+      controller.requests.last.complete(data(45, 25, 120));
+      await tester.pumpAndSettle();
+      expect(find.text('10 B/s'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+    },
+  );
 }
