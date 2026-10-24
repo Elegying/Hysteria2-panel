@@ -448,21 +448,14 @@ assert_reopenable_installer_entrypoint
         self.assertIn('read -r -p "请输入节点域名 [${EXISTING_PUBLIC_HOST}]: "', source)
         self.assertNotIn("服务器公网 IP 或域名", source)
 
-    def test_readme_offers_one_line_bootstrap_and_strict_signed_install(self):
+    def test_readme_offers_checked_bootstrap_and_strict_signed_install(self):
         source = README.read_text()
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
 
-        quick_command = (
-            "(umask 077;i=$(mktemp)&&"
-            "trap 'rm -f \"$i\"' EXIT&&"
-            "curl -fsSL --retry 3 https://raw.githubusercontent.com/Elegying/"
-            'Hysteria2-panel/main/install.sh -o "$i"&&bash "$i")'
-        )
-        self.assertIn(quick_command, source)
-        self.assertLess(len(quick_command), 180)
+        quick_command = source.split('```bash\n', 1)[1].split('```', 1)[0]
         self.assertNotRegex(source, r"(?m)^bash <\(curl")
         syntax = subprocess.run(
-            ["bash", "-n", "-c", quick_command], capture_output=True, text=True
+            ["sh", "-n", "-c", quick_command], capture_output=True, text=True
         )
         self.assertEqual(0, syntax.returncode, syntax.stderr)
         self.assertIn("首次信任入口", source)
@@ -475,7 +468,7 @@ assert_reopenable_installer_entrypoint
         self.assertIn("bash -n", source)
         self.assertLess(source.index(quick_command), source.index("verify-blob"))
         self.assertLess(source.index("verify-blob"), source.index("sudo bash"))
-        self.assertIn("if quick_command not in readme:", workflow)
+        self.assertIn("README checked main installer is incomplete", workflow)
         self.assertNotIn(
             "README must not execute an unsigned main-branch installer", workflow
         )

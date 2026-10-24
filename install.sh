@@ -2,6 +2,10 @@
 # Deliberately omit errtrace (-E): the root EXIT finalizer owns exactly one
 # rollback for failures in functions, subshells, substitutions and pipelines.
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
+if [ -z "${BASH_VERSION:-}" ]; then
+  printf '%s\n' '错误：安装器需要 Bash，请使用 bash install.sh；Alpine/OpenRC 不受支持，请使用带 systemd 的 Debian/Ubuntu/Rocky Linux。' >&2
+  exit 1
+fi
 set -euo pipefail
 
 PANEL_VERSION="0.39.43"
@@ -256,13 +260,19 @@ sync_existing_directories() {
 }
 
 download_file() {
-  local url="$1" destination="$2" attempt
+  local url="$1" destination="$2" attempt status
   for attempt in 1 2 3 4; do
     if curl -q -fL --connect-timeout 10 --max-time 300 \
       "${url}" -o "${destination}"; then
       return 0
+    else
+      status=$?
     fi
     rm -f -- "${destination}" || return 1
+    if (( status == 5 || status == 6 )); then
+      echo "下载 DNS 解析失败（curl ${status}）：无法解析下载主机或代理；请检查 /etc/resolv.conf、系统 DNS 服务及代理配置。未关闭 TLS 校验，也未修改 DNS。" >&2
+      return "${status}"
+    fi
     (( attempt >= 4 )) || sleep "${attempt}" || return 1
   done
   return 1
@@ -3625,9 +3635,27 @@ validate_panel_public_host() {
   done
 }
 
+preflight_download_dns() {
+  # A proxy may resolve the origin remotely. Do not reject that valid setup.
+  if [[ -n "${https_proxy:-${HTTPS_PROXY:-${all_proxy:-${ALL_PROXY:-}}}}" ]]; then
+    echo "下载 DNS：检测到代理，交由实际 HTTPS 下载验证解析。"
+    return 0
+  fi
+  if ! command -v getent >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
+    echo "下载 DNS：缺少 getent/timeout，将由下载器报告解析失败。"
+    return 0
+  fi
+  local hostname="${PANEL_SOURCE_URL#*://}"
+  hostname="${hostname%%/*}"
+  if ! timeout 15 getent ahosts "${hostname}" >/dev/null 2>&1; then
+    fail "无法解析下载主机 ${hostname}（含 15 秒超时）；请检查 /etc/resolv.conf、系统 DNS 服务和网络。不会自动覆盖解析器配置；尚未安装依赖。"
+  fi
+  echo "下载 DNS：${hostname} 解析正常。"
+}
+
 preflight_panel_acme_dns() {
-  "${PYTHON_BIN}" - "${PANEL_PUBLIC_HOST}" <<'PY' \
-    || fail "面板域名 DNS 尚未解析到公网地址；未调用 Certbot，也不会自动降级为 HTTP"
+  timeout 15 "${PYTHON_BIN}" - "${PANEL_PUBLIC_HOST}" <<'PY' \
+    || fail "面板域名 ${PANEL_PUBLIC_HOST} 的 DNS 尚未解析到公网地址；请核对域名拼写和 A/AAAA 记录，并检查本机 DNS。未调用 Certbot，也不会自动降级为 HTTP"
 import ipaddress
 import socket
 import sys
@@ -6533,7 +6561,11 @@ fi
 [[ ${EUID} -eq 0 ]] || fail "请使用 root 或 sudo 运行"
 [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux"
 assert_reopenable_installer_entrypoint
-[[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统"
+[[ -d /run/systemd/system ]] || fail "需要使用 systemd 的 Linux 系统；Alpine/OpenRC 不受支持。请使用 Debian、Ubuntu 或 Rocky Linux 的 systemd 镜像；仅补装 Bash 无法解决此问题，尚未安装依赖。"
+case "$(uname -m)" in
+  x86_64|amd64|aarch64|arm64) ;;
+  *) fail "仅支持 Linux amd64 和 arm64；当前架构为 $(uname -m)，尚未安装依赖" ;;
+esac
 if (( WATCH_UPGRADE == 1 )); then
   for command_name in awk sleep systemctl; do
     command -v "${command_name}" >/dev/null 2>&1 \
@@ -6634,7 +6666,8 @@ guard_legacy_restore_admission \
 assert_no_pending_restore_state
 assert_no_unmanaged_install_paths
 
-required_commands=(awk busctl cat chmod chown cmp cp curl date df du find flock getent grep groupadd groupdel id install ip ip6tables-save iptables-save ln mktemp mv nft openssl readlink rm sed sha256sum sleep sort ss stat sudo sync sysctl systemctl systemd-run systemd-tmpfiles uname useradd userdel usermod visudo)
+preflight_download_dns
+required_commands=(awk busctl cat chmod chown cmp cp curl date df du find flock getent grep groupadd groupdel id install ip ip6tables-save iptables-save ln mktemp mv nft openssl readlink rm sed sha256sum sleep sort ss stat sudo sync sysctl systemctl systemd-run systemd-tmpfiles timeout uname useradd userdel usermod visudo)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
   command -v "${command_name}" >/dev/null 2>&1 || missing_commands+=("${command_name}")
@@ -6872,6 +6905,7 @@ else
   PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST,,}"
   validate_panel_public_host "${PANEL_PUBLIC_HOST}" \
     || fail "面板公网域名必须是完整的 ASCII DNS 名称，例如 panel.example.com"
+  preflight_panel_acme_dns
 fi
 EGRESS_POLICY="${EGRESS_POLICY:-${EXISTING_EGRESS_POLICY}}"
 EGRESS_POLICY="${EGRESS_POLICY,,}"

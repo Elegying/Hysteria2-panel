@@ -39,7 +39,7 @@
 
 部署前确认：
 
-- 使用带 systemd 的 Linux，拥有 `root` 或 `sudo` 权限；
+- 使用 amd64/arm64、带 systemd 的 Linux，拥有 `root` 或 `sudo` 权限；Alpine/OpenRC 不受支持，仅补装 Bash 不能解决；
 - 已把独立的面板域名解析到服务器公网 IP；
 - 云安全组已放行 TCP `80`、面板端口，以及 Hysteria 使用的 TCP/UDP 端口；
 - 面板默认使用 HTTPS。DNS 未配置正确时，安装会在申请证书前安全停止，不会自动降级为明文 HTTP。
@@ -49,7 +49,24 @@
 在服务器上用 `root` 执行：
 
 ```bash
-(umask 077;i=$(mktemp)&&trap 'rm -f "$i"' EXIT&&curl -fsSL --retry 3 https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$i"&&bash "$i")
+(
+  command -v bash >/dev/null 2>&1 || { echo '缺少 Bash；请使用带 systemd 的 Debian/Ubuntu/Rocky Linux，Alpine/OpenRC 不受支持。' >&2; exit 1; }
+  [ -d /run/systemd/system ] || { echo '需要运行中的 systemd；不支持 Alpine/OpenRC。' >&2; exit 1; }
+  command -v curl >/dev/null 2>&1 || { echo '请先通过系统包管理器安装 curl 和 CA 证书。' >&2; exit 1; }
+  umask 077
+  i=$(mktemp) || exit 1
+  trap 'rm -f "$i"' EXIT
+  curl -q -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$i" || {
+    rc=$?
+    case "$rc" in
+      5|6) echo 'DNS 解析失败：检查 /etc/resolv.conf、系统 DNS 服务及代理配置；不会自动修改 DNS。' >&2 ;;
+      60) echo 'TLS 证书校验失败：检查系统时间和 CA 证书；不要使用 -k 跳过校验。' >&2 ;;
+      *) echo "安装脚本下载失败（curl $rc）：检查网络和 GitHub 可达性，修复后重试。" >&2 ;;
+    esac
+    exit "$rc"
+  }
+  bash "$i"
+)
 ```
 
 安装器会询问节点名称、节点域名、Hysteria 端口、面板端口与协议，以及管理员账号和密码。密码不会回显。
@@ -72,7 +89,7 @@ Debian 11 归档修复仅匹配普通 `.list` 文件中的已知官方旧安全�
 
 脚本启动仍需 Bash、systemd、基础维护锁工具，以及下载命令使用的 curl；缺少这些启动前提、系统密钥损坏、DNS/云安全组错误或未知服务冲突时会明确失败，不关闭校验、不强停其他服务，也不自动跨版本升级系统。
 
-> 这条短命令把 GitHub HTTPS 与受保护的 `main/install.sh` 作为首次信任入口，适合跟随项目当前稳定主线。安装脚本会先以 `0600` 权限保存为普通临时文件，退出时自动删除。请不要改成 `bash <(curl …)` 或 `curl … | bash`，安装器会在修改系统前拒绝这两种输入方式。
+> 整块命令可一次复制执行；启动检查采用 POSIX shell 语法，即使没有 Bash 也能给出明确提示。它把 GitHub HTTPS 与受保护的 `main/install.sh` 作为首次信任入口，适合跟随项目当前稳定主线。安装脚本会先以 `0600` 权限保存为普通临时文件，退出时自动删除。请不要改成 `bash <(curl …)` 或 `curl … | bash`，安装器会在修改系统前拒绝这两种输入方式。
 
 ### 3. 完成首次检查
 

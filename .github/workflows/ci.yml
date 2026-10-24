@@ -135,13 +135,12 @@ jobs:
               "https://raw.githubusercontent.com/"
               "Elegying/Hysteria2-panel/main/install.sh"
           )
-          quick_command = (
-              "(umask 077;i=$(mktemp)&&"
-              "trap 'rm -f \"$i\"' EXIT&&"
-              'curl -fsSL --retry 3 {} -o "$i"&&bash "$i")'
-          ).format(versionless_url)
-          if quick_command not in readme:
-              raise SystemExit("README one-line main installer is missing")
+          quick_command = readme.split('```bash\n', 1)[1].split('```', 1)[0]
+          if any(marker not in quick_command for marker in (
+              versionless_url, 'command -v bash', '/run/systemd/system',
+              'umask 077', 'trap', 'mktemp', 'DNS', 'bash "$i"',
+          )):
+              raise SystemExit("README checked main installer is incomplete")
           if "首次信任入口" not in readme or "GitHub HTTPS" not in readme:
               raise SystemExit("README must explain the one-line installer trust boundary")
           required_bootstrap_markers = (
