@@ -1,0 +1,614 @@
+[
+  {
+    "users": 100,
+    "concurrency": 2,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1445,
+    "outcomes": {
+      "allowed": 1445
+    },
+    "elapsed_seconds": 8.008,
+    "rps": 180.44,
+    "p50_ms": 10.34,
+    "p95_ms": 15.7,
+    "p99_ms": 33.81,
+    "panel_cpu_seconds": 5.29,
+    "panel_rss_mib": 69.69
+  },
+  {
+    "users": 100,
+    "concurrency": 2,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 273,
+    "outcomes": {
+      "ok": 273
+    },
+    "elapsed_seconds": 8.044,
+    "rps": 33.94,
+    "p50_ms": 58.52,
+    "p95_ms": 64.97,
+    "p99_ms": 76.99,
+    "panel_cpu_seconds": 3.7,
+    "panel_rss_mib": 69.96
+  },
+  {
+    "users": 100,
+    "concurrency": 2,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 127,
+    "outcomes": {
+      "allowed": 127
+    },
+    "elapsed_seconds": 8.063,
+    "rps": 15.75,
+    "p50_ms": 62.5,
+    "p95_ms": 73.5,
+    "p99_ms": 76.58,
+    "panel_cpu_seconds": 3.27,
+    "panel_rss_mib": 70.38
+  },
+  {
+    "users": 100,
+    "concurrency": 2,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 127,
+    "outcomes": {
+      "ok": 127
+    },
+    "elapsed_seconds": 8.063,
+    "rps": 15.75,
+    "p50_ms": 62.59,
+    "p95_ms": 72.74,
+    "p99_ms": 78.3,
+    "panel_cpu_seconds": 3.27,
+    "panel_rss_mib": 70.38
+  },
+  {
+    "users": 100,
+    "concurrency": 8,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1520,
+    "outcomes": {
+      "allowed": 1520
+    },
+    "elapsed_seconds": 8.047,
+    "rps": 188.89,
+    "p50_ms": 40.56,
+    "p95_ms": 55.95,
+    "p99_ms": 85.8,
+    "panel_cpu_seconds": 5.16,
+    "panel_rss_mib": 74.72
+  },
+  {
+    "users": 100,
+    "concurrency": 8,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 267,
+    "outcomes": {
+      "ok": 267
+    },
+    "elapsed_seconds": 8.221,
+    "rps": 32.48,
+    "p50_ms": 245.01,
+    "p95_ms": 273.15,
+    "p99_ms": 285.36,
+    "panel_cpu_seconds": 3.72,
+    "panel_rss_mib": 74.76
+  },
+  {
+    "users": 100,
+    "concurrency": 8,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 167,
+    "outcomes": {
+      "allowed": 167
+    },
+    "elapsed_seconds": 8.189,
+    "rps": 20.39,
+    "p50_ms": 197.4,
+    "p95_ms": 214.05,
+    "p99_ms": 221.22,
+    "panel_cpu_seconds": 3.55,
+    "panel_rss_mib": 74.76
+  },
+  {
+    "users": 100,
+    "concurrency": 8,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 165,
+    "outcomes": {
+      "ok": 165
+    },
+    "elapsed_seconds": 8.189,
+    "rps": 20.15,
+    "p50_ms": 197.23,
+    "p95_ms": 214.39,
+    "p99_ms": 223.34,
+    "panel_cpu_seconds": 3.55,
+    "panel_rss_mib": 74.76
+  },
+  {
+    "users": 100,
+    "concurrency": 16,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1487,
+    "outcomes": {
+      "allowed": 1487
+    },
+    "elapsed_seconds": 8.075,
+    "rps": 184.14,
+    "p50_ms": 84.08,
+    "p95_ms": 114.79,
+    "p99_ms": 128.84,
+    "panel_cpu_seconds": 5.47,
+    "panel_rss_mib": 78.96
+  },
+  {
+    "users": 100,
+    "concurrency": 16,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 271,
+    "outcomes": {
+      "ok": 271
+    },
+    "elapsed_seconds": 8.456,
+    "rps": 32.05,
+    "p50_ms": 498.53,
+    "p95_ms": 533.35,
+    "p99_ms": 543.27,
+    "panel_cpu_seconds": 3.84,
+    "panel_rss_mib": 79.07
+  },
+  {
+    "users": 100,
+    "concurrency": 16,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 208,
+    "outcomes": {
+      "allowed": 208
+    },
+    "elapsed_seconds": 8.291,
+    "rps": 25.09,
+    "p50_ms": 315.31,
+    "p95_ms": 362.21,
+    "p99_ms": 391.96,
+    "panel_cpu_seconds": 3.79,
+    "panel_rss_mib": 79.07
+  },
+  {
+    "users": 100,
+    "concurrency": 16,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 206,
+    "outcomes": {
+      "ok": 206
+    },
+    "elapsed_seconds": 8.291,
+    "rps": 24.85,
+    "p50_ms": 314.96,
+    "p95_ms": 362.82,
+    "p99_ms": 395.6,
+    "panel_cpu_seconds": 3.79,
+    "panel_rss_mib": 79.07
+  },
+  {
+    "users": 200,
+    "concurrency": 2,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1489,
+    "outcomes": {
+      "allowed": 1489
+    },
+    "elapsed_seconds": 8.007,
+    "rps": 185.95,
+    "p50_ms": 10.22,
+    "p95_ms": 13.81,
+    "p99_ms": 35.94,
+    "panel_cpu_seconds": 5.35,
+    "panel_rss_mib": 94.73
+  },
+  {
+    "users": 200,
+    "concurrency": 2,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 258,
+    "outcomes": {
+      "ok": 258
+    },
+    "elapsed_seconds": 8.03,
+    "rps": 32.13,
+    "p50_ms": 61.46,
+    "p95_ms": 75.58,
+    "p99_ms": 87.94,
+    "panel_cpu_seconds": 3.96,
+    "panel_rss_mib": 94.8
+  },
+  {
+    "users": 200,
+    "concurrency": 2,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 119,
+    "outcomes": {
+      "allowed": 119
+    },
+    "elapsed_seconds": 8.048,
+    "rps": 14.79,
+    "p50_ms": 67.3,
+    "p95_ms": 76.82,
+    "p99_ms": 80.29,
+    "panel_cpu_seconds": 3.19,
+    "panel_rss_mib": 94.8
+  },
+  {
+    "users": 200,
+    "concurrency": 2,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 119,
+    "outcomes": {
+      "ok": 119
+    },
+    "elapsed_seconds": 8.048,
+    "rps": 14.79,
+    "p50_ms": 66.79,
+    "p95_ms": 76.8,
+    "p99_ms": 77.59,
+    "panel_cpu_seconds": 3.19,
+    "panel_rss_mib": 94.8
+  },
+  {
+    "users": 200,
+    "concurrency": 8,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1453,
+    "outcomes": {
+      "allowed": 1453
+    },
+    "elapsed_seconds": 8.037,
+    "rps": 180.79,
+    "p50_ms": 42.67,
+    "p95_ms": 54.81,
+    "p99_ms": 79.72,
+    "panel_cpu_seconds": 5.14,
+    "panel_rss_mib": 94.83
+  },
+  {
+    "users": 200,
+    "concurrency": 8,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 267,
+    "outcomes": {
+      "ok": 267
+    },
+    "elapsed_seconds": 8.235,
+    "rps": 32.42,
+    "p50_ms": 245.55,
+    "p95_ms": 267.21,
+    "p99_ms": 275.66,
+    "panel_cpu_seconds": 4.06,
+    "panel_rss_mib": 94.85
+  },
+  {
+    "users": 200,
+    "concurrency": 8,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 164,
+    "outcomes": {
+      "allowed": 164
+    },
+    "elapsed_seconds": 8.191,
+    "rps": 20.02,
+    "p50_ms": 184.21,
+    "p95_ms": 317.58,
+    "p99_ms": 350.02,
+    "panel_cpu_seconds": 3.65,
+    "panel_rss_mib": 94.85
+  },
+  {
+    "users": 200,
+    "concurrency": 8,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 162,
+    "outcomes": {
+      "ok": 162
+    },
+    "elapsed_seconds": 8.191,
+    "rps": 19.78,
+    "p50_ms": 183.8,
+    "p95_ms": 308.31,
+    "p99_ms": 366.12,
+    "panel_cpu_seconds": 3.65,
+    "panel_rss_mib": 94.85
+  },
+  {
+    "users": 200,
+    "concurrency": 16,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1165,
+    "outcomes": {
+      "allowed": 1165
+    },
+    "elapsed_seconds": 8.137,
+    "rps": 143.18,
+    "p50_ms": 104.78,
+    "p95_ms": 153.44,
+    "p99_ms": 185.55,
+    "panel_cpu_seconds": 4.7,
+    "panel_rss_mib": 94.85
+  },
+  {
+    "users": 200,
+    "concurrency": 16,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 244,
+    "outcomes": {
+      "ok": 244
+    },
+    "elapsed_seconds": 8.502,
+    "rps": 28.7,
+    "p50_ms": 556.63,
+    "p95_ms": 595.49,
+    "p99_ms": 603.61,
+    "panel_cpu_seconds": 3.7,
+    "panel_rss_mib": 94.91
+  },
+  {
+    "users": 200,
+    "concurrency": 16,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 168,
+    "outcomes": {
+      "allowed": 168
+    },
+    "elapsed_seconds": 8.352,
+    "rps": 20.11,
+    "p50_ms": 401.79,
+    "p95_ms": 455.04,
+    "p99_ms": 486.11,
+    "panel_cpu_seconds": 3.83,
+    "panel_rss_mib": 94.92
+  },
+  {
+    "users": 200,
+    "concurrency": 16,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 164,
+    "outcomes": {
+      "ok": 164
+    },
+    "elapsed_seconds": 8.352,
+    "rps": 19.64,
+    "p50_ms": 401.87,
+    "p95_ms": 460.2,
+    "p99_ms": 488.25,
+    "panel_cpu_seconds": 3.83,
+    "panel_rss_mib": 94.92
+  },
+  {
+    "users": 500,
+    "concurrency": 2,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1491,
+    "outcomes": {
+      "allowed": 1491
+    },
+    "elapsed_seconds": 8.005,
+    "rps": 186.26,
+    "p50_ms": 10.05,
+    "p95_ms": 14.28,
+    "p99_ms": 36.3,
+    "panel_cpu_seconds": 5.3,
+    "panel_rss_mib": 110.66
+  },
+  {
+    "users": 500,
+    "concurrency": 2,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 253,
+    "outcomes": {
+      "ok": 253
+    },
+    "elapsed_seconds": 8.058,
+    "rps": 31.4,
+    "p50_ms": 61.48,
+    "p95_ms": 78.88,
+    "p99_ms": 89.54,
+    "panel_cpu_seconds": 4.56,
+    "panel_rss_mib": 111.0
+  },
+  {
+    "users": 500,
+    "concurrency": 2,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 126,
+    "outcomes": {
+      "allowed": 126
+    },
+    "elapsed_seconds": 8.047,
+    "rps": 15.66,
+    "p50_ms": 62.23,
+    "p95_ms": 75.39,
+    "p99_ms": 92.7,
+    "panel_cpu_seconds": 3.61,
+    "panel_rss_mib": 111.0
+  },
+  {
+    "users": 500,
+    "concurrency": 2,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 125,
+    "outcomes": {
+      "ok": 125
+    },
+    "elapsed_seconds": 8.047,
+    "rps": 15.53,
+    "p50_ms": 62.9,
+    "p95_ms": 74.58,
+    "p99_ms": 88.91,
+    "panel_cpu_seconds": 3.61,
+    "panel_rss_mib": 111.0
+  },
+  {
+    "users": 500,
+    "concurrency": 8,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1466,
+    "outcomes": {
+      "allowed": 1466
+    },
+    "elapsed_seconds": 8.042,
+    "rps": 182.28,
+    "p50_ms": 42.66,
+    "p95_ms": 52.29,
+    "p99_ms": 74.96,
+    "panel_cpu_seconds": 4.97,
+    "panel_rss_mib": 111.03
+  },
+  {
+    "users": 500,
+    "concurrency": 8,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 254,
+    "outcomes": {
+      "ok": 254
+    },
+    "elapsed_seconds": 8.262,
+    "rps": 30.74,
+    "p50_ms": 257.69,
+    "p95_ms": 278.23,
+    "p99_ms": 287.6,
+    "panel_cpu_seconds": 4.26,
+    "panel_rss_mib": 111.03
+  },
+  {
+    "users": 500,
+    "concurrency": 8,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 188,
+    "outcomes": {
+      "allowed": 188
+    },
+    "elapsed_seconds": 8.162,
+    "rps": 23.03,
+    "p50_ms": 176.23,
+    "p95_ms": 199.0,
+    "p99_ms": 249.58,
+    "panel_cpu_seconds": 4.05,
+    "panel_rss_mib": 111.03
+  },
+  {
+    "users": 500,
+    "concurrency": 8,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 184,
+    "outcomes": {
+      "ok": 184
+    },
+    "elapsed_seconds": 8.162,
+    "rps": 22.54,
+    "p50_ms": 174.63,
+    "p95_ms": 203.18,
+    "p99_ms": 243.91,
+    "panel_cpu_seconds": 4.05,
+    "panel_rss_mib": 111.03
+  },
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "auth",
+    "endpoint": "auth",
+    "requests": 1555,
+    "outcomes": {
+      "allowed": 1555
+    },
+    "elapsed_seconds": 8.072,
+    "rps": 192.65,
+    "p50_ms": 80.46,
+    "p95_ms": 117.19,
+    "p99_ms": 139.61,
+    "panel_cpu_seconds": 5.49,
+    "panel_rss_mib": 111.14
+  },
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "users",
+    "endpoint": "users",
+    "requests": 266,
+    "outcomes": {
+      "ok": 266
+    },
+    "elapsed_seconds": 8.483,
+    "rps": 31.36,
+    "p50_ms": 507.47,
+    "p95_ms": 536.94,
+    "p99_ms": 545.63,
+    "panel_cpu_seconds": 4.68,
+    "panel_rss_mib": 111.2
+  },
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "mixed",
+    "endpoint": "auth",
+    "requests": 208,
+    "outcomes": {
+      "allowed": 208
+    },
+    "elapsed_seconds": 8.312,
+    "rps": 25.03,
+    "p50_ms": 323.39,
+    "p95_ms": 380.94,
+    "p99_ms": 390.82,
+    "panel_cpu_seconds": 4.3,
+    "panel_rss_mib": 111.2
+  },
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "mixed",
+    "endpoint": "users",
+    "requests": 200,
+    "outcomes": {
+      "ok": 200
+    },
+    "elapsed_seconds": 8.312,
+    "rps": 24.06,
+    "p50_ms": 322.83,
+    "p95_ms": 374.95,
+    "p99_ms": 393.38,
+    "panel_cpu_seconds": 4.3,
+    "panel_rss_mib": 111.2
+  }
+]

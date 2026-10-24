@@ -1,0 +1,93 @@
+[
+  {
+    "scenario": "web_backup_restore",
+    "users": 501,
+    "backup_bytes": 72313,
+    "backup_seconds": 0.354,
+    "rto_seconds": 25.645,
+    "exact_users_tokens_and_usage": true,
+    "tls_identity_preserved": true,
+    "real_quic_before": [
+      {
+        "port": 31999,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.108
+      },
+      {
+        "port": 443,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.108
+      }
+    ],
+    "real_quic_after": [
+      {
+        "port": 31999,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.106
+      },
+      {
+        "port": 443,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.106
+      }
+    ],
+    "both_auth_entrypoints": true
+  },
+  {
+    "scenario": "restore_sigkill_prepared",
+    "rto_seconds": 25.078,
+    "fault_reached": true,
+    "outcome": "rolled_back",
+    "exact_users_tokens_and_usage": true,
+    "real_quic_after": [
+      {
+        "port": 31999,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.107
+      },
+      {
+        "port": 443,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.107
+      }
+    ]
+  },
+  {
+    "scenario": "restore_sigkill_replaced-database",
+    "rto_seconds": 25.092,
+    "fault_reached": true,
+    "outcome": "applied",
+    "exact_users_tokens_and_usage": true,
+    "real_quic_after": [
+      {
+        "port": 31999,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.106
+      },
+      {
+        "port": 443,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.107
+      }
+    ]
+  },
+  {
+    "scenario": "restore_sigkill_disk-consistent",
+    "rto_seconds": 25.068,
+    "fault_reached": true,
+    "outcome": "applied",
+    "exact_users_tokens_and_usage": true,
+    "real_quic_after": [
+      {
+        "port": 31999,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.107
+      },
+      {
+        "port": 443,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.107
+      }
+    ]
+  }
+]

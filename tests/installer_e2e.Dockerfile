@@ -9,7 +9,8 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
       rm -rf /var/lib/apt/lists/*; \
     else \
       dnf install -y dbus gawk systemd util-linux && dnf clean all; \
-    fi
+    fi && \
+    ln -sf /dev/null /etc/systemd/system/systemd-binfmt.service
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

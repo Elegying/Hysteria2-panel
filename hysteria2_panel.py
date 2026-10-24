@@ -2995,19 +2995,26 @@ class Database:
         with self._connect() as connection:
             row = connection.execute(
                 """SELECT m.session_id, m.admin_id, m.device_id, m.device_name,
-                    m.access_expires_at, m.refresh_expires_at, a.username
+                    m.access_expires_at, m.refresh_expires_at, m.last_used_at, a.username
                 FROM mobile_sessions AS m
                 JOIN admins AS a ON a.id = m.admin_id
                 WHERE m.access_token_hash = ? AND m.access_expires_at > ?
                     AND m.refresh_expires_at > ?""",
                 (self._mobile_token_hash(access_token), now, now),
             ).fetchone()
-            if row and now - int(row["access_expires_at"]) < 0:
+            # Activity is recorded in whole seconds. Rewriting that same value
+            # for every GET needlessly competes with authentication's writer.
+            # Still read/revalidate the token and expiry on every request.
+            if row and int(row["last_used_at"]) < now:
                 connection.execute(
-                    "UPDATE mobile_sessions SET last_used_at = ? WHERE session_id = ?",
-                    (now, row["session_id"]),
+                    "UPDATE mobile_sessions SET last_used_at = ? WHERE session_id = ? AND last_used_at < ?",
+                    (now, row["session_id"], now),
                 )
-        return dict(row) if row else None
+        if row is None:
+            return None
+        result = dict(row)
+        result.pop("last_used_at")
+        return result
 
     def rotate_mobile_session(
         self,
@@ -7110,12 +7117,17 @@ class InternalAuthHandler(JsonHandler):
         if content_length < 0 or content_length > 4096:
             self.send_json(413, {"error": {"code": "REQUEST_TOO_LARGE", "message": "Request too large"}})
             return
-        status, payload = handle_auth_payload(
-            self.server.database,
-            self.rfile.read(content_length),
-            self.server.usage_manager,
-            require_udp_443=self.path == "/auth/udp-443",
-        )
+        raw_body = self.rfile.read(content_length)
+        try:
+            status, payload = handle_auth_payload(
+                self.server.database,
+                raw_body,
+                self.server.usage_manager,
+                require_udp_443=self.path == "/auth/udp-443",
+            )
+        except (sqlite3.Error, OSError):
+            LOGGER.exception("internal authentication storage unavailable")
+            status, payload = 503, {"ok": False, "id": ""}
         self.send_json(status, payload)
 
     def do_GET(self):
@@ -9103,6 +9115,8 @@ class PanelHandler(JsonHandler):
                 )
             self._send_archive(archive)
             self._audit_safely(session["username"], "backup_downloaded", "proxy-users")
+        except MaintenanceBusyError:
+            self._error_page(503, "维护任务正在运行，请稍后重试备份")
         except Exception:
             LOGGER.exception("backup creation failed")
             self._error_page(500, "备份生成失败，请检查服务日志")
@@ -9769,6 +9783,7 @@ class UsageManager:
         self.lock = threading.Lock()
         self._quiescing = threading.Event()
         self._user_usage_lock = threading.Lock()
+        self._display_read_lock = threading.Lock()
         self._user_usage_checkpoint = None
         self._user_usage_traffic_at = None
         self._user_usage_online = None
@@ -10230,6 +10245,54 @@ class UsageManager:
                 now, MAX_STATE_AGE_SECONDS
             )
             origin_rows = self.database.list_usage_origins(machine_totals=True)
+        return self._format_snapshot(
+            users, online, node_states, origin_rows, now,
+            available=available, online_available=online_available,
+            online_observed_at=now if online_available else None,
+        )
+
+    def read_snapshot(self):
+        """Render committed data without collecting or waiting for the auth lock.
+
+        Only display callers use this path. Authorization, quota changes and
+        backup settlement retain their existing synchronous checks. A missing,
+        failed or stale collector checkpoint is shown as unavailable, not zero.
+        """
+        now = int(self.wall_clock())
+        checkpoint = self.user_usage_checkpoint()
+        available = False
+        online = {}
+        observed_at = None
+        if checkpoint is not None:
+            traffic_at, online_at, sampled_online = checkpoint
+            available = all(
+                type(value) is int and 0 <= now - value <= MAX_STATE_AGE_SECONDS
+                for value in (traffic_at, online_at)
+            )
+            if available:
+                online = dict(sampled_online)
+                observed_at = online_at
+        # SQLite row materialization releases/reacquires the GIL per row. Many
+        # concurrent full-list readers can otherwise amplify that cost. This
+        # display-only lock never gates authorization or traffic collection.
+        with self._display_read_lock:
+            users = self.database.list_proxy_users_for_usage()
+            node_states = self.database.list_node_online_states(now, MAX_STATE_AGE_SECONDS)
+            origins = self.database.list_usage_origins(machine_totals=True)
+        snapshot = self._format_snapshot(
+            users, online, node_states, origins, now,
+            available=available, online_available=available,
+            online_observed_at=observed_at,
+        )
+        # Reuse these exact current rows in the projection instead of running a
+        # second full query outside the reader bound. This is not a row cache.
+        snapshot["user_rows"] = users
+        return snapshot
+
+    def _format_snapshot(
+        self, users, online, node_states, origin_rows, now, *,
+        available, online_available, online_observed_at,
+    ):
         global_online = dict(online)
         for node in node_states:
             if node["online_state"] != "fresh":
@@ -10260,7 +10323,7 @@ class UsageManager:
                 "online_state": (
                     "fresh" if online_available else "unavailable"
                 ),
-                "observed_at": now if online_available else None,
+                "observed_at": online_observed_at,
             }
         )
         current_node_ids = set()

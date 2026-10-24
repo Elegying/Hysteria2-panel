@@ -1,0 +1,25 @@
+{
+  "baseline_commit": "a66e2b28cb09e0ee7b62c5cb343c185dbf6f4ff7",
+  "baseline_runtime_sha256": {
+    "hysteria2_panel.py": "f92019524d21e6d2f91aaad8117c47cb77e10798b470e59e630a2545f0a82d3b",
+    "hy2panel/dashboard.py": "285327ccef230ffdb96f2790f98e6d53f0f89252302a6777311b0404b88b42b1",
+    "hy2panel/mobile_api.py": "d412be91aacd152d14724b39eddeabd3e59989f9f3f816cc9f477cc17901f21e"
+  },
+  "os": "WSL Ubuntu 24.04 / Docker Ubuntu 24.04",
+  "cpu_quota": 2,
+  "memory_bytes": 2147483648,
+  "additional_swap_bytes": 0,
+  "load_generator_inside_quota": true,
+  "unit_tests": {
+    "total": 1052,
+    "passed": 1040,
+    "skipped": 12,
+    "elapsed_seconds": 408.89
+  },
+  "matrix_extra_non_load_accounts": {
+    "before": 0,
+    "verified": 1
+  },
+  "rate_pair_extra_non_load_accounts": 101,
+  "node_agent_source": "original baseline commit /workspace/node_agent.py"
+}

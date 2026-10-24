@@ -1,0 +1,19 @@
+{
+  "python": "3.12.3",
+  "panel_version": "0.39.41",
+  "source_sha256": {
+    "hysteria2_panel.py": "a673463c2cdaef974d3431d349afdc90e8c9f21fa3154685adab4402130dee26",
+    "hy2panel/mobile_api.py": "0bbbc4ba9c9c5040da7ebc4d4aeaa84c1a0f96c1f8f646e58a46040b29e56b5c",
+    "hy2panel/dashboard.py": "890174cdd30b7609e4eaa69c01ccd7e61f65e316196e667d5812d9e55a6c8abc"
+  },
+  "mode": "capacity",
+  "users": [
+    500
+  ],
+  "concurrency": [
+    16
+  ],
+  "seconds_per_scenario": 15,
+  "offered_rps": 60,
+  "load_model": "scheduled arrivals, latency includes queue delay, new TCP/TLS connection per request"
+}

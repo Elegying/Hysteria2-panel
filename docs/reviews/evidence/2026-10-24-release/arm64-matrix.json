@@ -1,0 +1,32 @@
+[
+  {
+    "distribution": "ubuntu",
+    "architecture": "arm64",
+    "container": "hy2-release-arm-ubuntu-arm64",
+    "base_image": "ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517",
+    "transport": "local candidate source, real hash validation",
+    "initial_systemd_state": "running",
+    "status": "passed",
+    "seconds": 240.821
+  },
+  {
+    "distribution": "debian",
+    "architecture": "arm64",
+    "container": "hy2-release-arm-debian-arm64",
+    "base_image": "debian:stable@sha256:7fa362f5e7c036d7f45621a6c721c03493cdcb5889adfcd65587759e34fe4c6f",
+    "transport": "local candidate source, real hash validation",
+    "initial_systemd_state": "degraded",
+    "status": "passed",
+    "seconds": 252.989
+  },
+  {
+    "distribution": "rocky",
+    "architecture": "arm64",
+    "container": "hy2-release-arm-rocky-arm64",
+    "base_image": "rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6",
+    "transport": "local candidate source, real hash validation",
+    "initial_systemd_state": "running",
+    "status": "passed",
+    "seconds": 240.787
+  }
+]

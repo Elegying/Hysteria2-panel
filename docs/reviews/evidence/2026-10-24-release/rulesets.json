@@ -1,0 +1,129 @@
+[
+  {
+    "id": 20781229,
+    "name": "Protect main",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": [
+          "~DEFAULT_BRANCH"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      },
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "strict_required_status_checks_policy": true,
+          "do_not_enforce_on_create": false,
+          "required_status_checks": [
+            {
+              "context": "test (3.8)",
+              "integration_id": 15368
+            },
+            {
+              "context": "test (3.12)",
+              "integration_id": 15368
+            },
+            {
+              "context": "test (3.13)",
+              "integration_id": 15368
+            },
+            {
+              "context": "browser-smoke",
+              "integration_id": 15368
+            },
+            {
+              "context": "static-analysis",
+              "integration_id": 15368
+            },
+            {
+              "context": "managed-firewall-integration",
+              "integration_id": 15368
+            },
+            {
+              "context": "systemd-service-semantics",
+              "integration_id": 15368
+            },
+            {
+              "context": "rhel-firewall-package-contract",
+              "integration_id": 15368
+            },
+            {
+              "context": "full-installer-e2e",
+              "integration_id": 15368
+            },
+            {
+              "context": "codeql-python",
+              "integration_id": 15368
+            },
+            {
+              "context": "mobile-tests",
+              "integration_id": 15368
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "id": 20781230,
+    "name": "Protect release tags",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": [
+          "refs/tags/v*"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "update"
+      }
+    ]
+  },
+  {
+    "id": 24794409,
+    "name": "Require PR for main",
+    "enforcement": "active",
+    "conditions": {
+      "ref_name": {
+        "exclude": [],
+        "include": [
+          "~DEFAULT_BRANCH"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "type": "pull_request",
+        "parameters": {
+          "required_approving_review_count": 0,
+          "dismiss_stale_reviews_on_push": true,
+          "required_reviewers": [],
+          "require_code_owner_review": false,
+          "require_last_push_approval": false,
+          "required_review_thread_resolution": true,
+          "require_extra_approval_for_unattributed_changes": true,
+          "allowed_merge_methods": [
+            "merge",
+            "squash",
+            "rebase"
+          ]
+        }
+      }
+    ]
+  }
+]

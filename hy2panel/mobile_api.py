@@ -111,7 +111,8 @@ def _version_at_least(value, minimum):
 
 def _safe_snapshot(application):
     try:
-        snapshot = application.usage_manager.snapshot()
+        manager = application.usage_manager
+        snapshot = getattr(manager, "read_snapshot", manager.snapshot)()
     except Exception:
         snapshot = {
             "traffic": {},
@@ -135,7 +136,10 @@ def _user_items(application, snapshot):
     traffic_by_user = snapshot.get("traffic", {})
     online_by_user = snapshot.get("online", {})
     items = []
-    for user in application.database.list_proxy_users_for_usage():
+    users = snapshot.get("user_rows")
+    if users is None:
+        users = application.database.list_proxy_users_for_usage()
+    for user in users:
         traffic = traffic_by_user.get(user["name"], {})
         tx_bytes = _non_negative_int(traffic.get("tx", user.get("tx_bytes", 0)))
         rx_bytes = _non_negative_int(traffic.get("rx", user.get("rx_bytes", 0)))

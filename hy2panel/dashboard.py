@@ -151,11 +151,14 @@ def render_dashboard(
     _stat_int = context.stat_int
     summarize_dashboard = context.summarize_dashboard
     try:
-        snapshot = self.app.usage_manager.snapshot()
+        manager = self.app.usage_manager
+        snapshot = getattr(manager, "read_snapshot", manager.snapshot)()
     except Exception:
         LOGGER.exception("stats snapshot failed")
         snapshot = {"traffic": {}, "online": {}, "available": False}
-    all_users = self.app.database.list_proxy_users_for_usage()
+    all_users = snapshot.get("user_rows")
+    if all_users is None:
+        all_users = self.app.database.list_proxy_users_for_usage()
     user_selection = select_dashboard_users(
         all_users,
         snapshot,

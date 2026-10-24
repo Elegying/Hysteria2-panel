@@ -1,0 +1,45 @@
+[
+  {
+    "scenario": "signed_cycles",
+    "nodes": 1,
+    "users_per_batch": 100,
+    "cycles": 20,
+    "elapsed_seconds": 2.679,
+    "p95_ms": 29.41,
+    "p99_ms": 37.45,
+    "expected_bytes": 68000,
+    "actual_bytes": 68000
+  },
+  {
+    "scenario": "signed_cycles",
+    "nodes": 2,
+    "users_per_batch": 100,
+    "cycles": 40,
+    "elapsed_seconds": 2.724,
+    "p95_ms": 28.58,
+    "p99_ms": 48.35,
+    "expected_bytes": 136000,
+    "actual_bytes": 136000
+  },
+  {
+    "scenario": "signed_cycles",
+    "nodes": 5,
+    "users_per_batch": 100,
+    "cycles": 100,
+    "elapsed_seconds": 2.951,
+    "p95_ms": 47.63,
+    "p99_ms": 85.47,
+    "expected_bytes": 340000,
+    "actual_bytes": 340000
+  },
+  {
+    "scenario": "central_outage_and_duplicate_replay",
+    "nodes": 5,
+    "durable_batches": 50,
+    "http_submissions": 100,
+    "recovery_and_replay_seconds": 1.621,
+    "expected_bytes": 170000,
+    "actual_bytes": 170000,
+    "remaining_batches": 0
+  }
+]
