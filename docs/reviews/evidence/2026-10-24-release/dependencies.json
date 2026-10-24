@@ -1,0 +1,37 @@
+[
+  {
+    "image": "debian:11-slim",
+    "exit_code": 0,
+    "network_mode": "host",
+    "checks": ["APT_FAILURE_ISOLATION_OK", "DEPENDENCY_BOOTSTRAP_OK"],
+    "initial_attempt": "Bridge-network package download timed out; unchanged test passed using isolated WSL Docker host network."
+  },
+  {
+    "image": "debian:12-slim",
+    "exit_code": 0
+  },
+  {
+    "image": "debian:13-slim",
+    "exit_code": 0
+  },
+  {
+    "image": "ubuntu:20.04",
+    "exit_code": 0
+  },
+  {
+    "image": "ubuntu:22.04",
+    "exit_code": 0
+  },
+  {
+    "image": "ubuntu:24.04",
+    "exit_code": 0
+  },
+  {
+    "image": "rockylinux:8",
+    "exit_code": 0
+  },
+  {
+    "image": "rockylinux:9",
+    "exit_code": 0
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "scenario": "installed_stats_packet_drop",
+    "unready_after_seconds": 13.586,
+    "ready_after_network_recovery_seconds": 6.119,
+    "auth_denied_during_fault": true,
+    "auth_allowed_after_recovery": true
+  },
+  {
+    "scenario": "installed_sqlite_writer_lock",
+    "denial_seconds": 5.008,
+    "http_status_during_fault": 503,
+    "auth_allowed_after_recovery": true
+  },
+  {
+    "scenario": "quic_after_faults",
+    "entrypoints": [
+      {
+        "port": 31999,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.105
+      },
+      {
+        "port": 443,
+        "verified_payload_bytes": 720896,
+        "connect_and_transfer_seconds": 0.103
+      }
+    ]
+  }
+]

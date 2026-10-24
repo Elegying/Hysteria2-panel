@@ -1,0 +1,22 @@
+[
+  {
+    "scenario": "real_tmpfs_enospc",
+    "filesystem_bytes": 4194304,
+    "before_bytes": 330,
+    "recovered_bytes": 407,
+    "source_not_cleared": true
+  },
+  {
+    "scenario": "real_sqlite_writer_lock",
+    "blocked_seconds": 5.009,
+    "before_bytes": 407,
+    "recovered_bytes": 473,
+    "duplicate_bytes": 0
+  },
+  {
+    "scenario": "real_http_stats_503",
+    "before_bytes": 473,
+    "recovered_bytes": 561,
+    "duplicate_bytes": 0
+  }
+]

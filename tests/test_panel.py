@@ -662,6 +662,35 @@ class AuthContractTests(unittest.TestCase):
         self.assertEqual("application/json; charset=utf-8", response.headers["Content-Type"])
         self.assertEqual("nosniff", response.headers["X-Content-Type-Options"])
 
+    def test_internal_auth_storage_errors_return_explicit_unavailable(self):
+        manager = mock.Mock()
+        server = make_internal_server(("127.0.0.1", 0), self.db, manager)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        for path in ("/auth", "/auth/udp-443"):
+            for stage in ("authenticate_token", "authorize"):
+                target = self.db if stage == "authenticate_token" else manager
+                with self.subTest(path=path, stage=stage), \
+                        mock.patch.object(self.db, "authenticate_token", return_value="alice"), \
+                        mock.patch.object(target, stage, side_effect=sqlite3.OperationalError("database is locked")):
+                    request = urllib.request.Request(
+                        "http://127.0.0.1:{}{}".format(server.server_address[1], path),
+                        data=b'{"auth":"valid-token"}', method="POST",
+                    )
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        urllib.request.urlopen(request, timeout=2)
+                    with raised.exception as response:
+                        self.assertEqual(503, response.code)
+                        self.assertEqual({"ok": False, "id": ""}, json.load(response))
+        manager.authorize.return_value = True
+        request = urllib.request.Request(
+            "http://127.0.0.1:{}/auth".format(server.server_address[1]),
+            data=b'{"auth":"valid-token"}', method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            self.assertEqual({"ok": True, "id": "alice"}, json.load(response))
+
     def test_udp_443_auth_endpoint_only_allows_opted_in_users(self):
         server = make_internal_server(("127.0.0.1", 0), self.db)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -7792,7 +7821,7 @@ class PanelHttpTests(unittest.TestCase):
         }
 
         with mock.patch.object(
-            self.application.usage_manager, "snapshot", return_value=snapshot
+            self.application.usage_manager, "read_snapshot", return_value=snapshot
         ):
             with self.request("/", headers=headers) as response:
                 body = response.read().decode()
@@ -8040,6 +8069,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_dashboard_marks_users_over_the_client_instance_limit(self):
         self.db.create_proxy_user("alice", device_limit=1)
+        self.application.usage_manager.collect_once()
         headers, _ = self.authenticated_headers()
 
         with self.request("/", headers=headers) as response:
@@ -8291,6 +8321,7 @@ class PanelHttpTests(unittest.TestCase):
             "online": {"Alice & Co": 2},
             "available": True,
         }
+        self.application.usage_manager.collect_once()
         headers, _ = self.authenticated_headers()
 
         with self.request(
@@ -8634,6 +8665,17 @@ class PanelHttpTests(unittest.TestCase):
                 self.assertEqual(202, response.status)
             self.assertEqual(2, extend.call_count)
 
+    def test_backup_reports_maintenance_contention_as_retryable(self):
+        headers, csrf_token = self.authenticated_headers()
+        with mock.patch.object(self.backup_manager, "create_archive",
+                               side_effect=hysteria2_panel.MaintenanceBusyError("busy")):
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                self.request("/backup", {"csrf": csrf_token}, headers=headers,
+                             follow_redirects=False)
+        self.assertEqual(503, raised.exception.code)
+        self.assertIn("维护任务正在运行", raised.exception.read().decode())
+        self.assertEqual([], list(self.backup_manager.work_dir.glob("*.zip")))
+
     def test_backup_fails_closed_when_pending_traffic_cannot_be_flushed(self):
         headers, csrf_token = self.authenticated_headers()
         original_run = self.application.usage_manager.run_after_collect
@@ -8748,6 +8790,7 @@ class PanelHttpTests(unittest.TestCase):
             "online": {"alpha": 1, "beta": 3, "gamma": 2},
             "available": True,
         }
+        self.application.usage_manager.collect_once()
         headers, _ = self.authenticated_headers()
 
         with self.request("/?sort=online&order=desc", headers=headers) as response:

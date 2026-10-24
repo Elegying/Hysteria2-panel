@@ -1,0 +1,74 @@
+[
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "auth",
+    "offered_rps": 60,
+    "endpoint": "auth",
+    "requests": 900,
+    "outcomes": {
+      "allowed": 900
+    },
+    "elapsed_seconds": 14.994,
+    "rps": 60.03,
+    "p50_ms": 7.46,
+    "p95_ms": 13.09,
+    "p99_ms": 31.16,
+    "panel_cpu_seconds": 2.87,
+    "panel_rss_mib": 70.96
+  },
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "users",
+    "offered_rps": 60,
+    "endpoint": "users",
+    "requests": 900,
+    "outcomes": {
+      "ok": 900
+    },
+    "elapsed_seconds": 14.997,
+    "rps": 60.01,
+    "p50_ms": 11.26,
+    "p95_ms": 17.72,
+    "p99_ms": 30.13,
+    "panel_cpu_seconds": 5.45,
+    "panel_rss_mib": 71.4
+  },
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "mixed",
+    "offered_rps": 60,
+    "endpoint": "auth",
+    "requests": 450,
+    "outcomes": {
+      "allowed": 450
+    },
+    "elapsed_seconds": 14.995,
+    "rps": 30.01,
+    "p50_ms": 6.31,
+    "p95_ms": 9.11,
+    "p99_ms": 31.92,
+    "panel_cpu_seconds": 4.08,
+    "panel_rss_mib": 71.42
+  },
+  {
+    "users": 500,
+    "concurrency": 16,
+    "workload": "mixed",
+    "offered_rps": 60,
+    "endpoint": "users",
+    "requests": 450,
+    "outcomes": {
+      "ok": 450
+    },
+    "elapsed_seconds": 14.995,
+    "rps": 30.01,
+    "p50_ms": 10.43,
+    "p95_ms": 13.04,
+    "p99_ms": 14.87,
+    "panel_cpu_seconds": 4.08,
+    "panel_rss_mib": 71.42
+  }
+]

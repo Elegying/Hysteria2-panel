@@ -57,6 +57,7 @@ ADR 记录“为什么这样设计”，不是操作教程。编号重复的两�
 - [ADR-024：异地备份与计量进程隔离](decisions/ADR-024-offsite-backup-accounting-isolation.md)
 - [ADR-025：维护结算与面板日志交接](decisions/ADR-025-maintenance-journal-handoff.md)
 - [ADR-026：认证重试与当前权限复核](decisions/ADR-026-current-policy-auth-revalidation.md)
+- [ADR-027：展示读取与同步计量隔离](decisions/ADR-027-display-read-checkpoints.md)
 
 ## 设计规格
 
@@ -81,6 +82,9 @@ ADR 记录“为什么这样设计”，不是操作教程。编号重复的两�
 
 这些文件是某个时间点的审计记录，不代表最新版本的长期承诺。
 
+- [隔离恢复演练与容量复审](reviews/2026-10-24-recovery-capacity.md)
+- [发布前验收与短时异常复审](reviews/2026-10-24-release-acceptance.md)
+- [隔离运行实验复现步骤](RUNTIME_LAB.md)
 - [认证并发与旧决策重试后续审查](reviews/2026-10-10-auth-concurrency-audit.md)
 - [维护结算与日志交接后续审查](reviews/2026-10-10-maintenance-audit.md)
 - [备份与恢复后续审查](reviews/2026-10-10-backup-recovery-audit.md)

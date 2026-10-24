@@ -1,0 +1,41 @@
+{
+  "baseline_commit": "a66e2b28cb09e0ee7b62c5cb343c185dbf6f4ff7",
+  "runtime_sha256": {
+    "hysteria2_panel.py": "5c71114ef54f63ea1f7d43e700f583b9b716d4e837155d4e3e7ee386bbd01863",
+    "install.sh": "e061afddc9c09cbe10337b39cd2e6e1a08757ae819b893ca24f03fdc33ff0cc3",
+    "hy2panel/dashboard.py": "890174cdd30b7609e4eaa69c01ccd7e61f65e316196e667d5812d9e55a6c8abc",
+    "hy2panel/mobile_api.py": "0bbbc4ba9c9c5040da7ebc4d4aeaa84c1a0f96c1f8f646e58a46040b29e56b5c"
+  },
+  "source_transport": "local immutable candidate archive; production installer hash validation retained",
+  "published": false,
+  "candidate_archive_sha256": "351942c28b6a06c161ec810c3fd7e975fbffcde09fec65ad5319f651e016639b",
+  "tested_versions": {
+    "panel": "0.39.41 plus unpublished fixes",
+    "python": [
+      "3.8.20",
+      "3.12.3",
+      "3.13.17"
+    ],
+    "flutter": "3.47.2"
+  },
+  "checks": {
+    "python_each": {
+      "total": 1053,
+      "passed": 1040,
+      "skipped": 13
+    },
+    "flutter_tests_passed": 146,
+    "browser_interactions_passed": 36,
+    "browser_viewports": [
+      "1380x900",
+      "375x812"
+    ],
+    "sqlite_resource_warning_test": "passed",
+    "ruff": "passed",
+    "bandit": "passed",
+    "shellcheck": "passed",
+    "systemd_semantics": "passed",
+    "managed_firewall_namespace": "passed",
+    "legacy_upgrade_rollback": "passed"
+  }
+}
