@@ -87,7 +87,7 @@ class UpgradeIngressDrain:
             listed = self._run([self.nft, "list", "tables"])
             if listed.returncode or ("table inet " + self.table) in listed.stdout:
                 raise RuntimeError("upgrade ingress cleanup pending; kernel lease expires in 120s")
-        stopped = self._run(["systemctl", "stop", self.unit + ".timer", self.unit + ".service"])
+        stopped = self._run(["systemctl", "stop", self.unit + ".timer"])
         if stopped.returncode:
             LOGGER.warning("upgrade drain table removed; cleanup timer could not be stopped")
 
