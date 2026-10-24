@@ -1239,7 +1239,7 @@ cleanup() {
   if declare -F release_legacy_restore_guard >/dev/null 2>&1; then
     release_legacy_restore_guard || cleanup_status=1
   fi
-  if [[ -n "${TMP_DIR:-}" && -d "${TMP_DIR}" && "${TMP_DIR}" == /tmp/hysteria2-panel.* ]]; then
+  if [[ -n "${TMP_DIR:-}" && -d "${TMP_DIR}" && ( "${TMP_DIR}" == /tmp/hysteria2-panel.* || "${TMP_DIR}" == /var/tmp/hysteria2-panel.* ) ]]; then
     rm -r -- "${TMP_DIR}" || cleanup_status=1
   fi
   return "${cleanup_status}"
@@ -3633,6 +3633,21 @@ validate_panel_public_host() {
   for label in "${labels[@]}"; do
     [[ "${label}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
   done
+}
+
+create_panel_workspace() {
+  local directory=/tmp filesystem
+  filesystem="$(stat -f -c %T "${directory}")" || fail "无法检查安装暂存分区"
+  if [[ "${filesystem}" == tmpfs || "${filesystem}" == ramfs ]]; then
+    directory=/var/tmp
+    [[ -d "${directory}" && ! -L "${directory}" ]] \
+      || fail "/tmp 是内存盘；需要真实的 /var/tmp 磁盘目录用于安装暂存，请先检查挂载配置"
+    filesystem="$(stat -f -c %T "${directory}")" || fail "无法检查 /var/tmp 暂存分区"
+    [[ "${filesystem}" != tmpfs && "${filesystem}" != ramfs ]] \
+      || fail "/tmp 和 /var/tmp 均为内存盘；请先为 /var/tmp 提供磁盘空间，避免安装包耗尽内存"
+    echo "安装暂存：/tmp 是内存盘，改用磁盘目录 /var/tmp。" >&2
+  fi
+  TMPDIR="${directory}" mktemp -d -t hysteria2-panel.XXXXXXXX
 }
 
 preflight_download_dns() {
@@ -6979,7 +6994,7 @@ else
   [[ ${#ADMIN_PASSWORD} -ge 8 ]] || fail "面板密码至少需要 8 个字符"
 fi
 
-TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+TMP_DIR="$(create_panel_workspace)"
 
 if (( EXISTING_INSTALL == 0 )); then
   install_fresh_recovery_infrastructure

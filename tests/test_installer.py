@@ -4254,7 +4254,7 @@ fi
         self.assertLess(first_gate, guard)
         self.assertLess(guard, second_gate)
         self.assertLess(second_gate, dependency_install)
-        self.assertLess(second_gate, main.index('TMP_DIR="$(TMPDIR=/tmp mktemp', second_gate))
+        self.assertLess(second_gate, main.index('TMP_DIR="$(create_panel_workspace)', second_gate))
 
     def test_installer_refuses_to_mutate_an_unfinished_egress_transaction(self):
         source = INSTALLER.read_text()

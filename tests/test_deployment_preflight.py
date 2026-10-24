@@ -17,6 +17,33 @@ def function(name):
 
 
 class DeploymentPreflightTests(unittest.TestCase):
+    def test_panel_workspace_avoids_memory_filesystems(self):
+        for first, second, expected, directory in (
+            ('ext2/ext3', 'tmpfs', 0, '/tmp'),
+            ('tmpfs', 'ext2/ext3', 0, '/var/tmp'),
+            ('ramfs', 'overlayfs', 0, '/var/tmp'),
+            ('tmpfs', 'tmpfs', 97, ''),
+        ):
+            with self.subTest(first=first, second=second):
+                script = function('create_panel_workspace') + '''
+fail() { printf '%s\\n' "$*" >&2; exit 97; }
+stat() { if [[ "$4" == /tmp ]]; then printf '%s' "$FIRST"; else printf '%s' "$SECOND"; fi; }
+mktemp() { printf '%s' "$TMPDIR"; }
+create_panel_workspace
+'''
+                result = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                                        env=dict(os.environ, FIRST=first, SECOND=second))
+                self.assertEqual(expected, result.returncode, result.stderr)
+                self.assertEqual(directory, result.stdout)
+
+    def test_disk_workspace_is_removed_by_finalizer_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix='hysteria2-panel.', dir='/var/tmp') as directory:
+            (Path(directory) / 'payload').write_text('fixture')
+            result = subprocess.run(['bash', '-c', function('cleanup') + '\ncleanup'],
+                                    env=dict(os.environ, TMP_DIR=directory), capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertFalse(Path(directory).exists())
+
     def test_sh_invocation_reports_bash_requirement_before_mutation(self):
         result = subprocess.run(['sh', str(ROOT / 'install.sh')], capture_output=True, text=True)
         self.assertNotEqual(0, result.returncode)
