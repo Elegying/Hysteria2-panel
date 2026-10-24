@@ -193,7 +193,7 @@ sync_traffic_before_upgrade_rollback
 """
             result = subprocess.run(["bash"], input=script, text=True, capture_output=True)
             self.assertEqual(1, result.returncode)
-            self.assertEqual(["sync-traffic --quiesce --primary-only"], result.stdout.splitlines())
+            self.assertEqual(["sync-traffic --quiesce --primary-only --upgrade-drain"], result.stdout.splitlines())
 
     def test_reboot_recovery_uses_the_persisted_candidate_and_never_the_old_panel(self):
         with tempfile.TemporaryDirectory() as directory:
