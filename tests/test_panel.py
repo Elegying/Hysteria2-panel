@@ -9362,6 +9362,7 @@ class PanelHttpTests(unittest.TestCase):
             str(self.backup_manager.tls_cert), str(self.backup_manager.tls_key)
         )
         server.tls_context = tls_context
+        server.https_redirect_url = "https://panel.example:19998/login"
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         port = server.server_address[1]
@@ -9378,6 +9379,49 @@ class PanelHttpTests(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 1)
         finally:
             slow_client.close()
+            server.shutdown()
+            server.server_close()
+
+    def test_same_port_http_redirect_is_bounded_and_uses_configured_host(self):
+        server = make_panel_server(("127.0.0.1", 0), self.application)
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.load_cert_chain(str(self.backup_manager.tls_cert), str(self.backup_manager.tls_key))
+        server.tls_context = tls_context
+        server.https_redirect_url = "https://panel.example:19998/login"
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for payload, status in (
+                (b"GET / HTTP/1.1\r\nHost: attacker.example\r\n\r\n", b"308"),
+                (b"HEAD //attacker.example/ HTTP/1.0\r\n\r\n", b"308"),
+                (b"POST /login HTTP/1.1\r\nContent-Length: 0\r\n\r\n", b"400"),
+                (b"GET http://attacker.example/ HTTP/1.1\r\n\r\n", b"400"),
+                (b"GET / HTTP/1.1\r\nX-Large: " + b"a" * 8192, b"400"),
+            ):
+                with self.subTest(payload=payload[:40]):
+                    with socket.create_connection(server.server_address, timeout=2) as client:
+                        # Fragmented navigation must also be recognized.
+                        client.sendall(payload[:1])
+                        time.sleep(0.01)
+                        client.sendall(payload[1:])
+                        response = client.recv(4096)
+                    self.assertIn(b"HTTP/1.1 " + status, response)
+                    self.assertNotIn(b"Set-Cookie", response)
+                    if status == b"308":
+                        self.assertIn(b"Location: https://panel.example:19998/login\r\n", response)
+                        self.assertNotIn(b"attacker.example", response)
+            server.request_deadline = 1
+            with socket.create_connection(server.server_address, timeout=2) as slow:
+                slow.sendall(b"G")
+                started = time.monotonic()
+                self.assertEqual(b"", slow.recv(1))
+                self.assertLess(time.monotonic() - started, 2)
+            with urllib.request.urlopen(
+                "https://127.0.0.1:{}/healthz".format(server.server_address[1]),
+                context=ssl._create_unverified_context(), timeout=2,
+            ) as response:
+                self.assertEqual(200, response.status)
+        finally:
             server.shutdown()
             server.server_close()
 

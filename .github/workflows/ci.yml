@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.8', '3.12', '3.13']
+        python-version: ['3.8', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -42,8 +42,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run unit and integration tests
         run: python -m unittest discover -s tests -v
-      - name: Reject leaked SQLite connections on Python 3.13
-        if: matrix.python-version == '3.13'
+      - name: Reject leaked SQLite connections on modern Python
+        if: matrix.python-version == '3.13' || matrix.python-version == '3.14'
         env:
           PYTHONWARNINGS: error::ResourceWarning
         run: python -m unittest tests.test_panel.DatabaseTests.test_database_connections_are_closed_explicitly
@@ -277,6 +277,9 @@ jobs:
           - check: full-installer-e2e
             runner: ubuntu-24.04
             image: ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+          - check: full-installer-ubuntu2604
+            runner: ubuntu-24.04
+            image: ubuntu:26.04
           - check: full-installer-debian12
             runner: ubuntu-24.04
             image: debian:12-slim
@@ -347,7 +350,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['debian:11-slim', 'debian:12-slim', 'debian:13-slim', 'ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04', 'rockylinux:8', 'rockylinux:9']
+        image: ['debian:11-slim', 'debian:12-slim', 'debian:13-slim', 'ubuntu:20.04', 'ubuntu:22.04', 'ubuntu:24.04', 'ubuntu:26.04', 'rockylinux:8', 'rockylinux:9']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify dependencies on a disposable clean distribution

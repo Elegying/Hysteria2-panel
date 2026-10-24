@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.43"
+PANEL_VERSION="0.39.44"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,12 +30,12 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="ddc0f0bc0d012dd4195aae95c825ff7d4cf4a28a4af275fcde8c530c07d85070"
+PANEL_SHA256="5eb240329fdbef65fec94d17dfcc8bc81d5594dfe0cf2108251a00526340a692"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="736bf2d5f67e7d5bc4e2e0500820b5547cdb396754447d88290022633d1ca0d0"
+HY2PANEL_VERSION_SHA256="64f9b5f6defb67f116dea633d8337afe995a9552c6f7c61859cbcc86c3fd78d6"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
 HY2PANEL_WEB_ASSETS_SHA256="5404114bdb81dddbcd5e7318bf235580948030669a80a3d50146b331cf96f0c9"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
@@ -3635,7 +3635,7 @@ validate_panel_public_host() {
   done
 }
 
-create_panel_workspace() {
+panel_workspace_directory() {
   local directory=/tmp filesystem
   filesystem="$(stat -f -c %T "${directory}")" || fail "无法检查安装暂存分区"
   if [[ "${filesystem}" == tmpfs || "${filesystem}" == ramfs ]]; then
@@ -3647,7 +3647,47 @@ create_panel_workspace() {
       || fail "/tmp 和 /var/tmp 均为内存盘；请先为 /var/tmp 提供磁盘空间，避免安装包耗尽内存"
     echo "安装暂存：/tmp 是内存盘，改用磁盘目录 /var/tmp。" >&2
   fi
+  printf '%s\n' "${directory}"
+}
+
+create_panel_workspace() {
+  local directory
+  directory="$(panel_workspace_directory)" || return
   TMPDIR="${directory}" mktemp -d -t hysteria2-panel.XXXXXXXX
+}
+
+preflight_panel_disk_space() {
+  # Sum simultaneous allocations per filesystem, including separate mounts.
+  local workspace path ancestor device available size backup=0 index
+  local -a paths budgets
+  local -A needed=() representatives=()
+  workspace="$(panel_workspace_directory)" || return
+  for path in /opt/hysteria2-panel /etc/hysteria2-panel /var/lib/hysteria2-panel; do
+    if [[ -e "${path}" ]]; then
+      size="$(du -sk -- "${path}" | awk '{print $1}')" || fail "无法估算安装备份空间"
+      [[ "${size}" =~ ^[0-9]+$ ]] || fail "安装备份空间估算无效"
+      backup=$((backup + size))
+    fi
+  done
+  # KiB: staging, installed payload, package overhead on /usr and /var, backup.
+  paths=("${workspace}" /opt/hysteria2-panel /usr /var /etc/hysteria2-panel /var/lib/hysteria2-panel /var/backups/hysteria2-panel)
+  budgets=(196608 196608 131072 131072 16384 65536 "${backup}")
+  for index in "${!paths[@]}"; do
+    path="${paths[index]}"
+    ancestor="${path}"
+    while [[ ! -d "${ancestor}" ]]; do ancestor="${ancestor%/*}"; ancestor="${ancestor:-/}"; done
+    device="$(stat -c %d -- "${ancestor}")" || fail "无法检查 ${path} 所在分区"
+    [[ "${device}" =~ ^[0-9]+$ ]] || fail "${path} 分区标识无效"
+    needed[${device}]=$(( ${needed[${device}]:-65536} + budgets[index] ))
+    representatives[${device}]="${ancestor}"
+  done
+  for device in "${!needed[@]}"; do
+    path="${representatives[${device}]}"
+    available="$(df -Pk -- "${path}" | awk 'NR == 2 {print $4}')" || fail "无法读取 ${path} 可用空间"
+    [[ "${available}" =~ ^[0-9]+$ ]] || fail "${path} 可用空间无效"
+    (( available >= needed[${device}] )) || fail "磁盘空间不足：${path} 所在分区需至少 ${needed[${device}]} KiB，当前 ${available} KiB（包含暂存、安装、依赖、备份及余量）；请扩容或清理无关文件后重试，不会自动删除恢复备份"
+  done
+  echo "磁盘预检：暂存、安装、依赖和备份分区空间充足。"
 }
 
 preflight_download_dns() {
@@ -6682,6 +6722,11 @@ assert_no_pending_restore_state
 assert_no_unmanaged_install_paths
 
 preflight_download_dns
+if command -v df >/dev/null && command -v du >/dev/null && command -v stat >/dev/null && command -v awk >/dev/null; then
+  preflight_panel_disk_space
+else
+  echo "磁盘预检：缺少基础检查工具，安装依赖后、下载载荷前再次检查。"
+fi
 required_commands=(awk busctl cat chmod chown cmp cp curl date df du find flock getent grep groupadd groupdel id install ip ip6tables-save iptables-save ln mktemp mv nft openssl readlink rm sed sha256sum sleep sort ss stat sudo sync sysctl systemctl systemd-run systemd-tmpfiles timeout uname useradd userdel usermod visudo)
 missing_commands=()
 for command_name in "${required_commands[@]}"; do
@@ -6994,6 +7039,7 @@ else
   [[ ${#ADMIN_PASSWORD} -ge 8 ]] || fail "面板密码至少需要 8 个字符"
 fi
 
+preflight_panel_disk_space
 TMP_DIR="$(create_panel_workspace)"
 
 if (( EXISTING_INSTALL == 0 )); then

@@ -6910,6 +6910,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self.worker_queue_timeout = max(0, float(worker_queue_timeout))
         self.request_queue_size = max(1, int(request_queue_size))
         self.tls_context = None
+        self.https_redirect_url = None
         self._worker_slots = threading.BoundedSemaphore(self.max_workers)
         self._active_requests = set()
         self._request_deadlines = {}
@@ -6959,6 +6960,31 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._worker_slots.release()
             raise
 
+    def _redirect_plain_http(self, request):
+        """Handle only navigation, with bounded headers and a configured destination."""
+        headers = bytearray()
+        while b"\r\n\r\n" not in headers and len(headers) < 8192:
+            chunk = request.recv(min(1024, 8192 - len(headers)))
+            if not chunk:
+                return
+            headers.extend(chunk)
+        line = bytes(headers).split(b"\r\n", 1)[0].split(b" ")
+        valid = (
+            b"\r\n\r\n" in headers
+            and len(line) == 3
+            and line[0] in (b"GET", b"HEAD")
+            and line[1].startswith(b"/")
+            and line[2] in (b"HTTP/1.0", b"HTTP/1.1")
+        )
+        if valid:
+            response = (
+                "HTTP/1.1 308 Permanent Redirect\r\nLocation: {}\r\n"
+                "Cache-Control: no-store\r\n"
+            ).format(self.https_redirect_url)
+        else:
+            response = "HTTP/1.1 400 Bad Request\r\n"
+        request.sendall((response + "Content-Length: 0\r\nConnection: close\r\n\r\n").encode("ascii"))
+
     def process_request_thread(self, request, client_address):
         tracked_request = request
         request_deadline = time.monotonic() + self.request_deadline
@@ -6966,6 +6992,10 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         try:
             try:
                 if self.tls_context is not None:
+                    if self.https_redirect_url and request.recv(1, socket.MSG_PEEK) != b"\x16":
+                        self._redirect_plain_http(request)
+                        self.shutdown_request(request)
+                        return
                     with self._deadline_condition:
                         request = self.tls_context.wrap_socket(
                             request,
@@ -11247,6 +11277,9 @@ def _run_service_with_database(settings, database):
             str(settings.panel_tls_cert), str(settings.panel_tls_key)
         )
         panel_server.tls_context = tls_context
+        panel_server.https_redirect_url = "https://{}:{}/login".format(
+            settings.panel_public_host, settings.panel_port
+        )
     auth_server = make_internal_server(
         (settings.auth_host, settings.auth_port), database, usage_manager
     )

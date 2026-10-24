@@ -106,12 +106,15 @@ jobs:
             --required "test (3.8)" \
             --required "test (3.12)" \
             --required "test (3.13)" \
+            --required "test (3.14)" \
             --required "browser-smoke" \
             --required mobile-tests \
             --required static-analysis \
             --required managed-firewall-integration \
             --required systemd-service-semantics \
             --required full-installer-e2e \
+            --required full-installer-ubuntu2604 \
+            --required "dependency-bootstrap (ubuntu:26.04)" \
             --required rhel-firewall-package-contract \
             <<<"${jobs_payload}"
 
