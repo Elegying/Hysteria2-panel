@@ -315,6 +315,8 @@ find /var/backups/hysteria2-panel -mindepth 2 -maxdepth 2 \
 
 echo "fresh-install/upgrade SIGKILL recovery, watchdog restart and health verification: PASS"
 
+python3 /workspace/tests/upgrade_quic_regression.py
+
 python3 /workspace/tests/installer_https_usage.py
 
 python3 /workspace/tests/installer_wal_backup.py

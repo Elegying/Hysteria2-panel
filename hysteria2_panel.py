@@ -109,6 +109,7 @@ from hy2panel.operations import (
     ServiceController,
     SystemMetrics,
     UpdateController,
+    UpgradeIngressDrain,
 )
 from hy2panel.release import UpdateChecker, UpdateInstaller
 from hy2panel.systemd import SystemdNotifier
@@ -10715,6 +10716,10 @@ def egress_auth_gate(path=EGRESS_SWITCH_ACTIVE_MARKER):
             _durable_unlink(path)
 
 
+class SessionDrainTimeout(RuntimeError):
+    """Online sessions survived the bounded graceful drain."""
+
+
 def quiesce_stats_client(
     stats_client,
     attempts=30,
@@ -10745,7 +10750,28 @@ def quiesce_stats_client(
         sleeper(interval)
     # /kick consumes one traffic event per ID; other idle sessions can survive.
     # Stopping now would discard counters recorded after the final collection.
-    raise RuntimeError("Hysteria sessions did not drain; traffic and services retained")
+    raise SessionDrainTimeout("Hysteria sessions did not drain; traffic and services retained")
+
+
+def quiesce_upgrade_stats(settings, stats_client, primary_only=False, secondary_only=False):
+    # Never turn a stats/auth error into a firewall operation. This opt-in path
+    # is exclusively for the root installer after it stopped authentication.
+    if os.geteuid() != 0:
+        raise RuntimeError("upgrade draining requires root")
+    if _systemd_unit_state("hysteria2-panel.service")[1] != "inactive":
+        raise RuntimeError("stop panel authentication before upgrade draining")
+    LOGGER.warning("Upgrade: draining existing QUIC sessions (graceful phase)")
+    try:
+        quiesce_stats_client(stats_client)
+        return
+    except SessionDrainTimeout:
+        LOGGER.warning("Upgrade: idle sessions remain; temporarily isolating UDP ingress")
+    ports = [] if secondary_only else [settings.hysteria_port]
+    if not primary_only and settings.hysteria_port != 443:
+        ports.append(443)
+    with UpgradeIngressDrain(ports):
+        quiesce_stats_client(stats_client, attempts=60)
+    LOGGER.warning("Upgrade: sessions drained; temporary UDP isolation removed")
 
 
 @contextlib.contextmanager
@@ -10865,6 +10891,7 @@ def sync_traffic(
     secondary_only=False,
     quiesce=False,
     legacy_traffic=False,
+    upgrade_drain=False,
 ):
     options = {"legacy_traffic": True} if legacy_traffic else {}
     stats_client = make_stats_client(
@@ -10873,7 +10900,11 @@ def sync_traffic(
         secondary_only=secondary_only,
         **options,
     )
-    if quiesce:
+    if upgrade_drain:
+        if not quiesce:
+            raise ValueError("upgrade draining requires quiesce")
+        quiesce_upgrade_stats(settings, stats_client, primary_only, secondary_only)
+    elif quiesce:
         quiesce_stats_client(stats_client)
     database = Database(settings.database_path, settings.hmac_key)
     database.initialize()
@@ -12119,6 +12150,7 @@ def main(argv=None):
     sync_endpoints.add_argument("--primary-only", action="store_true")
     sync_endpoints.add_argument("--secondary-only", action="store_true")
     sync_parser.add_argument("--quiesce", action="store_true")
+    sync_parser.add_argument("--upgrade-drain", action="store_true", help=argparse.SUPPRESS)
     sync_parser.add_argument("--legacy-traffic", action="store_true", help=argparse.SUPPRESS)
     subcommands.add_parser("restore-pending", help="apply the staged backup as root")
     subcommands.add_parser(
@@ -12219,6 +12251,7 @@ def main(argv=None):
                     primary_only=args.primary_only,
                     secondary_only=args.secondary_only,
                     quiesce=args.quiesce,
+                    **({"upgrade_drain": True} if args.upgrade_drain else {}),
                     **({"legacy_traffic": True} if args.legacy_traffic else {}),
                 )
             return 0

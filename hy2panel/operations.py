@@ -13,6 +13,7 @@ import subprocess  # nosec B404 - fixed executables and argv only
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .version import PANEL_VERSION
@@ -25,6 +26,70 @@ _SYSTEMD_NOTIFICATION_ENVIRONMENT = (
     "WATCHDOG_PID",
     "WATCHDOG_USEC",
 )
+
+
+class UpgradeIngressDrain:
+    """Expire idle QUIC without destroying its live traffic counters.
+
+    Only the upgrade helper, with authentication stopped, may use this guard.
+    Kernel set expiry restores ingress even if Python/systemd is killed. An
+    independent transient timer removes the empty table after an interrupted run.
+    Each invocation owns a unique table and never rewrites existing rules.
+    """
+
+    def __init__(self, ports, runner=subprocess.run):
+        self.ports = sorted(set(ports))
+        if not self.ports or any(type(p) is not int or not 1 <= p <= 65535 for p in self.ports):
+            raise ValueError("invalid upgrade drain ports")
+        self.runner = runner
+        self.table = "hy2_drain_" + uuid.uuid4().hex
+        self.unit = "hy2-upgrade-drain-" + self.table
+        self.nft = shutil.which("nft", path="/usr/sbin:/usr/bin:/sbin:/bin")
+        if not self.nft:
+            raise RuntimeError("nft is required for idle connection draining")
+
+    def _run(self, command, **kwargs):
+        return self.runner(command, capture_output=True, text=True, timeout=10,
+                           check=False, env=_systemctl_environment(), **kwargs)
+
+    def __enter__(self):
+        # Arm cleanup before adding any packet filter. No shell or downloaded
+        # cleanup program is involved; nft receives a generated table name.
+        timer = self._run([
+            "systemd-run", "--quiet", "--collect", "--unit=" + self.unit,
+            "--on-active=150s", "--timer-property=AccuracySec=1s",
+            self.nft, "delete", "table", "inet", self.table,
+        ])
+        if timer.returncode:
+            raise RuntimeError("could not arm upgrade ingress cleanup")
+        ports = ", ".join(str(port) for port in self.ports)
+        rules = (
+            "add table inet {table}\n"
+            "add set inet {table} ports {{ type inet_service; flags timeout; "
+            "timeout 120s; elements = {{ {ports} }}; }}\n"
+            "add chain inet {table} input {{ type filter hook input priority -310; policy accept; }}\n"
+            "add rule inet {table} input udp dport @ports counter drop\n"
+        ).format(table=self.table, ports=ports)
+        try:
+            result = self._run([self.nft, "-f", "-"], input=rules)
+            if result.returncode:
+                raise RuntimeError("could not isolate upgrade UDP ingress")
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+        return self
+
+    def __exit__(self, *_args):
+        result = self._run([self.nft, "delete", "table", "inet", self.table])
+        if result.returncode:
+            # Preserve the cleanup timer on uncertain deletion, and fail the
+            # upgrade rather than report success while ingress may be blocked.
+            listed = self._run([self.nft, "list", "tables"])
+            if listed.returncode or ("table inet " + self.table) in listed.stdout:
+                raise RuntimeError("upgrade ingress cleanup pending; kernel lease expires in 120s")
+        stopped = self._run(["systemctl", "stop", self.unit + ".timer", self.unit + ".service"])
+        if stopped.returncode:
+            LOGGER.warning("upgrade drain table removed; cleanup timer could not be stopped")
 
 
 def _systemctl_environment():

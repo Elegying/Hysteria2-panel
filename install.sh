@@ -4,7 +4,7 @@
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
 set -euo pipefail
 
-PANEL_VERSION="0.39.42"
+PANEL_VERSION="0.39.43"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -26,15 +26,15 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="5c71114ef54f63ea1f7d43e700f583b9b716d4e837155d4e3e7ee386bbd01863"
+PANEL_SHA256="ddc0f0bc0d012dd4195aae95c825ff7d4cf4a28a4af275fcde8c530c07d85070"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="b0b46a3476d096ea2fd154c058ef5af4051e41fbb87fbd25efc3e2abcad0b992"
+HY2PANEL_VERSION_SHA256="736bf2d5f67e7d5bc4e2e0500820b5547cdb396754447d88290022633d1ca0d0"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
 HY2PANEL_WEB_ASSETS_SHA256="5404114bdb81dddbcd5e7318bf235580948030669a80a3d50146b331cf96f0c9"
-HY2PANEL_OPERATIONS_SHA256="d081cea0fbfa3aa47de13fe3156ce9cc0238d68d99ac7a9cf155d2afff6c2a15"
+HY2PANEL_OPERATIONS_SHA256="799c6bb551ddee726ec90cc00e5e5ce04f4a0c0e73b83b9b7f2e821e3788c61e"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
@@ -45,7 +45,7 @@ HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce5
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="890174cdd30b7609e4eaa69c01ccd7e61f65e316196e667d5812d9e55a6c8abc"
 HY2PANEL_MOBILE_API_SHA256="0bbbc4ba9c9c5040da7ebc4d4aeaa84c1a0f96c1f8f646e58a46040b29e56b5c"
-NODE_AGENT_SHA256="3331a14fa33d97a8be8fbfccb4519e6db63aa5ee2cdfa77ea9bf753d3f4907b0"
+NODE_AGENT_SHA256="d243db73722a128f50e9a9036abd36914ebd459e82daaa241b1b7c4873113891"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -441,7 +441,7 @@ sync_traffic_before_upgrade_rollback() {
     source "${BACKUP_DIR}/etc/panel.env"
     set +a
     "${PYTHON_BIN}" -B "${TRAFFIC_SYNC_SCRIPT}" \
-      sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}"
+      sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}" --upgrade-drain
   ); then
     return 0
   fi
@@ -7095,7 +7095,7 @@ if [[ -e /opt/hysteria2-panel || -e /etc/hysteria2-panel || -e /var/lib/hysteria
       source "${BACKUP_DIR}/etc/panel.env"
       set +a
       "${PYTHON_BIN}" "${TMP_DIR}/hysteria2_panel.py" \
-        sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}"
+        sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}" --upgrade-drain
     ) || fail "升级前流量结算失败；安装已停止且旧版本将自动恢复"
     [[ ! -e /var/lib/hysteria2-panel/pending-traffic.json ]] \
       || fail "升级前仍有未结算流量；安装已停止且旧版本将自动恢复"
@@ -8055,7 +8055,7 @@ if (( EXISTING_INSTALL == 1 )); then
     source "${BACKUP_DIR}/etc/panel.env"
     set +a
     "${PYTHON_BIN}" /opt/hysteria2-panel/hysteria2_panel.py \
-      sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}"
+      sync-traffic --quiesce "${TRAFFIC_SYNC_OPTIONS[@]}" --upgrade-drain
   ) \
     || fail "切换新版本前的最终流量结算失败；旧版本将自动恢复"
   [[ ! -e /var/lib/hysteria2-panel/pending-traffic.json ]] \
