@@ -7195,6 +7195,9 @@ systemd-tmpfiles --create "${TMPFILES_FILE}" \
   || fail "无法持久创建维护锁目录；安装已停止"
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria" /opt/hysteria2-panel/bin/hysteria
 install -o root -g root -m 0755 "${TMP_DIR}/cosign" /opt/hysteria2-panel/bin/cosign
+# /tmp may be tmpfs on small hosts. These verified copies are no longer needed;
+# release them before Certbot/APT consumes memory, rather than waiting for EXIT.
+rm -f -- "${TMP_DIR}/hysteria" "${TMP_DIR}/cosign"
 install -o root -g root -m 0755 "${TMP_DIR}/hysteria2_panel.py" /opt/hysteria2-panel/hysteria2_panel.py
 install -o root -g root -m 0755 "${TMP_DIR}/offsite_backup.py" /opt/hysteria2-panel/offsite_backup.py
 install -o root -g root -m 0644 "${TMP_DIR}/qrcodegen.py" /opt/hysteria2-panel/qrcodegen.py
