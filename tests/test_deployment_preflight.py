@@ -17,6 +17,43 @@ def function(name):
 
 
 class DeploymentPreflightTests(unittest.TestCase):
+    def test_disk_budget_sums_shared_filesystems_and_checks_separate_staging(self):
+        for separate, root_space, stage_space, expected in (
+            ('0', '900000', '900000', 0),
+            ('0', '700000', '800000', 97),
+            ('1', '700000', '300000', 0),
+            ('1', '700000', '250000', 97),
+            ('1', '500000', '300000', 97),
+            ('1', 'invalid', '300000', 97),
+        ):
+            with self.subTest(separate=separate, root=root_space, stage=stage_space):
+                with tempfile.TemporaryDirectory() as directory:
+                    source = function('preflight_panel_disk_space').replace('/opt/hysteria2-panel', directory, 1)
+                    script = source + '''
+fail() { printf '%s\\n' "$*" >&2; exit 97; }
+panel_workspace_directory() { printf '%s' "$WORK"; }
+du() { printf '1024\\tfixture\\n'; }
+stat() { if [[ "$SEPARATE" == 1 && "${@: -1}" == "$WORK" ]]; then echo 2; else echo 1; fi; }
+df() {
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted\\n'
+  if [[ "$SEPARATE" == 1 && "${@: -1}" == "$WORK" ]]; then
+    printf 'fixture 999999 0 %s 0%% /stage\\n' "$STAGE_SPACE"
+  else
+    printf 'fixture 999999 0 %s 0%% /\\n' "$ROOT_SPACE"
+  fi
+}
+preflight_panel_disk_space
+'''
+                    result = subprocess.run(['bash', '-eu', '-o', 'pipefail', '-c', script],
+                        capture_output=True, text=True, env=dict(os.environ, WORK=directory,
+                        SEPARATE=separate, ROOT_SPACE=root_space, STAGE_SPACE=stage_space))
+                    self.assertEqual(expected, result.returncode, result.stderr)
+
+    def test_disk_preflight_precedes_dependencies_payload_and_service_drain(self):
+        main = SOURCE[SOURCE.index('\npreflight_download_dns\n'):]
+        self.assertLess(main.index('preflight_panel_disk_space'), main.index('install_system_dependencies'))
+        self.assertLess(main.index('\npreflight_panel_disk_space\n'), main.index('TMP_DIR="$(create_panel_workspace)"'))
+
     def test_panel_workspace_avoids_memory_filesystems(self):
         for first, second, expected, directory in (
             ('ext2/ext3', 'tmpfs', 0, '/tmp'),
@@ -25,7 +62,7 @@ class DeploymentPreflightTests(unittest.TestCase):
             ('tmpfs', 'tmpfs', 97, ''),
         ):
             with self.subTest(first=first, second=second):
-                script = function('create_panel_workspace') + '''
+                script = function('panel_workspace_directory') + function('create_panel_workspace') + '''
 fail() { printf '%s\\n' "$*" >&2; exit 97; }
 stat() { if [[ "$4" == /tmp ]]; then printf '%s' "$FIRST"; else printf '%s' "$SECOND"; fi; }
 mktemp() { printf '%s' "$TMPDIR"; }

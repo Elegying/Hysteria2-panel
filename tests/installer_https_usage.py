@@ -87,6 +87,18 @@ def main():
                 time.sleep(1)
 
         assert expect(None, 401) == {'apiVersion': 1, 'error': {'code': 'INVALID_CREDENTIALS'}}
+        for method, status in (('GET', 308), ('HEAD', 308), ('POST', 400)):
+            plain = http.client.HTTPConnection('127.0.0.1', 31998, timeout=3)
+            try:
+                plain.request(method, '/login', headers={'Host': 'untrusted.invalid'})
+                response = plain.getresponse()
+                assert response.status == status, 'Same-port HTTP policy failed'
+                assert response.getheader('Set-Cookie') is None
+                if status == 308:
+                    assert response.getheader('Location') == 'https://panel.installer.test:31998/login'
+                response.read()
+            finally:
+                plain.close()
         expect(secrets.token_urlsafe(24), 401)
         user = database.create_proxy_user(name)
         payload = expect(user['token'], 200)
