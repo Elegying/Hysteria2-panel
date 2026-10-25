@@ -10,20 +10,38 @@ import asyncio
 import socket
 
 from aioquic.asyncio import QuicConnectionProtocol, connect
-from aioquic.h3.connection import H3_ALPN, H3Connection
+from aioquic.h3.connection import H3_ALPN, H3Connection, MessageError
 from aioquic.h3.events import DataReceived, HeadersReceived
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import ConnectionTerminated
 
 
+class HttpConnection(H3Connection):
+    def __init__(self, quic):
+        super().__init__(quic)
+        self.head_streams = set()
+
+    def _check_content_length(self, stream):
+        # aioquic 1.3.0 does not track request methods. RFC 9110 permits a
+        # HEAD Content-Length describing the GET body, while HEAD sends none.
+        # Keep GET length validation and explicitly reject any HEAD body.
+        if stream.stream_id in self.head_streams:
+            if stream.content_length != 0:
+                raise MessageError("HEAD response contains a body")
+            return
+        super()._check_content_length(stream)
+
+
 class Client(QuicConnectionProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.http = H3Connection(self._quic)
+        self.http = HttpConnection(self._quic)
         self.requests = {}
 
     async def request(self, authority, path, method="GET", headers=()):
         stream = self._quic.get_next_available_stream_id()
+        if method == "HEAD":
+            self.http.head_streams.add(stream)
         future = asyncio.get_running_loop().create_future()
         self.requests[stream] = (future, [], bytearray())
         self.http.send_headers(stream, [
@@ -36,12 +54,15 @@ class Client(QuicConnectionProtocol):
             return await asyncio.wait_for(future, 10)
         finally:
             self.requests.pop(stream, None)
+            self.http.head_streams.discard(stream)
 
     def quic_event_received(self, event):
         if isinstance(event, ConnectionTerminated):
             for future, _, _ in self.requests.values():
                 if not future.done():
-                    future.set_exception(ConnectionError("HTTP/3 connection ended"))
+                    future.set_exception(ConnectionError(
+                        "HTTP/3 connection ended: {}".format(event.reason_phrase)
+                    ))
             return
         for received in self.http.handle_event(event):
             if not isinstance(received, (HeadersReceived, DataReceived)):
@@ -71,10 +92,12 @@ async def check(args, port):
         assert headers[b":status"] == b"200", headers
         assert b"text/html" in headers[b"content-type"], headers
         assert b"<title>Field Notes</title>" in body
+        page_length = len(body)
         for marker in (b"Hysteria", b"hy2panel", b"PRIVATE KEY", b"pinSHA256"):
             assert marker not in body, marker
         headers, body = await client.request(args.server_name, "/", "HEAD")
         assert headers[b":status"] == b"200" and not body
+        assert int(headers[b"content-length"]) == page_length
         for path in ("/missing-page", "/server.key", "/panel.env", "/bootstrap.json"):
             headers, _ = await client.request(args.server_name, path)
             assert headers[b":status"] == b"404", (path, headers)
