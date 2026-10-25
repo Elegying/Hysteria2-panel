@@ -7554,6 +7554,37 @@ class PanelHttpTests(unittest.TestCase):
             self.assertIn('<svg xmlns="http://www.w3.org/2000/svg"', icon)
             self.assertIn('viewBox="0 0 64 64"', icon)
 
+    def test_public_login_errors_and_icon_do_not_identify_proxy_product(self):
+        for path in ("/login", "/", "/favicon.svg", "/healthz"):
+            with self.subTest(path=path), self.request(path) as response:
+                body = response.read().decode()
+                self.assertIsNone(response.headers.get("Server"))
+                for marker in ("Hysteria", "hy2panel", "hysteria2://", "pinSHA256", "/users/", "<script"):
+                    self.assertNotIn(marker, body)
+        with self.assertRaises(urllib.error.HTTPError) as failed:
+            self.request("/login", {"username": "Elegy", "password": "incorrect"})
+        self.assertEqual(401, failed.exception.code)
+        self.assertIsNone(failed.exception.headers.get("Server"))
+        body = failed.exception.read().decode()
+        self.assertNotIn("Hysteria", body)
+        self.assertNotIn("<script", body)
+        self.assertIn('role="alert"', body)
+
+    def test_public_login_keeps_existing_form_and_authenticated_features(self):
+        with self.request("/login") as response:
+            body = response.read().decode()
+        self.assertIn('method="post" action="/login"', body)
+        self.assertIn('name="username"', body)
+        self.assertIn('name="password"', body)
+        with self.assertRaises(urllib.error.HTTPError) as login:
+            self.request("/login", {"username": "Elegy", "password": "admin-password"},
+                         follow_redirects=False)
+        self.assertEqual(303, login.exception.code)
+        cookie = login.exception.headers["Set-Cookie"].split(";", 1)[0]
+        with self.request("/", headers={"Cookie": cookie}) as response:
+            self.assertIn("Hysteria 2 用户管理面板", response.read().decode())
+            self.assertIsNone(response.headers.get("Server"))
+
     def test_fifth_bad_login_immediately_locks_source_and_returns_retry_after(self):
         now = [1000.0]
         self.application.rate_limiter = LoginRateLimiter(

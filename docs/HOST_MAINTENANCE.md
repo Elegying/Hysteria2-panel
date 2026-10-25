@@ -22,7 +22,7 @@ usedns = no
 ignoreip = 127.0.0.1/8 ::1
 ```
 
-在 `ignoreip` 加入已核实的管理来源地址，然后运行 `fail2ban-client -t`，通过后启用服务。保留现有 SSH 会话，另开会话确认还能登录。确认只启用预期的 `sshd` jail，并检查实际 nftables 规则只匹配 TCP SSH 端口；不要仅凭服务 active 判定规则正确。使用带计数器的 DROP，与安装器已有的 SSH 专用规则校验兼容；某些发行版默认的无计数器 REJECT 不在该校验白名单内。对接节点通过 HTTPS 与面板通讯，用户使用 Hysteria UDP 入口，不应匹配此规则。
+在 `ignoreip` 加入已核实的管理来源地址，然后运行 `fail2ban-client -t`，通过后启用服务。保留现有 SSH 会话，另开会话确认还能登录。确认只启用预期的 `sshd` jail，并检查实际 nftables 规则只匹配 TCP SSH 端口；不要仅凭服务 active 判定规则正确。v0.39.45 起，安装器可保留严格匹配 `addr-set-sshd`、单独 TCP 管理端口的 DROP 或 `icmp port-unreachable` REJECT 规则，计数器可选；该端口不得与面板、Hysteria 主端口、80 或 443 重叠。额外条件及未知拦截仍拒绝部署，安装器不修改 SSH 规则。对接节点通过 HTTPS 与面板通讯，用户使用 Hysteria UDP 入口，不应匹配此规则。
 
 不启用全端口 recidive，也不因日志报错放宽面板认证、TLS 或来源验证。
 

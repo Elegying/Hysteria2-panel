@@ -29,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.44"
+AGENT_VERSION = "0.39.45"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -1413,10 +1413,9 @@ acl:
   inline:
 {acl}
 masquerade:
-  type: string
-  string:
-    content: "404 page not found"
-    statusCode: 404
+  type: file
+  file:
+    dir: /etc/hysteria2-panel-node/masquerade
 """.format(
             port=port,
             outbound_mode=outbound_mode,

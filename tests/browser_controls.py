@@ -154,6 +154,19 @@ try:
     browser.call('Browser.grantPermissions', {'origin':fixture.base_url,'permissions':['clipboardReadWrite','clipboardSanitizedWrite']})
     browser.call('Browser.setDownloadBehavior', {'behavior':'allow','downloadPath':str(OUT)})
     browser.navigate(fixture.base_url+'/login')
+    browser.call('Emulation.setDeviceMetricsOverride', {
+        'width': 375, 'height': 812, 'deviceScaleFactor': 1, 'mobile': False,
+    })
+    browser.wait('innerWidth === 375')
+    assert browser.evaluate('document.documentElement.scrollWidth <= innerWidth')
+    assert browser.evaluate('document.querySelector("#password").getBoundingClientRect().right <= innerWidth')
+    assert not browser.evaluate('document.querySelector("script")')
+    (OUT/'login-mobile.png').write_bytes(base64.b64decode(
+        browser.call('Page.captureScreenshot', {'format': 'png'})['data']))
+    browser.call('Emulation.setDeviceMetricsOverride', {
+        'width': 1380, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False,
+    })
+    passed('public login remains responsive and does not ship management scripts')
     browser.value('#username','Elegy')
     browser.value('#password','admin-password')
     browser.click('.login-form button',navigation=True)

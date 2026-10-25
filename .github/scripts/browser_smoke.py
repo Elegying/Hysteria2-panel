@@ -39,7 +39,7 @@ def png_size(path):
     return struct.unpack(">II", data[16:24]), len(data)
 
 
-def render(chrome, html_path, output_path, width, height, profile_path):
+def render(chrome, html_path, output_path, width, height, profile_path, minimum_bytes=10_000):
     command = [
         chrome,
         "--headless=new",
@@ -83,7 +83,7 @@ def render(chrome, html_path, output_path, width, height, profile_path):
             )
         )
     dimensions, byte_count = png_size(output_path)
-    if dimensions != (width, height) or byte_count < 10_000:
+    if dimensions != (width, height) or byte_count < minimum_bytes:
         raise RuntimeError(
             "unexpected browser render: dimensions={}, bytes={}".format(
                 dimensions, byte_count
@@ -95,6 +95,12 @@ def main():
     fixture = PanelHttpTests("runTest")
     fixture.setUp()
     try:
+        with urllib.request.urlopen(  # nosec B310 -- fixed loopback fixture.
+            fixture.base_url + "/login", timeout=3
+        ) as response:
+            login = response.read(65536)
+        if any(marker in login for marker in (b"Hysteria", b"hy2panel", b"<script")):
+            raise RuntimeError("public login leaks authenticated application assets")
         names = ["browser-user-{:02d}".format(index) for index in range(59)]
         names.append("long-mobile-account-name-without-pagination")
         for name in names:
@@ -122,6 +128,10 @@ def main():
     chrome = chrome_executable()
     with tempfile.TemporaryDirectory(prefix="hy2panel-browser-smoke-") as directory:
         work = pathlib.Path(directory)
+        login_path = work / "login.html"
+        login_path.write_bytes(login)
+        render(chrome, login_path, work / "login-mobile.png", 375, 812,
+               work / "login-profile", minimum_bytes=5_000)
         html_path = work / "dashboard.html"
         html_path.write_bytes(dashboard)
         render(

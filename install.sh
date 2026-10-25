@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.44"
+PANEL_VERSION="0.39.45"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,14 +30,14 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="5eb240329fdbef65fec94d17dfcc8bc81d5594dfe0cf2108251a00526340a692"
+PANEL_SHA256="420cfba7acdf5e0696bc1f75e9a171e8ac7bc0d37be143baf088fc70001e395c"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="64f9b5f6defb67f116dea633d8337afe995a9552c6f7c61859cbcc86c3fd78d6"
+HY2PANEL_VERSION_SHA256="ede73bf6468523c1bf32e3e6c116c0f5b7fceaaa86e294938b355eeac67ae2bb"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
-HY2PANEL_WEB_ASSETS_SHA256="5404114bdb81dddbcd5e7318bf235580948030669a80a3d50146b331cf96f0c9"
+HY2PANEL_WEB_ASSETS_SHA256="0cbe0c1b8e5ab4e1c8dab2093f178668ed87d8b4126b8280558f64ac143770a3"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
@@ -49,7 +49,7 @@ HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce5
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="890174cdd30b7609e4eaa69c01ccd7e61f65e316196e667d5812d9e55a6c8abc"
 HY2PANEL_MOBILE_API_SHA256="0bbbc4ba9c9c5040da7ebc4d4aeaa84c1a0f96c1f8f646e58a46040b29e56b5c"
-NODE_AGENT_SHA256="2b80aaccfcbf10cec45545fafa6547fac7ea9e4a78d32111022ba83d6f6e8fed"
+NODE_AGENT_SHA256="2b0d7343268fbc076e808387a94c5af88469038933b1250ea92bd4ec3eacfa83"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1988,6 +1988,63 @@ activate_node_agent() {
   echo "节点签名心跳已启用；未安装 Hysteria，也未修改网络、DNS 或任何节点证书。"
 }
 
+write_masquerade_site() {
+  local directory="$1" staged
+  # Only public assets live here. Never expose the configuration directory,
+  # whose siblings contain the TLS key and authentication secrets.
+  [[ ! -L "${directory}" ]] || return 1
+  if [[ -e "${directory}" ]]; then
+    [[ -d "${directory}" && "$(stat -c '%u:%g:%a' "${directory}")" == "0:0:755" ]] || return 1
+  fi
+  [[ ! -L "${directory}/index.html" ]] || return 1
+  install -d -o root -g root -m 0755 "${directory}" || return 1
+  staged="$(mktemp "${directory}/.index.XXXXXXXX")" || return 1
+  if ! cat > "${staged}" <<'HTML'
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="A small collection of notes on walking, observing and keeping a field journal.">
+<title>Field Notes</title>
+<style>
+:root{color-scheme:light;font-family:Georgia,serif;color:#24352d;background:#f4f1e8}
+*{box-sizing:border-box}body{margin:0}main{max-width:780px;margin:auto;padding:64px 24px}
+header{border-bottom:1px solid #c9cebe;padding-bottom:32px}nav{display:flex;flex-wrap:wrap;gap:24px;margin-top:24px}
+a{color:#385e49;text-underline-offset:4px}h1{font-size:clamp(40px,8vw,64px);font-weight:normal;margin:12px 0}
+h2{font-size:26px;font-weight:normal}p,li{font-size:18px;line-height:1.75}section{padding:24px 0;border-bottom:1px solid #c9cebe}
+.eyebrow,footer{font-family:system-ui,sans-serif;font-size:13px;letter-spacing:.06em;color:#526457}
+footer{margin-top:32px}:focus-visible{outline:2px solid #385e49;outline-offset:4px}
+@media(max-width:480px){main{padding-top:32px}p,li{font-size:17px}}
+</style>
+</head>
+<body><main>
+<header><span class="eyebrow">A NOTEBOOK FOR THE EVERYDAY</span><h1>Field Notes</h1>
+<p>Small observations, quiet walks, and things worth writing down.</p>
+<nav aria-label="Contents"><a href="#walking">On walking</a><a href="#notebook">Keeping a notebook</a><a href="#about">About</a></nav></header>
+<section id="walking"><h2>Take the familiar route slowly</h2>
+<p>A route does not have to be new to be interesting. Walk a little more slowly and notice what has changed: the angle of the light, a leaf caught on a fence, or the sound of rain reaching the pavement.</p>
+<p>Choose one detail to remember. You do not need to record everything for a walk to leave a trace.</p></section>
+<section id="notebook"><h2>A page, a date, a few words</h2>
+<p>A useful notebook is one you actually carry. Begin with the date and place, then add a short description in your own words.</p>
+<ul><li>Describe one thing you saw before reaching for an explanation.</li><li>Leave room for a sketch or a thought that arrives later.</li><li>Return to an older page and see what you notice now.</li></ul></section>
+<section id="about"><h2>About this collection</h2>
+<p>These short notes are an invitation to pay attention to ordinary places. Read them at your own pace, then close the page and step outside.</p></section>
+<footer>Field Notes &middot; A small collection of observations</footer>
+</main></body></html>
+HTML
+  then
+    rm -f -- "${staged}"
+    return 1
+  fi
+  if ! chmod 0644 "${staged}" || ! chown root:root "${staged}" ||
+    ! sync -f "${staged}" || ! mv -fT -- "${staged}" "${directory}/index.html" ||
+    ! sync -f "${directory}"; then
+    rm -f -- "${staged}"
+    return 1
+  fi
+}
+
 initialize_data_plane_owned_paths() {
   DATA_PLANE_OWNED_FILES=(
     "${NODE_AGENT_OPT_DIR}/bin/hysteria"
@@ -1999,6 +2056,7 @@ initialize_data_plane_owned_paths() {
     "${NODE_AGENT_CONFIG_DIR}/stats.env"
     "${NODE_AGENT_CONFIG_DIR}/bootstrap.json"
     "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state"
+    "${NODE_AGENT_CONFIG_DIR}/masquerade/index.html"
   )
   DATA_PLANE_OWNED_UNITS=(
     /etc/systemd/system/hysteria2-panel-node-auth.service
@@ -2126,7 +2184,7 @@ assert_data_plane_paths_unclaimed() {
   local path
   initialize_data_plane_owned_paths
   for path in "${DATA_PLANE_OWNED_FILES[@]}" "${DATA_PLANE_OWNED_UNITS[@]}" \
-    "${NODE_AGENT_OPT_DIR}/bin" /var/lib/hysteria2-panel-node \
+    "${NODE_AGENT_OPT_DIR}/bin" "${NODE_AGENT_CONFIG_DIR}/masquerade" /var/lib/hysteria2-panel-node \
     "${NODE_DATA_PLANE_TRANSACTION}" "${NODE_UNINSTALL_SERVICE}"; do
     [[ ! -e "${path}" && ! -L "${path}" ]] \
       || fail "数据面路径已存在；为避免覆盖未知数据，部署已停止：${path}"
@@ -2170,12 +2228,24 @@ inspect_data_plane_state_item() {
 assert_existing_data_plane_healthy() {
   local inspection_status mode path unit
   initialize_data_plane_owned_paths
+  if [[ -e "${NODE_AGENT_CONFIG_DIR}/masquerade" || -L "${NODE_AGENT_CONFIG_DIR}/masquerade" ]]; then
+    require_node_agent_directory "${NODE_AGENT_CONFIG_DIR}/masquerade" 755
+  fi
   for path in "${DATA_PLANE_OWNED_FILES[@]}"; do
     [[ "${path}" == "${NODE_AGENT_CONFIG_DIR}/data-plane-firewall.state" ]] \
       && [[ ! -e "${path}" && ! -L "${path}" ]] && continue
+    # Older releases have a string masquerade and no asset directory.
+    if [[ "${path}" == "${NODE_AGENT_CONFIG_DIR}/masquerade/index.html" \
+      && ! -e "${NODE_AGENT_CONFIG_DIR}/masquerade" \
+      && ! -L "${NODE_AGENT_CONFIG_DIR}/masquerade" ]] \
+      && ! grep -q '^[[:space:]]*type: file$' "${NODE_AGENT_CONFIG_DIR}/hysteria-main.yaml" \
+      && ! grep -q '^[[:space:]]*type: file$' "${NODE_AGENT_CONFIG_DIR}/hysteria-udp443.yaml"; then
+      continue
+    fi
     [[ -f "${path}" && ! -L "${path}" ]] \
       || fail "已安装数据面缺少受管文件：${path}"
     mode=600
+    [[ "${path}" != "${NODE_AGENT_CONFIG_DIR}/masquerade/index.html" ]] || mode=644
     [[ "${path}" == "${NODE_AGENT_OPT_DIR}/bin/hysteria" \
       || "${path}" == "${NODE_AGENT_OPT_DIR}/tcp_probe.py" ]] && mode=755
     [[ "$(stat -c '%u:%g:%a' "${path}")" == "0:0:${mode}" ]] \
@@ -2824,10 +2894,20 @@ restore_existing_data_plane() {
       || "${path}" == "${NODE_AGENT_OPT_DIR}/tcp_probe.py" ]] && continue
     rm -f -- "${path}" || return 1
     if [[ -f "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}" ]]; then
-      install -o root -g root -m 0600 \
-        "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}" "${path}" || return 1
+      if [[ "${path}" == "${NODE_AGENT_CONFIG_DIR}/masquerade/index.html" ]]; then
+        install -d -o root -g root -m 0755 "${NODE_AGENT_CONFIG_DIR}/masquerade" || return 1
+        install -o root -g root -m 0644 \
+          "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}" "${path}" || return 1
+      else
+        install -o root -g root -m 0600 \
+          "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}" "${path}" || return 1
+      fi
     fi
   done
+  if [[ -d "${NODE_AGENT_CONFIG_DIR}/masquerade" \
+    && ! -f "${DATA_PLANE_BACKUP_DIR}/config/index.html" ]]; then
+    rmdir -- "${NODE_AGENT_CONFIG_DIR}/masquerade" || return 1
+  fi
   # Runtime accounting is never rolled back with application/configuration.
   require_node_agent_directory "${NODE_AGENT_STATE_DIR}" 700
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
@@ -2893,6 +2973,9 @@ rollback_data_plane_activation() {
     [[ -d "${NODE_AGENT_OPT_DIR}/bin" && ! -L "${NODE_AGENT_OPT_DIR}/bin" ]] \
       || return 1
     rmdir -- "${NODE_AGENT_OPT_DIR}/bin" || return 1
+  fi
+  if [[ -d "${NODE_AGENT_CONFIG_DIR}/masquerade" ]]; then
+    rmdir -- "${NODE_AGENT_CONFIG_DIR}/masquerade" || return 1
   fi
   rm -f -- "${NODE_DATA_PLANE_TRANSACTION}" || return 1
   systemctl daemon-reload || return 1
@@ -3021,6 +3104,8 @@ activate_data_plane() {
     install -o root -g root -m 0600 "${TMP_DIR}/data-plane/${path}" \
       "${NODE_AGENT_CONFIG_DIR}/${path}"
   done
+  write_masquerade_site "${NODE_AGENT_CONFIG_DIR}/masquerade" \
+    || fail "无法写入节点公开网站内容；已安排恢复"
 
   cat > "${TMP_DIR}/hysteria2-panel-node-auth.service" <<EOF
 [Unit]
@@ -4252,6 +4337,7 @@ verify_fresh_install_commit_payload() {
     '/etc/hysteria2-panel/hysteria.yaml|root:hy2tls:640:1|1'
     '/etc/hysteria2-panel/server.crt|root:hy2tls:640:1|1'
     '/etc/hysteria2-panel/server.key|root:hy2tls:640:1|1'
+    '/etc/hysteria2-panel/masquerade/index.html|root:root:644:1|1'
     '/var/lib/hysteria2-panel/panel.db|hy2panel:hy2panel:600:1|1'
     '/etc/systemd/system/hysteria2-panel.service|root:root:644:1|1'
     '/etc/systemd/system/hysteria2-panel-server.service|root:root:644:1|1'
@@ -5588,24 +5674,113 @@ def verified_default_host_guard(entries):
                         expression = counter
                     normalized["expr"].append(expression)
             actual.append({kind: normalized})
+    # An isolated management TCP port may have changed. Preserve it verbatim;
+    # it must not overlap any port needed by the panel/data plane.
+    if len(actual) == len(expected):
+        ssh_rule = actual[8].get("rule", {}).get("expr", [])
+        if len(ssh_rule) == 2 and ssh_rule[1] == accept:
+            value = ssh_rule[0].get("match", {}).get("right")
+            if (type(value) is int and 1 <= value <= 65535 and value not in {80, 443}
+                    and str(value) not in sys.argv[1:]):
+                expected[8]["rule"]["expr"][0] = port("tcp", "dport", value)
     return json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+def verified_service_allowlist(entries, candidate):
+    # Recognize a complete simple default-deny policy by structure, not its
+    # table name. Never edit it or bypass an additional input chain.
+    family, table, chain = candidate
+    actual = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return False
+        for kind, row in entry.items():
+            if not isinstance(row, dict) or row.get("family") != family:
+                continue
+            if row.get("table") != table and not (kind == "table" and row.get("name") == table):
+                continue
+            if len(entry) != 1:
+                return False
+            row = dict(row)
+            row.pop("handle", None)
+            if "expr" in row:
+                expressions = row["expr"]
+                if not isinstance(expressions, list):
+                    return False
+                row["expr"] = []
+                for expression in expressions:
+                    if not isinstance(expression, dict):
+                        return False
+                    if "counter" in expression:
+                        counts = expression["counter"]
+                        if (set(expression) != {"counter"} or not isinstance(counts, dict)
+                                or set(counts) != {"packets", "bytes"}
+                                or any(type(v) is not int or v < 0 for v in counts.values())):
+                            return False
+                    else:
+                        row["expr"].append(expression)
+            actual.append({kind: row})
+    if len(actual) != 11:
+        return False
+    def match(left, right, op="=="):
+        return {"match": {"op": op, "left": left, "right": right}}
+    def port(protocol, field, right):
+        return match({"payload": {"protocol": protocol, "field": field}}, right)
+    accept, drop = {"accept": None}, {"drop": None}
+    allowed = []
+    for index, protocol, required in [(8, "tcp", {80, 443, *map(int, sys.argv[1:])}),
+                                      (9, "udp", {443, *map(int, sys.argv[1:3])})]:
+        expr = actual[index].get("rule", {}).get("expr", [])
+        if len(expr) != 2 or expr[1] != accept:
+            return False
+        values = expr[0].get("match", {}).get("right", {})
+        if not isinstance(values, dict) or set(values) != {"set"}:
+            return False
+        ports = values["set"]
+        if (not isinstance(ports, list) or not ports
+                or any(type(p) is not int or not 1 <= p <= 65535 for p in ports)
+                or len(set(ports)) != len(ports) or not required.issubset(ports)):
+            return False
+        allowed.append([port(protocol, "dport", values), accept])
+    expressions = [
+        [match({"meta": {"key": "iifname"}}, "lo"), accept],
+        [match({"ct": {"key": "state"}}, "invalid", "in"), drop],
+        [match({"ct": {"key": "state"}}, ["established", "related"], "in"), accept],
+        [match({"meta": {"key": "l4proto"}}, {"set": ["icmp", "ipv6-icmp"]}), accept],
+        [port("udp", "sport", 67), port("udp", "dport", 68), accept],
+        [port("udp", "sport", 547), port("udp", "dport", 546), accept],
+        *allowed, [drop],
+    ]
+    expected = [
+        {"table": {"family": family, "name": table}},
+        {"chain": {"family": family, "table": table, "name": chain,
+                   "type": "filter", "hook": "input", "prio": 10, "policy": "drop"}},
+    ]
+    expected.extend({"rule": {"family": family, "table": table, "chain": chain, "expr": expr}}
+                    for expr in expressions)
+    return actual == expected
 
 def isolated_sshd_ban(rule):
     # Preserve a narrowly proven Fail2Ban SSH rule. Unknown expressions still
-    # fail closed, and port 22 cannot be exempted when this install needs it.
-    if "22" in sys.argv[1:]:
-        return False
+    # fail closed. A ban on a required application port is never exempted.
     expressions = rule.get("expr")
-    if not isinstance(expressions, list) or len(expressions) != 4:
+    if not isinstance(expressions, list) or len(expressions) not in (3, 4):
         return False
-    port, source, counter, verdict = expressions
+    port, source = expressions[:2]
+    verdict = expressions[-1]
+    value = port.get("match", {}).get("right") if isinstance(port, dict) else None
+    if type(value) is not int or not 1 <= value <= 65535 or str(value) in sys.argv[1:] or value in {80, 443}:
+        return False
     expected_port = {"match": {"op": "==", "left": {
-        "payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}}
+        "payload": {"protocol": "tcp", "field": "dport"}}, "right": value}}
     expected_source = {"match": {"op": "==", "left": {
         "payload": {"protocol": "ip", "field": "saddr"}},
         "right": "@addr-set-sshd"}}
-    if port != expected_port or source != expected_source or verdict != {"drop": None}:
+    if (port != expected_port or source != expected_source or verdict not in (
+            {"drop": None}, {"reject": {"type": "icmp", "expr": "port-unreachable"}})):
         return False
+    if len(expressions) == 3:
+        return True
+    counter = expressions[2]
     if not isinstance(counter, dict) or set(counter) != {"counter"}:
         return False
     counts = counter["counter"]
@@ -5621,7 +5796,16 @@ if not isinstance(payload, dict):
 entries = payload.get("nftables")
 if not isinstance(entries, list):
     raise SystemExit(2)
-host_guard = ("inet", "hy2_host_guard", "input") if verified_default_host_guard(entries) else None
+host_guards = set()
+if verified_default_host_guard(entries):
+    host_guards.add(("inet", "hy2_host_guard", "input"))
+for entry in entries:
+    candidate = entry.get("chain", {}) if isinstance(entry, dict) else {}
+    if (isinstance(candidate, dict) and candidate.get("family") == "inet" and candidate.get("hook") == "input"
+            and isinstance(candidate.get("table"), str) and isinstance(candidate.get("name"), str)):
+        key = ("inet", candidate["table"], candidate["name"])
+        if verified_service_allowlist(entries, key):
+            host_guards.add(key)
 inbound_chains = set()
 sshd_chains = set()
 for entry in entries:
@@ -5634,7 +5818,7 @@ for entry in entries:
     if not all(isinstance(value, str) and value for value in key):
         raise SystemExit(2)
     inbound_chains.add(key)
-    if key == host_guard:
+    if key in host_guards:
         continue
     if chain.get("policy", "accept") != "accept":
         raise SystemExit(0)
@@ -5649,7 +5833,7 @@ for entry in entries:
     if not all(isinstance(value, str) and value for value in key):
         raise SystemExit(2)
     if key in inbound_chains:
-        if key == host_guard:
+        if key in host_guards:
             continue
         if key in sshd_chains and isolated_sshd_ban(rule):
             continue
@@ -7515,12 +7699,13 @@ else
     - "direct(all)"
 EOF
 fi
+write_masquerade_site /etc/hysteria2-panel/masquerade \
+  || fail "无法写入公开网站内容；已安排恢复"
 cat >> /etc/hysteria2-panel/hysteria.yaml <<EOF
 masquerade:
-  type: string
-  string:
-    content: "404 page not found"
-    statusCode: 404
+  type: file
+  file:
+    dir: /etc/hysteria2-panel/masquerade
 EOF
 chown root:hy2tls /etc/hysteria2-panel/hysteria.yaml
 chmod 0640 /etc/hysteria2-panel/hysteria.yaml

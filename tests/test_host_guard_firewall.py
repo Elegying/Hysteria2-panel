@@ -44,6 +44,70 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
                 self.assertEqual([], calls)
                 self.assertIn("入站策略已核验", result.stdout)
 
+    def test_changed_ssh_port_is_preserved_without_opening_port_22(self):
+        rules = [row["rule"] for row in self.payload["nftables"] if "rule" in row]
+        rules[6]["expr"][0]["match"]["right"] = 1993
+        result, calls = self.run_guard(self.payload)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], calls)
+
+    def simple_allowlist(self):
+        payload = copy.deepcopy(self.payload)
+        rows = [row for row in payload["nftables"] if "metainfo" not in row]
+        rules = rows[2:]
+        rows = rows[:2] + [rules[i] for i in (0, 2, 1, 3, 4, 5, 7, 8, 12)]
+        rows[8]["rule"]["expr"][0]["match"]["right"] = {
+            "set": [80, 443, 1993, 19998, 19999]
+        }
+        for entry in rows:
+            kind, value = next(iter(entry.items()))
+            if kind == "table":
+                value["name"] = "site_guard"
+            else:
+                value["table"] = "site_guard"
+        return {"nftables": rows}
+
+    def test_complete_service_allowlist_is_preserved_without_writes(self):
+        result, calls = self.run_guard(self.simple_allowlist())
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], calls)
+
+    def test_service_allowlist_missing_extra_and_conflicting_rules_fail_closed(self):
+        baseline = self.simple_allowlist()
+        for index in range(2, len(baseline["nftables"])):
+            payload = copy.deepcopy(baseline)
+            del payload["nftables"][index]
+            result, calls = self.run_guard(payload)
+            self.assertEqual(97, result.returncode, (index, result.stderr))
+            self.assertEqual([], calls)
+        for index, missing_port in ((8, 19999), (8, 19998), (9, 443), (9, 19999)):
+            payload = copy.deepcopy(baseline)
+            payload["nftables"][index]["rule"]["expr"][0]["match"]["right"]["set"].remove(missing_port)
+            result, calls = self.run_guard(payload)
+            self.assertEqual(97, result.returncode, result.stderr)
+            self.assertEqual([], calls)
+        payload = copy.deepcopy(baseline)
+        payload["nftables"].insert(8, copy.deepcopy(payload["nftables"][-1]))
+        result, calls = self.run_guard(payload)
+        self.assertEqual(97, result.returncode, result.stderr)
+        self.assertEqual([], calls)
+
+    def test_ssh_reject_only_exempts_an_unrelated_single_port(self):
+        for port, expected in ((1993, 0), (19999, 97), (19998, 97), (443, 97), (80, 97)):
+            payload = self.simple_allowlist()
+            payload["nftables"].extend([
+                {"chain": {"family": "inet", "table": "f2b-table", "name": "f2b-chain",
+                           "type": "filter", "hook": "input", "prio": -1, "policy": "accept"}},
+                {"rule": {"family": "inet", "table": "f2b-table", "chain": "f2b-chain", "expr": [
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": port}},
+                    {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "@addr-set-sshd"}},
+                    {"reject": {"type": "icmp", "expr": "port-unreachable"}},
+                ]}},
+            ])
+            result, calls = self.run_guard(payload)
+            self.assertEqual(expected, result.returncode, result.stderr)
+            self.assertEqual([], calls)
+
     def test_missing_changed_reordered_or_extra_guard_rules_fail_closed(self):
         rules = [entry["rule"] for entry in self.payload["nftables"] if "rule" in entry]
         for index in range(len(rules)):

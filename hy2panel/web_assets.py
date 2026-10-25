@@ -1,10 +1,29 @@
 """Static browser assets kept outside the application entrypoint."""
 
 FAVICON_SVG = b"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-<title>Hysteria 2 Panel</title><rect x="2" y="2" width="60" height="60" rx="14" fill="#0b1a2c" stroke="#284867" stroke-width="2"/>
-<path fill="#4bc493" d="M9 16h7v12h11V16h7v32h-7V35H16v13H9z"/>
-<path fill="#f3f7ff" d="M37 24c0-7 4-11 11-11s11 4 11 10c0 5-3 8-8 12l-6 6h14v7H37v-8l10-9c4-3 5-5 5-7 0-3-1-4-4-4-3 0-4 2-4 5h-7z"/>
+<title>Console</title><rect x="2" y="2" width="60" height="60" rx="14" fill="#0b1a2c" stroke="#284867" stroke-width="2"/>
+<rect x="17" y="17" width="12" height="12" rx="3" fill="#4bc493"/>
+<rect x="35" y="17" width="12" height="12" rx="3" fill="#f3f7ff"/>
+<rect x="17" y="35" width="12" height="12" rx="3" fill="#f3f7ff"/>
+<rect x="35" y="35" width="12" height="12" rx="3" fill="#4bc493"/>
 </svg>"""
+
+# The public login response does not ship dashboard styles, endpoint names or
+# QR/client configuration JavaScript. Authentication and form paths stay stable.
+LOGIN_STYLE = """
+:root{color-scheme:dark;font-family:system-ui,sans-serif;color:#f3f7ff;background:#07111f}
+*{box-sizing:border-box}body{margin:0}main{width:min(480px,calc(100% - 32px));margin:clamp(32px,12vh,120px) auto}
+.login{padding:32px;border:1px solid #304967;border-radius:20px;background:#0d1929}
+.login-brand{display:flex;align-items:center;gap:16px}.login-brand img{width:54px;height:54px}
+h1{font-size:28px;margin:4px 0}.state-kicker,.muted,.login-support{color:#a4b1c2}
+.login-form{display:grid;gap:12px}label{display:block;margin-bottom:8px}
+input{width:100%;min-height:44px;padding:10px;border:1px solid #536b87;border-radius:8px;background:#121f31;color:inherit;font:inherit}
+button{min-height:44px;padding:10px 20px;border:0;border-radius:8px;background:#4169b7;color:white;font:inherit;cursor:pointer}
+:focus-visible{outline:3px solid #8ab4ff;outline-offset:3px}.login-actions{margin:0}
+.login-support{font-size:13px;line-height:1.6}.error{color:#ff9aaa;overflow-wrap:anywhere}
+.skip-link{position:absolute;left:16px;top:-100px;color:white}.skip-link:focus{top:8px}
+@media(max-width:480px){.login{padding:24px}button{width:100%}}
+"""
 
 PAGE_STYLE = """
 :root{color-scheme:dark;--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
