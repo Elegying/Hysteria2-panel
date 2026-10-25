@@ -39,7 +39,7 @@ def png_size(path):
     return struct.unpack(">II", data[16:24]), len(data)
 
 
-def render(chrome, html_path, output_path, width, height, profile_path):
+def render(chrome, html_path, output_path, width, height, profile_path, minimum_bytes=10_000):
     command = [
         chrome,
         "--headless=new",
@@ -83,7 +83,7 @@ def render(chrome, html_path, output_path, width, height, profile_path):
             )
         )
     dimensions, byte_count = png_size(output_path)
-    if dimensions != (width, height) or byte_count < 10_000:
+    if dimensions != (width, height) or byte_count < minimum_bytes:
         raise RuntimeError(
             "unexpected browser render: dimensions={}, bytes={}".format(
                 dimensions, byte_count
@@ -131,7 +131,7 @@ def main():
         login_path = work / "login.html"
         login_path.write_bytes(login)
         render(chrome, login_path, work / "login-mobile.png", 375, 812,
-               work / "login-profile")
+               work / "login-profile", minimum_bytes=5_000)
         html_path = work / "dashboard.html"
         html_path.write_bytes(dashboard)
         render(

@@ -49,7 +49,7 @@ HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce5
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="890174cdd30b7609e4eaa69c01ccd7e61f65e316196e667d5812d9e55a6c8abc"
 HY2PANEL_MOBILE_API_SHA256="0bbbc4ba9c9c5040da7ebc4d4aeaa84c1a0f96c1f8f646e58a46040b29e56b5c"
-NODE_AGENT_SHA256="5139893e3501b5471869da6142e310492048ecbc6c48ced8e71c4991157f158e"
+NODE_AGENT_SHA256="2b0d7343268fbc076e808387a94c5af88469038933b1250ea92bd4ec3eacfa83"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -5768,7 +5768,7 @@ def isolated_sshd_ban(rule):
     port, source = expressions[:2]
     verdict = expressions[-1]
     value = port.get("match", {}).get("right") if isinstance(port, dict) else None
-    if type(value) is not int or not 1 <= value <= 65535 or str(value) in sys.argv[1:] or value == 443:
+    if type(value) is not int or not 1 <= value <= 65535 or str(value) in sys.argv[1:] or value in {80, 443}:
         return False
     expected_port = {"match": {"op": "==", "left": {
         "payload": {"protocol": "tcp", "field": "dport"}}, "right": value}}

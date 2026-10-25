@@ -93,7 +93,7 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         self.assertEqual([], calls)
 
     def test_ssh_reject_only_exempts_an_unrelated_single_port(self):
-        for port, expected in ((1993, 0), (19999, 97), (19998, 97), (443, 97)):
+        for port, expected in ((1993, 0), (19999, 97), (19998, 97), (443, 97), (80, 97)):
             payload = self.simple_allowlist()
             payload["nftables"].extend([
                 {"chain": {"family": "inet", "table": "f2b-table", "name": "f2b-chain",
