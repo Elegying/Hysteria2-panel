@@ -320,6 +320,13 @@ jobs:
           docker cp . "${container}:/workspace"
           docker exec --env PANEL_REF="${PANEL_REF}" "${container}" \
             bash /workspace/tests/installer_e2e.sh
+          python3 -m venv "${RUNNER_TEMP}/http3-test"
+          "${RUNNER_TEMP}/http3-test/bin/pip" install aioquic==1.3.0
+          docker cp "${container}:/etc/hysteria2-panel/server.crt" "${RUNNER_TEMP}/node-test.crt"
+          node_ip="$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${container}")"
+          "${RUNNER_TEMP}/http3-test/bin/python" tests/http3_masquerade.py \
+            --host "${node_ip}" --server-name 127.0.0.1 \
+            --certificate "${RUNNER_TEMP}/node-test.crt" --ports 31999 443
       - name: Verify deployed legacy upgrade and automatic rollback
         if: matrix.check == 'full-installer-e2e'
         shell: bash

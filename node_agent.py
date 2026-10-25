@@ -1413,10 +1413,9 @@ acl:
   inline:
 {acl}
 masquerade:
-  type: string
-  string:
-    content: "404 page not found"
-    statusCode: 404
+  type: file
+  file:
+    dir: /etc/hysteria2-panel-node/masquerade
 """.format(
             port=port,
             outbound_mode=outbound_mode,

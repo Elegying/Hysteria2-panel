@@ -1680,7 +1680,12 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             self.assertNotIn("S" * 48, config)
             self.assertIn('    - "reject(10.0.0.0/8)"', config)
             self.assertIn('    - "direct(all, tcp/443)"', config)
-            self.assertTrue(config.endswith('    statusCode: 404\n'))
+            self.assertTrue(config.endswith(
+                'masquerade:\n  type: file\n  file:\n'
+                '    dir: /etc/hysteria2-panel-node/masquerade\n'
+            ))
+            self.assertNotIn("listenHTTPS:", config)
+            self.assertNotIn("obfs:", config)
             self.assertNotIn("vpn.example.com", config)
             self.assertNotIn("panel.example.com", config)
 

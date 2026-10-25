@@ -95,6 +95,12 @@ def main():
     fixture = PanelHttpTests("runTest")
     fixture.setUp()
     try:
+        with urllib.request.urlopen(  # nosec B310 -- fixed loopback fixture.
+            fixture.base_url + "/login", timeout=3
+        ) as response:
+            login = response.read(65536)
+        if any(marker in login for marker in (b"Hysteria", b"hy2panel", b"<script")):
+            raise RuntimeError("public login leaks authenticated application assets")
         names = ["browser-user-{:02d}".format(index) for index in range(59)]
         names.append("long-mobile-account-name-without-pagination")
         for name in names:
@@ -122,6 +128,10 @@ def main():
     chrome = chrome_executable()
     with tempfile.TemporaryDirectory(prefix="hy2panel-browser-smoke-") as directory:
         work = pathlib.Path(directory)
+        login_path = work / "login.html"
+        login_path.write_bytes(login)
+        render(chrome, login_path, work / "login-mobile.png", 375, 812,
+               work / "login-profile")
         html_path = work / "dashboard.html"
         html_path.write_bytes(dashboard)
         render(
