@@ -627,6 +627,9 @@ class BackupManager:
         "token_seed",
         "enabled",
         "generation",
+        "user_type",
+        "expires_at",
+        "starts_at",
         "device_limit",
         "traffic_limit_bytes",
         "tx_bytes",
@@ -639,9 +642,10 @@ class BackupManager:
     )
     REQUIRED_PROXY_COLUMNS = tuple(
         column for column in PROXY_COLUMNS
-        if column not in {"allow_udp_443", "traffic_adjusted_at", "domain_usage_reset_at"}
+        if column not in {"allow_udp_443", "traffic_adjusted_at", "domain_usage_reset_at", "expires_at", "starts_at", "user_type"}
     )
     RESTORED_TABLE_COLUMNS = {
+        "premium_node_profiles": ("node_id", "region", "label", "host", "port", "identity_json", "listen_port", "port_hopping"),
         "proxy_users": PROXY_COLUMNS,
         "retired_proxy_names": ("name_fingerprint", "retired_at"),
         "usage_origins": (
@@ -677,14 +681,38 @@ class BackupManager:
             "updated_by",
             "updated_at",
         ),
+        "subscription_defaults": ("id", "nodes_json", "updated_at"),
+        "subscriptions": (
+            "id",
+            "user_id",
+            "token",
+            "token_seed",
+            "enabled",
+            "created_at",
+            "updated_at",
+        ),
+        "subscription_nodes": (
+            "id",
+            "subscription_id",
+            "node_id",
+            "label",
+            "host",
+            "port",
+            "pin_sha256",
+            "enabled",
+        ),
     }
     RESTORED_TABLE_ORDER = {
+        "premium_node_profiles": "node_id",
         "proxy_users": "id",
         "retired_proxy_names": "name_fingerprint",
         "usage_origins": "origin_id",
         "usage_origin_users": "origin_id, user_name COLLATE NOCASE, user_name",
         "origin_traffic_daily": "origin_id, usage_date",
         "origin_traffic_budgets": "origin_id",
+        "subscription_defaults": "id",
+        "subscriptions": "id",
+        "subscription_nodes": "id",
     }
     # Portable backups deliberately retain only RESTORED_TABLE_COLUMNS. Every
     # other application table must be listed here so a newly introduced table
@@ -715,7 +743,7 @@ class BackupManager:
         ("admins", "DELETE FROM admins"),
     )
     RUNTIME_TABLES = frozenset(name for name, _statement in RUNTIME_TABLE_CLEANUP)
-    USER_TABLES = ("proxy_users", "retired_proxy_names")
+    USER_TABLES = ("premium_node_profiles", "proxy_users", "retired_proxy_names", "subscriptions", "subscription_nodes", "subscription_defaults")
     MACHINE_TABLES = (
         "origin_traffic_budgets", "origin_traffic_daily",
         "usage_origin_users", "usage_origins",
@@ -738,6 +766,8 @@ class BackupManager:
         maintenance_lock_mode=0o640,
         restore_marker_path=RESTORE_ACTIVE_MARKER,
         runner=subprocess.run,
+        subscription_base_url="",
+        subscription_name="私家车",
     ):
         self.database = database
         self.hmac_key = bytes(hmac_key)
@@ -746,6 +776,8 @@ class BackupManager:
         self.public_host = str(public_host).strip()
         self.hysteria_port = int(hysteria_port)
         self.node_name = str(node_name)
+        self.subscription_base_url = str(subscription_base_url).rstrip("/")
+        self.subscription_name = str(subscription_name)
         self.local_origin_id = local_origin_id if isinstance(local_origin_id, str) else None
         self.work_dir = Path(work_dir)
         self.maintenance_lock_path = Path(maintenance_lock_path)
@@ -1275,7 +1307,10 @@ class BackupManager:
                     "source": {
                         "publicHost": self.public_host,
                         "hysteriaPort": self.hysteria_port,
-                        "nodeName": "",
+                        "nodeName": self.node_name,
+                        "subscriptionBaseUrl": self.subscription_base_url,
+                        "subscriptionName": self.subscription_name,
+                        "portHoppingEnabled": PortHoppingController().status()["enabled"],
                     },
                     "certificate": {
                         "pinSHA256": self._certificate_pin(certificate),
@@ -1440,6 +1475,27 @@ class BackupManager:
                         verifier._fingerprint(token), expected_fingerprint
                     ):
                         raise BackupValidationError("用户签名密钥与数据库不匹配")
+                if "subscriptions" in tables:
+                    for user_id, seed, fingerprint in connection.execute(
+                        "SELECT user_id, token_seed, token FROM subscriptions"
+                    ):
+                        if seed is not None:
+                            if not isinstance(seed, bytes) or len(seed) != 32:
+                                raise BackupValidationError("订阅令牌种子格式无效")
+                            token = verifier._subscription_token_from_seed(seed)
+                            if not isinstance(fingerprint, str) or not hmac.compare_digest(
+                                verifier._fingerprint(token), fingerprint
+                            ):
+                                raise BackupValidationError("订阅签名密钥与数据库不匹配")
+                        if connection.execute(
+                            "SELECT 1 FROM proxy_users WHERE id = ?", (user_id,)
+                        ).fetchone() is None:
+                            raise BackupValidationError("订阅关联用户不存在")
+                for table in ("subscriptions", "subscription_nodes"):
+                    if table in tables and connection.execute(
+                        "PRAGMA foreign_key_check(" + table + ")"
+                    ).fetchone() is not None:
+                        raise BackupValidationError("订阅数据库外键一致性检查失败")
                 return user_count
         except sqlite3.DatabaseError as exc:
             raise BackupValidationError("用户数据库无效") from exc
@@ -1472,6 +1528,17 @@ class BackupManager:
             ascii_lower = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
             users = {name.translate(ascii_lower): value for name, value in users.items()}
             with sqlite_connection(str(incoming_path)) as source:
+                connected_profiles = current.execute("""SELECT p.node_id,p.identity_json
+                    FROM premium_node_profiles p JOIN nodes n ON n.node_id=p.node_id
+                    WHERE n.status!='revoked' AND n.policy_state='protocol_ready'""").fetchall()
+                if connected_profiles:
+                    has_profiles = source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='premium_node_profiles'").fetchone()
+                    if not has_profiles:
+                        raise BackupValidationError("备份缺少当前专线证书，请先解除对接再恢复")
+                    for profile in connected_profiles:
+                        saved = source.execute("SELECT identity_json FROM premium_node_profiles WHERE node_id=?", (profile["node_id"],)).fetchone()
+                        if saved is None or saved[0] != profile["identity_json"]:
+                            raise BackupValidationError("备份专线证书与已对接节点不一致，请先恢复再重新对接")
                 for name, fingerprint in source.execute(
                     "SELECT name, token_fingerprint FROM proxy_users"
                 ):
@@ -1504,7 +1571,18 @@ class BackupManager:
             or not isinstance(source.get("nodeName"), str)
         ):
             raise BackupValidationError("备份来源信息无效")
+        for key in ("nodeName", "subscriptionName"):
+            value = source.get(key, "")
+            if not isinstance(value, str) or len(value) > 64 or any(ord(c) < 32 for c in value):
+                raise BackupValidationError("备份节点或订阅名称无效")
+        if "portHoppingEnabled" in source and type(source["portHoppingEnabled"]) is not bool:
+            raise BackupValidationError("备份端口跳跃设置无效")
+        base_url = source.get("subscriptionBaseUrl", "")
+        if not isinstance(base_url, str) or len(base_url) > 512:
+            raise BackupValidationError("备份订阅地址无效")
         if require_compatible_endpoint:
+            if base_url and self.subscription_base_url and base_url.rstrip("/") != self.subscription_base_url:
+                raise BackupValidationError("订阅域名、HTTPS 协议和端口必须与原面板一致，才能保留已发出的订阅链接")
             if source["publicHost"].lower() != self.public_host.lower():
                 raise BackupValidationError(
                     "备份域名与当前部署域名不一致，旧节点无法无感迁移"
@@ -1755,6 +1833,7 @@ class BackupManager:
             "publicHost": self.public_host,
             "hysteriaPort": self.hysteria_port,
             "nodeName": self.node_name,
+            "subscriptionBaseUrl": self.subscription_base_url,
             "localOriginId": self.local_origin_id,
         }
         _atomic_write_json(marker_path, record)
@@ -1950,6 +2029,7 @@ class BackupManager:
                 "sessions", "mobile_sessions", "domain_usage_monthly", "user_traffic_hourly",
                 "node_online_counts", "node_online_snapshots", "node_usage_checkpoints",
                 "node_auth_decisions", "local_auth_leases", "usage_origin_users",
+                "subscription_nodes", "subscriptions", "subscription_defaults", "premium_node_profiles",
                 "proxy_users", "retired_proxy_names",
             ):
                 destination.execute("DELETE FROM {}".format(table))  # nosec B608
@@ -2069,6 +2149,8 @@ class BackupManager:
                 {
                     "HY2PANEL_HMAC_KEY": restored_hmac.hex(),
                     "HY2PANEL_CERT_PIN": manifest["certificate"]["pinSHA256"],
+                    **({"HY2PANEL_NODE_NAME": manifest["source"]["nodeName"]} if manifest["source"].get("nodeName") else {}),
+                    **({"HY2PANEL_SUBSCRIPTION_NAME": manifest["source"]["subscriptionName"]} if manifest["source"].get("subscriptionName") else {}),
                 },
             )
             backup_bytes = (
@@ -2131,6 +2213,7 @@ class BackupManager:
                     {
                         "phase": "prepared",
                         "restoreScope": "users",
+                        "portHoppingEnabled": manifest["source"].get("portHoppingEnabled"),
                         "backupDir": str(backup_dir),
                         "incomingArchive": str(incoming_archive),
                         "oldFiles": {
@@ -2302,6 +2385,33 @@ def _validate_token(token):
     return token
 
 
+def _parse_expires_at(value):
+    """Accept either a Unix timestamp string or a YYYY-MM-DD date string."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError("到期时间格式无效")
+    value = value.strip()
+    if re.fullmatch(r"\d{10,11}", value):
+        timestamp = int(value)
+        if timestamp <= 0:
+            raise ValueError("到期时间无效")
+        return timestamp
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", value)
+    if not match:
+        raise ValueError("到期时间格式无效，请使用 YYYY-MM-DD")
+    year, month, day = (int(match.group(i)) for i in (1, 2, 3))
+    try:
+        # Interpreted as Beijing time, consistent with the panel's billing timezone.
+        local = datetime.datetime(
+            year, month, day, 0, 0, 0,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8)),
+        )
+        return int(local.timestamp())
+    except ValueError as exc:
+        raise ValueError("到期时间无效") from exc
+
+
 def _usage_month(timestamp):
     value = datetime.datetime.fromtimestamp(
         int(timestamp), datetime.timezone(datetime.timedelta(hours=8))
@@ -2406,6 +2516,9 @@ class Database:
                     token_seed BLOB,
                     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
                     generation INTEGER NOT NULL DEFAULT 0,
+                    user_type INTEGER NOT NULL DEFAULT 0 CHECK (user_type IN (0, 1)),
+                    expires_at INTEGER,
+                    starts_at INTEGER,
                     device_limit INTEGER NOT NULL DEFAULT 3 CHECK (device_limit BETWEEN 1 AND 100),
                     traffic_limit_bytes INTEGER NOT NULL DEFAULT 268435456000 CHECK (traffic_limit_bytes > 0),
                     tx_bytes INTEGER NOT NULL DEFAULT 0 CHECK (tx_bytes >= 0),
@@ -2417,6 +2530,43 @@ class Database:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS premium_node_profiles (
+                    node_id TEXT PRIMARY KEY,
+                    region TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    identity_json TEXT,
+                    listen_port INTEGER NOT NULL DEFAULT 19999,
+                    port_hopping INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS subscription_defaults (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    nodes_json TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL UNIQUE REFERENCES proxy_users(id) ON DELETE CASCADE,
+                    token TEXT NOT NULL UNIQUE,
+                    token_seed BLOB,
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS subscription_nodes (
+                    id INTEGER PRIMARY KEY,
+                    subscription_id INTEGER NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+                    node_id TEXT,
+                    label TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    pin_sha256 TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+                    UNIQUE(subscription_id, label)
+                );
+                CREATE INDEX IF NOT EXISTS subscription_nodes_subscription_idx
+                    ON subscription_nodes(subscription_id);
                 CREATE TABLE IF NOT EXISTS sessions (
                     token_hash TEXT PRIMARY KEY,
                     admin_id INTEGER NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
@@ -2536,6 +2686,7 @@ class Database:
                     platform TEXT,
                     architecture TEXT,
                     agent_version TEXT,
+                    tier TEXT NOT NULL DEFAULT 'standard' CHECK (tier IN ('standard', 'premium')),
                     created_at INTEGER NOT NULL,
                     registered_at INTEGER,
                     last_seen_at INTEGER
@@ -2671,6 +2822,9 @@ class Database:
                 )
             migrations = {
                 "token_seed": "ALTER TABLE proxy_users ADD COLUMN token_seed BLOB",
+                "starts_at": "ALTER TABLE proxy_users ADD COLUMN starts_at INTEGER",
+                "user_type": "ALTER TABLE proxy_users ADD COLUMN user_type INTEGER NOT NULL DEFAULT 0",
+                "expires_at": "ALTER TABLE proxy_users ADD COLUMN expires_at INTEGER",
                 "device_limit": "ALTER TABLE proxy_users ADD COLUMN device_limit INTEGER NOT NULL DEFAULT 3",
                 "traffic_limit_bytes": "ALTER TABLE proxy_users ADD COLUMN traffic_limit_bytes INTEGER NOT NULL DEFAULT 268435456000",
                 "tx_bytes": "ALTER TABLE proxy_users ADD COLUMN tx_bytes INTEGER NOT NULL DEFAULT 0",
@@ -2711,10 +2865,22 @@ class Database:
             for column, statement in budget_migrations.items():
                 if column not in budget_columns:
                     connection.execute(statement)
+            profile_columns = {row["name"] for row in connection.execute("PRAGMA table_info(premium_node_profiles)")}
+            if "listen_port" not in profile_columns:
+                connection.execute("ALTER TABLE premium_node_profiles ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 19999")
+            if "port_hopping" not in profile_columns:
+                connection.execute("ALTER TABLE premium_node_profiles ADD COLUMN port_hopping INTEGER NOT NULL DEFAULT 0")
             node_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(nodes)")
             }
             node_migrations = {
+                "port_hopping": "ALTER TABLE nodes ADD COLUMN port_hopping INTEGER NOT NULL DEFAULT 0",
+                "listen_port": "ALTER TABLE nodes ADD COLUMN listen_port INTEGER NOT NULL DEFAULT 19999",
+                "region": "ALTER TABLE nodes ADD COLUMN region TEXT NOT NULL DEFAULT ''",
+                "subscription_host": "ALTER TABLE nodes ADD COLUMN subscription_host TEXT NOT NULL DEFAULT ''",
+                "subscription_port": "ALTER TABLE nodes ADD COLUMN subscription_port INTEGER NOT NULL DEFAULT 19999",
+                "identity_json": "ALTER TABLE nodes ADD COLUMN identity_json TEXT",
+
                 "verified_at": "ALTER TABLE nodes ADD COLUMN verified_at INTEGER",
                 "verified_by": "ALTER TABLE nodes ADD COLUMN verified_by TEXT",
                 "last_heartbeat_at": "ALTER TABLE nodes ADD COLUMN last_heartbeat_at INTEGER",
@@ -2750,6 +2916,10 @@ class Database:
                 "budget_checked_at": "ALTER TABLE nodes ADD COLUMN budget_checked_at INTEGER",
                 "lifecycle_changed_by": (
                     "ALTER TABLE nodes ADD COLUMN lifecycle_changed_by TEXT"
+                ),
+                "tier": (
+                    "ALTER TABLE nodes ADD COLUMN tier "
+                    "TEXT NOT NULL DEFAULT 'standard'"
                 ),
             }
             for column, statement in node_migrations.items():
@@ -3101,7 +3271,10 @@ class Database:
         token=None,
         device_limit=DEFAULT_DEVICE_LIMIT,
         traffic_limit_bytes=DEFAULT_TRAFFIC_LIMIT_BYTES,
-        allow_udp_443=False,
+        allow_udp_443=True,
+        user_type=0,
+        expires_at=None,
+        starts_at=None,
     ):
         name = _validate_name(name)
         device_limit = int(device_limit)
@@ -3111,6 +3284,17 @@ class Database:
         if not 1 <= traffic_limit_bytes <= MAX_TRAFFIC_LIMIT_BYTES:
             raise ValueError("traffic limit is out of range")
         allow_udp_443 = int(bool(allow_udp_443))
+        user_type = int(user_type)
+        if user_type not in (0, 1):
+            raise ValueError("user type must be 0 (standard) or 1 (premium)")
+        if expires_at is not None:
+            expires_at = int(expires_at)
+            if expires_at <= 0:
+                raise ValueError("expires_at must be a positive timestamp")
+        if starts_at is not None:
+            starts_at = int(starts_at)
+            if starts_at <= 0 or (expires_at is not None and starts_at >= expires_at):
+                raise ValueError("开通时间必须早于到期时间")
         token_seed = None
         if token is None:
             token_seed = secrets.token_bytes(32)
@@ -3128,9 +3312,10 @@ class Database:
                 cursor = connection.execute(
                     """INSERT INTO proxy_users(
                     name, token_fingerprint, token_seed, enabled, device_limit,
-                    traffic_limit_bytes, allow_udp_443, tx_bytes, rx_bytes,
+                    traffic_limit_bytes, allow_udp_443, user_type, expires_at, starts_at,
+                    tx_bytes, rx_bytes,
                     created_at, updated_at
-                    ) VALUES (?, ?, ?, 1, ?, ?, ?, 0, 0, ?, ?)""",
+                     ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)""",
                     (
                         name,
                         self._fingerprint(token),
@@ -3138,6 +3323,9 @@ class Database:
                         device_limit,
                         traffic_limit_bytes,
                         allow_udp_443,
+                        user_type,
+                        expires_at,
+                        starts_at,
                         now,
                         now,
                     ),
@@ -3147,13 +3335,17 @@ class Database:
             raise ValueError("用户名或认证密钥已存在，请检查后重试") from exc
 
     def authenticate_token(self, token, require_udp_443=False):
+        # Retain the argument/schema for old clients and backups; ports are node-wide now.
         if not isinstance(token, str) or not 1 <= len(token) <= 512:
             return None
         with self._connect() as connection:
-            query = "SELECT name FROM proxy_users WHERE token_fingerprint = ? AND enabled = 1"
-            if require_udp_443:
-                query += " AND allow_udp_443 = 1"
-            row = connection.execute(query, (self._fingerprint(token),)).fetchone()
+            query = (
+                "SELECT name FROM proxy_users WHERE token_fingerprint = ? AND enabled = 1"
+                " AND user_type = 0 AND (starts_at IS NULL OR starts_at <= ?)"
+                " AND (expires_at IS NULL OR expires_at > ?)"
+            )
+            params = [self._fingerprint(token), int(time.time()), int(time.time())]
+            row = connection.execute(query, params).fetchone()
         return row["name"] if row else None
 
     def user_usage(self, fingerprint, local_checkpoint, now, admit=None):
@@ -3172,7 +3364,7 @@ class Database:
             )
             connection.execute("BEGIN")
             user = connection.execute(
-                """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes, device_limit
+                """SELECT name, user_type, tx_bytes, rx_bytes, traffic_limit_bytes, device_limit
                 FROM proxy_users WHERE token_fingerprint = ?""",
                 (fingerprint,),
             ).fetchone()
@@ -3180,11 +3372,17 @@ class Database:
                 admit(None if user is None else user["device_limit"])
             if user is None:
                 raise UserUsageError(401, "INVALID_CREDENTIALS")
-            if local_checkpoint is None:
-                raise UserUsageError(503, "STATS_UNAVAILABLE")
-            traffic_at, online_at, local_online = local_checkpoint
-            online = local_online.get(user["name"], 0)
-            observations = [traffic_at, online_at]
+            premium = user["user_type"] == 1
+            if premium:
+                # Premium accounts authenticate only on remote premium nodes.
+                traffic_at, online_at, online = now, now, 0
+                observations = []
+            else:
+                if local_checkpoint is None:
+                    raise UserUsageError(503, "STATS_UNAVAILABLE")
+                traffic_at, online_at, local_online = local_checkpoint
+                online = local_online.get(user["name"], 0)
+                observations = [traffic_at, online_at]
             nodes = connection.execute(
                 """SELECT n.status, n.policy_state, s.sequence, s.observed_at,
                     s.traffic_acked_at, s.accepted_at, c.traffic_observed_at,
@@ -3194,10 +3392,10 @@ class Database:
                 LEFT JOIN node_usage_checkpoints AS c ON c.node_id = n.node_id
                 LEFT JOIN node_online_counts AS o
                     ON o.node_id = n.node_id AND o.user_name = ?
-                WHERE n.status NOT IN ('revoked', 'pending_registration')
+                WHERE n.tier = ? AND n.status NOT IN ('revoked', 'pending_registration')
                     AND COALESCE(n.lifecycle_state, 'active')
                         NOT IN ('stopped', 'archived')""",
-                (user["name"],),
+                (user["name"], "premium" if premium else "standard"),
             )
             for node in nodes:
                 if (node["status"] != "pending_verification"
@@ -3216,7 +3414,7 @@ class Database:
                 traffic_at = min(traffic_at, node["traffic_observed_at"])
                 online_at = min(online_at, node["observed_at"])
                 online += node["count"]
-            if any(type(value) is not int or value < 0 or value > now
+            if not observations or any(type(value) is not int or value < 0 or value > now
                    for value in observations):
                 raise UserUsageError(503, "STATS_UNAVAILABLE")
             expires_at = min(observations) + USER_USAGE_TTL_SECONDS
@@ -3243,7 +3441,8 @@ class Database:
 
     def _get_proxy_user(self, user_id, connection):
         row = connection.execute(
-            """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+            """SELECT id, name, enabled, generation, user_type, expires_at, starts_at,
+            device_limit, traffic_limit_bytes,
             allow_udp_443,
             tx_bytes, rx_bytes, created_at, updated_at
             FROM proxy_users WHERE id = ?""",
@@ -3260,7 +3459,8 @@ class Database:
     def get_proxy_user_by_name(self, name):
         with self._connect() as connection:
             row = connection.execute(
-                """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                """SELECT id, name, enabled, generation, user_type, expires_at, starts_at,
+                device_limit, traffic_limit_bytes,
                 allow_udp_443,
                 tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users WHERE name = ? COLLATE NOCASE""",
@@ -3292,6 +3492,35 @@ class Database:
             if cursor.rowcount != 1:
                 raise ConflictError("proxy user changed; refresh and try again")
 
+    def expire_proxy_users(self, now):
+        """Disable due accounts once and persist remote disconnects in the same transaction."""
+        now = int(now)
+        with self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM proxy_users WHERE enabled = 1 AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 1",
+                (now,),
+            ).fetchone() is None:
+                return []
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, name FROM proxy_users WHERE enabled = 1 AND expires_at IS NOT NULL AND expires_at <= ?",
+                (now,),
+            ).fetchall()
+            if not rows:
+                return []
+            connection.execute(
+                """UPDATE proxy_users SET enabled = 0, generation = generation + 1,
+                updated_at = ?, local_drain_started_at = ?
+                WHERE enabled = 1 AND expires_at IS NOT NULL AND expires_at <= ?""", (now, now, now),
+            )
+            names = [row["name"] for row in rows]
+            self._queue_kick_users_on_ready_nodes(connection, names, now)
+            connection.executemany(
+                "INSERT INTO audit_log(created_at,actor,action,target,remote_ip) VALUES (?,'system:expiry','proxy_user_expired',?,'')",
+                [(now, name) for name in names],
+            )
+            return names
+
     def update_proxy_user_limits(
         self,
         user_id,
@@ -3300,6 +3529,8 @@ class Database:
         allow_udp_443=None,
         expected_generation=None,
         used_traffic_bytes=None,
+        expires_at=...,
+        starts_at=...,
     ):
         device_limit = int(device_limit)
         traffic_limit_bytes = int(traffic_limit_bytes)
@@ -3314,6 +3545,10 @@ class Database:
             or not 0 <= used_traffic_bytes <= MAX_TRAFFIC_LIMIT_BYTES
         ):
             raise ValueError("已用流量超出允许范围")
+        if expires_at is not ... and expires_at is not None:
+            expires_at = int(expires_at)
+            if expires_at <= 0:
+                raise ValueError("expires_at must be a positive timestamp")
         now = int(time.time())
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -3324,15 +3559,24 @@ class Database:
             udp_443_value = row["allow_udp_443"]
             if allow_udp_443 is not None:
                 udp_443_value = int(bool(allow_udp_443))
+            expires_value = row["expires_at"] if expires_at is ... else expires_at
+            starts_value = row["starts_at"] if starts_at is ... else starts_at
+            if starts_value is not None:
+                starts_value = int(starts_value)
+                if starts_value <= 0 or (expires_value is not None and starts_value >= expires_value):
+                    raise ValueError("开通时间必须早于到期时间")
             cursor = connection.execute(
                 """UPDATE proxy_users
                 SET device_limit = ?, traffic_limit_bytes = ?, allow_udp_443 = ?,
+                    expires_at = ?, starts_at = ?,
                     generation = generation + 1, updated_at = ?
                 WHERE id = ? AND generation = ?""",
                 (
                     device_limit,
                     traffic_limit_bytes,
                     udp_443_value,
+                    expires_value,
+                    starts_value,
                     now,
                     row["id"],
                     generation,
@@ -3343,6 +3587,9 @@ class Database:
             if used_traffic_bytes is not None:
                 self._set_user_used_traffic(connection, row, used_traffic_bytes, now)
             updated = self._get_proxy_user(row["id"], connection)
+            if ((updated["starts_at"] is not None and updated["starts_at"] > now)
+                    or (updated["expires_at"] is not None and updated["expires_at"] <= now)):
+                self._queue_kick_users_on_ready_nodes(connection, [row["name"]], now)
             if updated["tx_bytes"] + updated["rx_bytes"] >= updated["traffic_limit_bytes"]:
                 self._queue_kick_users_on_ready_nodes(
                     connection, [row["name"]], now, quota_only=True
@@ -3447,7 +3694,8 @@ class Database:
             total = connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
             rows = connection.execute(
                 """
-                SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                SELECT id, name, enabled, generation, user_type, expires_at, starts_at,
+                device_limit, traffic_limit_bytes,
                 allow_udp_443,
                 tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users ORDER BY name COLLATE NOCASE LIMIT ? OFFSET ?
@@ -3463,10 +3711,285 @@ class Database:
             ).fetchall()
         return [row["name"] for row in rows]
 
+    def ensure_subscription(self, user_id):
+        """Idempotent issuance: sharing never rotates an existing URL."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._get_proxy_user(int(user_id), connection)
+            row = connection.execute(
+                "SELECT id, token_seed FROM subscriptions WHERE user_id = ?", (int(user_id),)
+            ).fetchone()
+            if row:
+                if row["token_seed"] is None:
+                    raise ValueError("订阅凭据不可恢复，请显式重置订阅链接")
+                return {"id": row["id"], "token": self._subscription_token_from_seed(bytes(row["token_seed"]))}
+            seed = secrets.token_bytes(32)
+            token = self._subscription_token_from_seed(seed)
+            now = int(time.time())
+            cursor = connection.execute(
+                "INSERT INTO subscriptions(user_id,token,token_seed,enabled,created_at,updated_at) VALUES (?,?,?,1,?,?)",
+                (int(user_id), self._fingerprint(token), seed, now, now),
+            )
+            return {"id": cursor.lastrowid, "token": token}
+
+    def update_premium_node_profile(self, node_id, label, host, port):
+        label = _validate_name(label)
+        host = str(host).strip().lower()
+        port = int(port)
+        if not re.fullmatch(r"(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", host) or not 1 <= port <= 65535:
+            raise ValueError("节点地址或端口无效")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute("SELECT tier FROM nodes WHERE node_id = ?", (node_id,)).fetchone()
+            if node is None or node["tier"] != "premium":
+                raise ValueError("高级节点不存在")
+            connection.execute("UPDATE premium_node_profiles SET label=?, host=?, port=? WHERE node_id=?",
+                (label, host, port, node_id))
+            connection.execute("UPDATE nodes SET name=?, subscription_host=?, subscription_port=? WHERE node_id=?",
+                (label, host, port, node_id))
+
+    def get_or_create_node_identity(self, node_id, policy_provider):
+        # Persist one independent identity per advanced server. A transaction
+        # serializes bootstrap retries so they cannot observe different pins.
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            node = connection.execute("SELECT * FROM nodes WHERE node_id = ? AND tier = 'premium'", (node_id,)).fetchone()
+            if node is None:
+                raise ValueError("高级节点不存在")
+            profile = connection.execute("SELECT identity_json FROM premium_node_profiles WHERE node_id = ?", (node_id,)).fetchone()
+            if profile is None:
+                raise ValueError("专线配置缺失，请恢复备份后重新对接该地区节点")
+            if profile["identity_json"]:
+                return json.loads(profile["identity_json"])
+            with tempfile.TemporaryDirectory(prefix="hy2-node-cert-") as directory:
+                cert, key = Path(directory) / "cert.pem", Path(directory) / "key.pem"
+                openssl = shutil.which("openssl")
+                if openssl is None:
+                    raise RuntimeError("openssl is required for node identity")
+                subprocess.run([openssl, "req", "-x509", "-newkey", "ec",  # nosec B603 -- fixed argv, validated hostname, private temporary paths.
+                    "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "3650",
+                    "-subj", "/CN=" + node["subscription_host"],
+                    "-addext", "subjectAltName=DNS:" + node["subscription_host"],
+                    "-keyout", str(key), "-out", str(cert)],
+                    check=True, capture_output=True, timeout=15)
+                identity = HysteriaIdentityProvider(cert, key,
+                    lambda: policy_provider()["egressPolicy"], openssl_executable=openssl)()
+            connection.execute("UPDATE premium_node_profiles SET identity_json = ? WHERE node_id = ?",
+                (json.dumps(identity), node_id))
+            return identity
+
+    def premium_subscription_nodes(self):
+        with self._connect() as connection:
+            rows = connection.execute("""SELECT n.*, p.label AS line_label, p.host AS line_host,
+                p.port AS line_port, p.identity_json AS line_identity
+                FROM nodes AS n JOIN premium_node_profiles AS p ON p.node_id = n.node_id
+                WHERE tier = 'premium'
+                AND status = 'pending_verification' AND verified_at IS NOT NULL
+                AND policy_state = 'protocol_ready' AND lifecycle_state = 'active'
+                AND data_plane_state = 'dns_admitted'
+                AND p.identity_json IS NOT NULL ORDER BY p.region, created_at DESC""").fetchall()
+        result, seen = [], set()
+        for row in rows:
+            if row["region"] in seen or not row["subscription_host"]:
+                continue
+            identity = json.loads(row["line_identity"])
+            result.append({"node_id": row["node_id"], "label": row["line_label"],
+                "host": row["line_host"], "port": row["line_port"],
+                "pin_sha256": identity["certificateDerSha256"], "enabled": True,
+                **({"hop_ports": "20000-50000"} if row["port_hopping"] else {})})
+            seen.add(row["region"])
+        return result
+
+    def get_subscription_defaults(self):
+        with self._connect() as connection:
+            row = connection.execute("SELECT nodes_json FROM subscription_defaults WHERE id = 1").fetchone()
+        return json.loads(row[0]) if row else None
+
+    def set_subscription_defaults(self, nodes):
+        nodes = validate_subscription_nodes(nodes)
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO subscription_defaults(id,nodes_json,updated_at) VALUES (1,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET nodes_json=excluded.nodes_json,updated_at=excluded.updated_at",
+                (json.dumps(nodes, ensure_ascii=False), int(time.time())),
+            )
+
+    def create_subscription(self, user_id, token=None):
+        """Create a subscription for a proxy user. Each user has at most one."""
+        user_id = int(user_id)
+        token_seed = None
+        if token is None:
+            token_seed = secrets.token_bytes(32)
+            token = self._subscription_token_from_seed(token_seed)
+        token = _validate_token(token)
+        now = int(time.time())
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._get_proxy_user(user_id, connection)
+                cursor = connection.execute(
+                    """INSERT INTO subscriptions(user_id, token, token_seed, enabled, created_at, updated_at)
+                    VALUES (?, ?, ?, 1, ?, ?)""",
+                    (user_id, self._fingerprint(token), token_seed, now, now),
+                )
+                return {"id": cursor.lastrowid, "token": token}
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("该用户已存在订阅，或订阅令牌冲突") from exc
+
+    def _subscription_token_from_seed(self, seed):
+        digest = hmac.new(
+            self.hmac_key, b"subscription-token\0" + seed, hashlib.sha256
+        ).digest()
+        return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+    def recover_subscription_token(self, subscription_id):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT token_seed FROM subscriptions WHERE id = ?",
+                (int(subscription_id),),
+            ).fetchone()
+        if not row:
+            raise KeyError("subscription not found")
+        seed = row["token_seed"]
+        return self._subscription_token_from_seed(bytes(seed)) if seed is not None else None
+
+    def get_subscription(self, subscription_id=None, user_id=None):
+        if subscription_id is not None:
+            clause = "WHERE s.id = ?"
+            param = (int(subscription_id),)
+        elif user_id is not None:
+            clause = "WHERE s.user_id = ?"
+            param = (int(user_id),)
+        else:
+            raise ValueError("subscription_id or user_id is required")
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""SELECT s.id, s.user_id, s.enabled, s.created_at, s.updated_at,  -- fixed query shape
+                    u.name AS user_name, u.user_type, u.starts_at, u.expires_at
+                    FROM subscriptions AS s
+                    JOIN proxy_users AS u ON u.id = s.user_id
+                    {clause}""",  # nosec B608 -- clause is one of two fixed literals; IDs are bound.
+                param,
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_subscription_by_token(self, token):
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT s.id, s.user_id, s.enabled, s.created_at, s.updated_at,
+                    u.name AS user_name, u.user_type, u.starts_at, u.expires_at, u.enabled AS user_enabled, u.allow_udp_443,
+                    u.tx_bytes, u.rx_bytes, u.traffic_limit_bytes
+                    FROM subscriptions AS s
+                    JOIN proxy_users AS u ON u.id = s.user_id
+                    WHERE s.token = ?""",
+                (self._fingerprint(token),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_subscription_enabled(self, subscription_id, enabled):
+        now = int(time.time())
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE subscriptions SET enabled = ?, updated_at = ? WHERE id = ?",
+                (1 if enabled else 0, now, int(subscription_id)),
+            )
+            return cursor.rowcount == 1
+
+    def list_subscriptions(self):
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT s.id, s.user_id, s.enabled, s.created_at, s.updated_at,
+                    u.name AS user_name, u.user_type, u.starts_at, u.expires_at
+                    FROM subscriptions AS s
+                    JOIN proxy_users AS u ON u.id = s.user_id
+                    ORDER BY s.id"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_subscription_nodes(self, subscription_id, nodes):
+        """Replace the node set of a subscription.
+
+        ``nodes`` is an iterable of dicts with keys: node_id, label, host,
+        port, pin_sha256, enabled.
+        """
+        now = int(time.time())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM subscription_nodes WHERE subscription_id = ?",
+                (int(subscription_id),),
+            )
+            for node in nodes:
+                node_id = node.get("node_id")
+                connection.execute(
+                    """INSERT INTO subscription_nodes(
+                        subscription_id, node_id, label, host, port, pin_sha256, enabled
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        int(subscription_id),
+                        str(node_id) if node_id else None,
+                        str(node["label"]),
+                        str(node["host"]),
+                        int(node["port"]),
+                        str(node["pin_sha256"]),
+                        int(bool(node.get("enabled", True))),
+                    ),
+                )
+            connection.execute(
+                "UPDATE subscriptions SET updated_at = ? WHERE id = ?",
+                (now, int(subscription_id)),
+            )
+
+    def list_subscription_nodes(self, subscription_id):
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT node_id, label, host, port, pin_sha256, enabled
+                FROM subscription_nodes WHERE subscription_id = ? ORDER BY id""",
+                (int(subscription_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_subscription(self, subscription_id):
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM subscriptions WHERE id = ?", (int(subscription_id),)
+            )
+            return cursor.rowcount == 1
+
+    def regenerate_subscription_token(self, subscription_id):
+        """Revoke both leaked subscription and proxy credentials atomically."""
+        token_seed = secrets.token_bytes(32)
+        token = self._subscription_token_from_seed(token_seed)
+        proxy_seed = secrets.token_bytes(32)
+        proxy_token = self._token_from_seed(proxy_seed)
+        now = int(time.time())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT user_id FROM subscriptions WHERE id = ?", (int(subscription_id),)
+            ).fetchone()
+            if row is None:
+                raise KeyError("subscription not found")
+            user = self._get_proxy_user(row["user_id"], connection)
+            connection.execute(
+                """UPDATE subscriptions SET token = ?, token_seed = ?, updated_at = ?
+                WHERE id = ?""",
+                (self._fingerprint(token), token_seed, now, int(subscription_id)),
+            )
+            connection.execute(
+                """UPDATE proxy_users SET token_fingerprint = ?, token_seed = ?,
+                generation = generation + 1, updated_at = ?, local_drain_started_at = ?
+                WHERE id = ?""",
+                (self._fingerprint(proxy_token), proxy_seed, now, now, user["id"]),
+            )
+            self._queue_kick_users_on_ready_nodes(connection, [user["name"]], now)
+        return {"id": int(subscription_id), "token": token, "user_name": user["name"]}
+
     def list_proxy_users_for_usage(self):
         with self._connect() as connection:
             rows = connection.execute(
-                """SELECT id, name, enabled, generation, device_limit, traffic_limit_bytes,
+                """SELECT id, name, enabled, generation, user_type, expires_at, starts_at,
+                device_limit, traffic_limit_bytes,
                 allow_udp_443, local_drain_started_at,
                 tx_bytes, rx_bytes, created_at, updated_at
                 FROM proxy_users ORDER BY name COLLATE NOCASE"""
@@ -4479,6 +5002,15 @@ class Database:
             connection.execute("UPDATE proxy_users SET domain_usage_reset_at = ?", (now,))
             connection.execute("DELETE FROM domain_usage_monthly")
 
+    def reset_group_traffic(self, user_type):
+        now = int(time.time())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute("SELECT * FROM proxy_users WHERE user_type=?", (user_type,)).fetchall()
+            for user in rows:
+                self._set_user_used_traffic(connection, user, 0, now)
+            connection.execute("UPDATE proxy_users SET generation=generation+1,updated_at=? WHERE user_type=?", (now,user_type))
+
     def reset_all_traffic(self):
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -4528,16 +5060,58 @@ class Database:
         token_digest,
         created_at,
         expires_at,
+        tier="standard",
+        region="",
+        subscription_host="",
+        subscription_port=19999,
+        port_hopping=False,
     ):
+        if type(port_hopping) is not bool:
+            raise ValueError("端口跳跃开关无效")
+        if tier not in {"standard", "premium"}:
+            raise ValueError("线路类型无效")
+        if tier == "premium" and region not in {"hk", "us", "jp", "sg"}:
+            raise ValueError("高级线路必须选择香港、美国、日本或新加坡")
+        if subscription_host and not re.fullmatch(r"(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?", subscription_host):
+            raise ValueError("节点地址无效")
+        if tier == "premium" and not subscription_host:
+            raise ValueError("请填写专线节点订阅地址")
+        subscription_port = int(subscription_port)
+        if not 1 <= subscription_port <= 65535 or subscription_port in {443, 19995, 19996, 19997}:
+            raise ValueError("主监听端口不能占用 443 或 19995–19997 保留端口")
         node_id = uuid.uuid4().hex
         enrollment_id = uuid.uuid4().hex
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            saved = None
+            listen_port = subscription_port
+            if port_hopping:
+                subscription_port = 443
+            if tier == "premium":
+                # A region is a stable logical line. Restore its identity before
+                # authorizing a newly enrolled replacement machine.
+                saved = connection.execute("""SELECT p.* FROM premium_node_profiles AS p
+                    LEFT JOIN nodes AS n ON n.node_id=p.node_id
+                    WHERE p.region=? AND (n.node_id IS NULL OR n.status='revoked')
+                    ORDER BY p.node_id LIMIT 1""", (region,)).fetchone()
+                active = connection.execute("SELECT 1 FROM nodes WHERE tier='premium' AND region=? AND status!='revoked'", (region,)).fetchone()
+                if active:
+                    raise ValueError("该地区已有专线节点，请先移除旧对接后再替换")
+                if saved:
+                    name, subscription_host, subscription_port = saved["label"], saved["host"], saved["port"]
+                    listen_port = saved["listen_port"]
+                    port_hopping = bool(saved["port_hopping"])
             connection.execute(
                 """INSERT INTO nodes(
-                    node_id, name, expected_ip, status, created_at
-                ) VALUES (?, ?, ?, 'pending_registration', ?)""",
-                (node_id, name, expected_ip, created_at),
+                    node_id, name, expected_ip, status, created_at, tier, region, subscription_host, subscription_port, listen_port, port_hopping
+                ) VALUES (?, ?, ?, 'pending_registration', ?, ?, ?, ?, ?, ?, ?)""",
+                (node_id, name, expected_ip, created_at, tier, region, subscription_host, subscription_port, listen_port, int(port_hopping)),
             )
+            if saved:
+                connection.execute("UPDATE premium_node_profiles SET node_id=? WHERE node_id=?", (node_id,saved["node_id"]))
+            elif tier == "premium":
+                connection.execute("""INSERT INTO premium_node_profiles(node_id, region, label, host, port, listen_port, port_hopping)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""", (node_id, region, name, subscription_host, subscription_port, listen_port, int(port_hopping)))
             connection.execute(
                 """INSERT INTO node_enrollments(
                     enrollment_id, node_id, token_digest, created_by,
@@ -4556,6 +5130,7 @@ class Database:
             "node_id": node_id,
             "enrollment_id": enrollment_id,
             "expires_at": expires_at,
+            "restored_profile": saved is not None,
         }
 
     def revoke_node_enrollment(self, enrollment_id, revoked_at):
@@ -5474,7 +6049,7 @@ class Database:
                     connection, node_id, "auth", nonce_digest, now
                 )
                 node = connection.execute(
-                    """SELECT policy_state, lifecycle_state FROM nodes
+                    """SELECT policy_state, lifecycle_state, tier FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -5508,6 +6083,7 @@ class Database:
                     "__hy2panel_bootstrap_canary__" if allowed else None
                 )
                 if canary_grant is None:
+                    tier = node["tier"]
                     # A queued stop has not stopped old QUIC sessions. Keep its
                     # snapshots in the existing fail-closed capacity contract.
                     ready_count = connection.execute(
@@ -5515,7 +6091,7 @@ class Database:
                         WHERE policy_state = 'protocol_ready'
                             AND status = 'pending_verification'
                             AND verified_at IS NOT NULL
-                            AND lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')"""
+                            AND tier = ? AND lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')""", (tier,)
                     ).fetchone()[0]
                     fresh_count = connection.execute(
                         """SELECT COUNT(*) FROM nodes AS n
@@ -5524,9 +6100,10 @@ class Database:
                             AND n.status = 'pending_verification'
                             AND n.verified_at IS NOT NULL
                             AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')
-                            AND s.accepted_at >= ? AND s.observed_at >= ?
+                            AND n.tier = ? AND s.accepted_at >= ? AND s.observed_at >= ?
                             AND s.traffic_acked_at >= ?""",
                         (
+                            tier,
                             int(now) - int(freshness_seconds),
                             int(now) - int(freshness_seconds),
                             int(now) - int(freshness_seconds),
@@ -5534,14 +6111,23 @@ class Database:
                     ).fetchone()[0]
                     if ready_count == 0 or fresh_count != ready_count:
                         raise sqlite3.IntegrityError("node state is stale")
-                    query = """SELECT name, enabled, device_limit,
+                    query = """SELECT name, enabled, device_limit, user_type,
+                        expires_at,
                         traffic_limit_bytes, tx_bytes, rx_bytes FROM proxy_users
-                        WHERE token_fingerprint = ? AND enabled = 1"""
-                    if require_udp_443:
-                        query += " AND allow_udp_443 = 1"
+                        WHERE token_fingerprint = ? AND enabled = 1
+                        AND (expires_at IS NULL OR expires_at > ?)
+                        AND (starts_at IS NULL OR starts_at <= ?)"""
                     user = connection.execute(
-                        query, (self._fingerprint(token),)
+                        query, (self._fingerprint(token), int(now), int(now))
                     ).fetchone()
+                    if user is not None:
+                        node_tier = connection.execute(
+                            "SELECT tier FROM nodes WHERE node_id = ?",
+                            (node_id,),
+                        ).fetchone()
+                        tier = node_tier["tier"] if node_tier else "standard"
+                        if int(user["user_type"]) != (1 if tier == "premium" else 0):
+                            user = None
                     if user is not None:
                         user_name = user["name"]
                         remote_online = connection.execute(
@@ -5657,14 +6243,14 @@ class Database:
                     """SELECT COUNT(*) FROM nodes
                     WHERE policy_state = 'protocol_ready'
                         AND status = 'pending_verification' AND verified_at IS NOT NULL
-                        AND lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')"""
+                        AND tier = 'standard' AND lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')"""
                 ).fetchone()[0]
                 fresh_count = connection.execute(
                     """SELECT COUNT(*) FROM nodes AS n
                     JOIN node_online_snapshots AS s ON s.node_id = n.node_id
                     WHERE n.policy_state = 'protocol_ready'
                         AND n.status = 'pending_verification' AND n.verified_at IS NOT NULL
-                        AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')
+                        AND n.tier = 'standard' AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')
                         AND s.accepted_at >= ? AND s.observed_at >= ?
                         AND s.traffic_acked_at >= ?""",
                     (
@@ -5679,9 +6265,10 @@ class Database:
                     """SELECT name, enabled, device_limit, traffic_limit_bytes,
                         tx_bytes, rx_bytes FROM proxy_users
                     WHERE name = ? COLLATE NOCASE AND enabled = 1
-                        AND local_drain_started_at IS NULL
-                        AND (? = 0 OR allow_udp_443 = 1)""",
-                    (name, int(bool(require_udp_443))),
+                        AND user_type = 0 AND (starts_at IS NULL OR starts_at <= ?)
+                        AND (expires_at IS NULL OR expires_at > ?)
+                        AND local_drain_started_at IS NULL""",
+                    (name, int(now), int(now)),
                 ).fetchone()
                 if user is None:
                     return False
@@ -6699,14 +7286,41 @@ def handle_auth_payload(database, raw_body, usage_manager=None, require_udp_443=
     return 200, {"ok": bool(user_id), "id": user_id or ""}
 
 
-def build_connection_uri(host, port, auth, pin_sha256, label):
+def validate_subscription_nodes(nodes, allow_empty=False):
+    if not isinstance(nodes, list) or len(nodes) > 32 or (not nodes and not allow_empty):
+        raise ValueError("需要 1–32 个节点")
+    normalized, labels = [], set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            raise ValueError("节点格式无效")
+        label = str(node.get("label", "")).strip()
+        host = str(node.get("host", "")).strip()
+        pin = str(node.get("pin_sha256", "")).replace(":", "").lower()
+        port = int(node.get("port", 0))
+        if (not label or len(label) > 80 or label in labels or any(ord(c) < 32 for c in label)
+                or not host or len(host) > 253 or not re.fullmatch(r"[A-Za-z0-9.:-]+", host)
+                or not 1 <= port <= 65535 or not re.fullmatch(r"[0-9a-f]{64}", pin)
+                or type(node.get("enabled", True)) is not bool):
+            raise ValueError("节点字段无效或名称重复")
+        labels.add(label)
+        normalized.append({"label": label, "host": host, "port": port, "pin_sha256": pin,
+                           "enabled": node.get("enabled", True), "node_id": node.get("node_id")})
+    if normalized and not any(n["enabled"] for n in normalized):
+        raise ValueError("至少启用一个节点")
+    return normalized
+
+
+def build_connection_uri(host, port, auth, pin_sha256, label, hop_ports=None, shadowrocket=False):
     bracketed_host = "[{}]".format(host) if ":" in host and not host.startswith("[") else host
     encoded_auth = urllib.parse.quote(auth, safe="")
-    query = urllib.parse.urlencode({"insecure": "1", "pinSHA256": pin_sha256})
+    parameters = {"insecure": "1", "pinSHA256": pin_sha256}
+    if shadowrocket and hop_ports == PortHoppingController.PORTS:
+        parameters.update(mport=hop_ports, keepalive="30")
+    query = urllib.parse.urlencode(parameters)
     return "hysteria2://{}@{}:{}/?{}#{}".format(
         encoded_auth,
         bracketed_host,
-        int(port),
+        hop_ports if hop_ports == PortHoppingController.PORTS and not shadowrocket else int(port),
         query,
         urllib.parse.quote(label, safe=""),
     )
@@ -6868,6 +7482,9 @@ class JsonHandler(BaseHTTPRequestHandler):
         path = str(getattr(self, "path", "")).split("?", 1)[0]
         path = path.replace("\r\n", "").replace("\n", "").replace("\r", "")
         message = (message_format % args).replace("\r\n", "").replace("\n", "").replace("\r", "")
+        if path.startswith("/sub/"):
+            path = "/sub/[redacted]"
+            message = "subscription request"
         if path.startswith("/api/v1/user/") or getattr(self, "_is_user_usage_request", False):
             path = "/api/v1/user/usage"
             message = "user usage request"
@@ -7216,8 +7833,10 @@ class PanelApplication:
         offsite_backup_status_path=Path(
             "/var/lib/hysteria2-panel/offsite-backup-status.json"
         ),
+        subscription_name="私家车",
     ):
         self.database = database
+        self.subscription_base_url = ""
         self.public_host = public_host
         self.hysteria_port = int(hysteria_port)
         self.pin_sha256 = pin_sha256
@@ -7247,6 +7866,8 @@ class PanelApplication:
         self.update_result = None
         self.update_lock = threading.Lock()
         self.node_name = node_name
+        self.subscription_name = subscription_name
+        self.port_hopping_controller = PortHoppingController()
         self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
         self.user_usage_limiter = UserUsageRateLimiter()
@@ -7508,6 +8129,10 @@ class PanelHandler(JsonHandler):
         return urllib.parse.urlsplit(self.path).path
 
     def _redirect(self, location, cookie=None):
+        if location == "/" and cookie is None:
+            previous = urllib.parse.urlsplit(self.headers.get("Referer", ""))
+            if previous.path == "/" and urllib.parse.parse_qs(previous.query).get("type") == ["premium"]:
+                location = "/?type=premium"
         self.send_response(303)
         self.send_header("Location", location)
         if cookie:
@@ -7830,7 +8455,7 @@ class PanelHandler(JsonHandler):
                     payload.get("name", ""),
                     device_limit=device_limit,
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
-                    allow_udp_443=json_boolean(payload.get("allowUdp443", False)),
+                    allow_udp_443=(json_boolean(payload.get("allowUdp443", True)) or True),
                 )
             self._audit_safely(
                 self._mobile_actor(session), "proxy_user_created", credentials["name"]
@@ -8091,12 +8716,14 @@ class PanelHandler(JsonHandler):
                     device_limit=json_integer(payload.get("deviceLimit", "")),
                     traffic_limit_bytes=(current["traffic_limit_bytes"] if traffic_only else
                                          json_integer(payload.get("trafficLimitGb", "")) * 1024**3),
-                    allow_udp_443=json_boolean(payload.get("allowUdp443", False)),
+                    allow_udp_443=(json_boolean(payload.get("allowUdp443", True)) or True),
                     expected_generation=json_integer(payload.get("generation", "")),
                     used_traffic_bytes=(parse_used_traffic_gib(payload["usedTrafficGiB"])
                                         if "usedTrafficGiB" in payload else None),
                 )
-                if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
+                if (user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]
+                        or (user["starts_at"] is not None and user["starts_at"] > time.time())
+                        or (user["expires_at"] is not None and user["expires_at"] <= time.time())):
                     self._kick_safely(user["name"])
             self._audit_safely(
                 self._mobile_actor(session),
@@ -8230,6 +8857,7 @@ class PanelHandler(JsonHandler):
         status_filter="",
         online_filter="",
         udp443_filter="",
+        type_filter="",
     ):
         context = DashboardContext(
             logger=LOGGER,
@@ -8251,33 +8879,36 @@ class PanelHandler(JsonHandler):
             status_filter=status_filter,
             online_filter=online_filter,
             udp443_filter=udp443_filter,
+            type_filter=type_filter,
             context=context,
         )
 
+    def _subscription_url(self, token):
+        base = self.app.subscription_base_url
+        if not base:
+            host, port = self.server.server_address[:2]
+            base = "http://{}:{}".format("[{}]".format(host) if ":" in host else host, port)
+        return base.rstrip("/") + "/sub/" + token
+
+    def _default_subscription_nodes(self):
+        configured = self.app.database.get_subscription_defaults()
+        return configured if configured is not None else [{
+            "label": self.app.node_name, "host": self.app.public_host,
+            "port": 443, "pin_sha256": self.app.pin_sha256, "enabled": True,
+        }]
+
     def _connection_payload(self, credentials):
-        return {
-            "name": credentials["name"],
-            "uri": build_connection_uri(
-                self.app.public_host,
-                self.app.hysteria_port,
-                credentials["token"],
-                self.app.pin_sha256,
-                self.app.node_name,
-            ),
-        }
+        subscription = self.app.database.ensure_subscription(credentials["id"])
+        return {"name": credentials["name"], "uri": self._subscription_url(subscription["token"]),
+                "kind": "subscription"}
 
     def _credentials_page(self, session, credentials):
         uri = self._connection_payload(credentials)["uri"]
-        content = """<header class="topbar"><h1>连接分享</h1><span class="topbar-spacer"></span><a class="button secondary" href="/">返回控制台</a></header>
-<section class="card"><h2>{name}</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p>
-<div class="copy-grid"><div><label for="token">认证密钥</label><textarea id="token" rows="2" readonly>{token}</textarea></div><button class="secondary" type="button" data-copy-target="token">复制密钥</button></div>
-<div class="copy-grid"><div><label for="uri">Hysteria 2 连接地址</label><textarea id="uri" rows="4" readonly>{uri}</textarea></div><button type="button" data-copy-target="uri">一键复制分享</button></div>
-<p class="notice" role="status">客户端会使用自签名证书，并同时固定证书 SHA-256 指纹。</p></section>""".format(
-            name=html.escape(credentials["name"]),
-            token=html.escape(credentials["token"]),
-            uri=html.escape(uri),
-        )
-        return self._page("连接信息", content)
+        content = """<header class="topbar"><h1>订阅分享</h1><a class="button secondary" href="/">返回控制台</a></header>
+<section class="card"><h2>{name}</h2><p>将此链接添加到客户端的订阅中。以后刷新订阅即可同步节点配置和流量信息。</p>
+<div class="copy-grid"><div><label for="uri">固定订阅链接</label><textarea id="uri" rows="4" readonly>{uri}</textarea></div><button type="button" data-copy-target="uri">复制订阅链接</button></div>
+<p class="notice">订阅链接包含访问凭据，请只分享给该用户。</p></section>""".format(name=html.escape(credentials["name"]), uri=html.escape(uri))
+        return self._page("订阅信息", content)
 
     def _error_page(self, status, message):
         message = str(message)[:512]
@@ -8550,7 +9181,7 @@ class PanelHandler(JsonHandler):
                         addresses = {
                             str(ipaddress.ip_address(item[4][0]))
                             for item in socket.getaddrinfo(
-                                self.app.public_host,
+                                node.get("subscription_host") if node.get("tier") == "premium" else self.app.public_host,
                                 None,
                                 type=socket.SOCK_STREAM,
                             )
@@ -8593,6 +9224,11 @@ class PanelHandler(JsonHandler):
                 ttl_minutes=10,
                 actor=session["username"],
                 mode="join",
+                tier=form.get("tier", "standard"),
+                region=form.get("region", ""),
+                subscription_host=form.get("subscription_host", "").strip(),
+                subscription_port=19999,
+                port_hopping=form.get("port_hopping") == "1",
             )
         except (TypeError, ValueError) as exc:
             self.send_json(400, {"error": str(exc)})
@@ -8807,6 +9443,206 @@ class PanelHandler(JsonHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_subscription(self, token):
+        """Serve a subscription link payload for a premium proxy user.
+
+        The token is the subscription token (not the proxy auth token). It is
+        resolved to a subscription, then the owning user's proxy token is used
+        as the auth for every node in the subscription, so node authentication
+        still flows through the central panel's per-user checks.
+        """
+        try:
+            subscription = self.app.database.get_subscription_by_token(token)
+            if subscription is None:
+                self._send_subscription_error(404, "订阅不存在或已失效")
+                return
+            if not subscription["enabled"] or not subscription["user_enabled"]:
+                self._send_subscription_error(403, "订阅已停用")
+                return
+            if subscription["starts_at"] is not None and int(time.time()) < subscription["starts_at"]:
+                self._send_subscription_error(403, "账号尚未到开通时间")
+                return
+            if subscription["expires_at"] is not None and int(
+                time.time()
+            ) >= int(subscription["expires_at"]):
+                self._send_subscription_error(410, "订阅已到期")
+                return
+            nodes = self.app.database.list_subscription_nodes(
+                subscription["id"]
+            )
+            if int(subscription["user_type"]) == 1:
+                nodes = self.app.database.premium_subscription_nodes()
+            elif not nodes:
+                nodes = self._default_subscription_nodes()
+                with self.app.database._connect() as connection:
+                    remote_lines = connection.execute("""SELECT * FROM nodes WHERE tier='standard'
+                        AND status='pending_verification' AND policy_state='protocol_ready'
+                        AND lifecycle_state='active' AND data_plane_state='dns_admitted'
+                        AND verified_at IS NOT NULL AND subscription_host!=''""").fetchall()
+                occupied = {(n["host"].lower(), n["port"]) for n in nodes}
+                for remote in remote_lines:
+                    if (remote["subscription_host"].lower(), remote["subscription_port"]) in occupied:
+                        continue
+                    nodes.append({"node_id": remote["node_id"], "label": remote["name"],
+                        "host": remote["subscription_host"], "port": remote["subscription_port"],
+                        "pin_sha256": self.app.pin_sha256, "enabled": True,
+                        **({"hop_ports": "20000-50000"} if remote["port_hopping"] else {})})
+            else:
+                # A standard account may never publish a premium registry node.
+                with self.app.database._connect() as connection:
+                    premium = connection.execute("SELECT node_id, subscription_host FROM nodes WHERE tier = 'premium'").fetchall()
+                ids = {r["node_id"] for r in premium}
+                hosts = {r["subscription_host"].lower() for r in premium if r["subscription_host"]}
+                nodes = [n for n in nodes if n.get("node_id") not in ids and n["host"].lower() not in hosts]
+            if int(subscription["user_type"]) == 0:
+                with self.app.database._connect() as connection:
+                    premium_hosts = {r[0].lower() for r in connection.execute("SELECT host FROM premium_node_profiles")}
+                nodes = [n for n in nodes if n["host"].lower() not in premium_hosts]
+            nodes = [dict(node) for node in nodes if node["enabled"]]
+            hopping = self.app.port_hopping_controller.status()
+            with self.app.database._connect() as connection:
+                # A shared hostname must work on every admitted destination.
+                mixed_shared_hopping = connection.execute("""SELECT 1 FROM nodes
+                    WHERE tier='standard' AND status='pending_verification'
+                    AND policy_state='protocol_ready' AND lifecycle_state='active'
+                    AND data_plane_state='dns_admitted' AND port_hopping=0
+                    AND (subscription_host='' OR lower(subscription_host)=?) LIMIT 1""",
+                    (self.app.public_host.lower(),)).fetchone() is not None
+            for node in nodes:
+                if hopping["enabled"] and not mixed_shared_hopping and node["host"].lower() == self.app.public_host.lower() and node["port"] == hopping["target"]:
+                    node["hop_ports"] = hopping["ports"]
+            proxy_token = self.app.database.recover_proxy_token(
+                subscription["user_id"]
+            )
+            if proxy_token is None:
+                self._send_subscription_error(503, "订阅凭据不可用")
+                return
+            agent = self.headers.get("User-Agent", "").lower()
+            shadowrocket = "shadowrocket" in agent
+            lines = []
+            for node in nodes:
+                if not node["enabled"]:
+                    continue
+                lines.append(
+                    build_connection_uri(
+                        node["host"],
+                        node["port"],
+                        proxy_token,
+                        node["pin_sha256"],
+                        node["label"],
+                        hop_ports=node.get("hop_ports"), shadowrocket=shadowrocket,
+                    )
+                )
+            if not lines:
+                self._send_subscription_error(404, "订阅未配置任何节点")
+                return
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            output_format = query.get("format", [""])[0].lower()
+            agent = self.headers.get("User-Agent", "").lower()
+            if not output_format:
+                output_format = "clash" if any(x in agent for x in ("clash", "mihomo", "stash", "ssrvpn")) else "base64"
+            if output_format == "clash":
+                proxies = [{"name": n["label"], "type": "hysteria2", "server": n["host"],
+                            "port": n["port"], "password": proxy_token, "skip-cert-verify": True,
+                            "fingerprint": n["pin_sha256"].replace(":", ""),
+                            **({"ssrvpn-account-usage": {"version": 1,
+                                "origin": self.app.subscription_base_url.rstrip("/")}}
+                               if "ssrvpn" in agent and self.app.subscription_base_url.startswith("https://") else {}),
+                            **({"ports": n["hop_ports"], "hop-interval": 30} if n.get("hop_ports") else {})} for n in nodes]
+                body = json.dumps({"proxies": proxies, "proxy-groups": [{"name": "订阅节点", "type": "select",
+                    "proxies": [n["label"] for n in nodes]}], "rules": ["MATCH,订阅节点"]}, ensure_ascii=False).encode()
+                content_type = "application/yaml; charset=utf-8"
+            elif output_format in ("base64", "raw"):
+                if shadowrocket:
+                    used = subscription["tx_bytes"] + subscription["rx_bytes"]
+                    total = subscription["traffic_limit_bytes"]
+                    expiry = (time.strftime("%Y-%m-%d 到期", time.gmtime(subscription["expires_at"] + 8 * 3600))
+                              if subscription["expires_at"] is not None else "永久")
+                    status = "STATUS=剩余 {:.2f} / {:.0f} GiB · 已用 {:.2f} GiB · {}".format(
+                        max(0, total - used) / 1024**3, total / 1024**3, used / 1024**3, expiry)
+                    lines.insert(0, status)
+                body = "\n".join(lines).encode("utf-8")
+                if output_format == "base64":
+                    body = base64.b64encode(body)
+                content_type = "text/plain; charset=utf-8"
+            else:
+                self._send_subscription_error(400, "不支持的订阅格式，可选 base64、raw、clash")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Vary", "User-Agent")
+            usage = "upload={}; download={}; total={}".format(
+                subscription["tx_bytes"], subscription["rx_bytes"], subscription["traffic_limit_bytes"])
+            if subscription["expires_at"] is not None:
+                usage += "; expire={}".format(subscription["expires_at"])
+            if not shadowrocket or output_format == "clash":
+                self.send_header("Subscription-Userinfo", usage)
+            self.send_header("Profile-Update-Interval", "1")
+            self.send_header("Profile-Title", "base64:" + base64.b64encode(self.app.subscription_name.encode()).decode())
+            self.send_header(
+                "Content-Disposition",
+                "inline; filename=\"subscription.txt\"; filename*=UTF-8''{}".format(
+                    urllib.parse.quote(
+                        self.app.subscription_name + ".txt",
+                        safe="",
+                    )
+                ),
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception:
+            LOGGER.exception("subscription endpoint failed")
+            self._send_subscription_error(500, "订阅服务暂时不可用")
+
+    def _send_subscription_error(self, status, message):
+        body = message.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_subscription_view(self, subscription_id):
+        try:
+            subscription = self.app.database.get_subscription(
+                subscription_id=subscription_id
+            )
+            if subscription is None:
+                self.send_json(404, {"error": "订阅不存在"})
+                return
+            token = self.app.database.recover_subscription_token(subscription_id)
+            nodes = self.app.database.list_subscription_nodes(subscription_id)
+            self.send_json(200, {
+                "id": subscription["id"],
+                "user_id": subscription["user_id"],
+                "user_name": subscription["user_name"],
+                "enabled": subscription["enabled"],
+                "token": token,
+                "url": self._subscription_url(token) if token else None,
+                "uses_defaults": not nodes,
+                "user_type": subscription["user_type"],
+                "premium_ready_count": len(self.app.database.premium_subscription_nodes()) if subscription["user_type"] == 1 else 0,
+                "expires_at": subscription["expires_at"],
+                "nodes": nodes,
+            })
+        except KeyError:
+            self.send_json(404, {"error": "订阅不存在"})
+        except Exception:
+            LOGGER.exception("subscription view failed")
+            self.send_json(503, {"error": "订阅信息暂时不可用"})
+
+    def _handle_subscription_by_user(self, user_id):
+        try:
+            subscription = self.app.database.get_subscription(user_id=user_id)
+            if subscription is None:
+                self.send_json(404, {"error": "该用户尚未创建订阅，请点击创建"})
+                return
+            self._handle_subscription_view(subscription["id"])
+        except Exception:
+            LOGGER.exception("subscription by user failed")
+            self.send_json(503, {"error": "订阅信息暂时不可用"})
+
     def do_GET(self):
         path = self._path()
         if path.startswith("/api/v1/user/"):
@@ -8840,6 +9676,10 @@ class PanelHandler(JsonHandler):
             else:
                 self._send_html(200, self._login_page())
             return
+        subscription_match = re.fullmatch(r"/sub/([A-Za-z0-9_-]{8,512})", path)
+        if subscription_match:
+            self._handle_subscription(subscription_match.group(1))
+            return
         history_match = re.fullmatch(r"/api/v1/users/(\d{1,19})/traffic-history", path)
         if history_match and valid_user_id(history_match.group(1)):
             if not self._require_session():
@@ -8864,13 +9704,41 @@ class PanelHandler(JsonHandler):
             if user is None:
                 self.send_json(404, {"error": "未找到该用户，请检查完整用户名"})
                 return
+            expires_date = ""
+            if user["expires_at"] is not None:
+                expires_date = datetime.datetime.fromtimestamp(
+                    int(user["expires_at"]),
+                    datetime.timezone(datetime.timedelta(hours=8)),
+                ).strftime("%Y-%m-%d")
             self.send_json(200, {
                 "id": str(user["id"]), "name": user["name"], "generation": user["generation"],
                 "device_limit": user["device_limit"],
                 "traffic_limit_gb": max(1, user["traffic_limit_bytes"] // 1024**3),
                 "used_traffic_gib": format((user["tx_bytes"] + user["rx_bytes"]) / 1024**3, ".9f").rstrip("0").rstrip(".") or "0",
                 "allow_udp_443": bool(user["allow_udp_443"]),
+                "user_type": user["user_type"],
+                "expires_at": user["expires_at"],
+                "starts_at": user["starts_at"],
+                "starts_date": datetime.datetime.fromtimestamp(user["starts_at"], datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d") if user["starts_at"] else "",
+                "expires_date": expires_date,
             })
+            return
+        if path == "/subscriptions/defaults":
+            if not self._require_session():
+                return
+            self.send_json(200, {"nodes": self._default_subscription_nodes(), "hopping": self.app.port_hopping_controller.status()})
+            return
+        subscription_view_match = re.fullmatch(r"/subscriptions/(\d+)", path)
+        if subscription_view_match:
+            if not self._require_session():
+                return
+            self._handle_subscription_view(int(subscription_view_match.group(1)))
+            return
+        subscription_user_match = re.fullmatch(r"/subscriptions/user/(\d+)", path)
+        if subscription_user_match:
+            if not self._require_session():
+                return
+            self._handle_subscription_by_user(int(subscription_user_match.group(1)))
             return
         if path == "/updates/status":
             session = self._require_session()
@@ -8894,7 +9762,8 @@ class PanelHandler(JsonHandler):
                     query.get("q", [""])[0],
                     query.get("status", [""])[0],
                     query.get("online", [""])[0],
-                    query.get("udp443", [""])[0],
+                    "",  # UDP 443 is no longer a user-list filter.
+                    query.get("type", [""])[0],
                 )
                 payload = dashboard_online_payload(
                     [user["name"] for user in users], snapshot
@@ -8931,7 +9800,8 @@ class PanelHandler(JsonHandler):
                     query.get("q", [""])[0],
                     query.get("status", [""])[0],
                     query.get("online", [""])[0],
-                    query.get("udp443", [""])[0],
+                    "",  # UDP 443 is no longer a user-list filter.
+                    query.get("type", ["standard"])[0],
                 ),
             )
             return
@@ -9028,6 +9898,17 @@ class PanelHandler(JsonHandler):
         self._error_page(404, "页面不存在")
 
     def _dispatch_authenticated_post(self, path, session, form):
+        line_match = re.fullmatch(r"/nodes/([0-9a-f]{32})/line-config", path)
+        if line_match:
+            try:
+                self.app.database.update_premium_node_profile(line_match.group(1),
+                    form.get("label", ""), form.get("host", ""), form.get("port", ""))
+            except (ValueError, TypeError) as exc:
+                self._error_page(400, str(exc))
+                return
+            self._audit_safely(session["username"], "premium_node_profile_updated", line_match.group(1))
+            self._redirect("/?type=premium")
+            return
         if path == "/users":
             self._handle_create_user(session, form)
             return
@@ -9107,7 +9988,47 @@ class PanelHandler(JsonHandler):
             )
             return
         if path == "/users/reset-traffic":
-            self._handle_reset_all_traffic(session)
+            self._handle_reset_all_traffic(session, form.get("user_group"))
+            return
+        if path in {"/port-hopping/enable", "/port-hopping/disable"}:
+            try:
+                with self.app.user_action_lock:
+                    result = self.app.port_hopping_controller.set_enabled(path.endswith("/enable"))
+                self._audit_safely(session["username"], "port_hopping_changed", str(result["enabled"]))
+                self.send_json(200, result)
+            except (RuntimeError, OSError, subprocess.SubprocessError):
+                self.send_json(503, {"error": "端口跳跃应用失败，请检查服务端任务日志"})
+            return
+        if path == "/subscriptions/defaults":
+            try:
+                nodes = json.loads(form.get("nodes", "[]"))
+                with self.app.user_action_lock:
+                    self.app.database.set_subscription_defaults(nodes)
+                self._audit_safely(session["username"], "subscription_defaults_updated", "all")
+                self.send_json(200, {"ok": True})
+            except (ValueError, TypeError, KeyError):
+                self.send_json(400, {"error": "请检查节点名称、地址、端口（1–65535）及 SHA-256 指纹"})
+            return
+        if path == "/subscriptions":
+            self._handle_create_subscription(session, form)
+            return
+        subscription_node_match = re.fullmatch(
+            r"/subscriptions/(\d+)/nodes", path
+        )
+        if subscription_node_match:
+            self._handle_set_subscription_nodes(
+                session, int(subscription_node_match.group(1)), form
+            )
+            return
+        subscription_action_match = re.fullmatch(
+            r"/subscriptions/(\d+)/(toggle|delete|regenerate)", path
+        )
+        if subscription_action_match:
+            self._handle_subscription_action(
+                session,
+                int(subscription_action_match.group(1)),
+                subscription_action_match.group(2),
+            )
             return
         if path == "/system/reboot":
             self._handle_reboot(session)
@@ -9259,14 +10180,19 @@ class PanelHandler(JsonHandler):
     def _handle_create_user(self, session, form):
         inline = form.get("inline") == "1"
         try:
-            device_limit = int(form.get("device_limit", DEFAULT_DEVICE_LIMIT))
+            device_limit = int(form.get("device_limit", 100 if form.get("user_type") == "1" else DEFAULT_DEVICE_LIMIT))
             traffic_limit_gb = int(form.get("traffic_limit_gb", 250))
+            user_type = int(form.get("user_type", "0"))
+            expires_value = _parse_expires_at(form.get("expires_at", ""))
             with self.app.user_action_lock:
                 credentials = self.app.database.create_proxy_user(
                     form.get("name", ""),
                     device_limit=device_limit,
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
-                    allow_udp_443=form.get("allow_udp_443") == "1",
+                    allow_udp_443=True,
+                    user_type=user_type,
+                    expires_at=expires_value,
+                    starts_at=_parse_expires_at(form.get("starts_at", "")),
                 )
         except (TypeError, ValueError) as exc:
             if inline:
@@ -9280,6 +10206,67 @@ class PanelHandler(JsonHandler):
             return
         self._send_html(201, self._credentials_page(session, credentials))
 
+    def _handle_create_subscription(self, session, form):
+        try:
+            user_id = int(form.get("user_id", ""))
+            with self.app.user_action_lock:
+                user = self.app.database.get_proxy_user(user_id)
+                if user is None:
+                    raise ValueError("用户不存在")
+                subscription = self.app.database.ensure_subscription(user_id)
+        except (TypeError, ValueError, KeyError) as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        self._audit_safely(session["username"], "subscription_created", user["name"])
+        self.send_json(201, {
+            "id": subscription["id"],
+            "token": subscription["token"],
+            "url": self._subscription_url(subscription["token"]),
+        })
+
+    def _handle_set_subscription_nodes(self, session, subscription_id, form):
+        try:
+            nodes_json = form.get("nodes", "[]")
+            nodes = json.loads(nodes_json)
+            if not isinstance(nodes, list):
+                raise ValueError("节点配置格式无效")
+            normalized = validate_subscription_nodes(nodes, allow_empty=True)
+            with self.app.user_action_lock:
+                subscription = self.app.database.get_subscription(
+                    subscription_id=subscription_id
+                )
+                if subscription is None:
+                    raise ValueError("订阅不存在")
+                self.app.database.set_subscription_nodes(subscription_id, normalized)
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        self._audit_safely(session["username"], "subscription_nodes_set", str(subscription_id))
+        self.send_json(200, {"ok": True})
+
+    def _handle_subscription_action(self, session, subscription_id, action):
+        try:
+            with self.app.user_action_lock:
+                subscription = self.app.database.get_subscription(
+                    subscription_id=subscription_id
+                )
+                if subscription is None:
+                    raise ValueError("订阅不存在")
+                if action == "toggle":
+                    self.app.database.set_subscription_enabled(
+                        subscription_id, not subscription["enabled"]
+                    )
+                elif action == "delete":
+                    self.app.database.delete_subscription(subscription_id)
+                elif action == "regenerate":
+                    rotated = self.app.database.regenerate_subscription_token(subscription_id)
+                    self._kick_safely(rotated["user_name"])
+        except (TypeError, ValueError, KeyError) as exc:
+            self.send_json(400, {"error": str(exc)})
+            return
+        self._audit_safely(session["username"], "subscription_" + action, str(subscription_id))
+        self.send_json(200, {"ok": True})
+
     def _handle_edit_user(self, session, user_id, form):
         inline = form.get("inline") == "1" or "application/json" in self.headers.get(
             "Accept", ""
@@ -9288,16 +10275,27 @@ class PanelHandler(JsonHandler):
             generation = int(form.get("generation", ""))
             device_limit = int(form.get("device_limit", ""))
             traffic_limit_gb = int(form.get("traffic_limit_gb", ""))
-            allow_udp_443 = form.get("allow_udp_443") == "1"
+            allow_udp_443 = True
+            expires_at = form.get("expires_at", "")
+            expires_value = _parse_expires_at(expires_at) if expires_at else None
+            update_values = {
+                "device_limit": device_limit,
+                "traffic_limit_bytes": traffic_limit_gb * 1024**3,
+                "allow_udp_443": allow_udp_443,
+                "expected_generation": generation,
+                "used_traffic_bytes": (
+                    parse_used_traffic_gib(form["used_traffic_gib"])
+                    if "used_traffic_gib" in form else None
+                ),
+            }
+            if "expires_at" in form:
+                update_values["expires_at"] = expires_value
+            if "starts_at" in form:
+                update_values["starts_at"] = _parse_expires_at(form["starts_at"])
             with self.app.user_action_lock:
                 user = self.app.usage_manager.update_user_limits(
                     user_id,
-                    device_limit=device_limit,
-                    traffic_limit_bytes=traffic_limit_gb * 1024**3,
-                    allow_udp_443=allow_udp_443,
-                    expected_generation=generation,
-                    used_traffic_bytes=(parse_used_traffic_gib(form["used_traffic_gib"])
-                                        if "used_traffic_gib" in form else None),
+                    **update_values,
                 )
                 if user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]:
                     self._kick_safely(user["name"])
@@ -9337,6 +10335,10 @@ class PanelHandler(JsonHandler):
             "device_limit": user["device_limit"],
             "traffic_limit_gb": user["traffic_limit_bytes"] // 1024**3,
             "allow_udp_443": bool(user["allow_udp_443"]),
+            "user_type": user["user_type"],
+            "expires_at": user["expires_at"],
+                "starts_at": user["starts_at"],
+                "starts_date": datetime.datetime.fromtimestamp(user["starts_at"], datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d") if user["starts_at"] else "",
             "generation": user["generation"],
         }
         if inline:
@@ -9457,12 +10459,12 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("user action failed")
             self._error_page(500, "操作未完成，请检查服务日志")
 
-    def _handle_reset_all_traffic(self, session):
+    def _handle_reset_all_traffic(self, session, group=None):
         try:
             with self.app.user_action_lock:
-                self.app.usage_manager.reset_all()
-            self._audit_safely(session["username"], "all_proxy_traffic_reset", "all")
-            self._redirect("/")
+                self.app.usage_manager.reset_all(group=group)
+            self._audit_safely(session["username"], "all_proxy_traffic_reset", group or "all")
+            self._redirect("/?type=" + group if group in {"standard", "premium"} else "/")
         except Exception:
             LOGGER.exception("resetting all traffic failed")
             self._error_page(500, "流量重置失败，请检查服务日志")
@@ -10088,6 +11090,7 @@ class UsageManager:
                 )
                 self._flush_pending_traffic_locked()
                 traffic = self.cumulative_collector.collect(observed_at, checkpoint)
+                self.database.expire_proxy_users(int(self.wall_clock()))
                 self.database.reset_monthly_traffic_if_due(self.wall_clock())
             except Exception:
                 self._record_health(False)
@@ -10122,6 +11125,7 @@ class UsageManager:
                 traffic, domain_usage, observed_at, fresh_local_collection=True
             )
             self._flush_pending_traffic_locked()
+            self.database.expire_proxy_users(int(self.wall_clock()))
             # Empty successful samples still advance the quota month. Nonempty
             # batches reset and settle atomically inside the database transaction.
             self.database.reset_monthly_traffic_if_due(self.wall_clock())
@@ -10145,6 +11149,7 @@ class UsageManager:
             if count > 0 and (
                 not user
                 or not user["enabled"]
+                or (user.get("expires_at") is not None and user["expires_at"] <= observed_at)
                 or user.get("local_drain_started_at") is not None
                 or user["tx_bytes"] + user["rx_bytes"] >= user["traffic_limit_bytes"]
             ):
@@ -10551,10 +11556,15 @@ class UsageManager:
             with self._authorization_lock:
                 self.pending.pop(user["name"], None)
 
-    def reset_all(self):
+    def reset_all(self, group=None):
         with self.lock:
             self._collect_locked()
-            self.database.reset_all_traffic()
+            if group in {"standard", "premium"}:
+                self.database.reset_group_traffic(1 if group == "premium" else 0)
+            elif group is None:
+                self.database.reset_all_traffic()
+            else:
+                raise ValueError("用户分组无效")
 
     def run_collector(self, stop_event, interval=10):
         while not stop_event.is_set():
@@ -10602,6 +11612,82 @@ def _valid_panel_public_host(hostname):
     )
 
 
+class PortHoppingController:
+    """Fixed local UDP forwarding; browser input never becomes a firewall command."""
+    UNIT = "hysteria2-panel-port-hopping.service"
+    STATE = Path("/etc/hysteria2-panel/.port-hopping.json")
+    PORTS = "20000-50000"
+
+    def __init__(self, runner=subprocess.run, state_path=STATE):
+        self.runner = runner
+        self.state_path = Path(state_path)
+
+    def status(self):
+        try:
+            metadata = self.state_path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+                raise ValueError("unsafe hopping state")
+            value = json.loads(self.state_path.read_text())
+            if type(value.get("enabled")) is not bool or not 1 <= value.get("target", 0) <= 65535:
+                raise ValueError("invalid hopping state")
+            if value["enabled"]:
+                active = self.runner(["/bin/systemctl", "is-active", "--quiet", self.UNIT],
+                                     capture_output=True, timeout=5, check=False)
+                value["enabled"] = active.returncode == 0
+            return {"enabled": value["enabled"], "ports": self.PORTS, "target": value["target"]}
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            return {"enabled": False, "ports": self.PORTS, "target": 443}
+
+    def set_enabled(self, enabled):
+        result = self.runner(
+            ["/usr/bin/sudo", "-n", "/bin/systemctl", "enable" if enabled else "disable", "--now", self.UNIT],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if result.returncode != 0 or self.status()["enabled"] != enabled:
+            raise RuntimeError("端口跳跃应用失败，请检查服务端任务日志")
+        return self.status()
+
+
+def apply_port_hopping(enabled):
+    if os.geteuid() != 0:
+        raise RuntimeError("port hopping must run as root")
+    # Fixed root-owned settings and fixed port range; no database or browser input.
+    parent = PortHoppingController.STATE.parent
+    metadata = parent.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise RuntimeError("unsafe configuration directory")
+    env = Settings.from_mapping(os.environ)
+    target = 443 if Path('/etc/hysteria2-panel/hysteria-443.yaml').is_file() else env.hysteria_port
+    if 20000 <= target <= 50000:
+        raise RuntimeError("跳跃范围不能包含服务监听端口")
+    table = "hy2_port_hopping"
+    with exclusive_maintenance_lock(blocking=True):
+        existing = subprocess.run(["/usr/sbin/nft", "list", "table", "inet", table], capture_output=True, text=True, check=False)  # nosec B603 -- fixed executable and validated local numeric configuration.
+        commands = "delete table inet " + table + "\n" if existing.returncode == 0 else ""
+        if enabled:
+            # Shadowrocket's TCP latency probe may select a hopping port too.
+            # TCP uses the existing compatibility probe; proxy traffic stays UDP.
+            commands += "table inet " + table + " {\n chain prerouting {\n type nat hook prerouting priority dstnat; policy accept;\n"
+            for protocol in ("udp", "tcp"):
+                commands += f' iifname != "lo" fib daddr type local {protocol} dport 20000-50000 redirect to :{target};\n'
+            commands += " }\n}\n"
+        if commands:
+            subprocess.run(["/usr/sbin/nft", "-c", "-f", "-"], input=commands, text=True, check=True, capture_output=True)  # nosec B603 -- fixed executable and validated local numeric configuration.
+            subprocess.run(["/usr/sbin/nft", "-f", "-"], input=commands, text=True, check=True, capture_output=True)  # nosec B603 -- fixed executable and validated local numeric configuration.
+        descriptor, temporary = tempfile.mkstemp(prefix=".hopping-", dir=parent)
+        try:
+            with os.fdopen(descriptor, "w") as output:
+                json.dump({"enabled": enabled, "target": target}, output)
+                output.flush()
+                os.fchmod(output.fileno(), 0o644)
+                os.fsync(output.fileno())
+            os.replace(temporary, PortHoppingController.STATE)
+            _fsync_directory(parent)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
 class Settings:
     def __init__(self, **values):
         self.__dict__.update(values)
@@ -10616,6 +11702,7 @@ class Settings:
             raise ValueError("HY2PANEL_HMAC_KEY must decode to at least 32 bytes")
         public_host = mapping.get("HY2PANEL_PUBLIC_HOST", "").strip()
         node_name = mapping.get("HY2PANEL_NODE_NAME", "Hysteria 2").strip()
+        subscription_name = mapping.get("HY2PANEL_SUBSCRIPTION_NAME", "私家车").strip()
         usage_origin_id = mapping.get(
             "HY2PANEL_USAGE_ORIGIN_ID", "0" * 32
         ).strip().lower()
@@ -10629,6 +11716,8 @@ class Settings:
             raise ValueError("HY2PANEL_PUBLIC_HOST is required")
         if not node_name or len(node_name) > 64 or any(ord(character) < 32 for character in node_name):
             raise ValueError("HY2PANEL_NODE_NAME must contain 1 to 64 printable characters")
+        if not subscription_name or len(subscription_name) > 64 or any(ord(c) < 32 for c in subscription_name):
+            raise ValueError("HY2PANEL_SUBSCRIPTION_NAME must contain 1 to 64 printable characters")
         if not re.fullmatch(r"[0-9a-f]{32}", usage_origin_id):
             raise ValueError(
                 "HY2PANEL_USAGE_ORIGIN_ID must contain exactly 32 hexadecimal characters"
@@ -10677,6 +11766,7 @@ class Settings:
             hmac_key=hmac_key,
             public_host=public_host,
             node_name=node_name,
+            subscription_name=subscription_name,
             local_origin_id="local:" + usage_origin_id,
             hysteria_port=hysteria_port,
             # Remote panel access is an explicit deployment feature.
@@ -11214,6 +12304,8 @@ def _run_service_with_database(settings, database):
         public_host=settings.public_host,
         hysteria_port=settings.hysteria_port,
         node_name=settings.node_name,
+        subscription_base_url="{}://{}:{}".format(settings.panel_scheme, settings.panel_public_host, settings.panel_port),
+        subscription_name=getattr(settings, "subscription_name", "私家车"),
         local_origin_id=settings.local_origin_id,
         work_dir=settings.database_path.parent / "backup-restore",
         maintenance_lock_group=os.getgid() if hasattr(os, "getgid") else None,
@@ -11265,6 +12357,7 @@ def _run_service_with_database(settings, database):
         pin_sha256=settings.cert_pin,
         stats_client=stats_client,
         node_name=settings.node_name,
+        subscription_name=getattr(settings, "subscription_name", "私家车"),
         secure_cookies=settings.panel_scheme == "https",
         usage_manager=usage_manager,
         backup_manager=backup_manager,
@@ -11275,6 +12368,8 @@ def _run_service_with_database(settings, database):
         node_control_service=node_control_service,
         data_plane_bootstrap_service=data_plane_bootstrap_service,
     )
+    application.subscription_base_url = "{}://{}:{}".format(
+        settings.panel_scheme, settings.panel_public_host, settings.panel_port)
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
     if settings.panel_scheme == "https":
         tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -11682,6 +12777,7 @@ def _restore_manager_from_record(record):
         public_host=record["publicHost"],
         hysteria_port=record["hysteriaPort"],
         node_name=record["nodeName"],
+        subscription_base_url=record.get("subscriptionBaseUrl", ""),
         local_origin_id=record.get("localOriginId"),
         work_dir=Path(record["workDir"]),
     )
@@ -12081,6 +13177,15 @@ def resume_after_restore(
     egress_manager=None,
     **start_options
 ):
+    # The hopping systemd helper acquires this same maintenance lock. Apply
+    # transport before taking it, while the restore marker still blocks users.
+    transport_record = marker_reader(marker_path, expected_uid=expected_uid, strict_paths=strict_paths)
+    if (transport_record and transport_record.get("phase") == "services-pending"
+            and transport_record.get("outcome") == "applied"
+            and type(transport_record.get("portHoppingEnabled")) is bool):
+        action = "enable" if transport_record["portHoppingEnabled"] else "disable"
+        runner(["/bin/systemctl", action, "--now", PortHoppingController.UNIT],
+               check=True, capture_output=True, text=True, timeout=45)
     with exclusive_maintenance_lock(lock_path, blocking=True):
         record = marker_reader(
             marker_path, expected_uid=expected_uid, strict_paths=strict_paths
@@ -12113,6 +13218,8 @@ def restore_pending(
             public_host=settings.public_host,
             hysteria_port=settings.hysteria_port,
             node_name=settings.node_name,
+            subscription_base_url="{}://{}:{}".format(settings.panel_scheme, settings.panel_public_host, settings.panel_port),
+            subscription_name=getattr(settings, "subscription_name", "私家车"),
             local_origin_id=settings.local_origin_id,
             work_dir=settings.database_path.parent / "backup-restore",
         )
@@ -12211,8 +13318,13 @@ def main(argv=None):
         "apply-egress-policy", help="apply a fixed egress policy as root"
     )
     egress_parser.add_argument("policy", choices=("web", "full"))
+    hopping_parser = subcommands.add_parser("port-hopping", help=argparse.SUPPRESS)
+    hopping_parser.add_argument("action", choices=("enable", "disable"))
     args = parser.parse_args(argv)
     try:
+        if args.command == "port-hopping":
+            apply_port_hopping(args.action == "enable")
+            return 0
         if args.command == "accounting-mode":
             print("cumulative-v1")
             return 0
@@ -12265,6 +13377,8 @@ def main(argv=None):
                         public_host=settings.public_host,
                         hysteria_port=settings.hysteria_port,
                         node_name=settings.node_name,
+                        subscription_base_url="{}://{}:{}".format(settings.panel_scheme, settings.panel_public_host, settings.panel_port),
+                        subscription_name=getattr(settings, "subscription_name", "私家车"),
                         local_origin_id=settings.local_origin_id,
                         work_dir=OFFSITE_BACKUP_WORK_DIR,
                     )

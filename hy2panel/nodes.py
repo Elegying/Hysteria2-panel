@@ -271,10 +271,10 @@ class NodeDnsAdmissionReconciler:
         self.resolver = resolver
         self.clock = clock
 
-    def _resolved_public_addresses(self):
+    def _resolved_public_addresses(self, hostname=None):
         try:
             answers = self.resolver(
-                self.hostname, 443, type=socket.SOCK_STREAM
+                hostname or self.hostname, 443, type=socket.SOCK_STREAM
             )
         except (OSError, socket.gaierror):
             return set()
@@ -300,12 +300,18 @@ class NodeDnsAdmissionReconciler:
         now = int(self.clock())
         admitted = 0
         for node in candidates:
+            node_addresses = addresses
+            if node.get("tier") == "premium":
+                hostname = node.get("subscription_host", "")
+                if not HOSTNAME_PATTERN.fullmatch(hostname):
+                    continue
+                node_addresses = self._resolved_public_addresses(hostname)
             expected = node.get("expected_ip") or node.get("observed_ip")
             try:
                 expected = str(ipaddress.ip_address(expected))
             except (TypeError, ValueError):
                 continue
-            if expected not in addresses:
+            if expected not in node_addresses:
                 continue
             try:
                 changed = self.database.mark_node_dns_admitted(
@@ -771,7 +777,8 @@ unset HY2PANEL_ENROLLMENT_TOKEN
             installer_mode=installer_mode,
         )
 
-    def create(self, name, expected_ip, ttl_minutes, actor, mode="join"):
+    def create(self, name, expected_ip, ttl_minutes, actor, mode="join",
+               tier="standard", region="", subscription_host="", subscription_port=19999, port_hopping=False):
         name = _normalize_name(name)
         expected_ip = _normalize_ip(expected_ip)
         address = ipaddress.ip_address(expected_ip)
@@ -798,8 +805,11 @@ unset HY2PANEL_ENROLLMENT_TOKEN
             token_digest=hashlib.sha256(token.encode("ascii")).hexdigest(),
             created_at=now,
             expires_at=now + ttl_minutes * 60,
+            tier=tier, region=region, subscription_host=subscription_host,
+            subscription_port=subscription_port, port_hopping=port_hopping,
         )
         return {
+            "restoredProfile": bool(record.get("restored_profile")),
             "nodeId": record["node_id"],
             "enrollmentId": record["enrollment_id"],
             "expiresAt": record["expires_at"],
@@ -1041,11 +1051,14 @@ class DataPlaneBootstrapService:
             self._reject()
         return node, hashlib.sha256(nonce_bytes).hexdigest(), now, remote_ip
 
-    def _identity(self):
+    def _identity(self, node=None):
         if self.identity_provider is None:
             self._reject()
         try:
-            identity = self.identity_provider()
+            if node and node.get("tier") == "premium":
+                identity = self.database.get_or_create_node_identity(node["node_id"], self.identity_provider)
+            else:
+                identity = self.identity_provider()
         except Exception:
             self._reject()
         expected = {
@@ -1214,7 +1227,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
         )
         if grant is None:
             self._reject()
-        identity = self._identity()
+        identity = self._identity(node)
         result = {
             "grantId": grant["grant_id"],
             "expiresAt": grant["expires_at"],
@@ -1223,8 +1236,10 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             "configProtocolVersion": 1,
             "hysteriaVersion": self.HYSTERIA_VERSION,
             "hysteriaSha256": dict(self.HYSTERIA_SHA256),
-            "ports": {"main": self.hysteria_port, "udp443": 443},
+            "ports": {"main": node.get("listen_port", self.hysteria_port) if node.get("tier") == "premium" else self.hysteria_port, "udp443": 443},
         }
+        if node.get("port_hopping"):
+            result["portHopping"] = True
         result.update(identity)
         if len(
             json.dumps(result, ensure_ascii=True, separators=(",", ":")).encode(
@@ -1269,7 +1284,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
         node, nonce_digest, now, remote_ip = self._verify(
             "ack", payload, DATA_PLANE_ACK_FIELDS, remote_ip
         )
-        identity = self._identity()
+        identity = self._identity(node)
         if any(
             not secrets.compare_digest(payload[field], identity[field])
             for field in digest_fields
@@ -1289,7 +1304,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             try:
                 self.canary_runner(
                     node_ip=remote_ip,
-                    main_port=self.hysteria_port,
+                    main_port=node.get("listen_port", self.hysteria_port) if node.get("tier") == "premium" else self.hysteria_port,
                     token=payload["bootstrapToken"],
                     pin_sha256=identity["certificateDerSha256"],
                 )

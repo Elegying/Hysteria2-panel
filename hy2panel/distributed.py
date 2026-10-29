@@ -336,7 +336,7 @@ class DistributedControlService:
         node, nonce_digest, now, _remote_ip = self._verify(
             "auth", payload, AUTH_FIELDS, remote_ip
         )
-        local_state = self._local_state(now)
+        local_state = {"online": {}} if node.get("tier") == "premium" else self._local_state(now)
         result = self.database.authorize_distributed_node(
             node["node_id"],
             payload["requestId"],

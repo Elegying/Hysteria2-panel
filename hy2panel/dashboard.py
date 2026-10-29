@@ -63,6 +63,7 @@ def select_dashboard_users(
     status_filter="",
     online_filter="",
     udp443_filter="",
+    type_filter="",
 ):
     sort_by = sort_by if sort_by in {"traffic", "online"} else ""
     sort_order = sort_order if sort_order in {"asc", "desc"} else ""
@@ -70,6 +71,7 @@ def select_dashboard_users(
     status_filter = status_filter if status_filter in {"enabled", "disabled"} else ""
     online_filter = online_filter if online_filter in {"active", "inactive"} else ""
     udp443_filter = udp443_filter if udp443_filter in {"allowed", "blocked"} else ""
+    type_filter = type_filter if type_filter in {"standard", "premium"} else "standard"
     online = snapshot.get("online", {})
     query = search_query.casefold().strip()
     filtered = []
@@ -83,6 +85,10 @@ def select_dashboard_users(
             continue
         if udp443_filter and bool(user["allow_udp_443"]) != (
             udp443_filter == "allowed"
+        ):
+            continue
+        if type_filter and int(user.get("user_type", 0)) != (
+            1 if type_filter == "premium" else 0
         ):
             continue
         filtered.append(user)
@@ -113,6 +119,7 @@ def select_dashboard_users(
         "status_filter": status_filter,
         "online_filter": online_filter,
         "udp443_filter": udp443_filter,
+        "type_filter": type_filter,
     }
 
 
@@ -138,6 +145,7 @@ def render_dashboard(
     status_filter="",
     online_filter="",
     udp443_filter="",
+    type_filter="",
     context=None,
 ):
     if context is None:
@@ -168,6 +176,7 @@ def render_dashboard(
         status_filter,
         online_filter,
         udp443_filter,
+        type_filter,
     )
     listed_users = user_selection["users"]
     sort_by = user_selection["sort_by"]
@@ -176,6 +185,7 @@ def render_dashboard(
     status_filter = user_selection["status_filter"]
     online_filter = user_selection["online_filter"]
     udp443_filter = user_selection["udp443_filter"]
+    type_filter = user_selection["type_filter"]
     summary = summarize_dashboard([user["name"] for user in all_users], snapshot)
     try:
         service_status = self.app.service_controller.status()
@@ -226,23 +236,41 @@ def render_dashboard(
         enabled = bool(user["enabled"])
         action_label = "禁用" if enabled else "启用"
         action_class = "ghost" if enabled else "success"
+        user_type = int(user.get("user_type", 0))
+        expires_at = user.get("expires_at")
+        type_badge = '<span class="status premium">专线</span> ' if user_type == 1 else ""
+        if expires_at is not None:
+            expiry_text = time.strftime("%Y-%m-%d", time.gmtime(int(expires_at) + 8 * 3600))
+            expired = int(expires_at) <= int(time.time())
+            expiry_note = ' <span class="muted expiry-note {cls}" title="{label} {expiry}">{label} {expiry}</span>'.format(
+                cls="expired" if expired else "", label="已到期" if expired else "到期", expiry=expiry_text)
+        else:
+            expiry_note = ' <span class="muted expiry-note">永久</span>'
+        if user.get("starts_at"):
+            start_text = time.strftime("%Y-%m-%d", time.gmtime(int(user["starts_at"]) + 8 * 3600))
+            expiry_note = expiry_note.replace('title="', 'title="开通 ' + start_text + ' · ', 1)
+            if int(user["starts_at"]) > int(time.time()):
+                expiry_note = '<span class="muted expiry-note">待开通 ' + start_text + '</span>'
+        subscription_button = '<button class="secondary" type="button" data-subscription-user-id="{id}">订阅管理</button>'.format(id=user["id"])
         rows.append(
-            """<tr data-user-name="{search_name}" data-enabled="{enabled_value}" data-online="{online}" data-device-limit="{device_limit}" data-allow-udp443="{allow_udp_443}" data-over-device-limit="{over_device_limit}"><td data-label="名称" data-live-user-name><strong{name_class}>{name}</strong>{limit_alert}</td>
+            """<tr data-user-name="{search_name}" data-enabled="{enabled_value}" data-online="{online}" data-device-limit="{device_limit}" data-allow-udp443="{allow_udp_443}" data-over-device-limit="{over_device_limit}"><td data-label="名称" data-live-user-name><strong{name_class}>{name}</strong>{type_badge}{limit_alert}{expiry_note}</td>
 <td data-label="状态"><span class="status {state_class}">{state}</span></td><td data-label="在线设备"><span data-live-user-online>{online}</span> / {device_limit}</td><td data-label="上传 / 下载">{tx} / {rx}</td>
 <td class="traffic-cell" data-label="总流量"><progress max="100" value="{percent:.1f}" aria-label="{name} 总流量使用 {percent:.1f}%"></progress><div class="traffic-label"><span>{used} / {limit}</span><span>{percent:.1f}%</span></div></td>
 <td data-label="操作"><div class="actions">
-<form class="inline" method="post" action="/users/{id}/share" data-share-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><input type="hidden" name="inline" value="1"><button type="submit">分享</button></form>
+<form class="inline" method="post" action="/users/{id}/share" data-share-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><input type="hidden" name="inline" value="1"><button type="submit">复制订阅</button></form>
 <form class="inline" method="post" action="/users/{id}/share" data-qr-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><input type="hidden" name="inline" value="1"><input type="hidden" name="qr" value="1"><button class="secondary" type="submit">二维码</button></form>
 <form class="inline" method="post" action="/users/{id}/toggle"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="{action_class}" type="submit">{action}</button></form>
 <button class="secondary" type="button" data-dialog-open="edit-user-dialog" data-edit-user-id="{id}" data-edit-user-name="{search_name}">编辑</button>
 <form class="inline" method="post" action="/users/{id}/rotate" data-confirm="轮换后旧连接地址会立即失效，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="warning" type="submit">改密</button></form>
 <form class="inline" method="post" action="/users/{id}/reset" data-confirm="确定重置该用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="ghost" type="submit">重置</button></form>
 <form class="inline" method="post" action="/users/{id}/delete" data-confirm="确定删除用户 {name} 吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="generation" value="{generation}"><button class="danger" type="submit">删除</button></form>
-<button class="secondary" type="button" data-traffic-user-id="{id}">流量</button>
+{subscription_button}<button class="secondary" type="button" data-traffic-user-id="{id}">流量</button>
 </div></td></tr>""".format(
                 name=html.escape(name),
                 search_name=html.escape(name, quote=True),
                 name_class=' class="over-limit-name"' if over_device_limit else "",
+                type_badge=type_badge,
+                expiry_note=expiry_note,
                 limit_alert='<span class="limit-alert" data-live-limit-alert{}>客户端实例超限</span>'.format(
                     "" if over_device_limit else " hidden"
                 ),
@@ -263,6 +291,7 @@ def render_dashboard(
                 csrf=csrf,
                 action=action_label,
                 action_class=action_class,
+                subscription_button=subscription_button,
             )
         )
     if not rows:
@@ -294,6 +323,7 @@ def render_dashboard(
             "status": status_filter,
             "online": online_filter,
             "udp443": udp443_filter,
+            "type": type_filter,
         }.items()
         if value
     }
@@ -316,6 +346,14 @@ def render_dashboard(
             user_selection["filtered_total"], user_selection["total_users"]
         )
     filter_values = {
+        "node_base_domain": html.escape(self.app.public_host.split(".", 1)[1] if "." in self.app.public_host and not self.app.public_host.replace(".", "").isdigit() else "", quote=True),
+        "group_node_settings": '<button class="secondary" type="button" data-dialog-open="node-onboarding-dialog">专线节点管理</button>' if type_filter == "premium" else '<button class="secondary" type="button" data-subscription-defaults>订阅节点设置</button>',
+
+        "active_user_group": "premium" if type_filter == "premium" else "standard",
+        "standard_tab_class": "secondary" if type_filter == "premium" else "",
+        "premium_tab_class": "" if type_filter == "premium" else "secondary",
+        "standard_tab_current": "false" if type_filter == "premium" else "page",
+        "premium_tab_current": "page" if type_filter == "premium" else "false",
         "search_query": html.escape(search_query, quote=True),
         "status_enabled": " selected" if status_filter == "enabled" else "",
         "status_disabled": " selected" if status_filter == "disabled" else "",
@@ -323,6 +361,9 @@ def render_dashboard(
         "online_inactive": " selected" if online_filter == "inactive" else "",
         "udp443_allowed": " selected" if udp443_filter == "allowed" else "",
         "udp443_blocked": " selected" if udp443_filter == "blocked" else "",
+        "type_all": " selected" if type_filter == "" else "",
+        "type_standard": " selected" if type_filter == "standard" else "",
+        "type_premium": " selected" if type_filter == "premium" else "",
     }
     machine_stats = snapshot.get("machine_stats", {})
     machine_origins = machine_stats.get("origins", [])
@@ -537,7 +578,7 @@ def render_dashboard(
             "当前无法证明出站策略；修复会应用安全的 WEB 策略并短暂重启运行中的 Hysteria 连接，确定继续吗？"
         )
     top_users = sorted(
-        all_users,
+        [u for u in all_users if int(u.get("user_type", 0)) == (1 if type_filter == "premium" else 0)],
         key=lambda item: item["tx_bytes"] + item["rx_bytes"],
         reverse=True,
     )[:5]
@@ -702,10 +743,22 @@ def render_dashboard(
                 status_label, status_class = "预算保护已停用", "warning"
                 budget_action = """<form method="post" action="/nodes/{node_id}/lifecycle/resume" data-confirm="请先增加预算或等待新计费周期；恢复后自行添加 DNS。确定恢复节点服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary compact-button" type="submit">恢复服务</button></form>""".format(node_id=node["node_id"], csrf=csrf)
         node_actions = budget_action + disconnect_action + delete_action
+        if node.get("tier") == "premium":
+            node_actions += ("<details><summary>订阅配置</summary>"
+                '<form method="post" action="/nodes/{id}/line-config">'
+                '<input type="hidden" name="csrf" value="{csrf}">'
+                '<label>节点名称<input name="label" required maxlength="64" value="{label}"></label>'
+                '<label>地址<input name="host" required value="{host}"></label>'
+                '<label>端口<input name="port" type="number" min="1" max="65535" required value="{port}"></label>'
+                '<small>修改下发配置前，需先在节点服务器调整监听和防火墙。用户刷新原订阅即可同步。</small>'
+                '<button type="submit">保存订阅配置</button></form></details>').format(
+                    id=node["node_id"], csrf=csrf, label=html.escape(node["name"], quote=True),
+                    host=html.escape(node.get("subscription_host", ""), quote=True),
+                    port=int(node.get("subscription_port", 19999)))
         node_rows.append(
             """<article class="node-row" data-pairing-node-id="{node_id}"><div><strong>{name}</strong><small class="muted">{detail}</small></div><span class="{status_class}">{status_label}</span><div class="node-actions">{node_actions}</div></article>""".format(
                 node_id=node["node_id"],
-                name=html.escape(node["name"]),
+                name=html.escape(("[专线节点] " if node.get("tier") == "premium" else "[普通节点] ") + node["name"]),
                 detail=html.escape(" · ".join(details)),
                 status_class=status_class,
                 status_label=status_label,
@@ -759,7 +812,7 @@ def render_dashboard(
 <div class="button-row service-actions"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动</button></form>
 <form method="post" action="/service/restart" data-confirm="确定重启 Hysteria 服务吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启代理服务</button></form>
 <form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止</button></form><a class="button secondary" href="/">刷新</a><button class="secondary" type="button" data-dialog-open="node-onboarding-dialog"{onboarding_disabled}>对接管理</button></div>
-<div class="service-details primary-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail port-detail"><div><span class="muted">服务端口</span><strong>UDP {port}</strong></div><form class="egress-control" method="post" action="/egress/{egress_target}" data-egress-form data-confirm="{egress_confirm}"><input type="hidden" name="csrf" value="{csrf}"><span class="egress-state{egress_state_class}" data-egress-state>{egress_state}</span><button class="egress-switch{egress_state_class}" type="submit" aria-pressed="{egress_checked}" aria-label="{egress_action} FULL 出口策略"><span class="egress-switch-track" aria-hidden="true"><span></span></span><span class="egress-switch-action">{egress_action}</span></button></form></div></div>
+<div class="service-details primary-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail port-detail"><div><span class="muted">服务端口</span><strong data-subscription-port>UDP {subscription_ports}</strong></div><button class="secondary" type="button" data-subscription-defaults>节点设置</button></div></div>
 
 <div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row version-actions"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
 <article class="card"><div class="section-head"><div><h2>系统资源</h2><p class="muted">服务器实时负载与容量。</p></div><form class="system-actions" method="post" action="/system/reboot" data-confirm="重启服务器后，所有节点连接会暂时中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger compact-button" type="submit">重启服务器</button></form></div><div class="resource-grid">
@@ -770,39 +823,48 @@ def render_dashboard(
 </section>
 <dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">数据节点对接</h2><p class="muted">生成代码后，在目标服务器以 root 粘贴运行一次即可。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">关闭</button></div>
 <p class="notice"><strong>生成前请先完成 DNS 设置：</strong>请自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS，也不会把 DNS 作为对接成功条件。</p>
-<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="填写服务器实际公网 IPv4 或 IPv6"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
+<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form data-node-base-domain="{node_base_domain}"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-tier">节点类型</label><select id="node-tier" name="tier"><option value="standard">普通节点</option><option value="premium">专线节点</option></select></div><div><label for="node-region">地区</label><select id="node-region" name="region"><option value="">请选择</option><option value="hk">香港</option><option value="us">美国</option><option value="jp">日本</option><option value="sg">新加坡</option></select></div><div><label for="node-host">订阅节点地址</label><input id="node-host" name="subscription_host" placeholder="例如 hk.ssrvpn.vip"></div><div><label for="node-hopping">端口跳跃</label><select id="node-hopping" name="port_hopping"><option value="1">开启</option><option value="0">关闭</option></select><small class="muted">端口自动配置，无需填写</small></div><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="填写服务器实际公网 IPv4 或 IPv6"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">在目标服务器粘贴运行</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <div class="node-list-head"><h3>节点状态</h3><span class="muted">卸载完成后自动移出列表；刷新可查看新注册节点</span></div><div class="node-list">{node_rows}</div></div></dialog>
-<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">备份用户、连接密钥与累计流量，恢复后沿用原客户端配置。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
-<div class="migration-guide"><section><h3>备份包含</h3><p>代理用户、累计流量、签名密钥、证书和私钥。请离线妥善保存。</p></section><section><h3>恢复影响</h3><p>恢复将替换代理用户、签名密钥和证书，并短暂重启服务。恢复保留目标面板的管理员、节点设置和机器计费记录。不备份服务器、对接节点与机器预算。</p></section><section><h3>迁移步骤</h3><p>保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用。</p><ol><li>为新服务器的独立面板域名配置 HTTPS。</li><li>登录新面板，恢复备份并验证。</li><li>确认正常后，再切换节点域名 DNS。</li></ol></section></div>
-<div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载用户备份</button></form></article>
+<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">备份普通/专线用户、固定订阅、节点配置和证书，恢复后沿用原订阅链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
+<div class="migration-guide"><section><h3>备份包含</h3><p>用户、开通/到期时间、累计流量、固定订阅身份、普通节点配置、各地区专线配置及独立证书私钥、订阅名称和跳跃开关。请离线妥善保存。</p></section><section><h3>恢复影响</h3><p>恢复会替换用户和订阅配置、签名密钥及证书，并短暂重启服务。保留目标管理员和机器计费记录；不恢复节点在线状态及旧授权。专线节点重新对接时按地区沿用备份中的证书和配置。</p></section><section><h3>迁移步骤</h3><p>保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用。</p><ol><li>为新服务器配置与旧面板相同的订阅域名、HTTPS 和端口。</li><li>恢复备份，再按原地区重新对接专线节点；验证原订阅链接和节点连接。</li><li>验证正常后切换 DNS；旧机保留到缓存请求和连接退出。不要让两套独立面板同时处理认证统计。</li></ol></section></div>
+<div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载迁移备份</button></form></article>
 <article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article><article class="detail wide-detail"><h3>每日异地备份</h3><p><strong class="{offsite_backup_class}">{offsite_backup_label}</strong></p><details class="advanced-help"><summary>高级配置说明</summary><p class="muted">{offsite_backup_detail}。凭据只允许保存在服务器的 <code>/etc/hysteria2-panel/offsite-backup.json</code>（root:root 0600），不会进入网页、数据库或备份。</p></details></article></div></div></dialog>
 <dialog id="traffic-history-dialog" class="migration-dialog" aria-labelledby="traffic-history-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="traffic-history-title">用户流量</h2><p class="muted">本月记录 · 北京时间 · 每月 1 日清理。日占比按本月记录，小时占比按当天记录。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭流量详情">关闭</button></div><p class="muted">仅展示功能启用后采集的数据，无记录日期不代表历史用量为零。按采样时刻归入时段。</p><div data-traffic-history-content aria-live="polite"></div></div></dialog>
-<dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>节点信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点信息弹窗">关闭</button></div>
-<div class="qr-panel" data-qr-panel hidden><canvas id="credentials-qr" class="qr-canvas" role="img" aria-label="Hysteria 2 节点配置二维码"></canvas><p class="muted">可直接扫描导入，或保存 PNG 到受信任的设备。</p></div>
-<label for="credentials-uri">Hysteria 2 节点代码</label><textarea id="credentials-uri" rows="5" readonly></textarea><div class="credential-actions"><button type="button" data-copy-target="credentials-uri">复制节点代码</button><button class="secondary" type="button" data-save-qr hidden>保存二维码 PNG</button></div><p class="notice" data-credentials-notice>关闭弹窗后会刷新当前用户列表。</p></div></dialog>
+<dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>订阅信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭订阅信息弹窗">关闭</button></div>
+<div class="qr-panel" data-qr-panel hidden><canvas id="credentials-qr" class="qr-canvas" role="img" aria-label="订阅链接二维码"></canvas><p class="muted">可直接扫描导入，或保存 PNG 到受信任的设备。</p></div>
+<label for="credentials-uri">固定订阅链接</label><textarea id="credentials-uri" rows="5" readonly></textarea><div class="credential-actions"><button type="button" data-copy-target="credentials-uri">复制订阅链接</button><button class="secondary" type="button" data-save-qr hidden>保存二维码 PNG</button></div><p class="notice" data-credentials-notice>关闭弹窗后会刷新当前用户列表。</p></div></dialog>
+<dialog id="subscription-dialog" class="migration-dialog" aria-labelledby="subscription-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="subscription-title">订阅管理</h2><p class="muted">用户链接保持不变；修改统一节点后，用户刷新订阅即可同步配置和流量信息。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭订阅管理">关闭</button></div>
+<input type="hidden" name="csrf" value="{csrf}" data-subscription-csrf>
+<div data-subscription-content><p class="muted">正在加载订阅信息…</p></div>
+</div></dialog>
 <dialog id="create-user-dialog" class="migration-dialog create-dialog" aria-labelledby="create-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="create-user-title">添加用户</h2><p class="muted">设置用户名称、设备数和总流量限制。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭添加用户弹窗">关闭</button></div>
 <form class="create-grid" method="post" action="/users" data-create-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机" autofocus></div>
+<div><label for="user_type">账号类型</label><select id="user_type" name="user_type" data-user-type-select><option value="0">普通用户</option><option value="1">专线用户</option></select></div>
 <div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
-<label class="checkbox-field wide" for="create-allow-udp-443"><input id="create-allow-udp-443" name="allow_udp_443" type="checkbox" value="1" checked><span>允许该账号使用 UDP 443</span></label><div><label for="traffic_limit_gb">总流量（GiB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
-<dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户</h2><p class="muted">修改限制或开放 UDP 443，不会改变已发放节点链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">关闭</button></div>
+<div><label for="starts_at">开通日期（可选）</label><input id="starts_at" name="starts_at" type="date"><small class="muted">留空立即开通；北京时间所选日期 00:00 生效。</small></div><div data-expiry-field><label for="expires_at">到期日期（可选）</label><input id="expires_at" name="expires_at" type="date" data-expiry-input><small class="muted">留空为永久；北京时间所选日期 00:00 到期停用。</small></div>
+<div><label for="traffic_limit_gb">总流量（GiB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
+<dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户</h2><p class="muted">修改额度、开通和到期日期，不会改变已发放订阅链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">关闭</button></div>
 <form class="create-grid" method="post" action="/users/{first_edit_id}/edit" data-edit-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><input type="hidden" name="generation" value="{first_edit_generation}"><div class="wide"><label for="edit-user-name">用户名</label><div class="edit-lookup"><input id="edit-user-name" data-edit-user-name-input maxlength="64" autocomplete="off" placeholder="输入完整用户名"><button class="secondary" type="button" data-edit-user-load>加载用户</button></div><p class="muted" data-edit-user-status role="status">输入完整用户名后加载设置。</p></div><fieldset class="create-grid wide edit-fields" data-edit-user-fields disabled aria-label="用户设置">
 <div><label for="edit-device-limit">限制设备数</label><input id="edit-device-limit" name="device_limit" type="number" min="1" max="100" value="{first_edit_device_limit}" required></div>
 <div><label for="edit-traffic-limit-gb">总流量（GiB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div>
-<label class="checkbox-field" for="edit-allow-udp-443"><input id="edit-allow-udp-443" name="allow_udp_443" type="checkbox" value="1"{first_edit_udp_443_checked}{udp_443_disabled}><span>允许该账号使用 UDP 443<small class="muted">开启后，客户端把服务器端口从 {port} 改为 443 即可；原 {port} 仍可继续使用。</small></span></label><div><label for="edit-used-traffic-gib">已用流量（GiB）</label><input id="edit-used-traffic-gib" name="used_traffic_gib" type="number" min="0" max="1048576" step="any" value="{first_edit_used_traffic_gib}" required><small class="muted">设置用户当前已用总量，支持小数；设为 0 即清零。</small></div></fieldset><button class="wide" type="submit" disabled>保存修改</button></form>
+<div><label for="edit-starts-at">开通日期（可选）</label><input id="edit-starts-at" name="starts_at" type="date"></div><div data-edit-expiry-field><label for="edit-expires-at">到期日期（可选）</label><input id="edit-expires-at" name="expires_at" type="date" value="{first_edit_expiry_date}"><small class="muted">清空后保存即设为永久；北京时间所选日期 00:00 到期停用。已停用账号续期后需点击启用。</small></div><div><label for="edit-used-traffic-gib">已用流量（GiB）</label><input id="edit-used-traffic-gib" name="used_traffic_gib" type="number" min="0" max="1048576" step="any" value="{first_edit_used_traffic_gib}" required><small class="muted">设置用户当前已用总量，支持小数；设为 0 即清零。</small></div></fieldset><button class="wide" type="submit" disabled>保存修改</button></form>
 <p class="notice">设备数按在线 Hysteria 客户端实例估算；标准通用节点链接不包含硬件设备指纹。</p></div></dialog>
 <p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
-<section id="users" class="card"><div class="section-head user-section-head"><div class="user-heading"><h2>用户管理</h2><p class="muted">创建用户并设置并发设备和总流量限制。用户流量每月 1 日 00:00（北京时间）自动清零。</p></div>
-<div class="section-actions"><button type="button" data-dialog-open="create-user-dialog">添加用户</button><button class="secondary" type="button" data-dialog-open="edit-user-dialog"{edit_disabled}>编辑用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">重置全部流量</button></form></div></div>
+<section id="users" class="card"><div class="section-head user-section-head"><div class="user-heading"><div class="user-group-heading"><h2>用户管理</h2><nav class="user-group-tabs" aria-label="用户分组"><a class="button {standard_tab_class}" aria-current="{standard_tab_current}" href="/?type=standard#users">普通用户</a><a class="button {premium_tab_class}" aria-current="{premium_tab_current}" href="/?type=premium#users">专线用户</a></nav></div><p class="muted">创建用户并设置并发设备和总流量限制。用户流量每月 1 日 00:00（北京时间）自动清零。</p></div>
+<div class="section-actions">{group_node_settings}<button type="button" data-dialog-open="create-user-dialog">添加用户</button><button class="secondary" type="button" data-dialog-open="edit-user-dialog"{edit_disabled}>编辑用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置当前分组所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="user_group" value="{active_user_group}"><button class="danger" type="submit">重置本组流量</button></form></div></div>
 
 <div class="user-tools"><form class="user-filters" method="get" action="/#users" data-user-filters><div class="user-search"><label for="user-search">用户名</label><input id="user-search" name="q" type="search" value="{search_query}" placeholder="输入用户名搜索" autocomplete="off" maxlength="96" data-user-search></div>
 <div><label for="user-status-filter">状态</label><select id="user-status-filter" name="status" data-status-filter><option value="">全部</option><option value="enabled"{status_enabled}>启用</option><option value="disabled"{status_disabled}>禁用</option></select></div>
 <div><label for="user-online-filter">在线</label><select id="user-online-filter" name="online" data-online-filter><option value="">全部</option><option value="active"{online_active}>在线</option><option value="inactive"{online_inactive}>离线</option></select></div>
-<div><label for="user-udp443-filter">UDP 443</label><select id="user-udp443-filter" name="udp443" data-udp443-filter><option value="">全部</option><option value="allowed"{udp443_allowed}>已开放</option><option value="blocked"{udp443_blocked}>未开放</option></select></div>
+<input type="hidden" name="type" value="{active_user_group}" data-type-filter>
 <button type="submit">搜索</button><button class="ghost" type="button" data-clear-user-filters>清除</button></form><p class="muted search-status" data-search-status role="status" aria-live="polite">{user_count_text}</p></div>
 <p class="muted filter-empty" data-filter-empty hidden>没有符合当前条件的用户。</p>
 <div class="table-wrap user-table"><table><thead><tr><th>名称</th><th>状态</th><th aria-sort="{online_sort_aria}"><a class="sort-link" href="{online_sort_href}">在线设备 {online_sort_mark}</a></th><th>上传 / 下载</th><th aria-sort="{traffic_sort_aria}"><a class="sort-link" href="{traffic_sort_href}">总流量 {traffic_sort_mark}</a></th><th>操作</th></tr></thead><tbody>{rows}</tbody></table></div></section>""".format(
         port=self.app.hysteria_port,
+        subscription_ports=" / ".join(dict.fromkeys(str(n["port"]) for n in (
+            self.app.database.get_subscription_defaults() or [{"port": 443, "enabled": True}]
+        ) if n.get("enabled", True))),
         public_host=html.escape(self.app.public_host),
         stats=stats_state,
         stats_class="ok" if summary["service_available"] else "bad",
@@ -886,6 +948,13 @@ def render_dashboard(
         first_edit_udp_443_checked=(
             " checked"
             if first_edit_user and first_edit_user["allow_udp_443"]
+            else ""
+        ),
+        first_edit_expiry_date=(
+            time.strftime(
+                "%Y-%m-%d", time.gmtime(int(first_edit_user["expires_at"]) + 8 * 3600)
+            )
+            if first_edit_user and first_edit_user.get("expires_at")
             else ""
         ),
         udp_443_disabled="" if self.app.hysteria_port != 443 else " disabled",

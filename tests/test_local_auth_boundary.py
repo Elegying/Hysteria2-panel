@@ -1,4 +1,4 @@
-"""Recheck entrypoint permission when an in-flight local admission commits."""
+"""Recheck account status when an in-flight local admission commits."""
 
 import concurrent.futures
 import contextlib
@@ -57,24 +57,21 @@ class LocalAuthBoundaryTests(unittest.TestCase):
     def _set_permission(self, interface, allowed):
         user = self.database.get_proxy_user(self.user["id"])
         if interface == "mobile":
-            status, _payload = self.fixture.mobile_json_request(
-                "PATCH", "/api/v1/mobile/users/{}".format(user["id"]),
-                {"generation": user["generation"], "deviceLimit": 10,
-                 "trafficLimitGb": 250, "allowUdp443": allowed},
-                access_token=self.mobile_token,
-            )
+            status, _ = self.fixture.mobile_json_request(
+                "POST", "/api/v1/mobile/users/{}/{}".format(user["id"], "enable" if allowed else "disable"),
+                {"generation": user["generation"]}, access_token=self.mobile_token)
             self.assertEqual(200, status)
         else:
-            form = {"csrf": self.csrf, "generation": str(user["generation"]),
-                    "device_limit": "10", "traffic_limit_gb": "250", "inline": "1"}
-            if allowed:
-                form["allow_udp_443"] = "1"
-            with self.fixture.request(
-                "/users/{}/edit".format(user["id"]), form, headers=self.web_headers
-            ) as response:
-                self.assertEqual(200, response.status)
-        current = self.database.get_proxy_user(user["id"])
-        self.assertEqual(allowed, bool(current["allow_udp_443"]))
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, *args, **kwargs):
+                    return None
+            form = urllib.parse.urlencode({"csrf": self.csrf, "generation": str(user["generation"])}).encode()
+            request = urllib.request.Request(self.fixture.base_url + "/users/{}/toggle".format(user["id"]),
+                data=form, headers=self.web_headers)
+            with self.assertRaises(urllib.error.HTTPError) as result:
+                urllib.request.build_opener(NoRedirect).open(request, timeout=3)
+            self.assertIn(result.exception.code, (302, 303))
+        self.assertEqual(allowed, bool(self.database.get_proxy_user(user["id"])["enabled"]))
 
     def _lease_count(self):
         with self.database._connect() as connection:
@@ -125,7 +122,7 @@ class LocalAuthBoundaryTests(unittest.TestCase):
         self.assertEqual({"ok": False, "id": ""}, response)
         self.assertEqual(leases_before, self._lease_count())
         self.assertFalse(self._authenticate("/auth/udp-443")["ok"])
-        self.assertTrue(self._authenticate("/auth")["ok"])
+        self.assertFalse(self._authenticate("/auth")["ok"])
         self._set_permission(interface, True)
         self.assertTrue(self._authenticate("/auth/udp-443")["ok"])
 

@@ -341,7 +341,7 @@ class PortableBackupCompactionTests(unittest.TestCase):
             manifest = json.loads(package.read("manifest.json"))
             self.assertEqual(1, manifest["formatVersion"])
             self.assertEqual("users", manifest["dataScope"])
-            self.assertEqual("", manifest["source"]["nodeName"])
+            self.assertEqual("Fixture node", manifest["source"]["nodeName"])
 
         with sqlite_connection(portable_database) as connection:
             self.assertEqual([("ok",)], connection.execute("PRAGMA quick_check").fetchall())

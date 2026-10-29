@@ -170,48 +170,12 @@ try:
     browser.value('#username','Elegy')
     browser.value('#password','admin-password')
     browser.click('.login-form button',navigation=True)
-    browser.wait('document.querySelector("[data-egress-form]")')
+    browser.wait('document.querySelector("[data-subscription-defaults]")')
     browser.screenshot('dashboard-before.png')
     passed('网页登录与控制台加载')
 
-    browser.accept = False
-    browser.click('[data-egress-form] button')
-    assert fixture.egress_policy_controller.actions == []
-    assert browser.evaluate('document.querySelector("[data-egress-state]").textContent') == 'FULL 已关闭'
-    assert browser.evaluate('document.querySelector("[data-egress-form] button").disabled') is False
-    passed('FULL 取消确认不提交且按钮可继续使用')
-    browser.accept = True
-    for target,label in (('full','FULL 已开启'),('web','FULL 已关闭')):
-        browser.click('[data-egress-form] button',navigation=True)
-        assert fixture.egress_policy_controller.state == target
-        assert browser.evaluate('document.querySelector("[data-egress-state]").textContent') == label
-    passed('FULL 开启与关闭真实表单往返')
-    switch = fixture.egress_policy_controller.switch
-    fixture.server.request_deadline = .2
-    def slow_switch(policy):
-        try:
-            time.sleep(.6)
-            return switch(policy)
-        finally:
-            # Only the POST under test gets the short deadline. Its redirect
-            # opens a separate dashboard request with the normal time budget.
-            fixture.server.request_deadline = 30
-    fixture.egress_policy_controller.switch = slow_switch
-    browser.click('[data-egress-form] button',navigation=True)
-    assert fixture.egress_policy_controller.state == 'full'
-    assert browser.evaluate('document.querySelector("[data-egress-state]").textContent') == 'FULL 已开启'
-    fixture.server.request_deadline = 30
-    fixture.egress_policy_controller.switch = switch
-    passed('FULL 慢切换仍返回成功页面')
-    def fail_switch(policy):
-        raise RuntimeError('simulated service failure')
-    fixture.egress_policy_controller.switch = fail_switch
-    browser.click('[data-egress-form] button',navigation=True)
-    assert browser.evaluate('document.body.innerText.includes("出站策略切换失败")')
-    assert fixture.egress_policy_controller.state == 'full'
-    fixture.egress_policy_controller.switch = switch
-    browser.navigate(fixture.base_url+'/')
-    passed('FULL 后端失败显示错误且原状态保留')
+    assert browser.evaluate('document.querySelector("[data-egress-form]") === null')
+    passed('旧 FULL 开关已移除')
 
     browser.click('[data-dialog-open="create-user-dialog"]')
     browser.wait('document.getElementById("create-user-dialog").open')
@@ -224,7 +188,7 @@ try:
     user_id = created['id']
     browser.click('[data-copy-target="credentials-uri"]')
     browser.wait('document.querySelector("[data-copy-target=credentials-uri]").textContent === "已复制"')
-    assert browser.evaluate('navigator.clipboard.readText()').startswith('hysteria2://')
+    assert browser.evaluate('navigator.clipboard.readText()').startswith(fixture.base_url + '/sub/')
     browser.click('#credentials-dialog [data-dialog-close]',navigation=True)
     passed('添加用户、连接信息、复制与关闭后刷新')
 
@@ -535,9 +499,7 @@ try:
     browser.value('[data-online-filter]','inactive','change')
     browser.click('[data-user-filters] button[type="submit"]',navigation=True)
     browser.wait('location.search.includes("online=inactive")')
-    browser.value('[data-udp443-filter]','blocked','change')
-    browser.click('[data-user-filters] button[type="submit"]',navigation=True)
-    browser.wait('location.search.includes("udp443=blocked")')
+    assert not browser.evaluate('document.querySelector("[data-udp443-filter]")')
     assert browser.evaluate('document.querySelectorAll("[data-user-name]").length') == 2
     browser.click('[data-clear-user-filters]',navigation=True)
     passed('页面刷新、流量升降排序与组合筛选')
@@ -610,9 +572,7 @@ try:
     browser.navigate(fixture.base_url+'/')
     browser.call('Emulation.setDeviceMetricsOverride',{'width':375,'height':812,'deviceScaleFactor':1,'mobile':True})
     browser.screenshot('dashboard-mobile.png')
-    browser.click('[data-egress-form] button',navigation=True)
-    assert fixture.egress_policy_controller.state=='web'
-    passed('手机视口 FULL 点击切换')
+    assert browser.evaluate('document.querySelector("[data-egress-form]") === null')
     browser.call('Emulation.clearDeviceMetricsOverride')
     browser.click('[data-dialog-open="migration-dialog"]')
     before_zip = set(OUT.glob('*.zip'))

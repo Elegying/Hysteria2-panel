@@ -182,7 +182,7 @@ class UserLookupTests(unittest.TestCase):
             payload = json.load(response)
         self.assertEqual('Lookup-User', payload['name'])
         self.assertTrue(payload['allow_udp_443'])
-        self.assertEqual({'id', 'name', 'generation', 'device_limit', 'traffic_limit_gb', 'used_traffic_gib', 'allow_udp_443'}, set(payload))
+        self.assertEqual({'id', 'name', 'generation', 'device_limit', 'traffic_limit_gb', 'used_traffic_gib', 'allow_udp_443', 'user_type', 'expires_at', 'expires_date', 'starts_at', 'starts_date'}, set(payload))
         with self.assertRaises(urllib.error.HTTPError) as error:
             f.request('/users/lookup?name=missing', headers=headers)
         self.assertEqual(404, error.exception.code)

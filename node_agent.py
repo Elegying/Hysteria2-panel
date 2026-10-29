@@ -1213,6 +1213,89 @@ def _openssl_filter(arguments, value, executable="/usr/bin/openssl"):
     return completed.stdout
 
 
+
+NODE_HOPPING_TABLE = "hy2_port_hopping"
+
+
+def node_hopping_rules():
+    rules = []
+    for protocol in ("udp", "tcp"):
+        rules.append({"family": "inet", "table": NODE_HOPPING_TABLE,
+            "chain": "prerouting", "expr": [
+                {"match": {"op": "!=", "left": {"meta": {"key": "iifname"}}, "right": "lo"}},
+                {"match": {"op": "==", "left": {"fib": {"result": "type", "flags": ["daddr"]}}, "right": "local"}},
+                {"match": {"op": "==", "left": {"payload": {"protocol": protocol, "field": "dport"}}, "right": {"range": [20000, 50000]}}},
+                {"redirect": {"port": 443}}]})
+    return rules
+
+
+def node_hopping_present(runner=subprocess.run):
+    def query(*arguments):
+        result = runner(["/usr/sbin/nft", "-j", *arguments],
+                        check=True, capture_output=True, text=True, timeout=10)
+        return json.loads(result.stdout)["nftables"]
+    tables = query("list", "tables")
+    if not any(item.get("table", {}).get("family") == "inet" and
+               item.get("table", {}).get("name") == NODE_HOPPING_TABLE for item in tables):
+        return False
+    rows = query("list", "table", "inet", NODE_HOPPING_TABLE)
+    chains, rules = [], []
+    for item in rows:
+        for kind, target in (("chain", chains), ("rule", rules)):
+            if kind in item:
+                clean = dict(item[kind])
+                clean.pop("handle", None)
+                target.append(clean)
+        if set(item) - {"metainfo", "table", "chain", "rule"}:
+            raise ProtocolError("port hopping table has unmanaged objects")
+    expected_chain = {"family": "inet", "table": NODE_HOPPING_TABLE,
+        "name": "prerouting", "type": "nat", "hook": "prerouting", "prio": -100, "policy": "accept"}
+    if chains != [expected_chain] or rules != node_hopping_rules():
+        raise ProtocolError("port hopping table is not owned by this node")
+    return True
+
+
+def configure_node_hopping(enabled, *, check_only=False, runner=subprocess.run,
+                           lock_path="/run/hysteria2-panel-node-hopping.lock"):
+    """Own only the exact fixed NAT table; never flush an external ruleset."""
+    import fcntl
+    if type(enabled) is not bool:
+        raise ProtocolError("invalid port hopping switch")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ProtocolError("invalid port hopping lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        present = node_hopping_present(runner)
+        if check_only:
+            if present != enabled:
+                raise ProtocolError("port hopping state does not match configuration")
+            return
+        if present == enabled:
+            return
+        if enabled:
+            command = 'table inet hy2_port_hopping {\n chain prerouting {\n type nat hook prerouting priority dstnat; policy accept;\n'
+            for protocol in ("udp", "tcp"):
+                command += ' iifname != "lo" fib daddr type local {} dport 20000-50000 redirect to :443;\n'.format(protocol)
+            command += ' }\n}\n'
+        else:
+            command = 'delete table inet hy2_port_hopping\n'
+        for arguments in (["-c", "-f", "-"], ["-f", "-"]):
+            runner(["/usr/sbin/nft", *arguments], input=command, check=True,
+                   capture_output=True, text=True, timeout=10)
+        if node_hopping_present(runner) != enabled:
+            raise ProtocolError("port hopping verification failed")
+    finally:
+        os.close(descriptor)
+
+
+def read_node_hopping(metadata_path):
+    metadata = json.loads(_read_private_regular_file(metadata_path, 8 * 1024).decode("ascii"))
+    value = metadata.get("portHopping", False)
+    if type(value) is not bool:
+        raise ProtocolError("invalid port hopping metadata")
+    return value
+
 def validate_data_plane_identity(response, architecture):
     expected_fields = {
         "grantId",
@@ -1237,7 +1320,8 @@ def validate_data_plane_identity(response, architecture):
     )
     if (
         not isinstance(response, dict)
-        or set(response) != expected_fields
+        or set(response) - {"portHopping"} != expected_fields
+        or type(response.get("portHopping", False)) is not bool
         or not NODE_ID_PATTERN.fullmatch(str(response.get("grantId", "")))
         or isinstance(response.get("expiresAt"), bool)
         or not isinstance(response.get("expiresAt"), int)
@@ -1328,6 +1412,7 @@ def validate_data_plane_identity(response, architecture):
         "hysteria_sha256": hysteria_hashes[architecture],
         "egress_policy": response["egressPolicy"],
         "main_port": response["ports"]["main"],
+        "port_hopping": response.get("portHopping", False),
     }
 
 
@@ -1345,7 +1430,7 @@ def render_data_plane_configs(identity, stats_secret, outbound_mode="auto"):
     }
     if (
         not isinstance(identity, dict)
-        or set(identity) != expected_identity
+        or set(identity) - {"port_hopping"} != expected_identity
         or identity.get("egress_policy") not in {"web", "full"}
         or outbound_mode not in ("auto", "4")
         or not isinstance(stats_secret, str)
@@ -1667,6 +1752,7 @@ def prepare_data_plane_bundle(
             "hysteriaSha256": identity["hysteria_sha256"],
             "egressPolicy": identity["egress_policy"],
             "mainPort": identity["main_port"],
+            "portHopping": identity.get("port_hopping", False),
             "configProtocolVersion": 1,
         }
         files = {
@@ -1950,7 +2036,8 @@ def collect_data_plane_attestation(
     }
     if (
         not isinstance(metadata, dict)
-        or set(metadata) != expected_fields
+        or set(metadata) - {"portHopping"} != expected_fields
+        or type(metadata.get("portHopping", False)) is not bool
         or metadata.get("hysteriaVersion") != "2.12.1"
         or metadata.get("configProtocolVersion") != 1
         or metadata.get("egressPolicy") not in {"web", "full"}
@@ -1970,6 +2057,8 @@ def collect_data_plane_attestation(
         )
     ):
         raise ProtocolError("data-plane metadata is invalid")
+    if "portHopping" in metadata:
+        configure_node_hopping(metadata["portHopping"], check_only=True)
     certificate = _read_private_regular_file(certificate_path, 16 * 1024)
     private_key = _read_private_regular_file(private_key_path, 16 * 1024)
     response = {
@@ -2000,6 +2089,8 @@ def collect_data_plane_attestation(
         "hysteria2-panel-node-tcp-probe-main.service",
         "hysteria2-panel-node-tcp-probe-udp443.service",
     )
+    if "portHopping" in metadata:
+        units += ("hysteria2-panel-node-port-hopping.service",)
     services_healthy = all(service_checker(unit) is True for unit in units)
     stats_healthy = all(
         stats_checker(url, stats_secret) is True
@@ -3697,6 +3788,9 @@ def _parser():
             command.add_argument("--require-ack", action="store_true")
             command.add_argument("--upload-only", action="store_true")
             command.add_argument("--legacy-traffic", action="store_true")
+    hopping = subcommands.add_parser("port-hopping")
+    hopping.add_argument("action", choices=("apply", "disable", "check"))
+    hopping.add_argument("--metadata", default="/etc/hysteria2-panel-node/bootstrap.json")
     return parser
 
 
@@ -3734,6 +3828,16 @@ def main(arguments=None):
         options = _parser().parse_args(arguments)
     except SystemExit as exc:
         return int(exc.code)
+    if options.command == "port-hopping":
+        try:
+            if os.geteuid() != 0:
+                raise ProtocolError("port hopping requires root")
+            enabled = False if options.action == "disable" else read_node_hopping(options.metadata)
+            configure_node_hopping(enabled, check_only=options.action == "check")
+            return 0
+        except (OSError, ValueError, KeyError, ProtocolError, subprocess.SubprocessError):
+            print("port hopping configuration failed", file=sys.stderr)
+            return 1
     if options.command == "accounting-mode":
         print("cumulative-v1")
         return 0

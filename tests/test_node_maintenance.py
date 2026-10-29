@@ -264,7 +264,7 @@ sync() { :; }
                 (config / "stats.env").write_text("HY2PANEL_STATS_SECRET=synthetic-stats-secret\n")
                 states = {
                     "hysteria2-panel-node-" + name + ".service": "active"
-                    for name in ("auth", "control", "hysteria-main", "hysteria-udp443", "tcp-probe-main", "tcp-probe-udp443")
+                    for name in ("auth", "control", "hysteria-main", "hysteria-udp443", "tcp-probe-main", "tcp-probe-udp443", "port-hopping")
                 }
                 (root / "states.json").write_text(json.dumps(states))
                 (root / "events.json").write_text("[]")

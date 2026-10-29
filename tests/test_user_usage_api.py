@@ -457,6 +457,42 @@ class UserUsageDistributedTests(DistributedControlCase):
     def query(self):
         return self.db.user_usage(self.db._fingerprint(self.token), self.local, self.now[0])
 
+    def test_premium_statistics_ignore_local_and_other_tier_failures(self):
+        with self.db._connect() as c:
+            c.execute("UPDATE proxy_users SET user_type=1, device_limit=100, traffic_limit_bytes=? WHERE id=?",
+                      (250 * 1024**3, self.user['id']))
+            c.execute("UPDATE nodes SET tier='premium' WHERE node_id=?", (self.nodes[0],))
+        self.local = None
+        self.checkpoint(self.nodes[0], online=4, traffic={'alice': {'tx': 13, 'rx': 17}})
+        result = self.query()
+        self.assertEqual(30, result['data']['usedBytes'])
+        self.assertEqual(4, result['data']['onlineDevices'])
+        self.assertEqual(100, result['data']['deviceLimit'])
+        self.assertEqual(250 * 1024**3, result['data']['trafficLimitBytes'])
+        # A fabricated local count must never leak into remote-only totals.
+        self.local = (0, 0, {'alice': 99})
+        self.assertEqual(4, self.query()['data']['onlineDevices'])
+        with self.db._connect() as c:
+            c.execute("UPDATE nodes SET tier='premium' WHERE node_id=?", (self.nodes[1],))
+        with self.assertRaisesRegex(panel.UserUsageError, 'STATS_INCOMPLETE'):
+            self.query()
+        self.checkpoint(self.nodes[1], online=3)
+        self.assertEqual(7, self.query()['data']['onlineDevices'])
+        self.now[0] += 31
+        with self.assertRaisesRegex(panel.UserUsageError, 'STATS_STALE'):
+            self.query()
+
+    def test_normal_statistics_ignore_premium_and_empty_premium_is_unavailable(self):
+        with self.db._connect() as c:
+            c.execute("UPDATE nodes SET tier='premium' WHERE node_id=?", (self.nodes[1],))
+        self.checkpoint(self.nodes[0], online=2)
+        self.assertEqual(3, self.query()['data']['onlineDevices'])
+        with self.db._connect() as c:
+            c.execute("UPDATE proxy_users SET user_type=1 WHERE id=?", (self.user['id'],))
+            c.execute("UPDATE nodes SET status='revoked' WHERE node_id=?", (self.nodes[1],))
+        with self.assertRaisesRegex(panel.UserUsageError, 'STATS_UNAVAILABLE'):
+            self.query()
+
     def test_account_ledger_matches_origins_including_historical_nodes(self):
         self.db.apply_traffic_batch(secrets.token_hex(16), {'alice': {'tx': 7, 'rx': 11}})
         self.checkpoint(self.nodes[0], traffic={'alice': {'tx': 13, 'rx': 17}})
