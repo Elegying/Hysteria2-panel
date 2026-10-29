@@ -109,6 +109,11 @@ def main():
     def reconcile():
         while True:
             reconciler.reconcile()
+            # The fixture panel has no local proxy; its empty local collector is
+            # fresh. Remote accounting still comes only from the real agent.
+            with app.usage_manager._user_usage_lock:
+                now = int(time.time())
+                app.usage_manager._user_usage_checkpoint = (now, now, {})
             time.sleep(1)
     threading.Thread(target=reconcile, daemon=True).start()
     server.serve_forever()

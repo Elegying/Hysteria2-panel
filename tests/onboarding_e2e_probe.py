@@ -2,6 +2,8 @@
 import json
 from pathlib import Path
 import sys
+import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, '/workspace')
@@ -39,4 +41,20 @@ except RuntimeError:
     pass
 else:
     raise AssertionError('Cross-tier account unexpectedly authenticated')
-print('Original subscription, user proxy traffic and tier isolation verified')
+request = urllib.request.Request('https://panel.e2e.test:19998/api/v1/user/usage',
+    headers={'Authorization': 'Bearer '+record['password']})
+for attempt in range(20):
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            usage = json.load(response)
+        if usage['meta']['complete'] and usage['data']['usedBytes'] > 0:
+            assert isinstance(usage['data']['onlineDevices'], int)
+            assert usage['data']['deviceLimit'] == 100
+            break
+    except urllib.error.HTTPError as exc:
+        if exc.code != 503:
+            raise
+    time.sleep(1)
+else:
+    raise AssertionError('Real node accounting did not become complete')
+print('Original subscription, user traffic, statistics and tier isolation verified')
