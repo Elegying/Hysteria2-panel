@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.47"
+PANEL_VERSION="0.39.48"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,12 +30,12 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="045662fb47e7ed934864db211163cdbf413cb86ce815d7de37b8f03861ac7544"
+PANEL_SHA256="8c14f8c9a64507d53afd8f025844746a3c5008a6d46e35c0a23d461d46357678"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="6b62117af492aa5513a253fb0a011036be8ef3fa255bc2e9c4b8350ba5d70e63"
+HY2PANEL_VERSION_SHA256="9db7ee5ebf806a9c2d52a6cb0ccf98393c272010e16fdc97994f5cf6ff8d044e"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
 HY2PANEL_WEB_ASSETS_SHA256="838f49620a5135212af95f642063e71a54ea516374d618bf2c5393b818576b08"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
@@ -44,12 +44,12 @@ HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
-HY2PANEL_NODES_SHA256="30abf3cdc578c9995e9aa1c1e3fb81b3372e32991870433a16d5e00ec5f615ef"
+HY2PANEL_NODES_SHA256="fbaa534ec94c2bb88b16fe1407afa5f91cb2c9805c9ac5cc66e25aedf8b0dabd"
 HY2PANEL_DISTRIBUTED_SHA256="63433d694dd2128b659c769681e0f541f1976ae8a8f6265fabc24e7a4b33a2e4"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="1719935aced8e59bfdc4e9843bb05be29e00146855e263613cc83adf72bf039e"
 HY2PANEL_MOBILE_API_SHA256="0bbbc4ba9c9c5040da7ebc4d4aeaa84c1a0f96c1f8f646e58a46040b29e56b5c"
-NODE_AGENT_SHA256="10333431d660437ca1027cfaee06e91e18997a312b0a079d1a4b733c77662657"
+NODE_AGENT_SHA256="64cbdb38df92071e533535175010c751cfaac67ae5a24af199030c043028db16"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -305,6 +305,12 @@ stop_loaded_units() {
     fi
     active_state="$(systemctl show --no-pager --property=ActiveState --value "${unit_file}" 2>/dev/null)" \
       || return 1
+    if [[ "${active_state}" == "failed" ]]; then
+      # A stopped failed oneshot retains its failure state until reset. This is
+      # not a running process and must not strand an otherwise safe rollback.
+      systemctl reset-failed "${unit_file}" || return 1
+      active_state="$(systemctl show --no-pager --property=ActiveState --value "${unit_file}" 2>/dev/null)" || return 1
+    fi
     [[ "${active_state}" == "inactive" ]] || return 1
   done
 }

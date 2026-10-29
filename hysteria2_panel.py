@@ -5621,7 +5621,8 @@ class Database:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 grant = connection.execute(
-                    """SELECT g.grant_id, g.bound_ip, g.automatic_canary
+                    """SELECT g.grant_id, g.bound_ip, g.automatic_canary,
+                        n.last_heartbeat_at, n.last_snapshot_at, n.last_traffic_ack_at
                     FROM node_data_plane_bootstrap_grants AS g
                     JOIN nodes AS n ON n.node_id = g.node_id
                     WHERE g.node_id = ? AND g.token_digest = ?
@@ -5641,6 +5642,11 @@ class Database:
                     return False
                 if bool(grant["automatic_canary"]) != automatic_canary_passed:
                     return False
+                if automatic_canary_passed and any(
+                    grant[field] is None or int(grant[field]) < acknowledged_at - MAX_STATE_AGE_SECONDS
+                    for field in ("last_heartbeat_at", "last_snapshot_at", "last_traffic_ack_at")
+                ):
+                    return False
                 self._consume_node_request_nonce(
                     connection,
                     node_id,
@@ -5658,11 +5664,11 @@ class Database:
                 node_updated = connection.execute(
                     """UPDATE nodes SET
                         data_plane_state = CASE
-                            WHEN data_plane_state = 'bootstrap_issued'
-                                THEN CASE WHEN ? = 1
-                                    THEN 'direct_canary_passed'
-                                    ELSE 'data_plane_installed' END
+                            WHEN ? = 1 THEN 'dns_admitted'
+                            WHEN data_plane_state = 'bootstrap_issued' THEN 'data_plane_installed'
                             ELSE data_plane_state END,
+                        dns_admitted_at = CASE WHEN ? = 1 THEN ? ELSE dns_admitted_at END,
+                        dns_admitted_by = CASE WHEN ? = 1 THEN 'system:one-click' ELSE dns_admitted_by END,
                         data_plane_installed_at = ?,
                         direct_canary_passed_at = CASE
                             WHEN ? = 1 AND direct_canary_passed_at IS NULL
@@ -5676,6 +5682,9 @@ class Database:
                         AND lifecycle_state = 'active'
                         AND policy_state = 'protocol_ready'""",
                     (
+                        int(automatic_canary_passed),
+                        int(automatic_canary_passed),
+                        acknowledged_at,
                         int(automatic_canary_passed),
                         acknowledged_at,
                         int(automatic_canary_passed),

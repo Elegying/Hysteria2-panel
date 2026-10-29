@@ -111,6 +111,7 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
             )
             runner(
                 node_ip="2001:4860:4860::8888",
+                server_name="hk.example.test",
                 main_port=24443,
                 token="canary_" + "T" * 40,
                 pin_sha256="ab" * 32,
@@ -120,6 +121,8 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
             [24443, 443, 24443, 443],
             [int(c["server"].rsplit(":", 1)[1]) for c in configs],
         )
+        self.assertEqual(["vpn.example.test"] * 2 + ["hk.example.test"] * 2,
+                         [c["tls"]["sni"] for c in configs])
         self.assertTrue(all("--max-filesize" in command for command in curl_calls))
         self.assertTrue(all(c["auth"].startswith("canary_") for c in configs))
         self.assertTrue(all(c["tls"]["insecure"] is True for c in configs))
@@ -914,6 +917,13 @@ class AutoBootstrapClaimTests(unittest.TestCase):
                 0, connection.execute("SELECT COUNT(*) FROM proxy_users").fetchone()[0]
             )
 
+        # Automatic publication requires fresh real control/accounting state.
+        self.assertFalse(self.db.acknowledge_data_plane_bootstrap(
+            self.node_id, digest, self.remote_ip, "d" * 64, self.now[0],
+            automatic_canary_passed=True))
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute("UPDATE nodes SET last_heartbeat_at=?, last_snapshot_at=?, last_traffic_ack_at=? WHERE node_id=?",
+                (self.now[0], self.now[0], self.now[0], self.node_id))
         self.assertTrue(
             self.db.acknowledge_data_plane_bootstrap(
                 self.node_id,
@@ -939,7 +949,7 @@ class AutoBootstrapClaimTests(unittest.TestCase):
         node = next(
             item for item in self.db.list_nodes() if item["node_id"] == self.node_id
         )
-        self.assertEqual("direct_canary_passed", node["data_plane_state"])
+        self.assertEqual("dns_admitted", node["data_plane_state"])
         self.assertEqual(self.now[0], node["direct_canary_passed_at"])
 
 
@@ -1243,10 +1253,19 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
         self.assertEqual(self.identity["certificateDerSha256"], calls[0]["pin_sha256"])
         self.assertEqual(24443, calls[0]["main_port"])
 
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute("UPDATE nodes SET last_heartbeat_at=?, last_snapshot_at=?, last_traffic_ack_at=? WHERE node_id=?",
+                (self.now[0], self.now[0], self.now[0], self.node_id))
         self.service.canary_runner = lambda **kwargs: calls.append(kwargs)
-        result = self.service.ack(
-            self._ack_payload(value=31), remote_ip=self.remote_ip
-        )
+        fresh = self.db.get_node_for_heartbeat(self.node_id)
+        pending = dict(fresh, last_snapshot_at=None)
+        with mock.patch.object(self.db, "get_node_for_heartbeat", side_effect=[fresh, pending, fresh]), \
+             mock.patch("hy2panel.nodes.time.sleep") as sleep:
+            result = self.service.ack(
+                self._ack_payload(value=31), remote_ip=self.remote_ip
+            )
+        sleep.assert_called_once_with(0.25)
+        self.assertEqual("dns_admitted", self.db.get_node_for_heartbeat(self.node_id)["data_plane_state"])
         self.assertEqual(
             {"nodeId": self.node_id, "status": "DIRECT_CANARY_PASSED"}, result
         )

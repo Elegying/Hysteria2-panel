@@ -93,3 +93,62 @@ class OnboardingCompletionTests(unittest.TestCase):
             self.assertEqual(42, result.returncode, result.stderr)
             self.assertEqual(['apt', 'apt', 'curl'], log.read_text().splitlines())
             self.assertNotIn('a'*40, result.stdout + result.stderr)
+
+    def test_signed_bootstrap_releases_verifier_before_installer_runs(self):
+        service = NodeEnrollmentService.__new__(NodeEnrollmentService)
+        service.panel_version = '0.39.47'
+        service.panel_url = 'https://panel.example.test'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, body in {
+                'id': 'echo 0',
+                'uname': 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi',
+                'sha256sum': 'exit 0',
+                'apt-get': 'exit 0',
+                'curl': '''for arg; do dest="$arg"; done
+case "$dest" in
+*/cosign) printf '#!/bin/sh\\ntouch "$VERIFIED"\\nexit 0\\n' > "$dest" ;;
+*/install.sh.sigstore.json) echo fixture > "$dest" ;;
+*/install.sh) cat > "$dest" <<'INSTALLER'
+#!/bin/bash
+set -eu
+[ -f "$VERIFIED" ]
+[ ! -e "${0%/*}/cosign" ]
+[ ! -e "${0%/*}/install.sh.sigstore.json" ]
+touch "$INSTALLED"
+INSTALLER
+;;
+*) exit 10;;
+esac''',
+            }.items():
+                path = root / name
+                path.write_text('#!/bin/sh\n' + body + '\n')
+                path.chmod(0o755)
+            env = {**os.environ, 'PATH': directory+':/usr/bin:/bin',
+                   'VERIFIED': str(root/'verified'), 'INSTALLED': str(root/'installed')}
+            command = service._deployment_command('a'*40).replace('/run/systemd/system', directory)
+            result = subprocess.run(['/bin/bash', '-c', command], env=env, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertTrue((root/'installed').exists())
+
+    def test_failed_stopped_unit_can_recover_but_running_unit_cannot(self):
+        source = (Path(__file__).resolve().parents[1]/'install.sh').read_text()
+        helper = source[source.index('stop_loaded_units()'):source.index('\n\nstop_panel_preserving_hysteria()')]
+        for initial, reset, expected in [('failed', 'inactive', 0), ('active', 'active', 1),
+                                         ('failed', 'failed', 1)]:
+            with self.subTest(initial=initial, reset=reset):
+                script = '''set -eu
+%s
+state=%s
+systemctl() {
+ case "$1" in
+ show) case "$*" in *LoadState*) echo loaded;; *) echo "$state";; esac;;
+ stop) :;;
+ reset-failed) state=%s;;
+ *) return 2;;
+ esac
+}
+stop_loaded_units test.service
+''' % (helper, initial, reset)
+                result = subprocess.run(['/bin/bash', '-c', script], capture_output=True, text=True)
+                self.assertEqual(expected, result.returncode, result.stderr)

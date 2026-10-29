@@ -4,6 +4,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -126,7 +127,7 @@ class HysteriaCanaryRunner:
         if not secrets.compare_digest(observed, expected_ip):
             raise RuntimeError("canary egress address does not match the node")
 
-    def _check_entrypoint(self, node_ip, port, token, pin_sha256, trace_url):
+    def _check_entrypoint(self, node_ip, port, token, pin_sha256, trace_url, server_name=None):
         local_port = int(self.port_factory())
         if not 1024 <= local_port <= 65535:
             raise RuntimeError("canary local port is invalid")
@@ -139,7 +140,7 @@ class HysteriaCanaryRunner:
             "server": server,
             "auth": token,
             "tls": {
-                "sni": self.server_name,
+                "sni": server_name or self.server_name,
                 "insecure": True,
                 "pinSHA256": pin,
             },
@@ -235,7 +236,7 @@ class HysteriaCanaryRunner:
                 if log_handle is not None:
                     log_handle.close()
 
-    def __call__(self, *, node_ip, main_port, token, pin_sha256, port_hopping=False):
+    def __call__(self, *, node_ip, main_port, token, pin_sha256, port_hopping=False, server_name=None):
         try:
             address = ipaddress.ip_address(node_ip)
         except ValueError as exc:
@@ -257,11 +258,13 @@ class HysteriaCanaryRunner:
             raise ValueError("canary certificate pin is invalid")
         if type(port_hopping) is not bool:
             raise ValueError("invalid hopping switch")
+        if server_name is not None and not HOSTNAME_PATTERN.fullmatch(server_name):
+            raise ValueError("canary server name is invalid")
         ports = [main_port, 443]
         if port_hopping:
             ports.extend((20000, 20001 + secrets.randbelow(29999), 50000))
         for port in ports:
-            self._check_entrypoint(node_ip, port, token, pin_sha256, trace_url)
+            self._check_entrypoint(node_ip, port, token, pin_sha256, trace_url, server_name)
             if port_hopping and port >= 20000:
                 with socket.create_connection((node_ip, port), timeout=3):
                     pass
@@ -794,6 +797,7 @@ curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {bundle} -o "$join_tmp
   --certificate-identity {identity} \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 bash -n "$join_tmp/install.sh"
+/bin/rm -f -- "$join_tmp/cosign" "$join_tmp/install.sh.sigstore.json"
 export HY2PANEL_PANEL_URL={panel_url}
 export HY2PANEL_ENROLLMENT_TOKEN={token}
 export PANEL_REF={tag}
@@ -1205,6 +1209,7 @@ bash -n "$bootstrap_tmp/install.sh"
 export HY2PANEL_PANEL_URL={panel_url}
 export HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN={token}
 export PANEL_REF={tag}
+/bin/rm -f -- "$bootstrap_tmp/cosign" "$bootstrap_tmp/install.sh.sigstore.json"
 /bin/bash "$bootstrap_tmp/install.sh" --activate-data-plane
 unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
 )
@@ -1378,10 +1383,29 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
                     main_port=self._main_port(node),
                     token=payload["bootstrapToken"],
                     pin_sha256=identity["certificateDerSha256"],
+                    **({"server_name": node["subscription_host"]} if node.get("tier") == "premium" else {}),
                     **({"port_hopping": True} if node.get("port_hopping") else {}),
                 )
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Node %s canary failed (%s)", node["node_id"], type(exc).__name__)
                 self._reject()
+            # The control loop starts alongside the proxy. Let its first signed
+            # snapshot/accounting upload arrive before atomically publishing.
+            from .distributed import MAX_STATE_AGE_SECONDS
+            deadline = time.monotonic() + 30
+            while True:
+                current = self.database.get_node_for_heartbeat(node["node_id"])
+                fresh_after = int(self.clock()) - MAX_STATE_AGE_SECONDS
+                if current and all(
+                    current.get(field) is not None and current[field] >= fresh_after
+                    for field in ("last_heartbeat_at", "last_snapshot_at", "last_traffic_ack_at")
+                ):
+                    break
+                if time.monotonic() >= deadline:
+                    logging.getLogger(__name__).warning("Node %s control/accounting readiness timed out", node["node_id"])
+                    self._reject()
+                time.sleep(0.25)
+
         acknowledged_at = int(self.clock())
         acknowledged = self.database.acknowledge_data_plane_bootstrap(
             node["node_id"],
