@@ -112,6 +112,7 @@ jobs:
             --required static-analysis \
             --required managed-firewall-integration \
             --required systemd-service-semantics \
+            --required node-onboarding-e2e \
             --required full-installer-e2e \
             --required full-installer-ubuntu2604 \
             --required "dependency-bootstrap (ubuntu:26.04)" \

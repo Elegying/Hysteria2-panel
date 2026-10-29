@@ -29,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.46"
+AGENT_VERSION = "0.39.47"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -1575,7 +1575,7 @@ class DataPlaneBootstrapClient:
         )
         try:
             request_timeout = (
-                75 if purpose == "ack" else CONTROL_REQUEST_TIMEOUT_SECONDS
+                180 if purpose == "ack" else CONTROL_REQUEST_TIMEOUT_SECONDS
             )
             with self.opener(request, timeout=request_timeout) as response:
                 status = getattr(
@@ -1915,6 +1915,7 @@ def _read_private_regular_file(path, maximum):
 
 def _systemd_service_active(unit):
     if unit not in {
+        "hysteria2-panel-node-port-hopping.service",
         "hysteria2-panel-node-auth.service",
         "hysteria2-panel-node-control.service",
         "hysteria2-panel-node-hysteria-main.service",

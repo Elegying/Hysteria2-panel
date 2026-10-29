@@ -1815,7 +1815,7 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
         Response.response = expected_ack
         self.assertEqual(expected_ack, client.ack("bootstrap_" + "T" * 40, {}))
         self.assertEqual(8 * 1024 + 1, captured["maximum"])
-        self.assertEqual(75, captured["timeout"])
+        self.assertEqual(180, captured["timeout"])
         automatic_ack = {
             "nodeId": "8" * 32,
             "status": "DIRECT_CANARY_PASSED",

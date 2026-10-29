@@ -235,7 +235,7 @@ class HysteriaCanaryRunner:
                 if log_handle is not None:
                     log_handle.close()
 
-    def __call__(self, *, node_ip, main_port, token, pin_sha256):
+    def __call__(self, *, node_ip, main_port, token, pin_sha256, port_hopping=False):
         try:
             address = ipaddress.ip_address(node_ip)
         except ValueError as exc:
@@ -255,8 +255,16 @@ class HysteriaCanaryRunner:
             raise ValueError("canary token is invalid")
         if not isinstance(pin_sha256, str) or not SHA256_PATTERN.fullmatch(pin_sha256):
             raise ValueError("canary certificate pin is invalid")
-        for port in (main_port, 443):
+        if type(port_hopping) is not bool:
+            raise ValueError("invalid hopping switch")
+        ports = [main_port, 443]
+        if port_hopping:
+            ports.extend((20000, 20001 + secrets.randbelow(29999), 50000))
+        for port in ports:
             self._check_entrypoint(node_ip, port, token, pin_sha256, trace_url)
+            if port_hopping and port >= 20000:
+                with socket.create_connection((node_ip, port), timeout=3):
+                    pass
 
 
 class NodeDnsAdmissionReconciler:
@@ -301,7 +309,7 @@ class NodeDnsAdmissionReconciler:
         admitted = 0
         for node in candidates:
             node_addresses = addresses
-            if node.get("tier") == "premium":
+            if node.get("subscription_host") or node.get("tier") == "premium":
                 hostname = node.get("subscription_host", "")
                 if not HOSTNAME_PATTERN.fullmatch(hostname):
                     continue
@@ -739,6 +747,12 @@ class NodeEnrollmentService:
         return """(
 set -euo pipefail
 if [ "$(id -u)" -ne 0 ]; then echo '请切换到 root 后重新粘贴此代码' >&2; exit 1; fi
+if [ "$(uname -s)" != Linux ] || [ ! -d /run/systemd/system ]; then
+  echo '对接需要使用 systemd 的 Linux 服务器' >&2; exit 1
+fi
+if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
+  echo '完整面板服务器不能作为对接节点' >&2; exit 1
+fi
 join_tmp="$(mktemp -d -t hy2panel-node-join.XXXXXXXX)"
 trap 'rm -rf -- "$join_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in
@@ -746,6 +760,28 @@ case "$(uname -m)" in
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
   *) echo '仅支持 Linux amd64 和 arm64' >&2; exit 1 ;;
 esac
+bootstrap_dependencies=0
+command -v curl >/dev/null 2>&1 || bootstrap_dependencies=1
+command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
+if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
+if [ "$bootstrap_dependencies" -eq 1 ]; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get 'update'
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates coreutils
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || dnf install -y curl
+    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || yum install -y curl
+    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
+  else
+    echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
+  fi
+fi
+command -v curl >/dev/null 2>&1
+command -v sha256sum >/dev/null 2>&1
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$join_tmp/cosign"
@@ -1051,6 +1087,13 @@ class DataPlaneBootstrapService:
             self._reject()
         return node, hashlib.sha256(nonce_bytes).hexdigest(), now, remote_ip
 
+    def _main_port(self, node):
+        # Legacy shared-DNS nodes follow the original panel listener. Independent
+        # lines use the same persisted port in bootstrap, canary and subscription.
+        if node.get("subscription_host") or node.get("tier") == "premium":
+            return node.get("listen_port", self.hysteria_port)
+        return self.hysteria_port
+
     def _identity(self, node=None):
         if self.identity_provider is None:
             self._reject()
@@ -1112,6 +1155,12 @@ class DataPlaneBootstrapService:
         return """(
 set -euo pipefail
 if [ "$(id -u)" -ne 0 ]; then echo '请切换到 root 后重新粘贴此代码' >&2; exit 1; fi
+if [ "$(uname -s)" != Linux ] || [ ! -d /run/systemd/system ]; then
+  echo '对接需要使用 systemd 的 Linux 服务器' >&2; exit 1
+fi
+if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
+  echo '完整面板服务器不能作为对接节点' >&2; exit 1
+fi
 bootstrap_tmp="$(mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
 trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in
@@ -1119,6 +1168,28 @@ case "$(uname -m)" in
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
   *) echo '仅支持 Linux amd64 和 arm64' >&2; exit 1 ;;
 esac
+bootstrap_dependencies=0
+command -v curl >/dev/null 2>&1 || bootstrap_dependencies=1
+command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
+if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
+if [ "$bootstrap_dependencies" -eq 1 ]; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get 'update'
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates coreutils
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || dnf install -y curl
+    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || yum install -y curl
+    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
+  else
+    echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
+  fi
+fi
+command -v curl >/dev/null 2>&1
+command -v sha256sum >/dev/null 2>&1
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$bootstrap_tmp/cosign"
@@ -1236,7 +1307,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             "configProtocolVersion": 1,
             "hysteriaVersion": self.HYSTERIA_VERSION,
             "hysteriaSha256": dict(self.HYSTERIA_SHA256),
-            "ports": {"main": node.get("listen_port", self.hysteria_port) if node.get("tier") == "premium" else self.hysteria_port, "udp443": 443},
+            "ports": {"main": self._main_port(node), "udp443": 443},
         }
         if node.get("port_hopping"):
             result["portHopping"] = True
@@ -1304,9 +1375,10 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
             try:
                 self.canary_runner(
                     node_ip=remote_ip,
-                    main_port=node.get("listen_port", self.hysteria_port) if node.get("tier") == "premium" else self.hysteria_port,
+                    main_port=self._main_port(node),
                     token=payload["bootstrapToken"],
                     pin_sha256=identity["certificateDerSha256"],
+                    **({"port_hopping": True} if node.get("port_hopping") else {}),
                 )
             except Exception:
                 self._reject()
