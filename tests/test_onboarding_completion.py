@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import node_agent
+
 from hy2panel.nodes import (
     DATA_PLANE_BOOTSTRAP_FIELDS, DataPlaneBootstrapService,
     HysteriaCanaryRunner, NodeDnsAdmissionReconciler, NodeEnrollmentService,
@@ -14,6 +16,13 @@ from hy2panel.nodes import (
 
 
 class OnboardingCompletionTests(unittest.TestCase):
+    def test_real_health_checker_accepts_managed_hopping_service(self):
+        with mock.patch('node_agent.subprocess.run', return_value=mock.Mock(returncode=0)) as run:
+            self.assertTrue(node_agent._systemd_service_active('hysteria2-panel-node-port-hopping.service'))
+            self.assertEqual('hysteria2-panel-node-port-hopping.service', run.call_args.args[0][-1])
+            self.assertFalse(node_agent._systemd_service_active('unrelated.service'))
+            self.assertEqual(1, run.call_count)
+
     def test_independent_standard_dns_is_used_instead_of_local_dns(self):
         db = mock.Mock()
         db.list_nodes.return_value = [{

@@ -1915,6 +1915,7 @@ def _read_private_regular_file(path, maximum):
 
 def _systemd_service_active(unit):
     if unit not in {
+        "hysteria2-panel-node-port-hopping.service",
         "hysteria2-panel-node-auth.service",
         "hysteria2-panel-node-control.service",
         "hysteria2-panel-node-hysteria-main.service",
