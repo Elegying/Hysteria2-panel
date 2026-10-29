@@ -105,13 +105,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                         '--name', name, '--hostname', name, '--network', network, '--ip', ip,
                         '--tmpfs', '/run', '--tmpfs', '/run/lock',
                         '-v', '/sys/fs/cgroup:/sys/fs/cgroup:rw',
-                        '-v', '/proc/sys/net/core:/proc/sys/net/core:rw',
+                        '-v', '/proc/sys/net/core:/host-net-core:rw',
                         '-v', str(ROOT)+':/workspace:ro', '-v', str(case)+':/fixture',
                         '--add-host', 'panel.e2e.test:11.250.85.2',
                         '--add-host', 'local.e2e.test:11.250.85.2',
                         '--add-host', 'node.e2e.test:11.250.85.3', image)
                     containers.append(name)
                     wait(lambda: subprocess.run(['docker','exec',name,'systemctl','is-system-running'], capture_output=True, text=True).stdout.strip() in {'running', 'degraded'})
+                    run('docker', 'exec', name, 'mount', '--bind', '/host-net-core', '/proc/sys/net/core')
                     run('docker', 'exec', name, 'sh', '-c',
                         'cp /fixture/tls.crt /usr/local/share/ca-certificates/hy2-e2e.crt && update-ca-certificates')
                 run('docker', 'exec', node, 'sh', '-c', '! command -v curl')
