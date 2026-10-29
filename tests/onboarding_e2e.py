@@ -137,6 +137,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                     run('docker','rm','-f',name)
                     containers.remove(name)
         except Exception:
+            for name in containers:
+                subprocess.run(['docker','exec',name,'journalctl','--no-pager','-n','150',
+                    '-u','hysteria2-panel-node-onboarding.service',
+                    '-u','hysteria2-panel-node-auth.service',
+                    '-u','hysteria2-panel-node-control.service'])
             for path in root.glob('*/**/*.log'):
                 print('LOG:', path.name, flush=True)
                 print(path.read_text(errors='replace')[-24000:], flush=True)
