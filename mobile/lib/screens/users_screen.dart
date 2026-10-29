@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
+import '../core/user_validity.dart';
 import '../core/glass.dart';
 import 'domain_usage_screen.dart';
 import 'user_traffic_history_screen.dart';
@@ -34,6 +35,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   final _search = TextEditingController();
   List<Map<String, dynamic>> _users = [];
   String _status = 'all';
+  int _userType = 0;
+  List<Map<String, dynamic>> get _tierUsers =>
+      _users.where((u) => (u['userType'] ?? 0) == _userType).toList();
   String? _sort;
   String? _error;
   bool _loading = true;
@@ -48,7 +52,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
 
   List<Map<String, dynamic>> get _filtered {
     final query = _search.text.trim().toLowerCase();
-    final values = _users.where((user) {
+    final values = _tierUsers.where((user) {
       final matchesQuery =
           query.isEmpty ||
           user['name'].toString().toLowerCase().contains(query);
@@ -128,6 +132,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       final data = await ref
           .read(appControllerProvider.notifier)
           .getJson('/api/v1/mobile/users');
+      if (data['subscriptionManagement'] != true) {
+        throw const ApiException('请先升级面板移动接口，以支持用户分类、有效期和固定订阅管理');
+      }
       final items = (data['items'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList();
@@ -162,16 +169,19 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
 
   Future<void> _createUser() async {
     final name = TextEditingController();
-    final deviceLimit = TextEditingController(text: '3');
+    final deviceLimit = TextEditingController(
+      text: _userType == 1 ? '100' : '3',
+    );
     final trafficLimit = TextEditingController(text: '250');
-    var udp443 = true;
+    int? startsAt;
+    int? expiresAt;
     String? formError;
     var submitting = false;
     final result = await showGlassFormDialog<Map<String, dynamic>>(
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => GlassDialog(
-          title: const Text('新增用户'),
+          title: Text(_userType == 1 ? '新增专线用户' : '新增普通用户'),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -199,23 +209,17 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   ),
                 ),
                 const SizedBox(height: 8),
-                GlassControlSurface(
-                  child: SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text(
-                      '允许 UDP 443',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    subtitle: const Text(
-                      '可通过此端口连接节点',
-                      style: TextStyle(fontSize: 13),
-                    ),
-                    value: udp443,
-                    onChanged: (value) => setDialogState(() => udp443 = value),
-                  ),
+                UserValidityField(
+                  label: '开通时间',
+                  empty: '立即开通',
+                  value: startsAt,
+                  onChanged: (v) => setDialogState(() => startsAt = v),
+                ),
+                UserValidityField(
+                  label: '到期时间',
+                  empty: '永久',
+                  value: expiresAt,
+                  onChanged: (v) => setDialogState(() => expiresAt = v),
                 ),
                 if (formError != null)
                   Text(
@@ -254,9 +258,11 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                               .read(appControllerProvider.notifier)
                               .postJson('/api/v1/mobile/users', {
                                 'name': name.text.trim(),
+                                'userType': _userType,
                                 'deviceLimit': devices,
                                 'trafficLimitGb': traffic,
-                                'allowUdp443': udp443,
+                                'startsAt': startsAt,
+                                'expiresAt': expiresAt,
                               });
                           if (dialogContext.mounted &&
                               ModalRoute.of(dialogContext)?.isCurrent == true) {
@@ -579,7 +585,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       final confirmed = await _confirm(
         sheetContext,
         '修改认证密钥',
-        '改密后旧连接地址会立即失效，必须把新地址重新发给用户。',
+        '改密后旧密码立即失效。订阅链接保持不变，用户刷新订阅即可获取新密码。',
       );
       if (!confirmed) return;
     } else if (action == 'reset-traffic') {
@@ -778,7 +784,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final devices = TextEditingController(text: '${user['deviceLimit']}');
     final gib = ((user['trafficLimitBytes'] as num? ?? 0) / 1073741824).round();
     final traffic = TextEditingController(text: '$gib');
-    var udp443 = user['allowUdp443'] == true;
+    int? startsAt = (user['startsAt'] as num?)?.toInt();
+    int? expiresAt = (user['expiresAt'] as num?)?.toInt();
     String? formError;
     var submitting = false;
     final saved = await showGlassFormDialog<bool>(
@@ -786,45 +793,46 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => GlassDialog(
           title: Text('编辑 ${user['name']}'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              GlassControlSurface(
-                child: TextField(
-                  controller: devices,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: '设备数限制'),
-                ),
-              ),
-              const SizedBox(height: 12),
-              GlassControlSurface(
-                child: TextField(
-                  controller: traffic,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: '流量额度（GiB）'),
-                ),
-              ),
-              GlassControlSurface(
-                child: SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text(
-                    '允许 UDP 443',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GlassControlSurface(
+                  child: TextField(
+                    controller: devices,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '设备数限制'),
                   ),
-                  subtitle: const Text(
-                    '可通过此端口连接节点',
-                    style: TextStyle(fontSize: 13),
+                ),
+                const SizedBox(height: 12),
+                GlassControlSurface(
+                  child: TextField(
+                    controller: traffic,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: '流量额度（GiB）'),
                   ),
-                  value: udp443,
-                  onChanged: (value) => setDialogState(() => udp443 = value),
                 ),
-              ),
-              if (formError != null)
-                Text(
-                  formError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                UserValidityField(
+                  label: '开通时间',
+                  empty: '立即开通',
+                  value: startsAt,
+                  onChanged: (v) => setDialogState(() => startsAt = v),
                 ),
-            ],
+                UserValidityField(
+                  label: '到期时间',
+                  empty: '永久',
+                  value: expiresAt,
+                  onChanged: (v) => setDialogState(() => expiresAt = v),
+                ),
+                if (formError != null)
+                  Text(
+                    formError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+              ],
+            ),
           ),
           actions: [
             GlassControlSurface(
@@ -856,7 +864,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                 'generation': user['generation'],
                                 'deviceLimit': deviceValue,
                                 'trafficLimitGb': trafficValue,
-                                'allowUdp443': udp443,
+                                'startsAt': startsAt,
+                                'expiresAt': expiresAt,
                               });
                           if (dialogContext.mounted &&
                               ModalRoute.of(dialogContext)?.isCurrent == true) {
@@ -904,7 +913,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('连接地址包含认证凭据，请只发送给受信任的人。'),
+              const Text('固定订阅链接仅分享给该用户。以后刷新订阅即可更新节点，改密不会改变此链接。'),
               const SizedBox(height: 14),
               SelectableText(uri),
               const SizedBox(height: 16),
@@ -973,7 +982,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   Widget build(BuildContext context) {
     super.build(context);
     final filtered = _filtered;
-    final top = [..._users]
+    final top = [..._tierUsers]
       ..sort(
         (a, b) => (b['usedBytes'] as num? ?? 0).compareTo(
           a['usedBytes'] as num? ?? 0,
@@ -984,7 +993,13 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         floatingActionButton: Padding(
           padding: EdgeInsets.only(bottom: appDockExtent(context)),
           child: liquid.GlassButton.custom(
-            onTap: _createUser,
+            onTap: () {
+              if (_error == null && !_loading) {
+                _createUser();
+              } else {
+                _message(_error ?? '用户信息加载中');
+              }
+            },
             quality: liquid.GlassQuality.premium,
             useOwnLayer: true,
             shape: const liquid.LiquidRoundedSuperellipse(borderRadius: 20),
@@ -1022,6 +1037,24 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                     ),
                   ),
                 ],
+              ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: SegmentedButton<int>(
+                    segments: const [
+                      ButtonSegment(value: 0, label: Text('普通用户')),
+                      ButtonSegment(value: 1, label: Text('专线用户')),
+                    ],
+                    selected: {_userType},
+                    onSelectionChanged: (values) => setState(() {
+                      _userType = values.single;
+                    }),
+                  ),
+                ),
               ),
               if (_error != null && _users.isNotEmpty)
                 SliverToBoxAdapter(
@@ -1239,7 +1272,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         ),
                         const SizedBox(height: 10),
                         Text(
-                          '显示 ${filtered.length} / 全部 ${_users.length} 位用户',
+                          '显示 ${filtered.length} / 当前分类 ${_tierUsers.length} 位用户',
                           style: Theme.of(context).textTheme.bodySmall,
                         ),
                       ],
@@ -1284,7 +1317,8 @@ class _CompactUserCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final enabled = user['enabled'] == true;
+    final activity = userActivityLabel(user);
+    final enabled = activity == '启用';
     final percent = (user['trafficPercent'] as num? ?? 0).toDouble();
     return GlassCard(
       child: InkWell(
@@ -1321,7 +1355,7 @@ class _CompactUserCard extends StatelessWidget {
                           ),
                         ),
                         Text(
-                          enabled ? '启用' : '禁用',
+                          activity,
                           style: TextStyle(
                             color: enabled
                                 ? Colors.green
@@ -1331,6 +1365,13 @@ class _CompactUserCard extends StatelessWidget {
                         ),
                       ],
                     ),
+                    if (user['expiresAt'] != null)
+                      Text(
+                        '到期 ${validityLabel(user['expiresAt'])}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
                     const SizedBox(height: 5),
                     Text(
                       '${user['onlineDevices']} / ${user['deviceLimit']} 台设备 · ${formatBytes(user['usedBytes'])} / ${formatBytes(user['trafficLimitBytes'])}',
@@ -1361,7 +1402,7 @@ class _UserFacts extends StatelessWidget {
       ('上传流量', formatBytes(user['txBytes'])),
       ('下载流量', formatBytes(user['rxBytes'])),
       ('流量额度', formatBytes(user['trafficLimitBytes'])),
-      ('UDP 443', user['allowUdp443'] == true ? '允许' : '禁止'),
+      ('用户类型', user['userType'] == 1 ? '专线用户' : '普通用户'),
       ('使用比例', '${(user['trafficPercent'] as num? ?? 0).toStringAsFixed(1)}%'),
     ];
     return GridView.builder(

@@ -77,6 +77,7 @@ from hy2panel.mobile_api import (
     match_mobile_route,
     json_boolean,
     json_integer,
+    json_timestamp,
     nodes_payload,
     overview_payload,
     users_payload,
@@ -8457,7 +8458,10 @@ class PanelHandler(JsonHandler):
 
     def _handle_mobile_user_create(self, session, payload):
         try:
-            device_limit = json_integer(payload.get("deviceLimit", DEFAULT_DEVICE_LIMIT))
+            user_type = json_integer(payload.get("userType", 0))
+            if user_type not in (0, 1):
+                raise ValueError("用户类型无效")
+            device_limit = json_integer(payload.get("deviceLimit", 100 if user_type else DEFAULT_DEVICE_LIMIT))
             traffic_limit_gb = json_integer(payload.get("trafficLimitGb", 250))
             with self.app.user_action_lock:
                 credentials = self.app.database.create_proxy_user(
@@ -8465,6 +8469,9 @@ class PanelHandler(JsonHandler):
                     device_limit=device_limit,
                     traffic_limit_bytes=traffic_limit_gb * 1024**3,
                     allow_udp_443=(json_boolean(payload.get("allowUdp443", True)) or True),
+                    user_type=user_type,
+                    starts_at=json_timestamp(payload.get("startsAt")),
+                    expires_at=json_timestamp(payload.get("expiresAt")),
                 )
             self._audit_safely(
                 self._mobile_actor(session), "proxy_user_created", credentials["name"]
@@ -8677,6 +8684,11 @@ class PanelHandler(JsonHandler):
                     ttl_minutes=10,
                     actor=session["username"],
                     mode="join",
+                    tier=payload.get("tier", "standard"),
+                    region=payload.get("region", ""),
+                    subscription_host=payload.get("subscriptionHost", ""),
+                    subscription_port=19999,
+                    port_hopping=json_boolean(payload.get("portHopping", False)),
                 )
                 self._audit_safely(
                     self._mobile_actor(session), "node_enrollment_created", result["nodeId"]
@@ -8727,6 +8739,8 @@ class PanelHandler(JsonHandler):
                                          json_integer(payload.get("trafficLimitGb", "")) * 1024**3),
                     allow_udp_443=(json_boolean(payload.get("allowUdp443", True)) or True),
                     expected_generation=json_integer(payload.get("generation", "")),
+                    starts_at=json_timestamp(payload["startsAt"]) if "startsAt" in payload else ...,
+                    expires_at=json_timestamp(payload["expiresAt"]) if "expiresAt" in payload else ...,
                     used_traffic_bytes=(parse_used_traffic_gib(payload["usedTrafficGiB"])
                                         if "usedTrafficGiB" in payload else None),
                 )

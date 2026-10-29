@@ -17,6 +17,7 @@ class DeepReviewController extends DesignFixtureController {
     if (path.endsWith('/domain-usage')) {
       return {
         'month': '2026-10',
+        'subscriptionManagement': true,
         'items': [
           {
             'domain': 'very-long-domain-for-small-screen.example.com',

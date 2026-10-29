@@ -18,6 +18,11 @@ class DesignFixtureController extends AppController {
 
   @override
   Future<Map<String, dynamic>> getJson(String path) async {
+    if (path.endsWith('/capabilities')) {
+      return {
+        'features': ['typed-node-enrollment-hopping'],
+      };
+    }
     if (path.endsWith('/overview')) {
       return {
         'serviceStatus': 'active',
@@ -55,6 +60,7 @@ class DesignFixtureController extends AppController {
         'online': 2,
         'statusCounts': {},
         'observedAt': 1,
+        'subscriptionManagement': true,
         'items': [
           for (final name in ['主节点', '边缘节点'])
             {
@@ -70,6 +76,7 @@ class DesignFixtureController extends AppController {
       };
     }
     return {
+      'subscriptionManagement': true,
       'items': [
         for (var i = 1; i <= 4; i++)
           {

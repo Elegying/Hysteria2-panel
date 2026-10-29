@@ -131,6 +131,12 @@ void main() {
     await mount(tester, c);
     expect(find.text('当前面板1'), findsOneWidget);
     await tab(tester, '用户');
+    await tester.scrollUntilVisible(
+      find.text('面板1-示例用户 1'),
+      150,
+      scrollable: find.byType(Scrollable).hitTestable().first,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('面板1-示例用户 1'), findsWidgets);
     await tab(tester, '首页');
     await tester.tap(find.text('面板2').hitTestable().first);
@@ -138,6 +144,12 @@ void main() {
     expect(find.text('当前面板2'), findsOneWidget);
     expect(find.text('当前面板1'), findsNothing);
     await tab(tester, '用户');
+    await tester.scrollUntilVisible(
+      find.text('面板2-示例用户 1'),
+      150,
+      scrollable: find.byType(Scrollable).hitTestable().first,
+    );
+    await tester.pumpAndSettle();
     expect(find.text('面板2-示例用户 1'), findsWidgets);
     expect(find.text('面板1-示例用户 1'), findsNothing);
     await tab(tester, '节点');

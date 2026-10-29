@@ -183,8 +183,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _showEnrollment() async {
+    try {
+      final capabilities = await ref
+          .read(appControllerProvider.notifier)
+          .getJson('/api/v1/mobile/capabilities');
+      if (!mounted) return;
+      if (!(capabilities['features'] as List? ?? []).contains(
+        'typed-node-enrollment-hopping',
+      )) {
+        await showGlassError(context, '请先升级面板移动接口，以支持节点类型和端口跳跃对接');
+        return;
+      }
+    } on ApiException catch (error) {
+      if (mounted) await showGlassError(context, error.message);
+      return;
+    }
+    if (!mounted) return;
     final name = TextEditingController();
     final expectedIp = TextEditingController();
+    final host = TextEditingController();
+    var tier = 'standard';
+    var region = 'hk';
+    var hopping = true;
     var submitting = false;
     String? formError;
     final result = await showGlassFormDialog<Map<String, dynamic>>(
@@ -211,6 +231,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     decoration: const InputDecoration(labelText: '目标服务器公网 IP'),
                   ),
                 ),
+                GlassDropdownField<String>(
+                  initialValue: tier,
+                  decoration: const InputDecoration(labelText: '节点类型'),
+                  items: const [
+                    DropdownMenuItem(value: 'standard', child: Text('普通节点')),
+                    DropdownMenuItem(value: 'premium', child: Text('专线节点')),
+                  ],
+                  onChanged: (v) => setDialogState(() => tier = v!),
+                ),
+                GlassDropdownField<String>(
+                  initialValue: region,
+                  decoration: const InputDecoration(labelText: '地区'),
+                  items: const [
+                    DropdownMenuItem(value: 'hk', child: Text('香港')),
+                    DropdownMenuItem(value: 'us', child: Text('美国')),
+                    DropdownMenuItem(value: 'jp', child: Text('日本')),
+                    DropdownMenuItem(value: 'sg', child: Text('新加坡')),
+                  ],
+                  onChanged: (v) => setDialogState(() => region = v!),
+                ),
+                TextField(
+                  controller: host,
+                  decoration: const InputDecoration(
+                    labelText: '订阅节点地址',
+                    hintText: '例如 hk.ssrvpn.vip',
+                  ),
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('端口跳跃'),
+                  subtitle: const Text('端口由面板统一配置，无需手动填写'),
+                  value: hopping,
+                  onChanged: (v) => setDialogState(() => hopping = v),
+                ),
                 if (formError != null)
                   Text(
                     formError!,
@@ -235,9 +289,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     : () async {
                         if (submitting) return;
                         if (name.text.trim().isEmpty ||
-                            expectedIp.text.trim().isEmpty) {
+                            expectedIp.text.trim().isEmpty ||
+                            host.text.trim().isEmpty) {
                           setDialogState(
-                            () => formError = '请填写节点名称和目标服务器公网 IP',
+                            () => formError = '请填写节点名称、订阅地址和目标服务器公网 IP',
                           );
                           return;
                         }
@@ -251,6 +306,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               .postJson('/api/v1/mobile/node-enrollments', {
                                 'name': name.text.trim(),
                                 'expectedIp': expectedIp.text.trim(),
+                                'tier': tier,
+                                'region': region,
+                                'subscriptionHost': host.text.trim(),
+                                'portHopping': hopping,
                                 'ttlMinutes': 10,
                                 'mode': 'join',
                               });
@@ -277,6 +336,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
     name.dispose();
     expectedIp.dispose();
+    host.dispose();
     if (result == null || !mounted) return;
     final command = result['deploymentCommand']?.toString() ?? '';
     var copied = false;

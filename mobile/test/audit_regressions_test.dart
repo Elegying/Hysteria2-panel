@@ -34,6 +34,7 @@ class AuditController extends DesignFixtureController {
     if (!path.endsWith('/nodes')) return super.getJson(path);
     reads++;
     return {
+      'subscriptionManagement': true,
       'items': [
         {
           'kind': 'remote',
@@ -126,9 +127,9 @@ void main() {
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
       SystemChannels.platform,
       (call) async {
-          if (call.method == 'Clipboard.setData') {
-            throw PlatformException(code: 'clipboard_denied');
-          }
+        if (call.method == 'Clipboard.setData') {
+          throw PlatformException(code: 'clipboard_denied');
+        }
         return null;
       },
     );
@@ -151,6 +152,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).at(0), '审查节点');
     await tester.enterText(find.byType(TextField).at(1), '8.8.8.8');
+    await tester.enterText(find.byType(TextField).at(2), 'hk.example.com');
     await tester.tap(
       find.descendant(
         of: find.byType(Dialog),

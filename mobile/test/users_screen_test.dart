@@ -14,7 +14,10 @@ class UserFormController extends AppController {
 
   @override
   Future<Map<String, dynamic>> getJson(String path) async => {
-    'features': supportsTrafficEdit ? ['user-used-traffic-edit'] : [],
+    'features': supportsTrafficEdit
+        ? ['user-used-traffic-edit', 'typed-node-enrollment-hopping']
+        : [],
+    'subscriptionManagement': true,
     'items': [
       {
         'id': 1,
@@ -136,6 +139,7 @@ void main() {
           } else if (kind == 'enroll') {
             await tester.enterText(field('节点名称'), 'pending-node');
             await tester.enterText(field('目标服务器公网 IP'), '192.0.2.1');
+            await tester.enterText(field('订阅节点地址'), 'hk.example.com');
           }
           final label = kind == 'create'
               ? '创建'
@@ -200,7 +204,7 @@ void main() {
       );
     }
   }
-  testWidgets('UDP 443 permission fits a narrow dialog with large text', (
+  testWidgets('validity fields fit a narrow dialog with large text', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(320, 812);
@@ -225,11 +229,10 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('新增用户'));
     await tester.pumpAndSettle();
-    final permission = find.byType(SwitchListTile);
-    await tester.ensureVisible(permission);
+    await tester.ensureVisible(find.text('到期时间'));
     await tester.pumpAndSettle();
-    expect(tester.widget<SwitchListTile>(permission).value, isTrue);
-    expect(find.text('可通过此端口连接节点'), findsOneWidget);
+    expect(find.text('允许 UDP 443'), findsNothing);
+    expect(find.text('永久（北京时间）'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
   for (final editing in [false, true]) {
@@ -293,17 +296,10 @@ void main() {
         await tester.pumpAndSettle();
         expect(controller.requests.single['deviceLimit'], 3);
         expect(controller.requests.single['trafficLimitGb'], 5);
-        expect(controller.requests.single['allowUdp443'], !editing);
+        expect(controller.requests.single.containsKey('allowUdp443'), isFalse);
+        expect(controller.requests.single['expiresAt'], isNull);
+        expect(controller.requests.single['startsAt'], isNull);
         expect(find.text('测试请求失败'), findsOneWidget);
-        if (!editing) {
-          final permission = find.byType(SwitchListTile);
-          await tester.ensureVisible(permission);
-          await tester.tap(permission);
-          await tester.pumpAndSettle();
-          await tester.tap(submit);
-          await tester.pumpAndSettle();
-          expect(controller.requests.last['allowUdp443'], false);
-        }
         await tester.pumpWidget(const SizedBox.shrink());
         await tester.pumpAndSettle();
       },

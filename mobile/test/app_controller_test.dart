@@ -237,6 +237,7 @@ void main() {
                 'features': [
                   'local-node-control',
                   'one-click-node-pairing',
+                  'typed-node-enrollment-hopping',
                   'node-realtime-traffic',
                   'server-reboot',
                   'domain-traffic-top10',
@@ -403,6 +404,7 @@ void main() {
                 'features': [
                   'local-node-control',
                   'one-click-node-pairing',
+                  'typed-node-enrollment-hopping',
                   'node-realtime-traffic',
                   'server-reboot',
                   'domain-traffic-top10',
