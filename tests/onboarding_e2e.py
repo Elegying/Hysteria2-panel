@@ -1,7 +1,8 @@
 """Run the generated one-click installer against clean, isolated systemd nodes.
 
 Ephemeral Linux CI runner required. No host service or firewall is modified.
-The container shares host net.core sysctls; CI restores these after the test. Only fixture
+Global qdisc sysctls use a narrow host bridge (unavailable inside a network
+namespace); CI restores these after the test. Only fixture
 asset URLs and the signature trust anchor change: the installer remains signed
 by a real disposable Cosign key. Production OIDC is checked in release CI.
 """
@@ -10,6 +11,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socketserver
+import threading
+import re
 import subprocess
 import sys
 import tempfile
@@ -54,6 +58,7 @@ def main():
     suffix = uuid.uuid4().hex[:8]
     network = 'hy2-e2e-' + suffix
     containers = []
+    bridges = []
     with tempfile.TemporaryDirectory(prefix='hy2-onboarding-e2e-') as directory:
         root = Path(directory)
         assets = root/'assets'
@@ -95,6 +100,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
             for tier, hopping in [('standard', False), ('premium', True)]:
                 case = root/tier
                 case.mkdir()
+                # Linux hides global default_qdisc in non-initial network namespaces.
+                # Forward only this real kernel knob to the ephemeral CI host.
+                class SysctlHandler(socketserver.StreamRequestHandler):
+                    def handle(self):
+                        args = json.loads(self.rfile.readline(4096))
+                        assert len(args) == 2 and args[0] in {'-n', '-w'}
+                        assert re.fullmatch(r'net\.core\.default_qdisc(?:=[A-Za-z0-9_-]{1,40})?', args[1])
+                        result = subprocess.run(['sudo', 'sysctl', *args], capture_output=True, text=True)
+                        self.wfile.write(json.dumps([result.returncode, result.stdout, result.stderr]).encode()+b'\n')
+                bridge = socketserver.UnixStreamServer(str(case/'sysctl.sock'), SysctlHandler)
+                bridges.append(bridge)
+                threading.Thread(target=bridge.serve_forever, daemon=True).start()
+                (case/'sysctl.sock').chmod(0o666)
+                (case/'sysctl-wrapper').write_text("""#!/usr/bin/python3
+import json,os,socket,sys
+args=sys.argv[1:]
+if len(args)==2 and args[1].split('=',1)[0]=='net.core.default_qdisc':
+    with socket.socket(socket.AF_UNIX) as client:
+        client.connect('/fixture/sysctl.sock')
+        client.sendall(json.dumps(args).encode()+b'\\n')
+        result=json.loads(client.makefile('rb').readline())
+    sys.stdout.write(result[1]); sys.stderr.write(result[2]); sys.exit(result[0])
+os.execv('/usr/sbin/sysctl.real', ['sysctl', *args])
+""")
                 shutil.copytree(assets, case/'assets')
                 for name in ('tls.crt', 'tls.key', 'cosign.pub'):
                     shutil.copy2(root/name, case/name)
@@ -105,17 +134,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                         '--name', name, '--hostname', name, '--network', network, '--ip', ip,
                         '--tmpfs', '/run', '--tmpfs', '/run/lock',
                         '-v', '/sys/fs/cgroup:/sys/fs/cgroup:rw',
-                        '-v', '/proc/sys/net/core:/host-net-core:rw',
                         '-v', str(ROOT)+':/workspace:ro', '-v', str(case)+':/fixture',
                         '--add-host', 'panel.e2e.test:11.250.85.2',
                         '--add-host', 'local.e2e.test:11.250.85.2',
                         '--add-host', 'node.e2e.test:11.250.85.3', image)
                     containers.append(name)
                     wait(lambda: subprocess.run(['docker','exec',name,'systemctl','is-system-running'], capture_output=True, text=True).stdout.strip() in {'running', 'degraded'})
-                    run('docker', 'exec', name, 'mount', '--bind', '/host-net-core', '/proc/sys/net/core')
                     run('docker', 'exec', name, 'sh', '-c',
                         'cp /fixture/tls.crt /usr/local/share/ca-certificates/hy2-e2e.crt && update-ca-certificates')
                 run('docker', 'exec', node, 'sh', '-c', '! command -v curl')
+                run('docker', 'exec', node, 'sh', '-c',
+                    'dpkg-divert --add --rename --divert /usr/sbin/sysctl.real /usr/sbin/sysctl && cp /fixture/sysctl-wrapper /usr/sbin/sysctl && chmod 755 /usr/sbin/sysctl')
                 run('docker', 'exec', '-d', '-e', 'TEST_TIER='+tier,
                     '-e', 'TEST_HOPPING='+str(int(hopping)), panel, 'sh', '-c',
                     'python3 /workspace/tests/onboarding_e2e_panel.py serve > /fixture/panel.log 2>&1')
@@ -169,6 +198,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                 print(path.read_text(errors='replace')[-24000:], flush=True)
             raise
         finally:
+            for bridge in bridges:
+                bridge.shutdown()
+                bridge.server_close()
             for name in containers:
                 subprocess.run(['docker','rm','-f',name], capture_output=True)
             subprocess.run(['docker','network','rm',network], capture_output=True)
