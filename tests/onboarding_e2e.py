@@ -109,7 +109,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                         '--add-host', 'local.e2e.test:11.250.85.2',
                         '--add-host', 'node.e2e.test:11.250.85.3', image)
                     containers.append(name)
-                    wait(lambda: subprocess.run(['docker','exec',name,'test','-d','/run/systemd/system']).returncode == 0)
+                    wait(lambda: subprocess.run(['docker','exec',name,'systemctl','is-system-running'], capture_output=True, text=True).stdout.strip() in {'running', 'degraded'})
                     run('docker', 'exec', name, 'sh', '-c',
                         'cp /fixture/tls.crt /usr/local/share/ca-certificates/hy2-e2e.crt && update-ca-certificates')
                 run('docker', 'exec', node, 'sh', '-c', '! command -v curl')

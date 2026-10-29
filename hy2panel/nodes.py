@@ -760,7 +760,7 @@ command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
 if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
 if [ "$bootstrap_dependencies" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
+    apt-get 'update'
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates coreutils
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y curl ca-certificates coreutils
@@ -1158,7 +1158,7 @@ command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
 if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
 if [ "$bootstrap_dependencies" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
+    apt-get 'update'
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates coreutils
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y curl ca-certificates coreutils
