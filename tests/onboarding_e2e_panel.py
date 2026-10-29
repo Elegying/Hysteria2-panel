@@ -95,8 +95,10 @@ def main():
     command = command.replace('https://github.com/Elegying/Hysteria2-panel/releases/download/v'+PANEL_VERSION+'/install.sh.sigstore.json', URL+'/assets/install.sh.sigstore.json')
     command = command.replace('https://github.com/sigstore/cosign/releases/download/v3.1.3/$cosign_asset', URL+'/assets/cosign')
     import re
-    command = re.sub(r'--certificate-identity [^\n]+\\\n  --certificate-oidc-issuer https://token.actions.githubusercontent.com',
-                     '--key /fixture/cosign.pub --insecure-ignore-tlog', command)
+    command, replacements = re.subn(
+        r"--certificate-identity\s+'[^']+'\s+--certificate-oidc-issuer\s+https://token.actions.githubusercontent.com",
+        '--key /fixture/cosign.pub --insecure-ignore-tlog', command)
+    assert replacements == 1, 'fixture signature trust anchor was not selected'
     (ROOT/'join.sh').write_text(command)
     (ROOT/'join.sh').chmod(0o600)
     (ROOT/'case.json').write_text(json.dumps({'node_id': issued['nodeId'],

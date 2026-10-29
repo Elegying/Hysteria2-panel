@@ -763,9 +763,13 @@ if [ "$bootstrap_dependencies" -eq 1 ]; then
     apt-get 'update'
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates coreutils
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl ca-certificates coreutils
+    dnf install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || dnf install -y curl
+    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl ca-certificates coreutils
+    yum install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || yum install -y curl
+    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
   else
     echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
   fi
@@ -1161,9 +1165,13 @@ if [ "$bootstrap_dependencies" -eq 1 ]; then
     apt-get 'update'
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates coreutils
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl ca-certificates coreutils
+    dnf install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || dnf install -y curl
+    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y curl ca-certificates coreutils
+    yum install -y ca-certificates
+    command -v curl >/dev/null 2>&1 || yum install -y curl
+    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
   else
     echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
   fi
