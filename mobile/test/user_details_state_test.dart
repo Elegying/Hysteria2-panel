@@ -18,6 +18,7 @@ class DetailsController extends AppController {
   Future<Map<String, dynamic>> getJson(String path) async {
     reads++;
     return {
+      'subscriptionManagement': true,
       'items': [
         if (exists)
           {

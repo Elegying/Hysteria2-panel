@@ -27,6 +27,7 @@ Map<String, dynamic> snapshot(
 }) => {
   'panelName': label,
   'observedAt': observedAt,
+  'subscriptionManagement': true,
   'items': [
     {
       'id': 1,
@@ -69,11 +70,13 @@ void refreshPage(WidgetTester tester) => unawaited(
 
 void main() {
   for (final malformed in [
-    {'items': 'invalid'},
+    {'subscriptionManagement': true, 'items': 'invalid'},
     {
+      'subscriptionManagement': true,
       'items': [42],
     },
     {
+      'subscriptionManagement': true,
       'items': [
         {'domain': 'example.test', 'usedBytes': 'invalid'},
       ],

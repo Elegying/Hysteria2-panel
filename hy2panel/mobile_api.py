@@ -19,6 +19,15 @@ def json_integer(value):
     return value
 
 
+def json_timestamp(value):
+    if value is None:
+        return None
+    value = json_integer(value)
+    if not 1 <= value <= 253402271999:
+        raise ValueError("时间超出允许范围")
+    return value
+
+
 def json_boolean(value):
     if type(value) is not bool:
         raise ValueError("字段必须是 JSON 布尔值")
@@ -151,6 +160,9 @@ def _user_items(application, snapshot):
                 "name": user["name"],
                 "enabled": bool(user["enabled"]),
                 "generation": int(user["generation"]),
+                "userType": int(user.get("user_type", 0)),
+                "startsAt": user.get("starts_at"),
+                "expiresAt": user.get("expires_at"),
                 "deviceLimit": int(user["device_limit"]),
                 "onlineDevices": _non_negative_int(online_by_user.get(user["name"], 0)),
                 "allowUdp443": bool(user["allow_udp_443"]),
@@ -176,6 +188,7 @@ def users_payload(application):
     return {
         "items": items,
         "total": len(items),
+        "subscriptionManagement": True,
         "available": bool(snapshot.get("available")),
         "onlineComplete": bool(snapshot.get("online_complete", True)),
         "observedAt": int(time.time()),
@@ -281,6 +294,8 @@ def nodes_payload(application, snapshot=None):
             "nodeId": "local",
             "originId": local_origin_id,
             "kind": "local",
+            "tier": "standard",
+            "subscriptionHost": application.public_host,
             "name": application.node_name,
             "status": local_status,
             "registrationStatus": "local",
@@ -326,6 +341,11 @@ def nodes_payload(application, snapshot=None):
                 "nodeId": node["node_id"],
                 "originId": "node:" + node["node_id"],
                 "kind": "remote",
+                "tier": node.get("tier", "standard"),
+                "region": node.get("region", ""),
+                "subscriptionHost": node.get("subscription_host", ""),
+                "subscriptionPort": node.get("subscription_port", 443),
+                "portHopping": bool(node.get("port_hopping", False)),
                 "name": node["name"],
                 "status": _node_status(node, now),
                 "registrationStatus": node.get("status") or "unknown",
@@ -517,6 +537,9 @@ def capabilities_payload(panel_version):
         "minimumAppVersion": MOBILE_APP_MIN_VERSION,
         "platforms": ["android"],
         "features": [
+            "stable-user-subscriptions",
+            "user-tiers-and-validity",
+            "typed-node-enrollment-hopping",
             "overview",
             "users",
             "user-used-traffic-edit",

@@ -12,6 +12,7 @@ const profilesKey = 'mobile_panel_accounts_v1';
 const features = [
   'local-node-control',
   'one-click-node-pairing',
+  'typed-node-enrollment-hopping',
   'node-realtime-traffic',
   'server-reboot',
   'domain-traffic-top10',

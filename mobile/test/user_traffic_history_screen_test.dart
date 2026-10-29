@@ -40,6 +40,7 @@ class HistoryController extends AppController {
     paths.add(path);
     if (path == '/api/v1/mobile/users') {
       return Future.value({
+        'subscriptionManagement': true,
         'items': [
           {
             'id': 42,
@@ -58,7 +59,11 @@ class HistoryController extends AppController {
       });
     }
     if (path.endsWith('/domain-usage')) {
-      return Future.value({'month': '2026-09', 'items': []});
+      return Future.value({
+        'month': '2026-09',
+        'subscriptionManagement': true,
+        'items': [],
+      });
     }
     return reply();
   }
@@ -109,6 +114,14 @@ void main() {
           screen: const Scaffold(body: UsersScreen()),
         );
         await tester.pumpAndSettle();
+        if (find.text('测试用户').evaluate().isEmpty) {
+          await tester.scrollUntilVisible(
+            find.text('测试用户'),
+            200,
+            scrollable: find.byType(Scrollable).first,
+          );
+          await tester.pumpAndSettle();
+        }
         await tester.tap(find.text('测试用户').first);
         await tester.pumpAndSettle();
         final visits = find.widgetWithText(OutlinedButton, '最常访问');

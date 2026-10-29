@@ -80,7 +80,10 @@ void main() {
             findsOneWidget,
           );
           expect(header.expandedHeight, isNull);
-          expect(header.toolbarHeight, lessThanOrEqualTo(label == '首页' ? 80 : 64));
+          expect(
+            header.toolbarHeight,
+            lessThanOrEqualTo(label == '首页' ? 80 : 64),
+          );
           if (label == '首页') {
             expect(find.byTooltip('刷新'), findsNothing);
             expect(find.byType(PopupMenuButton<String>), findsNothing);

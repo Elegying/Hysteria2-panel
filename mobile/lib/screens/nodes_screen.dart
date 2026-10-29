@@ -613,7 +613,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                                             .bodySmall,
                                       ),
                                       Text(
-                                        '${node['onlineDevices'] ?? '—'} 台在线 · 心跳 ${formatTimestamp(node['lastHeartbeatAt'])}',
+                                        '${node['tier'] == 'premium' ? '专线' : '普通'} · ${node['onlineDevices'] ?? '—'} 台在线 · 心跳 ${formatTimestamp(node['lastHeartbeatAt'])}',
                                         style: Theme.of(context)
                                             .textTheme
                                             .bodySmall,
