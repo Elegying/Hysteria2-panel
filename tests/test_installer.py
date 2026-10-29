@@ -4305,7 +4305,9 @@ fi
             )
         ]
 
-        self.assertIn('flock -n -E 75 --close "${MAINTENANCE_LOCK_FILE}"', helper)
+        self.assertIn('local -a lock_options=(-n)', helper)
+        self.assertIn('lock_options=(-w 30)', helper)
+        self.assertIn('flock "${lock_options[@]}" -E 75 --close "${MAINTENANCE_LOCK_FILE}"', helper)
         self.assertIn('/bin/bash "$0" --maintenance-lock-held', helper)
         self.assertIn('"${ORIGINAL_ARGS[@]}"', helper)
         self.assertIn(
