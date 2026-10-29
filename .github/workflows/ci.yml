@@ -82,6 +82,14 @@ jobs:
               )
           PY
 
+  node-onboarding-e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Generated command, real node, subscription, restart and uninstall
+        run: python3 tests/onboarding_e2e.py
+
   static-analysis:
     runs-on: ubuntu-latest
     timeout-minutes: 15

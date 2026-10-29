@@ -7516,7 +7516,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         max_workers=64,
         request_timeout=10,
         request_deadline=30,
-        node_canary_request_deadline=70,
+        node_canary_request_deadline=170,
         maintenance_request_deadline=15 * 60,
         worker_queue_timeout=0,
         request_queue_size=64,
@@ -7525,7 +7525,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
         self.request_timeout = max(1, int(request_timeout))
         self.request_deadline = max(1, int(request_deadline))
         self.node_canary_request_deadline = max(
-            self.request_deadline, min(120, int(node_canary_request_deadline))
+            self.request_deadline, min(180, int(node_canary_request_deadline))
         )
         self.maintenance_request_deadline = max(
             self.request_deadline, int(maintenance_request_deadline)
@@ -9181,7 +9181,7 @@ class PanelHandler(JsonHandler):
                         addresses = {
                             str(ipaddress.ip_address(item[4][0]))
                             for item in socket.getaddrinfo(
-                                node.get("subscription_host") if node.get("tier") == "premium" else self.app.public_host,
+                                node.get("subscription_host") or self.app.public_host,
                                 None,
                                 type=socket.SOCK_STREAM,
                             )
