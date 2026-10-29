@@ -231,7 +231,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     decoration: const InputDecoration(labelText: '目标服务器公网 IP'),
                   ),
                 ),
-                DropdownButtonFormField<String>(
+                GlassDropdownField<String>(
                   initialValue: tier,
                   decoration: const InputDecoration(labelText: '节点类型'),
                   items: const [
@@ -240,7 +240,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   ],
                   onChanged: (v) => setDialogState(() => tier = v!),
                 ),
-                DropdownButtonFormField<String>(
+                GlassDropdownField<String>(
                   initialValue: region,
                   decoration: const InputDecoration(labelText: '地区'),
                   items: const [

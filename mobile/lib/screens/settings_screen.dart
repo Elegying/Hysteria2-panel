@@ -21,6 +21,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   PackageInfo? _packageInfo;
   bool _checking = false;
 
+  Future<void> _openPanel() async {
+    final base = ref.read(appControllerProvider).session?.baseUrl;
+    if (base == null) return;
+    try {
+      final uri = Uri.parse(base);
+      if (uri.scheme != 'https' ||
+          uri.userInfo.isNotEmpty ||
+          !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+        throw const FormatException('panel unavailable');
+      }
+    } catch (_) {
+      if (mounted) await showGlassError(context, '无法打开面板网页，请使用浏览器访问已登录的面板地址');
+    }
+  }
+
   @override
   bool get wantKeepAlive => true;
 
@@ -245,6 +260,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         leading: const Icon(Icons.account_circle_outlined),
                         title: Text(session?.username ?? '未知管理员'),
                         subtitle: Text(session?.baseUrl ?? '未连接面板'),
+                      ),
+                      const Divider(height: 1),
+                      ListTile(
+                        leading: const Icon(Icons.open_in_browser),
+                        title: const Text('高级管理'),
+                        subtitle: const Text('在面板网页管理订阅配置、备份与恢复'),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: session == null ? null : _openPanel,
                       ),
                       const Divider(height: 1),
                       ListTile(
