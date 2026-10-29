@@ -72,10 +72,8 @@ class HoppingTests(unittest.TestCase):
             "clash-verge/v2.5.2 SSRVPN/1.0",
             "Shadowrocket/2.2.91 SSRVPN/1.0",
         ):
-            with (
-                self.subTest(agent=agent),
-                self.request(path, headers={"User-Agent": agent}) as response,
-            ):
+            with self.subTest(agent=agent), \
+                 self.request(path, headers={'User-Agent': agent}) as response:
                 proxy = json.load(response)["proxies"][0]
                 self.assertEqual(443, proxy["port"])
                 self.assertEqual("20000-50000", proxy["ports"])
@@ -182,22 +180,12 @@ class HoppingFirewallTests(unittest.TestCase):
                     return SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
                 return real_lstat(path)
 
-            with (
-                mock.patch.object(panel.PortHoppingController, "STATE", state),
-                mock.patch.object(os, "geteuid", return_value=0),
-                mock.patch.object(Path, "lstat", metadata),
-                mock.patch.object(
-                    panel.Settings,
-                    "from_mapping",
-                    return_value=SimpleNamespace(hysteria_port=443),
-                ),
-                mock.patch.object(
-                    panel,
-                    "exclusive_maintenance_lock",
-                    return_value=contextlib.nullcontext(),
-                ),
-                mock.patch.object(panel.subprocess, "run", side_effect=run),
-            ):
+            with mock.patch.object(panel.PortHoppingController, 'STATE', state), \
+                 mock.patch.object(os, 'geteuid', return_value=0), \
+                 mock.patch.object(Path, 'lstat', metadata), \
+                 mock.patch.object(panel.Settings, 'from_mapping', return_value=SimpleNamespace(hysteria_port=443)), \
+                 mock.patch.object(panel, 'exclusive_maintenance_lock', return_value=contextlib.nullcontext()), \
+                 mock.patch.object(panel.subprocess, 'run', side_effect=run):
                 panel.apply_port_hopping(True)
             self.assertEqual(
                 {"enabled": True, "target": 443}, json.loads(state.read_text())

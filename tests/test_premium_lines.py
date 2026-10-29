@@ -331,15 +331,9 @@ class BackupTransportRestoreTests(unittest.TestCase):
                     "portHoppingEnabled": enabled,
                 }
                 runner = mock.Mock()
-                with (
-                    mock.patch.object(
-                        panel,
-                        "exclusive_maintenance_lock",
-                        return_value=contextlib.nullcontext(),
-                    ),
-                    mock.patch.object(panel, "verify_restore_services"),
-                    mock.patch.object(panel, "_remove_restore_marker"),
-                ):
+                with mock.patch.object(panel, 'exclusive_maintenance_lock', return_value=contextlib.nullcontext()), \
+                     mock.patch.object(panel, 'verify_restore_services'), \
+                     mock.patch.object(panel, '_remove_restore_marker'):
                     panel.resume_after_restore(
                         SimpleNamespace(panel_port=19998),
                         runner=runner,
