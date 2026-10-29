@@ -1,7 +1,7 @@
 """Run the generated one-click installer against clean, isolated systemd nodes.
 
 Ephemeral Linux CI runner required. No host service or firewall is modified.
-Global qdisc sysctls use a narrow host bridge (unavailable inside a network
+Global net.core sysctls use a narrow host bridge (unavailable inside a network
 namespace); CI restores these after the test. Only fixture
 asset URLs and the signature trust anchor change: the installer remains signed
 by a real disposable Cosign key. Production OIDC is checked in release CI.
@@ -100,13 +100,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
             for tier, hopping in [('standard', False), ('premium', True)]:
                 case = root/tier
                 case.mkdir()
-                # Linux hides global default_qdisc in non-initial network namespaces.
-                # Forward only this real kernel knob to the ephemeral CI host.
+                # Linux hides or makes global net.core tuning read-only in network namespaces.
+                # Forward only these three real kernel knobs to the ephemeral CI host.
                 class SysctlHandler(socketserver.StreamRequestHandler):
                     def handle(self):
                         args = json.loads(self.rfile.readline(4096))
                         assert len(args) == 2 and args[0] in {'-n', '-w'}
-                        assert re.fullmatch(r'net\.core\.default_qdisc(?:=[A-Za-z0-9_-]{1,40})?', args[1])
+                        assert re.fullmatch(r'net\.core\.(?:default_qdisc|rmem_max|wmem_max)(?:=[A-Za-z0-9_-]{1,40})?', args[1])
                         result = subprocess.run(['sudo', 'sysctl', *args], capture_output=True, text=True)
                         self.wfile.write(json.dumps([result.returncode, result.stdout, result.stderr]).encode()+b'\n')
                 bridge = socketserver.UnixStreamServer(str(case/'sysctl.sock'), SysctlHandler)
@@ -116,7 +116,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                 (case/'sysctl-wrapper').write_text("""#!/usr/bin/python3
 import json,os,socket,sys
 args=sys.argv[1:]
-if len(args)==2 and args[1].split('=',1)[0]=='net.core.default_qdisc':
+if len(args)==2 and args[1].split('=',1)[0] in {'net.core.default_qdisc','net.core.rmem_max','net.core.wmem_max'}:
     with socket.socket(socket.AF_UNIX) as client:
         client.connect('/fixture/sysctl.sock')
         client.sendall(json.dumps(args).encode()+b'\\n')
