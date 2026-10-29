@@ -38,7 +38,10 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
                                 row["handle"] = 25
                             for expression in row.get("expr", []):
                                 if "counter" in expression:
-                                    expression["counter"] = {"packets": 153, "bytes": 23500}
+                                    expression["counter"] = {
+                                        "packets": 153,
+                                        "bytes": 23500,
+                                    }
                 result, calls = self.run_guard(payload)
                 self.assertEqual(0, result.returncode, result.stderr)
                 self.assertEqual([], calls)
@@ -82,7 +85,9 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
             self.assertEqual([], calls)
         for index, missing_port in ((8, 19999), (8, 19998), (9, 443), (9, 19999)):
             payload = copy.deepcopy(baseline)
-            payload["nftables"][index]["rule"]["expr"][0]["match"]["right"]["set"].remove(missing_port)
+            payload["nftables"][index]["rule"]["expr"][0]["match"]["right"][
+                "set"
+            ].remove(missing_port)
             result, calls = self.run_guard(payload)
             self.assertEqual(97, result.returncode, result.stderr)
             self.assertEqual([], calls)
@@ -93,17 +98,68 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         self.assertEqual([], calls)
 
     def test_ssh_reject_only_exempts_an_unrelated_single_port(self):
-        for port, expected in ((1993, 0), (19999, 97), (19998, 97), (443, 97), (80, 97)):
+        for port, expected in (
+            (1993, 0),
+            (19999, 97),
+            (19998, 97),
+            (443, 97),
+            (80, 97),
+        ):
             payload = self.simple_allowlist()
-            payload["nftables"].extend([
-                {"chain": {"family": "inet", "table": "f2b-table", "name": "f2b-chain",
-                           "type": "filter", "hook": "input", "prio": -1, "policy": "accept"}},
-                {"rule": {"family": "inet", "table": "f2b-table", "chain": "f2b-chain", "expr": [
-                    {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": port}},
-                    {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "@addr-set-sshd"}},
-                    {"reject": {"type": "icmp", "expr": "port-unreachable"}},
-                ]}},
-            ])
+            payload["nftables"].extend(
+                [
+                    {
+                        "chain": {
+                            "family": "inet",
+                            "table": "f2b-table",
+                            "name": "f2b-chain",
+                            "type": "filter",
+                            "hook": "input",
+                            "prio": -1,
+                            "policy": "accept",
+                        }
+                    },
+                    {
+                        "rule": {
+                            "family": "inet",
+                            "table": "f2b-table",
+                            "chain": "f2b-chain",
+                            "expr": [
+                                {
+                                    "match": {
+                                        "op": "==",
+                                        "left": {
+                                            "payload": {
+                                                "protocol": "tcp",
+                                                "field": "dport",
+                                            }
+                                        },
+                                        "right": port,
+                                    }
+                                },
+                                {
+                                    "match": {
+                                        "op": "==",
+                                        "left": {
+                                            "payload": {
+                                                "protocol": "ip",
+                                                "field": "saddr",
+                                            }
+                                        },
+                                        "right": "@addr-set-sshd",
+                                    }
+                                },
+                                {
+                                    "reject": {
+                                        "type": "icmp",
+                                        "expr": "port-unreachable",
+                                    }
+                                },
+                            ],
+                        }
+                    },
+                ]
+            )
             result, calls = self.run_guard(payload)
             self.assertEqual(expected, result.returncode, result.stderr)
             self.assertEqual([], calls)
@@ -113,26 +169,42 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         for index in range(len(rules)):
             with self.subTest(missing_rule=index):
                 payload = copy.deepcopy(self.payload)
-                payload["nftables"].remove(next(
-                    entry for entry in payload["nftables"] if entry.get("rule") == rules[index]
-                ))
+                payload["nftables"].remove(
+                    next(
+                        entry
+                        for entry in payload["nftables"]
+                        if entry.get("rule") == rules[index]
+                    )
+                )
                 result, calls = self.run_guard(payload)
                 self.assertEqual(97, result.returncode)
                 self.assertEqual([], calls)
         mutations = {
-            "wrong_interface": lambda rows: rows[0]["expr"][0]["match"].update(right="eth0"),
-            "missing_udp_port": lambda rows: rows[8]["expr"][0]["match"].update(right=443),
+            "wrong_interface": lambda rows: rows[0]["expr"][0]["match"].update(
+                right="eth0"
+            ),
+            "missing_udp_port": lambda rows: rows[8]["expr"][0]["match"].update(
+                right=443
+            ),
             "inverted_port": lambda rows: rows[8]["expr"][0]["match"].update(op="!="),
-            "lower_rate": lambda rows: rows[9]["expr"][1]["meter"]["stmt"]["limit"].update(rate=1),
+            "lower_rate": lambda rows: rows[9]["expr"][1]["meter"]["stmt"][
+                "limit"
+            ].update(rate=1),
             "extra_counter_action": lambda rows: rows[-1]["expr"][0].update(drop=None),
-            "invalid_counter": lambda rows: rows[-1]["expr"][0]["counter"].update(packets=True),
-            "jump": lambda rows: rows[7]["expr"].__setitem__(1, {"jump": {"target": "hidden"}}),
+            "invalid_counter": lambda rows: rows[-1]["expr"][0]["counter"].update(
+                packets=True
+            ),
+            "jump": lambda rows: rows[7]["expr"].__setitem__(
+                1, {"jump": {"target": "hidden"}}
+            ),
             "extra_drop": lambda rows: rows[7]["expr"].insert(0, {"drop": None}),
         }
         for name, mutate in mutations.items():
             with self.subTest(mutation=name):
                 payload = copy.deepcopy(self.payload)
-                mutate([entry["rule"] for entry in payload["nftables"] if "rule" in entry])
+                mutate(
+                    [entry["rule"] for entry in payload["nftables"] if "rule" in entry]
+                )
                 result, calls = self.run_guard(payload)
                 self.assertEqual(97, result.returncode)
                 self.assertEqual([], calls)
@@ -143,22 +215,33 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
                     payload["nftables"].append(copy.deepcopy(payload["nftables"][-1]))
                 else:
                     payload["nftables"][-1], payload["nftables"][-2] = (
-                        payload["nftables"][-2], payload["nftables"][-1]
+                        payload["nftables"][-2],
+                        payload["nftables"][-1],
                     )
                 result, calls = self.run_guard(payload)
                 self.assertEqual(97, result.returncode)
                 self.assertEqual([], calls)
 
     def test_changed_chain_or_uncovered_service_port_is_rejected(self):
-        for field, value in [("policy", "accept"), ("prio", -10),
-                             ("hook", "prerouting"), ("type", "nat")]:
+        for field, value in [
+            ("policy", "accept"),
+            ("prio", -10),
+            ("hook", "prerouting"),
+            ("type", "nat"),
+        ]:
             with self.subTest(field=field):
                 payload = copy.deepcopy(self.payload)
-                next(entry["chain"] for entry in payload["nftables"] if "chain" in entry)[field] = value
+                next(
+                    entry["chain"] for entry in payload["nftables"] if "chain" in entry
+                )[field] = value
                 result, calls = self.run_guard(payload)
                 self.assertNotEqual(0, result.returncode)
                 self.assertEqual([], calls)
-        for settings in ["HYSTERIA_PORT=29999", "PANEL_PORT=29998", "DATA_PLANE_MAIN_PORT=22"]:
+        for settings in [
+            "HYSTERIA_PORT=29999",
+            "PANEL_PORT=29998",
+            "DATA_PLANE_MAIN_PORT=22",
+        ]:
             with self.subTest(settings=settings):
                 result, calls = self.run_guard(self.payload, settings)
                 self.assertEqual(97, result.returncode)
@@ -168,25 +251,164 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         for table in ["hy2_host_guard", "another_table"]:
             with self.subTest(table=table):
                 payload = copy.deepcopy(self.payload)
-                payload["nftables"].append({"chain": {
-                    "family": "inet", "table": table, "name": "early",
-                    "type": "filter", "hook": "input", "prio": -100, "policy": "drop",
-                }})
+                payload["nftables"].append(
+                    {
+                        "chain": {
+                            "family": "inet",
+                            "table": table,
+                            "name": "early",
+                            "type": "filter",
+                            "hook": "input",
+                            "prio": -100,
+                            "policy": "drop",
+                        }
+                    }
+                )
                 result, calls = self.run_guard(payload)
                 self.assertEqual(97, result.returncode)
                 self.assertEqual([], calls)
 
     def test_guard_can_coexist_with_the_verified_ssh_ban_rule(self):
         payload = copy.deepcopy(self.payload)
-        payload["nftables"].extend([
-            {"chain": {"family": "inet", "table": "f2b-table", "name": "f2b-chain",
-                       "type": "filter", "hook": "input", "prio": -1, "policy": "accept"}},
-            {"rule": {"family": "inet", "table": "f2b-table", "chain": "f2b-chain", "expr": [
-                {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 22}},
-                {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "@addr-set-sshd"}},
-                {"counter": {"packets": 33, "bytes": 1980}}, {"drop": None},
-            ]}},
-        ])
+        payload["nftables"].extend(
+            [
+                {
+                    "chain": {
+                        "family": "inet",
+                        "table": "f2b-table",
+                        "name": "f2b-chain",
+                        "type": "filter",
+                        "hook": "input",
+                        "prio": -1,
+                        "policy": "accept",
+                    }
+                },
+                {
+                    "rule": {
+                        "family": "inet",
+                        "table": "f2b-table",
+                        "chain": "f2b-chain",
+                        "expr": [
+                            {
+                                "match": {
+                                    "op": "==",
+                                    "left": {
+                                        "payload": {"protocol": "tcp", "field": "dport"}
+                                    },
+                                    "right": 22,
+                                }
+                            },
+                            {
+                                "match": {
+                                    "op": "==",
+                                    "left": {
+                                        "payload": {"protocol": "ip", "field": "saddr"}
+                                    },
+                                    "right": "@addr-set-sshd",
+                                }
+                            },
+                            {"counter": {"packets": 33, "bytes": 1980}},
+                            {"drop": None},
+                        ],
+                    }
+                },
+            ]
+        )
         result, calls = self.run_guard(payload)
         self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], calls)
+
+    def test_all_port_guard_and_exact_hopping_rule_survive_upgrade(self):
+        payload = copy.deepcopy(self.payload)
+        payload["nftables"].insert(
+            -1,
+            {
+                "rule": {
+                    "family": "inet",
+                    "table": "hy2_host_guard",
+                    "chain": "input",
+                    "expr": [
+                        {
+                            "match": {
+                                "op": "==",
+                                "left": {"meta": {"key": "l4proto"}},
+                                "right": {"set": ["tcp", "udp"]},
+                            }
+                        },
+                        {
+                            "match": {
+                                "op": "==",
+                                "left": {
+                                    "payload": {"protocol": "th", "field": "dport"}
+                                },
+                                "right": {"range": [1, 65535]},
+                            }
+                        },
+                        {"accept": None},
+                    ],
+                }
+            },
+        )
+        payload["nftables"].extend(
+            [
+                {
+                    "chain": {
+                        "family": "inet",
+                        "table": "hy2_port_hopping",
+                        "name": "prerouting",
+                        "type": "nat",
+                        "hook": "prerouting",
+                        "prio": -100,
+                        "policy": "accept",
+                    }
+                },
+                {
+                    "rule": {
+                        "family": "inet",
+                        "table": "hy2_port_hopping",
+                        "chain": "prerouting",
+                        "expr": [
+                            {
+                                "match": {
+                                    "op": "!=",
+                                    "left": {"meta": {"key": "iifname"}},
+                                    "right": "lo",
+                                }
+                            },
+                            {
+                                "match": {
+                                    "op": "==",
+                                    "left": {
+                                        "fib": {"result": "type", "flags": ["daddr"]}
+                                    },
+                                    "right": "local",
+                                }
+                            },
+                            {
+                                "match": {
+                                    "op": "==",
+                                    "left": {
+                                        "payload": {"protocol": "udp", "field": "dport"}
+                                    },
+                                    "right": {"range": [20000, 50000]},
+                                }
+                            },
+                            {"redirect": {"port": 443}},
+                        ],
+                    }
+                },
+            ]
+        )
+        result, calls = self.run_guard(payload)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], calls)
+        tcp_rule = copy.deepcopy(payload["nftables"][-1])
+        tcp_rule["rule"]["expr"][2]["match"]["left"]["payload"]["protocol"] = "tcp"
+        payload["nftables"].append(tcp_rule)
+        result, calls = self.run_guard(payload)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], calls)
+        payload["nftables"][-1]["rule"]["expr"][-1]["redirect"]["port"] = 22
+        result, calls = self.run_guard(payload)
+        self.assertEqual(97, result.returncode, result.stderr)
         self.assertEqual([], calls)

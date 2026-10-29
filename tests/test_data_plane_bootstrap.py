@@ -1885,6 +1885,7 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
                 "hysteriaSha256",
                 "hysteriaVersion",
                 "mainPort",
+                "portHopping",
                 "privateKeyPublicSha256",
             },
             set(metadata),

@@ -110,7 +110,7 @@ class LocalSecurityDrainTests(unittest.TestCase):
                 {"csrf": csrf, "generation": "0"}, headers=headers,
             ) as response:
                 self.assertEqual(200, response.status)
-                self.assertIn("hysteria2://", response.read().decode())
+                self.assertIn("/sub/", response.read().decode())
         self.assertIsNotNone(self.drain())
         self.manager = self.restart_manager()
         self.stats.fail = False

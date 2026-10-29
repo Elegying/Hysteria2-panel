@@ -47,6 +47,12 @@ jobs:
         env:
           PYTHONWARNINGS: error::ResourceWarning
         run: python -m unittest tests.test_panel.DatabaseTests.test_database_connections_are_closed_explicitly
+      - name: Verify isolated node port hopping and restart cleanup
+        if: matrix.python-version == '3.12'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends nftables iproute2
+          sudo python3 tests/node_hopping_network.py
       - name: Compile Python services
         run: python -m py_compile hysteria2_panel.py qrcodegen.py tcp_probe.py node_agent.py offsite_backup.py hy2panel/*.py
       - name: Verify release tag matches source version

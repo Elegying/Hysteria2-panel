@@ -42,18 +42,17 @@ class AuthDecisionRevalidationTests(DistributedControlCase):
             self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM node_auth_decisions").fetchone()[0])
         self.assertFalse(self.authorize(request_id="e" * 32)["ok"])
 
-    def test_udp_permission_revocation_invalidates_a_cached_allow(self):
+    def test_legacy_udp_flag_no_longer_restricts_cached_admission(self):
         first = self.authorize()
         self.assertTrue(first["ok"])
         self.db.update_proxy_user_limits(self.user["id"], 10, 100, allow_udp_443=False)
-        self.assert_cached_denial(first)
+        self.assertTrue(self.authorize()["ok"])
         self.assertTrue(self.authorize(entrypoint="main", request_id="e" * 32)["ok"])
 
-    def test_a_main_entry_allow_cannot_be_reused_for_a_forbidden_udp_entry(self):
+    def test_main_and_udp_entrypoints_use_the_same_account_permissions(self):
         self.db.update_proxy_user_limits(self.user["id"], 10, 100, allow_udp_443=False)
-        first = self.authorize(entrypoint="main")
-        self.assertTrue(first["ok"])
-        self.assert_cached_denial(first, entrypoint="udp443")
+        self.assertTrue(self.authorize(entrypoint="main")["ok"])
+        self.assertTrue(self.authorize(entrypoint="udp443")["ok"])
 
     def test_a_cached_allow_cannot_authenticate_invalid_or_different_credentials(self):
         first = self.authorize()
@@ -100,11 +99,11 @@ class AuthDecisionRevalidationTests(DistributedControlCase):
         self.db.update_proxy_user_limits(self.user["id"], 1, 100, allow_udp_443=True)
         self.assert_cached_denial(first)
 
-    def test_a_cached_denial_stays_denied_when_permission_is_later_granted(self):
-        self.db.update_proxy_user_limits(self.user["id"], 10, 100, allow_udp_443=False)
+    def test_a_cached_denial_stays_denied_when_account_is_later_enabled(self):
+        self.db.set_proxy_user_enabled(self.user["id"], False)
         first = self.authorize()
         self.assertFalse(first["ok"])
-        self.db.update_proxy_user_limits(self.user["id"], 10, 100, allow_udp_443=True)
+        self.db.set_proxy_user_enabled(self.user["id"], True)
         self.assert_cached_denial(first)
         self.assertTrue(self.authorize(request_id="e" * 32)["ok"])
 

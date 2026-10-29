@@ -385,11 +385,11 @@ class DatabaseTests(unittest.TestCase):
                 expected_generation=0,
             )
 
-    def test_udp_443_access_is_opt_in_and_preserves_the_issued_token(self):
+    def test_udp_443_access_is_unified_and_preserves_the_issued_token(self):
         created = self.db.create_proxy_user("alice")
 
-        self.assertFalse(self.db.get_proxy_user(created["id"])["allow_udp_443"])
-        self.assertIsNone(
+        self.assertTrue(self.db.get_proxy_user(created["id"])["allow_udp_443"])
+        self.assertEqual("alice",
             self.db.authenticate_token(created["token"], require_udp_443=True)
         )
 
@@ -511,7 +511,7 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(250 * 1024**3, record["traffic_limit_bytes"])
         self.assertFalse(record["allow_udp_443"])
         self.assertEqual("legacy", legacy_db.authenticate_token(token))
-        self.assertIsNone(legacy_db.authenticate_token(token, require_udp_443=True))
+        self.assertEqual("legacy", legacy_db.authenticate_token(token, require_udp_443=True))
         self.assertIsNone(legacy_db.recover_proxy_token(1))
 
     def test_initialize_backfills_existing_traffic_once_as_unattributed_history(self):
@@ -691,7 +691,7 @@ class AuthContractTests(unittest.TestCase):
         with urllib.request.urlopen(request, timeout=2) as response:
             self.assertEqual({"ok": True, "id": "alice"}, json.load(response))
 
-    def test_udp_443_auth_endpoint_only_allows_opted_in_users(self):
+    def test_udp_443_auth_endpoint_uses_unified_account_permissions(self):
         server = make_internal_server(("127.0.0.1", 0), self.db)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -704,7 +704,7 @@ class AuthContractTests(unittest.TestCase):
 
         request = urllib.request.Request(url, data=body, method="POST")
         with urllib.request.urlopen(request, timeout=2) as response:
-            self.assertEqual({"ok": False, "id": ""}, json.load(response))
+            self.assertEqual({"ok": True, "id": "alice"}, json.load(response))
 
         self.db.update_proxy_user_limits(
             self.user["id"],
@@ -5238,7 +5238,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(1, manifest["formatVersion"])
         self.assertEqual("vpn.example.test", manifest["source"]["publicHost"])
         self.assertEqual(19999, manifest["source"]["hysteriaPort"])
-        self.assertEqual("", manifest["source"]["nodeName"])
+        self.assertEqual(self.manager.node_name, manifest["source"]["nodeName"])
         self.assertEqual(1, manifest["proxyUserCount"])
         with sqlite_connection(packaged_database) as connection:
             for table in ("admins", "sessions", "audit_log"):
@@ -5324,6 +5324,9 @@ class BackupManagerTests(unittest.TestCase):
         legacy_database.write_bytes(payloads["data/panel.db"])
         legacy_columns = ",".join(BackupManager.REQUIRED_PROXY_COLUMNS)
         with sqlite_connection(legacy_database) as connection:
+            # These tables did not exist in the pre-UDP443 schema either.
+            for table in ("subscription_nodes", "subscriptions", "subscription_defaults"):
+                connection.execute("DROP TABLE " + table)
             connection.execute(
                 "CREATE TABLE proxy_users_legacy AS SELECT {} FROM proxy_users".format(
                     legacy_columns
@@ -5378,7 +5381,7 @@ class BackupManagerTests(unittest.TestCase):
         restored = Database(destination_database.path, self.hmac_key)
         record = restored.get_proxy_user(self.user["id"])
         self.assertFalse(record["allow_udp_443"])
-        self.assertIsNone(
+        self.assertEqual("alice",
             restored.authenticate_token(self.user["token"], require_udp_443=True)
         )
 
@@ -5726,6 +5729,9 @@ class BackupManagerTests(unittest.TestCase):
             )
             for name, token in issued_tokens.items()
         }
+        subscription = self.database.ensure_subscription(self.user['id'])
+        defaults = [{'label': 'default', 'host': 'vpn.example.test', 'port': 443, 'pin_sha256': source_pin}]
+        self.database.set_subscription_defaults(defaults)
         archive = self.manager.create_archive()
         destination_root = self.root / "replacement-server"
         destination_root.mkdir()
@@ -5761,6 +5767,8 @@ class BackupManagerTests(unittest.TestCase):
         )
 
         restored = Database(destination_db.path, self.hmac_key)
+        self.assertEqual(subscription['token'], restored.ensure_subscription(self.user['id'])['token'])
+        self.assertEqual(443, restored.get_subscription_defaults()[0]['port'])
         restored_users = {user["name"]: user for user in restored.list_proxy_users_for_usage()}
         self.assertEqual(set(issued_tokens), set(restored_users))
         for name, token in issued_tokens.items():
@@ -6164,6 +6172,9 @@ class BackupManagerTests(unittest.TestCase):
                 connection.execute("UPDATE proxy_users SET tx_bytes=tx_bytes-1")
 
         def runner(command, **_kwargs):
+            if command[1] in {"enable", "disable"}:
+                self.assertEqual(["/bin/systemctl", command[1], "--now", hysteria2_panel.PortHoppingController.UNIT], command)
+                return mock.Mock(returncode=0, stdout="", stderr="")
             self.assertEqual("show", command[1])
             return mock.Mock(
                 returncode=0,
@@ -6458,7 +6469,7 @@ class PanelHttpTests(unittest.TestCase):
             ("q=alice", ["alice"]),
             ("online=inactive", ["carol"]),
             ("status=disabled", []),
-            ("udp443=allowed", ["alice"]),
+            ("udp443=allowed", ["carol", "bob", "alice"]),
             ("sort=online&order=desc", ["alice", "bob", "carol"]),
             ("online=active&sort=online&order=asc", ["bob", "alice"]),
         ]
@@ -7658,9 +7669,8 @@ class PanelHttpTests(unittest.TestCase):
         with self.request("/users", {"name": "alice", "csrf": csrf_token}, headers=headers) as response:
             body = response.read().decode()
         self.assertEqual(201, response.status)
-        self.assertIn("hysteria2://", body)
-        self.assertIn("8.8.8.8:19999", body)
-        self.assertIn("edge-fixture-02", body)
+        self.assertIn("/sub/", body)
+        self.assertIn("固定订阅链接", body)
         user = self.db.list_proxy_users()["users"][0]
         self.assertEqual("alice", user["name"])
         self.assertEqual(3, user["device_limit"])
@@ -7704,7 +7714,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(201, response.status)
         self.assertEqual("application/json; charset=utf-8", response.headers["Content-Type"])
         self.assertEqual("dialog-user", payload["name"])
-        self.assertTrue(payload["uri"].startswith("hysteria2://"))
+        self.assertTrue(payload["uri"].startswith(self.base_url + "/sub/"))
         self.assertNotIn("token", payload)
 
     def test_dashboard_shows_service_and_global_summary_cards(self):
@@ -7731,7 +7741,7 @@ class PanelHttpTests(unittest.TestCase):
             "Hysteria BBR",
             "内核 bbr / fq",
             "检查更新",
-            "重置全部流量",
+            "重置本组流量",
             "总流量",
             "分享",
             "重置",
@@ -8027,7 +8037,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('<dialog id="credentials-dialog"', body)
         self.assertIn('data-share-form', body)
         self.assertIn('data-qr-form', body)
-        for label in ("分享", "二维码", "禁用", "改密", "重置", "删除"):
+        for label in ("复制订阅", "二维码", "禁用", "改密", "重置", "删除"):
             self.assertIn(">{}<".format(label), body)
         edit_button = 'data-edit-user-id="{}"'.format(created["id"])
         self.assertLess(body.index('/users/{}/toggle'.format(created["id"])), body.index(edit_button))
@@ -8051,7 +8061,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('.machine-facts{grid-template-columns:repeat(2,minmax(0,1fr))}', body)
         self.assertIn(
             '.user-filters{grid-template-columns:minmax(200px,2fr) '
-            'repeat(3,minmax(105px,1fr)) auto}.budget-form{'
+            'repeat(3,minmax(105px,1fr)) auto auto}.budget-form{'
             'grid-template-columns:repeat(2,minmax(0,1fr))}',
             body,
         )
@@ -8090,7 +8100,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertNotIn("data-data-plane-bootstrap-form", body)
         self.assertNotIn("data-data-plane-canary-form", body)
         self.assertNotIn("data-node-dns-action-form", body)
-        migration_steps = ('为新服务器的独立面板域名配置 HTTPS。', '登录新面板，恢复备份并验证。', '确认正常后，再切换节点域名 DNS。')
+        migration_steps = ('为新服务器配置与旧面板相同的订阅域名、HTTPS 和端口。', '恢复备份，再按原地区重新对接专线节点；验证原订阅链接和节点连接。', '验证正常后切换 DNS；旧机保留到缓存请求和连接退出。不要让两套独立面板同时处理认证统计。')
         for step in migration_steps:
             self.assertIn('<li>' + step + '</li>', body)
         self.assertLess(body.index(migration_steps[0]), body.index(migration_steps[1]))
@@ -8238,9 +8248,9 @@ class PanelHttpTests(unittest.TestCase):
 
         with self.request("/", headers=headers) as response:
             dashboard = response.read().decode()
-        self.assertIn('name="allow_udp_443"', dashboard)
+        self.assertNotIn('name="allow_udp_443"', dashboard)
         self.assertIn('data-allow-udp443="1"', dashboard)
-        self.assertIn("允许该账号使用 UDP 443", dashboard)
+        self.assertNotIn("允许该账号使用 UDP 443", dashboard)
 
     def test_user_limit_edit_requires_csrf_and_detects_stale_generation(self):
         created = self.db.create_proxy_user("editable")
@@ -8365,7 +8375,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('name="q" type="search" value="Alice &amp; Co"', body)
         self.assertIn('<option value="enabled" selected>启用</option>', body)
         self.assertIn('<option value="active" selected>在线</option>', body)
-        self.assertIn('<option value="allowed" selected>已开放</option>', body)
+        self.assertNotIn('id="user-udp443-filter"', body)
         self.assertIn('data-enabled="1"', body)
         self.assertIn('data-online="2"', body)
         self.assertIn('data-allow-udp443="1"', body)
@@ -8811,7 +8821,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
         self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
         self.assertLess(ascending.index(gamma_row), ascending.index(beta_row))
-        self.assertIn('href="/?sort=traffic&amp;order=asc"', descending)
+        self.assertIn('href="/?type=standard&amp;sort=traffic&amp;order=asc"', descending)
 
     def test_online_device_header_sorts_users_in_both_directions(self):
         for name in ("alpha", "beta", "gamma"):
@@ -8836,10 +8846,10 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(descending.index(gamma_row), descending.index(alpha_row))
         self.assertLess(ascending.index(alpha_row), ascending.index(gamma_row))
         self.assertLess(ascending.index(gamma_row), ascending.index(beta_row))
-        self.assertIn('href="/?sort=online&amp;order=asc"', descending)
-        self.assertIn('<th aria-sort="descending"><a class="sort-link" href="/?sort=online', descending)
+        self.assertIn('href="/?type=standard&amp;sort=online&amp;order=asc"', descending)
+        self.assertIn('<th aria-sort="descending"><a class="sort-link" href="/?type=standard&amp;sort=online', descending)
         self.assertIn(
-            '<th aria-sort="none"><a class="sort-link" href="/?sort=traffic&amp;order=desc">总流量 ⇅</a>',
+            '<th aria-sort="none"><a class="sort-link" href="/?type=standard&amp;sort=traffic&amp;order=desc">总流量 ⇅</a>',
             descending,
         )
 
@@ -8854,7 +8864,7 @@ class PanelHttpTests(unittest.TestCase):
             headers=headers,
         ) as response:
             payload = json.loads(response.read().decode())
-        self.assertTrue(payload["uri"].startswith("hysteria2://"))
+        self.assertTrue(payload["uri"].startswith(self.base_url + "/sub/"))
         self.assertEqual("carol", payload["name"])
 
         with self.assertRaises(urllib.error.HTTPError) as raised:
@@ -8960,26 +8970,15 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual([], self.egress_policy_controller.actions)
         self.assertEqual(0, self.reboot_controller.queued)
 
-    def test_dashboard_shows_full_state_and_node_wide_switch_in_service_port_card(self):
-        headers, _csrf_token = self.authenticated_headers()
-
-        with self.request("/", headers=headers) as response:
-            body = response.read().decode()
-
-        self.assertIn('class="detail compact-detail port-detail"', body)
-
-        self.assertIn('action="/egress/full"', body)
-        self.assertIn('data-egress-form', body)
-        self.assertIn('aria-pressed="false"', body)
-        self.assertIn('FULL 已关闭', body)
-        self.assertLess(body.index("UDP 19999"), body.index('action="/egress/full"'))
-
-        self.egress_policy_controller.state = "full"
-        with self.request("/", headers=headers) as response:
-            body = response.read().decode()
-        self.assertIn('action="/egress/web"', body)
-        self.assertIn('aria-pressed="true"', body)
-        self.assertIn('FULL 已开启', body)
+    def test_dashboard_replaces_full_switch_with_node_settings(self):
+        headers, _ = self.authenticated_headers()
+        for state in ("full", "web", "inconsistent"):
+            self.egress_policy_controller.state = state
+            with self.request("/", headers=headers) as response:
+                body = response.read().decode()
+            self.assertNotIn('class="egress-control"', body)
+            self.assertIn('data-subscription-port>UDP 443', body)
+            self.assertIn('data-subscription-defaults>节点设置', body)
 
     def test_dashboard_renders_certificate_warning_and_future_validity_states(self):
         headers, _csrf_token = self.authenticated_headers()
@@ -9079,7 +9078,7 @@ class PanelHttpTests(unittest.TestCase):
                     )
                 self.assertEqual(400, rejected.exception.code)
                 self.assertEqual(0, self.db.get_proxy_user(user["id"])["generation"])
-                self.assertFalse(self.db.get_proxy_user(user["id"])["allow_udp_443"])
+                self.assertTrue(self.db.get_proxy_user(user["id"])["allow_udp_443"])
         for method, action in (("POST", "/disable"), ("DELETE", "")):
             with self.assertRaises(urllib.error.HTTPError) as rejected:
                 self.mobile_json_request(
@@ -9356,7 +9355,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
 
         self.assertEqual(201, response.status)
-        self.assertIn("hysteria2://", body)
+        self.assertIn("/sub/", body)
         self.assertEqual("alice", self.db.list_proxy_users()["users"][0]["name"])
 
     def test_kick_failure_does_not_hide_rotated_credentials(self):
@@ -9373,7 +9372,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
 
         self.assertEqual(200, response.status)
-        self.assertIn("hysteria2://", body)
+        self.assertIn("/sub/", body)
         self.assertIsNone(self.db.authenticate_token("first-token"))
         self.assertEqual(
             failures_before + 1,

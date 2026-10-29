@@ -46,6 +46,7 @@ report_error() {
 trap 'report_error "$?" "$LINENO"' ERR
 
 export NODE_NAME="CI full installer"
+export SUBSCRIPTION_NAME="CI subscription"
 export PUBLIC_HOST=127.0.0.1
 export HYSTERIA_PORT=31999
 export PANEL_PORT=31998

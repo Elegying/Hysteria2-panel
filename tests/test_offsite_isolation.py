@@ -54,6 +54,7 @@ class OffsiteIsolationTests(unittest.TestCase):
             tls_cert=certificate, tls_key=private_key,
             public_host="vpn.example.test", hysteria_port=443,
             node_name="fixture", local_origin_id=self.origin,
+            panel_scheme="https", panel_public_host="panel.example.test", panel_port=19998,
         )
         self.lock = self.root / "maintenance.lock"
         self.lock.touch(mode=0o640)

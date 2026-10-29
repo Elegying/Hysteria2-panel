@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.45"
+PANEL_VERSION="0.39.46"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,26 +30,26 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="420cfba7acdf5e0696bc1f75e9a171e8ac7bc0d37be143baf088fc70001e395c"
+PANEL_SHA256="998caa23bedc2e72dbe4c46785fb5ac48088c301208abda0262413d0e4e1fb4b"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="ede73bf6468523c1bf32e3e6c116c0f5b7fceaaa86e294938b355eeac67ae2bb"
+HY2PANEL_VERSION_SHA256="e611d125b66aa25c88af1c24a69d3af47f4c5419400d820d1b459a51fd662050"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
-HY2PANEL_WEB_ASSETS_SHA256="0cbe0c1b8e5ab4e1c8dab2093f178668ed87d8b4126b8280558f64ac143770a3"
+HY2PANEL_WEB_ASSETS_SHA256="838f49620a5135212af95f642063e71a54ea516374d618bf2c5393b818576b08"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
-HY2PANEL_NODES_SHA256="098fd6a4dc2d421c858aeabd4da4edc4165099309ee427c79144e489d2e8771a"
-HY2PANEL_DISTRIBUTED_SHA256="a05999d965a44d8e8265ccc0b6d72cda7eb184d65514a75fce588ab18bb0b327"
+HY2PANEL_NODES_SHA256="a09d80e06c8250c2f8dbe018b44756cfd5c71a6e4bcd73dd6f5e084d1194e6fd"
+HY2PANEL_DISTRIBUTED_SHA256="63433d694dd2128b659c769681e0f541f1976ae8a8f6265fabc24e7a4b33a2e4"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="890174cdd30b7609e4eaa69c01ccd7e61f65e316196e667d5812d9e55a6c8abc"
+HY2PANEL_DASHBOARD_SHA256="1719935aced8e59bfdc4e9843bb05be29e00146855e263613cc83adf72bf039e"
 HY2PANEL_MOBILE_API_SHA256="0bbbc4ba9c9c5040da7ebc4d4aeaa84c1a0f96c1f8f646e58a46040b29e56b5c"
-NODE_AGENT_SHA256="2b0d7343268fbc076e808387a94c5af88469038933b1250ea92bd4ec3eacfa83"
+NODE_AGENT_SHA256="19c0c6a6077854d39b3f44bd3a57c2de27890780e578300eafbe3efee7a4bdee"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -1119,7 +1119,7 @@ rollback_existing_install() {
       || { echo "警告：无法恢复 ACME 运行目录权限" >&2; return 1; }
   fi
 
-  for unit_file in hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-backup.timer hysteria2-panel-update.service; do
+  for unit_file in hysteria2-panel-port-hopping.service hysteria2-panel.service hysteria2-panel-server.service hysteria2-panel-server-443.service hysteria2-panel-tcp-probe.service hysteria2-panel-tcp-probe-443.service hysteria2-panel-egress-full.service hysteria2-panel-egress-web.service hysteria2-panel-egress-recover.service hysteria2-panel-restore.service hysteria2-panel-restore-recover.service hysteria2-panel-restore-resume.service hysteria2-panel-cert-renew.service hysteria2-panel-cert-renew.timer hysteria2-panel-node-dns-admission.service hysteria2-panel-node-dns-admission.timer hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-backup.timer hysteria2-panel-update.service; do
     if [[ -f "${BACKUP_DIR}/${unit_file}" ]]; then
       cp -a "${BACKUP_DIR}/${unit_file}" "/etc/systemd/system/${unit_file}"
     else
@@ -1815,7 +1815,8 @@ uninstall_node() {
     hysteria2-panel-node-hysteria-main.service \
     hysteria2-panel-node-hysteria-udp443.service \
     hysteria2-panel-node-tcp-probe-main.service \
-    hysteria2-panel-node-tcp-probe-udp443.service >/dev/null 2>&1 || true
+    hysteria2-panel-node-tcp-probe-udp443.service \
+    hysteria2-panel-node-port-hopping.service >/dev/null 2>&1 || true
   systemctl stop hysteria2-panel-node-heartbeat.service \
     hysteria2-panel-node-onboarding.service >/dev/null 2>&1 || true
   rollback_data_plane_firewall \
@@ -2065,6 +2066,7 @@ initialize_data_plane_owned_paths() {
     /etc/systemd/system/hysteria2-panel-node-hysteria-udp443.service
     /etc/systemd/system/hysteria2-panel-node-tcp-probe-main.service
     /etc/systemd/system/hysteria2-panel-node-tcp-probe-udp443.service
+    /etc/systemd/system/hysteria2-panel-node-port-hopping.service
   )
 }
 
@@ -2252,6 +2254,11 @@ assert_existing_data_plane_healthy() {
       || fail "已安装数据面文件权限异常：${path}"
   done
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    if [[ "${path##*/}" == "hysteria2-panel-node-port-hopping.service" && ! -e "${path}" && ! -L "${path}" ]]; then
+      "${PYTHON_BIN}" -c 'import json,sys; sys.exit("portHopping" in json.load(open(sys.argv[1])))' "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" \
+        || fail "已安装数据面缺少跳跃恢复单元"
+      continue
+    fi
     [[ -f "${path}" && ! -L "${path}" \
       && "$(stat -c '%u:%g:%a' "${path}")" == "0:0:644" ]] \
       || fail "已安装数据面 systemd 单元不安全：${path}"
@@ -2384,6 +2391,7 @@ write_data_plane_backup_manifest() {
         "${DATA_PLANE_BACKUP_DIR}/config/${path##*/}"
     done
     for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+      [[ "${path##*/}" == "hysteria2-panel-node-port-hopping.service" && ! -e "${path}" ]] && continue
       install -o root -g root -m 0644 "${path}" \
         "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}"
     done
@@ -2854,12 +2862,17 @@ quiesce_existing_data_plane() {
 stop_existing_data_plane() {
   quiesce_existing_data_plane "${1:-preserve}" || return 1
   stop_loaded_units \
+    hysteria2-panel-node-port-hopping.service \
     hysteria2-panel-node-tcp-probe-udp443.service \
     hysteria2-panel-node-tcp-probe-main.service \
     hysteria2-panel-node-hysteria-udp443.service \
     hysteria2-panel-node-hysteria-main.service \
     hysteria2-panel-node-control.service \
-    hysteria2-panel-node-auth.service
+    hysteria2-panel-node-auth.service || return 1
+  if [[ -f /etc/systemd/system/hysteria2-panel-node-port-hopping.service ]]; then
+    "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" port-hopping disable || return 1
+    rm -f -- /run/hysteria2-panel-node-hopping.lock || return 1
+  fi
 }
 
 restore_existing_data_plane() {
@@ -2911,6 +2924,10 @@ restore_existing_data_plane() {
   # Runtime accounting is never rolled back with application/configuration.
   require_node_agent_directory "${NODE_AGENT_STATE_DIR}" 700
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    if [[ "${path##*/}" == "hysteria2-panel-node-port-hopping.service" && ! -f "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}" ]]; then
+      rm -f -- "${path}" || return 1
+      continue
+    fi
     install -o root -g root -m 0644 \
       "${DATA_PLANE_BACKUP_DIR}/units/${path##*/}" "${path}" || return 1
   done
@@ -2920,6 +2937,7 @@ restore_existing_data_plane() {
   systemctl daemon-reload || return 1
   restart_node_agent_heartbeat_timer || return 1
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
+    [[ "${path##*/}" == "hysteria2-panel-node-port-hopping.service" && ! -e "${path}" ]] && continue
     unit="${path##*/}"
     systemctl enable --now "${unit}" || return 1
     systemctl is-active --quiet "${unit}" || return 1
@@ -3366,6 +3384,27 @@ LimitNOFILE=4096
 WantedBy=multi-user.target
 EOF
 
+  cat > "${TMP_DIR}/hysteria2-panel-node-port-hopping.service" <<EOF
+[Unit]
+Description=Hysteria2-panel data node port hopping
+After=network-online.target nftables.service firewalld.service ufw.service hysteria2-panel-node-hysteria-udp443.service
+Wants=network-online.target
+PartOf=firewalld.service nftables.service ufw.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+UMask=0077
+ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py port-hopping apply --metadata ${NODE_AGENT_CONFIG_DIR}/bootstrap.json
+ExecStop=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py port-hopping disable
+TimeoutStartSec=45
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     install -o root -g root -m 0644 "${TMP_DIR}/${path##*/}" "${path}"
   done
@@ -3383,6 +3422,7 @@ EOF
   systemctl enable --now hysteria2-panel-node-hysteria-udp443.service
   systemctl enable --now hysteria2-panel-node-tcp-probe-main.service
   systemctl enable --now hysteria2-panel-node-tcp-probe-udp443.service
+  systemctl enable --now hysteria2-panel-node-port-hopping.service
   for path in "${DATA_PLANE_OWNED_UNITS[@]}"; do
     unit="${path##*/}"
     systemctl is-active --quiet "${unit}" || fail "数据面服务未能健康启动：${unit}"
@@ -5676,6 +5716,10 @@ def verified_default_host_guard(entries):
             actual.append({kind: normalized})
     # An isolated management TCP port may have changed. Preserve it verbatim;
     # it must not overlap any port needed by the panel/data plane.
+    if len(actual) == len(expected) + 1:
+        expected.insert(-1, {"rule": {"family": family, "table": table, "chain": chain,
+            "expr": [match({"meta": {"key": "l4proto"}}, {"set": ["tcp", "udp"]}),
+                     port("th", "dport", {"range": [1, 65535]}), accept]}})
     if len(actual) == len(expected):
         ssh_rule = actual[8].get("rule", {}).get("expr", [])
         if len(ssh_rule) == 2 and ssh_rule[1] == accept:
@@ -5684,6 +5728,34 @@ def verified_default_host_guard(entries):
                     and str(value) not in sys.argv[1:]):
                 expected[8]["rule"]["expr"][0] = port("tcp", "dport", value)
     return json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
+
+def verified_port_hopping(entries):
+    chain_key = ("inet", "hy2_port_hopping", "prerouting")
+    chains, rules = [], []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            return False
+        for kind in ("chain", "rule"):
+            row = entry.get(kind)
+            if not isinstance(row, dict) or row.get("family") != "inet" or row.get("table") != "hy2_port_hopping":
+                continue
+            clean = dict(row)
+            clean.pop("handle", None)
+            (chains if kind == "chain" else rules).append(clean)
+    if chains != [{"family":"inet", "table":"hy2_port_hopping", "name":"prerouting", "type":"nat", "hook":"prerouting", "prio":-100, "policy":"accept"}] or len(rules) not in (1, 2):
+        return False
+    for target in {443, int(sys.argv[1]), int(sys.argv[2])}:
+        expected = {"family":"inet", "table":"hy2_port_hopping", "chain":"prerouting", "expr":[
+            {"match":{"op":"!=", "left":{"meta":{"key":"iifname"}}, "right":"lo"}},
+            {"match":{"op":"==", "left":{"fib":{"result":"type", "flags":["daddr"]}}, "right":"local"}},
+            {"match":{"op":"==", "left":{"payload":{"protocol":"udp", "field":"dport"}}, "right":{"range":[20000,50000]}}},
+            {"redirect":{"port":target}}]}
+        # Accept the legacy UDP-only table and the current UDP + TCP probe table.
+        tcp_expected = json.loads(json.dumps(expected))
+        tcp_expected["expr"][2]["match"]["left"]["payload"]["protocol"] = "tcp"
+        if rules == [expected] or rules == [expected, tcp_expected]:
+            return chain_key
+    return False
 
 def verified_service_allowlist(entries, candidate):
     # Recognize a complete simple default-deny policy by structure, not its
@@ -5799,6 +5871,9 @@ if not isinstance(entries, list):
 host_guards = set()
 if verified_default_host_guard(entries):
     host_guards.add(("inet", "hy2_host_guard", "input"))
+hopping_chain = verified_port_hopping(entries)
+if hopping_chain:
+    host_guards.add(hopping_chain)
 for entry in entries:
     candidate = entry.get("chain", {}) if isinstance(entry, dict) else {}
     if (isinstance(candidate, dict) and candidate.get("family") == "inet" and candidate.get("hook") == "input"
@@ -7052,6 +7127,7 @@ fi
 detected_host="$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]; exit}')" || true
 if (( EXISTING_INSTALL == 1 )); then
   EXISTING_NODE_NAME="${HY2PANEL_NODE_NAME}"
+  EXISTING_SUBSCRIPTION_NAME="${HY2PANEL_SUBSCRIPTION_NAME:-私家车}"
   EXISTING_PUBLIC_HOST="${HY2PANEL_PUBLIC_HOST}"
   EXISTING_HYSTERIA_PORT="${HY2PANEL_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${HY2PANEL_PANEL_PORT}"
@@ -7062,7 +7138,8 @@ if (( EXISTING_INSTALL == 1 )); then
   EXISTING_STATS_PORT="${HY2PANEL_STATS_PORT}"
   EXISTING_STATS_443_PORT="${HY2PANEL_STATS_443_PORT:-${DEFAULT_STATS_443_PORT}}"
 else
-  EXISTING_NODE_NAME="Hysteria 2"
+  EXISTING_NODE_NAME="私家车"
+  EXISTING_SUBSCRIPTION_NAME="私家车"
   EXISTING_PUBLIC_HOST="${detected_host}"
   EXISTING_HYSTERIA_PORT="${DEFAULT_HYSTERIA_PORT}"
   EXISTING_PANEL_PORT="${DEFAULT_PANEL_PORT}"
@@ -7087,6 +7164,7 @@ if (( EXISTING_INSTALL == 0 )); then
 fi
 if [[ "${AUTO_UPDATE}" == "1" ]]; then
   NODE_NAME="${EXISTING_NODE_NAME}"
+  SUBSCRIPTION_NAME="${EXISTING_SUBSCRIPTION_NAME}"
   PUBLIC_HOST="${EXISTING_PUBLIC_HOST}"
   HYSTERIA_PORT="${EXISTING_HYSTERIA_PORT}"
   PANEL_PORT="${EXISTING_PANEL_PORT}"
@@ -7102,9 +7180,19 @@ if [[ "${AUTO_UPDATE}" == "1" ]]; then
   RESET_ADMIN="0"
   ADMIN_PASSWORD=""
 fi
+SUBSCRIPTION_NAME="${SUBSCRIPTION_NAME:-}"
+if [[ -z "${SUBSCRIPTION_NAME}" ]]; then
+  read -r -p "订阅显示名称 [${EXISTING_SUBSCRIPTION_NAME}]: " SUBSCRIPTION_NAME </dev/tty
+  SUBSCRIPTION_NAME="${SUBSCRIPTION_NAME:-${EXISTING_SUBSCRIPTION_NAME}}"
+fi
+[[ ${#SUBSCRIPTION_NAME} -le 64 ]] || fail "订阅名称最多 64 个字符"
+[[ "${SUBSCRIPTION_NAME}" != *$'\n'* && "${SUBSCRIPTION_NAME}" != *$'\r'* ]] || fail "订阅名称不能包含换行"
+[[ "${SUBSCRIPTION_NAME}" != *'"'* && "${SUBSCRIPTION_NAME}" != *'`'* && "${SUBSCRIPTION_NAME}" != *'$'* && "${SUBSCRIPTION_NAME}" != *\\* ]] \
+  || fail "订阅名称不能包含引号、反引号、美元符号或反斜杠"
+
 NODE_NAME="${NODE_NAME:-}"
 if [[ -z "${NODE_NAME}" ]]; then
-  read -r -p "分享链接节点名称 [${EXISTING_NODE_NAME}]: " NODE_NAME </dev/tty
+  read -r -p "节点显示名称 [${EXISTING_NODE_NAME}]: " NODE_NAME </dev/tty
   NODE_NAME="${NODE_NAME:-${EXISTING_NODE_NAME}}"
 fi
 [[ ${#NODE_NAME} -le 64 ]] || fail "节点名称最多 64 个字符"
@@ -7482,6 +7570,7 @@ HY2PANEL_DB=/var/lib/hysteria2-panel/panel.db
 HY2PANEL_HMAC_KEY=${HMAC_KEY}
 HY2PANEL_USAGE_ORIGIN_ID=${USAGE_ORIGIN_ID}
 HY2PANEL_NODE_NAME="${NODE_NAME}"
+HY2PANEL_SUBSCRIPTION_NAME="${SUBSCRIPTION_NAME}"
 HY2PANEL_PUBLIC_HOST=${PUBLIC_HOST}
 HY2PANEL_HYSTERIA_PORT=${HYSTERIA_PORT}
 HY2PANEL_PANEL_PORT=${PANEL_PORT}
@@ -8015,6 +8104,31 @@ MemoryMax=384M
 [Install]
 WantedBy=multi-user.target
 EOF
+
+cat > /etc/systemd/system/hysteria2-panel-port-hopping.service <<EOF
+[Unit]
+Description=Hysteria 2 UDP port hopping (20000-50000)
+After=network-online.target nftables.service hy2-host-guard.service
+Before=hysteria2-panel.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/hysteria2-panel/panel.env
+ExecStart=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py port-hopping enable
+ExecStop=${PYTHON_BIN} /opt/hysteria2-panel/hysteria2_panel.py port-hopping disable
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+cat > /etc/sudoers.d/hysteria2-panel-hopping <<'EOF'
+hy2panel ALL=(root) NOPASSWD: /bin/systemctl enable --now hysteria2-panel-port-hopping.service, /bin/systemctl disable --now hysteria2-panel-port-hopping.service
+EOF
+chmod 0440 /etc/sudoers.d/hysteria2-panel-hopping
+visudo -cf /etc/sudoers.d/hysteria2-panel-hopping >/dev/null
 
 cat > /etc/systemd/system/hysteria2-panel-egress-full.service <<EOF
 [Unit]

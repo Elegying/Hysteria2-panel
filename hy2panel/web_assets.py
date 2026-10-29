@@ -23,9 +23,12 @@ button{min-height:44px;padding:10px 20px;border:0;border-radius:8px;background:#
 .login-support{font-size:13px;line-height:1.6}.error{color:#ff9aaa;overflow-wrap:anywhere}
 .skip-link{position:absolute;left:16px;top:-100px;color:white}.skip-link:focus{top:8px}
 @media(max-width:480px){.login{padding:24px}button{width:100%}}
+
 """
 
 PAGE_STYLE = """
+.user-group-heading{display:flex;align-items:center;gap:22px;flex-wrap:wrap}.user-group-heading h2{margin:0}.user-group-tabs{display:flex;gap:10px}.user-group-tabs .button[aria-current="page"]{background:var(--accent,#4476c9);color:white}.user-group-tabs .button{white-space:nowrap}
+
 :root{color-scheme:dark;--bg:#06111f;--surface:#0b1a2c;--surface-2:#132438;--text:#f3f7ff;--muted:#9aaac0;--line:#22364b;--accent:#5f91f7;--teal:#25b99a;--success:#4bc493;--warning:#f5b54b;--danger:#ff6675}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;text-rendering:optimizeLegibility}
 main{width:min(1420px,calc(100% - 40px));margin:20px auto 42px}.topbar{display:flex;align-items:center;gap:12px;background:#102846;border:1px solid #284867;border-radius:20px;padding:18px 22px;margin-bottom:16px}.brand{min-width:max-content}.eyebrow{display:inline-block;border:1px solid #405b7c;border-radius:999px;padding:7px 13px;color:#c8d7ef;font-size:12px;letter-spacing:.12em}.topbar h1{font-size:28px;margin:0 4px}.topbar-spacer{flex:1}.pill{display:flex;align-items:center;gap:6px;min-height:44px;border:1px solid #34495f;border-radius:10px;padding:9px 14px;background:#1b2c40;color:var(--muted);white-space:nowrap}.pill strong{color:var(--text);margin:0}
@@ -36,7 +39,7 @@ h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.m
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.resource,.detail{background:var(--surface-2);border:1px solid #283b50;border-radius:14px;padding:18px}.resource{padding:12px}.resource strong{font-size:18px;margin-top:4px}.resource small{font-size:11px}.resource strong,.detail strong{display:block}.certificate-resource{grid-column:1/-1;display:flex;align-items:baseline;gap:8px;min-width:0}.certificate-resource span{white-space:nowrap}.certificate-resource strong{margin:0;font-size:16px;white-space:nowrap}.service-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.compact-detail{padding:12px}.compact-detail strong{font-size:18px;margin-top:4px}.port-detail{display:flex;align-items:center;justify-content:space-between;gap:12px}.port-detail>div strong{white-space:nowrap}.egress-control{display:grid;justify-items:end;gap:3px;margin:0}.egress-state{color:var(--muted);font-size:11px;font-weight:750;white-space:nowrap}.egress-state.on{color:var(--success)}.egress-state.unknown{color:var(--warning)}.egress-switch{display:inline-flex;align-items:center;gap:6px;padding:5px 7px;background:#1b2c40;border-color:#40566f;border-radius:999px;font-size:11px}.egress-switch.on{background:#123833;border-color:#26745d;color:#caffec}.egress-switch.unknown{border-color:#8b6b30}.egress-switch-track{position:relative;width:30px;height:18px;border-radius:999px;background:#52647a;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.egress-switch-track>span{position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform .15s ease}.egress-switch.on .egress-switch-track{background:var(--success)}.egress-switch.on .egress-switch-track>span{transform:translateX(12px)}.egress-switch-action{min-width:22px;text-align:center}.bbr-detail strong,.version-row strong{font-size:18px;margin-top:4px}.bbr-detail small{display:block;font-size:11px;margin-top:3px}.version-panel>p{font-size:12px;margin:4px 0 0}.version-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.version-actions{flex-wrap:nowrap}.version-actions form{margin:0}.compact-button{padding:8px 11px}.notice{padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#10233a;color:#c7d6ea}
 .rank-list{display:grid;gap:6px}.rank-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;gap:7px;padding:7px 9px;background:var(--surface-2);border:1px solid #283b50;border-radius:10px}.rank-main{display:flex;align-items:baseline;gap:8px;min-width:0}.rank-number{color:var(--accent);font-weight:800}.rank-name{font-weight:700;overflow:hidden;text-overflow:ellipsis}.rank-traffic{color:var(--muted);font-size:12px;white-space:nowrap}
 .traffic-history-total{font-size:22px;font-weight:750;color:var(--success)}.traffic-history-day{border-top:1px solid var(--line);padding:12px 0}.traffic-history-day summary{cursor:pointer}.traffic-history-line{display:grid;grid-template-columns:minmax(110px,1fr) minmax(90px,1fr) 60px;gap:8px;align-items:center;padding:8px 0;font-variant-numeric:tabular-nums}.traffic-history-line strong{color:var(--success)}.traffic-history-line> :last-child{text-align:right}.traffic-history-day>p{font-size:13px}
-.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:flex;align-items:center;flex-wrap:wrap}.user-heading{flex:1 1 240px}.user-section-head .section-actions{flex:0 0 auto}.user-tools{justify-content:space-between;margin-bottom:14px}.user-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(120px,1fr)) auto;align-items:end;gap:9px;flex:1}.user-filters label{margin-bottom:4px;font-size:12px;color:var(--muted)}.user-filters button{padding:10px 12px}.search-status{margin:0;white-space:nowrap}.filter-empty{margin:0 0 14px;padding:11px 14px;border:1px dashed #3a526b;border-radius:10px;text-align:center}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.limit-alert[hidden]{display:none}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:420px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
+.create-grid{display:grid;grid-template-columns:2fr 1fr 1fr auto;align-items:end;gap:12px;margin-bottom:22px}.section-actions,.user-tools{display:flex;align-items:center;gap:9px}.user-section-head{display:flex;align-items:center;flex-wrap:wrap}.user-heading{flex:1 1 240px}.user-section-head .section-actions{flex:0 0 auto}.user-tools{justify-content:space-between;margin-bottom:14px}.user-filters{display:grid;grid-template-columns:minmax(220px,2fr) repeat(3,minmax(120px,1fr)) auto auto;align-items:end;gap:9px;flex:1}.user-filters label{margin-bottom:4px;font-size:12px;color:var(--muted)}.user-filters button{padding:10px 12px}.search-status{margin:0;white-space:nowrap}.filter-empty{margin:0 0 14px;padding:11px 14px;border:1px dashed #3a526b;border-radius:10px;text-align:center}label{display:block;font-weight:650;margin-bottom:6px}input,textarea,select{width:100%;padding:11px 13px;border:1px solid #3a4d63;border-radius:9px;background:#101f31;color:var(--text);font:inherit}input:focus,textarea:focus,select:focus,button:focus-visible,.button:focus-visible{outline:3px solid rgba(95,145,247,.38);outline-offset:2px}button:disabled{cursor:wait;opacity:.65}.table-wrap{overflow-x:auto;scrollbar-gutter:stable}table{width:100%;border-collapse:separate;border-spacing:0;min-width:1050px;font-variant-numeric:tabular-nums}th,td{padding:13px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}th{color:var(--muted);font-size:13px;white-space:nowrap}.user-table th{position:sticky;top:0;z-index:2;background:var(--surface);box-shadow:0 1px 0 var(--line)}.user-table tbody tr{transition:background-color .15s ease}.user-table tbody tr:hover{background:#0f2135}.user-table tr[data-over-device-limit="1"]{background:rgba(255,102,117,.07)}.over-limit-name{color:var(--danger)}.limit-alert{display:block;margin-top:2px;color:var(--danger);font-size:11px;font-weight:700}.limit-alert[hidden]{display:none}.sort-link{color:inherit;text-decoration:none}.sort-link:hover{text-decoration:underline}.status{font-weight:750}.enabled{color:var(--success)}.disabled{color:var(--danger)}progress{width:150px;height:10px;accent-color:var(--accent)}.traffic-cell{min-width:190px}.traffic-label{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);margin-top:4px}.actions{min-width:420px}.user-table tr[hidden]{display:none}.update-state{margin-top:6px}.update-state[data-state="failed"]{color:var(--danger)}.update-state[data-state="running"],.update-state[data-state="queued"]{color:var(--warning)}.update-state[data-state="success"]{color:var(--success)}
 .checkbox-field{display:flex;align-items:flex-start;gap:10px;margin:0;padding:12px;border:1px solid #3a4d63;border-radius:10px;background:#101f31}.checkbox-field input{width:auto;margin:4px 0 0;flex:0 0 auto}.checkbox-field span{font-weight:650}.checkbox-field small{display:block;margin-top:3px;font-weight:400}
 .login{width:min(430px,100%);margin:12vh auto}.login-form{display:grid;gap:12px}.login-actions{margin:4px 0 0}.login-actions button{min-width:110px}.copy-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px;margin-bottom:16px}.error{color:var(--danger)}code{word-break:break-all}
 .migration-dialog{width:min(820px,calc(100% - 32px));max-height:min(86vh,760px);padding:0;border:1px solid #35506d;border-radius:18px;background:var(--surface);color:var(--text);box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:auto}.migration-dialog::backdrop{background:rgba(1,8,18,.78);backdrop-filter:blur(4px)}.credentials-dialog{width:min(680px,calc(100% - 32px))}.create-dialog{width:min(560px,calc(100% - 32px))}.create-dialog .create-grid{grid-template-columns:1fr 1fr;margin-bottom:0}.create-dialog .wide,.create-dialog .create-grid>button{grid-column:1/-1}.credentials-dialog textarea{min-height:118px}.qr-panel{display:grid;justify-items:center;gap:8px;margin:16px 0}.qr-panel[hidden]{display:none}.qr-canvas{display:block;width:min(100%,320px);height:auto;border:10px solid #fff;border-radius:8px;background:#fff;image-rendering:pixelated}.credential-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:14px 0}.credential-actions button{width:100%}.dialog-shell{padding:22px}.dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:14px;margin-bottom:16px}.dialog-head h2{margin-bottom:4px}.dialog-close{flex:0 0 auto;width:40px;height:40px;padding:0;border-radius:50%;background:#1b2c40;border-color:#34495f;font-size:24px;line-height:1}.migration-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}.migration-grid .detail{height:100%}.migration-grid p:last-child{margin-bottom:0}.toast{position:fixed;right:18px;bottom:18px;z-index:20;max-width:min(420px,calc(100% - 36px));margin:0;padding:11px 14px;border:1px solid #375170;border-radius:10px;background:#102846;box-shadow:0 12px 36px rgba(0,0,0,.4)}.toast.error{border-color:#8a3844;color:#ffd5da}.toast[hidden]{display:none}
@@ -44,7 +47,7 @@ h1,h2,h3,p{margin-top:0}h2{font-size:20px;margin-bottom:4px}h3{font-size:16px}.m
 .operation-guides{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 18px}.operation-guide{padding:15px;border:1px solid #375170;border-radius:13px;background:#0d2035}.operation-guide h3{margin:0 0 12px}.danger-guide{border-color:#80505a}.numbered-steps{list-style:none;counter-reset:guide-step;display:grid;gap:11px;margin:0;padding:0}.numbered-steps li{counter-increment:guide-step;display:grid;grid-template-columns:34px minmax(0,1fr);column-gap:9px;align-items:start}.numbered-steps li::before{content:counter(guide-step);display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--accent);color:#03101e;font-weight:850;grid-row:1/3}.danger-guide .numbered-steps li::before{background:var(--warning)}.numbered-steps strong,.numbered-steps span{grid-column:2}.numbered-steps span{margin-top:2px;color:var(--muted);font-size:13px;line-height:1.45}.budget-summary{display:grid;gap:2px;min-width:0}.budget-main{display:flex;align-items:baseline;justify-content:space-between;gap:8px}.budget-main span,.budget-main strong{white-space:nowrap}.budget-main strong{font-size:12px}.budget-summary small{font-size:10px;white-space:normal}.budget-editor{margin-top:6px}.budget-editor summary{width:max-content;color:#c8d7ef;font-size:11px;font-weight:750;cursor:pointer}.budget-editor summary:hover{color:var(--text)}.budget-editor[open] summary{margin-bottom:7px}.budget-form{display:grid;grid-template-columns:repeat(4,minmax(80px,1fr)) auto;gap:6px;align-items:end;min-width:0}.budget-form label{font-size:10px;color:var(--muted)}.budget-form input{min-width:0;padding:7px 8px;margin-top:3px}.budget-form button{padding:8px 10px;white-space:nowrap}.legacy-cleanup-form{margin-top:7px}.legacy-cleanup-form button{width:100%}.wide-detail{grid-column:1/-1}
 @media(max-width:640px){.operation-guides{grid-template-columns:1fr}}
 @media(min-width:641px) and (max-width:1300px){.brand{display:none}.topbar h1{white-space:nowrap}}
-@media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.node-enrollment-grid{grid-template-columns:1fr 1fr}.node-enrollment-grid>button{width:100%}.user-filters{grid-template-columns:minmax(200px,2fr) repeat(3,minmax(105px,1fr)) auto}.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form button{grid-column:1/-1}}
+@media(max-width:1050px){.topbar{flex-wrap:wrap}.topbar-spacer{display:none}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.operations{grid-template-columns:1fr}.create-grid{grid-template-columns:1fr 1fr}.create-grid .wide{grid-column:1/-1}.node-enrollment-grid{grid-template-columns:1fr 1fr}.node-enrollment-grid>button{width:100%}.user-filters{grid-template-columns:minmax(200px,2fr) repeat(3,minmax(105px,1fr)) auto auto}.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form button{grid-column:1/-1}}
 @media(max-width:640px){.certificate-resource{grid-column:1/-1}main{width:calc(100% - 16px);margin:8px auto 24px}.topbar{padding:16px;border-radius:16px;align-items:flex-start;gap:9px}.topbar h1{font-size:23px;width:100%;order:-2;margin:0 0 5px}.brand{display:none}.pill{flex:1 1 calc(50% - 5px);padding:8px 10px;font-size:12px;text-align:center}.topbar-action,.logout-form{flex:1 1 calc(50% - 5px)}.topbar-action,.logout-form button{width:100%}.metrics{grid-template-columns:1fr 1fr;gap:8px}.metric{padding:14px}.metric strong{font-size:20px}.metric small{font-size:12px}.card{padding:16px;border-radius:14px}.primary-details{grid-template-columns:1fr}.create-grid,.migration-grid,.create-dialog .create-grid,.node-enrollment-grid{grid-template-columns:1fr}.node-enrollment-grid>button{width:100%}.node-list-head{align-items:flex-start;flex-direction:column;gap:2px}.node-row{grid-template-columns:minmax(0,1fr) auto}.node-actions{grid-column:1/-1;display:grid}.node-actions form,.node-actions button{width:100%}.section-head{flex-direction:column;padding-bottom:13px}.machine-section-head{gap:7px}.machine-count{align-self:flex-start}.machine-grid{grid-template-columns:1fr}.machine-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form{grid-template-columns:repeat(2,minmax(0,1fr))}.budget-form button{grid-column:1/-1}.user-heading{flex-basis:auto}.section-head>form,.section-head>form button,.create-grid>button{width:100%}.system-actions{width:100%}.section-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}.section-actions form,.section-actions button{width:100%}.section-actions form{grid-column:1/-1}.user-tools{align-items:stretch;flex-direction:column}.user-filters{grid-template-columns:1fr 1fr;width:100%}.user-filters .user-search{grid-column:1/-1}.user-filters button{width:100%}.search-status{white-space:normal}.button-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.button-row form,.button-row button,.button-row .button{width:100%}.bbr-detail,.version-panel{padding:10px}.version-row{gap:6px}.compact-button{padding:7px 6px;font-size:12px;white-space:nowrap}.login{margin:8vh auto}.login-actions button{width:100%}.copy-grid{grid-template-columns:1fr}.copy-grid button{width:100%}.migration-dialog{width:calc(100% - 12px);max-height:calc(100dvh - 12px);border-radius:14px}.dialog-shell{padding:16px}.dialog-head{position:sticky;top:-16px;z-index:1;background:var(--surface);padding-top:16px}.qr-canvas{width:min(100%,288px)}.user-table{overflow:visible}.user-table table,.user-table tbody{display:block;width:100%;min-width:0}.user-table thead{display:none}.user-table tr{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px 10px;margin-bottom:8px;padding:10px;background:var(--surface-2);border:1px solid #283b50;border-radius:12px}.user-table td{display:block;width:auto;min-width:0;padding:0;border-bottom:0}.user-table td:nth-child(1){grid-column:1}.user-table td:nth-child(2){grid-column:2}.user-table td:nth-child(3){grid-column:3}.user-table td:nth-child(4){grid-column:1;font-size:11px;color:var(--muted)}.user-table td:nth-child(5){grid-column:2/4}.user-table td:nth-child(6){grid-column:1/-1;padding-top:2px}.user-table .traffic-cell{min-width:0}.user-table .traffic-label{gap:5px;font-size:10px}.user-table progress{display:block;width:100%;height:8px}.user-table .actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;min-width:0}.user-table .actions form,.user-table .actions button{width:100%;min-width:0}.user-table .actions button{padding:7px 3px;font-size:11px;white-space:nowrap}.user-table .empty-state{grid-column:1/-1!important;text-align:center}.toast{right:8px;bottom:8px;max-width:calc(100% - 16px)}}
 @media(max-width:340px){.metrics{grid-template-columns:1fr}.pill{flex-basis:100%}.version-panel{padding-inline:8px}.version-row{align-items:flex-start;flex-direction:column;gap:4px}.bbr-detail strong,.version-row strong{font-size:16px}.compact-button{padding:7px 5px;font-size:11px;white-space:nowrap}.user-table .actions button{padding-inline:1px;font-size:10px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop{backdrop-filter:none}}
@@ -86,6 +89,12 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 .edit-lookup{display:flex;gap:8px}.edit-lookup input{min-width:0;flex:1}.edit-lookup button{flex-shrink:0}.edit-fields{border:0;padding:0;min-width:0}.dialog-head>div{min-width:0}#edit-user-title{overflow-wrap:anywhere}
 .dialog-status{margin:0 22px 22px;padding:12px 14px;border:1px solid #8a3844;border-radius:10px;background:#34202b;color:#ffd5da;overflow-wrap:anywhere}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important}.migration-dialog::backdrop,.dialog-head{backdrop-filter:none}}
+.subscription-node-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:16px;margin:12px 0;border:1px solid #3d5672;border-radius:12px;min-width:0}.subscription-node-row label{min-width:0}.subscription-node-row input{width:100%}.subscription-node-row input[type=checkbox]{width:auto}.subscription-url{overflow-wrap:anywhere}@media(max-width:600px){.subscription-node-row{grid-template-columns:1fr}}
+[data-live-user-name]{position:relative}
+[data-live-user-name]>strong{transform:translateY(-4px)}
+.expiry-note{position:absolute;left:11px;right:2px;top:calc(50% + 8px);font-size:10px;line-height:12px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:auto}
+@media(max-width:640px){.expiry-note{left:0;top:calc(50% + 2px);font-size:9px;line-height:11px}[data-live-user-name]>strong{transform:translateY(-5px)}}
+
 """
 
 PAGE_SCRIPT = """
@@ -190,7 +199,7 @@ function clearCredentialsQr() {
   if (canvas) {
     canvas.width = 0;
     canvas.height = 0;
-    canvas.setAttribute('aria-label', 'Hysteria 2 节点配置二维码');
+    canvas.setAttribute('aria-label', '订阅链接二维码');
   }
 }
 function drawCredentialsQr(rows, name) {
@@ -219,22 +228,22 @@ function drawCredentialsQr(rows, name) {
       if (row[x] === '1') context.fillRect((x + quiet) * scale, (y + quiet) * scale, scale, scale);
     }
   });
-  canvas.setAttribute('aria-label', String(name || '用户') + ' 的 Hysteria 2 节点配置二维码');
+  canvas.setAttribute('aria-label', String(name || '用户') + ' 的 订阅链接二维码');
   panel.hidden = false;
   saveButton.hidden = false;
 }
 function showCredentials(payload, withQr, refreshOnClose) {
-  if (!payload || typeof payload.uri !== 'string' || !payload.uri.startsWith('hysteria2://')) {
-    throw new Error('节点代码响应无效');
+  if (!payload || typeof payload.uri !== 'string' || !(payload.uri.startsWith('https://') || payload.uri.startsWith('http://'))) {
+    throw new Error('订阅链接响应无效');
   }
   const dialog = document.getElementById('credentials-dialog');
-  if (!dialog) throw new Error('节点信息弹窗加载失败');
+  if (!dialog) throw new Error('订阅信息弹窗加载失败');
   clearCredentialsQr();
   if (withQr) drawCredentialsQr(payload.qr, payload.name);
-  dialog.querySelector('[data-credentials-title]').textContent = String(payload.name || '用户') + ' 的节点信息';
+  dialog.querySelector('[data-credentials-title]').textContent = String(payload.name || '用户') + ' 的订阅信息';
   dialog.querySelector('#credentials-uri').value = payload.uri;
   dialog.querySelector('[data-credentials-notice]').textContent = withQr
-    ? '二维码和节点代码都包含认证凭据，请只保存到受信任的设备。'
+    ? '在客户端添加订阅；刷新可同步节点配置和剩余流量。链接仅供该用户使用。'
     : '关闭弹窗后会刷新当前用户列表。';
   dialog.dataset.refreshOnClose = refreshOnClose ? '1' : '0';
   dialog.showModal();
@@ -245,9 +254,9 @@ let editLoadedName = '';
 let editLoadSequence = 0;
 function editValues() {
   const form = document.querySelector('[data-edit-user-form]');
-  return JSON.stringify(['device_limit', 'traffic_limit_gb', 'used_traffic_gib', 'allow_udp_443'].map(function(name) {
+  return JSON.stringify(['device_limit', 'traffic_limit_gb', 'used_traffic_gib', 'expires_at', 'starts_at'].map(function(name) {
     const field = form.elements.namedItem(name);
-    return field.type === 'checkbox' ? field.checked : field.value;
+    return field ? (field.type === 'checkbox' ? field.checked : field.value) : null;
   }));
 }
 function canDiscardEdit() {
@@ -301,9 +310,15 @@ async function loadEditUser() {
     ['generation', 'device_limit', 'traffic_limit_gb', 'used_traffic_gib'].forEach(function(key) {
       form.elements.namedItem(key).value = user[key];
     });
+    const startsField = form.elements.namedItem('starts_at');
+    if (startsField) startsField.value = user.starts_date || '';
+    const expiresField = form.elements.namedItem('expires_at');
+    if (expiresField) {
+      expiresField.value = user.expires_date || '';
+    }
     const used = form.elements.namedItem('used_traffic_gib');
     used.dataset.initialValue = used.value;
-    form.elements.namedItem('allow_udp_443').checked = user.allow_udp_443;
+
     editBaseline = editValues();
     form.querySelector('[data-edit-user-fields]').disabled = false;
     form.querySelector('button[type="submit"]').disabled = false;
@@ -506,7 +521,7 @@ document.addEventListener('click', async function(event) {
   if (!target) return;
   const copied = await copyText(target.value);
   button.textContent = copied ? '已复制' : '复制失败，请手动选择';
-  notify(copied ? '节点代码已复制' : '自动复制失败，请手动选择节点代码', !copied);
+  notify(copied ? '订阅链接已复制' : '自动复制失败，请手动选择订阅链接', !copied);
 });
 document.addEventListener('click', function(event) {
   const button = event.target.closest('[data-save-qr]');
@@ -556,7 +571,7 @@ document.addEventListener('submit', async function(event) {
     const payload = await submitInlineForm(form);
     const copied = await copyText(payload.uri);
     button.textContent = copied ? '已复制' : '复制失败';
-    notify(copied ? payload.name + ' 的节点代码已复制' : '自动复制失败，请重试', !copied);
+    notify(copied ? payload.name + ' 的订阅链接已复制' : '自动复制失败，请重试', !copied);
   } catch (error) {
     button.textContent = original;
     notify(error.message || '分享失败，请重试', true);
@@ -680,7 +695,7 @@ document.addEventListener('submit', async function(event) {
       throw new Error('部署代码响应无效');
     }
     code.value = payload.deploymentCommand;
-    expiry.textContent = '对接码将在 ' + new Date(Number(payload.expiresAt) * 1000).toLocaleTimeString() + ' 过期，且只能使用一次。';
+    expiry.textContent = (payload.restoredProfile ? '已沿用备份中该地区的节点配置与证书。' : '') + '对接码将在 ' + new Date(Number(payload.expiresAt) * 1000).toLocaleTimeString() + ' 过期，且只能使用一次。';
     result.hidden = false;
     let copied = false;
     try {
@@ -739,7 +754,7 @@ if (credentialsDialog) credentialsDialog.addEventListener('close', function() {
   const refresh = credentialsDialog.dataset.refreshOnClose === '1';
   credentialsDialog.querySelector('#credentials-uri').value = '';
   clearCredentialsQr();
-  if (refresh) window.location.href = '/';
+  if (refresh) window.location.href = new URLSearchParams(window.location.search).get('type') === 'premium' ? '/?type=premium' : '/';
 });
 const nodeOnboardingDialog = document.getElementById('node-onboarding-dialog');
 if (nodeOnboardingDialog) nodeOnboardingDialog.addEventListener('close', function() {
@@ -771,7 +786,7 @@ if (filterForm) {
   function applyServerFilters() {
     const params = new URLSearchParams(new FormData(filterForm));
     const url = new URL(window.location.href);
-    ['q', 'status', 'online', 'udp443'].forEach(function(name) {
+    ['q', 'status', 'online', 'udp443', 'type'].forEach(function(name) {
       const value = params.get(name);
       if (value) url.searchParams.set(name, value);
       else url.searchParams.delete(name);
@@ -796,6 +811,7 @@ if (filterForm) {
     applyServerFilters();
   });
 }
+
 function isOnlineCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
@@ -995,5 +1011,159 @@ async function refreshOnlineStatus() {
 }
 if (document.querySelector('[data-live-online-total]')) {
   window.setTimeout(refreshOnlineStatus, 2000);
+}
+const subscriptionDialog = document.getElementById('subscription-dialog');
+let subscriptionRequest = null;
+function subscriptionCsrf() {
+  const field = subscriptionDialog && subscriptionDialog.querySelector('[data-subscription-csrf]');
+  return field ? field.value : '';
+}
+function escapeHtmlAttr(value) {
+  return String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function subscriptionNodeRow(node) {
+  return '<fieldset class="subscription-node-row"><legend>节点配置</legend>' +
+    '<label>名称<input data-sub-node-label maxlength="80" value="' + escapeHtmlAttr(node.label) + '" required></label>' +
+    '<label>服务器地址<input data-sub-node-host value="' + escapeHtmlAttr(node.host) + '" required></label>' +
+    '<label>UDP 端口<input type="number" data-sub-node-port min="1" max="65535" value="' + (node.port || 443) + '" required></label>' +
+    '<label>证书 SHA-256 指纹<input data-sub-node-pin value="' + escapeHtmlAttr(node.pin_sha256) + '" required></label>' +
+    '<label><input type="checkbox" data-sub-node-enabled' + (node.enabled === false ? '' : ' checked') + '>启用</label>' +
+    '<button type="button" class="secondary" data-sub-node-remove>移除此节点</button></fieldset>';
+}
+async function loadSubscription(userId) {
+  if (!subscriptionDialog) return;
+  const content = subscriptionDialog.querySelector('[data-subscription-content]');
+  if (!subscriptionDialog.open) subscriptionDialog.showModal();
+  if (subscriptionRequest) subscriptionRequest.abort();
+  const request = new AbortController(); subscriptionRequest = request;
+  const timeout = window.setTimeout(function() { request.abort(); }, 15000);
+  content.dataset.userId = userId || '';
+  content.textContent = '正在加载…';
+  try {
+    const response = await fetch(userId ? '/subscriptions/user/' + encodeURIComponent(userId) : '/subscriptions/defaults',
+      {credentials: 'same-origin', signal: request.signal, headers: {'Accept': 'application/json'}});
+    if (subscriptionRequest !== request || !subscriptionDialog.open) return;
+    if (response.redirected || response.status === 401) throw new Error('登录已失效，请重新登录');
+    if (response.status === 404 && userId) {
+      content.innerHTML = '<p>创建后获得固定订阅链接，默认使用统一节点。</p><button type="button" data-sub-action="create">创建订阅</button>';
+      return;
+    }
+    const data = await response.json();
+    if (subscriptionRequest !== request || !subscriptionDialog.open) return;
+    if (!response.ok) throw new Error(data.error || '读取失败');
+    content.dataset.subscriptionId = data.id || '';
+    if (userId) {
+      const url = new URL(data.url, window.location.origin).href;
+      content.innerHTML = '<label>固定订阅链接<textarea class="subscription-url" readonly>' + escapeHtmlAttr(url) + '</textarea></label>' +
+        '<button type="button" data-sub-action="copy">复制订阅链接</button>' +
+        '<p>在客户端添加订阅。刷新后更新节点、已用和剩余流量；支持 Mihomo / Clash Meta 和通用 Base64 订阅。</p>' +
+        '<p>状态：' + (data.enabled ? '启用' : '停用') + ' · ' + (data.user_type === 1 ? '高级专线 · 已就绪 ' + data.premium_ready_count + '/4 地区，共享套餐' : (data.uses_defaults ? '跟随普通节点设置' : '独立节点配置')) + '</p>' +
+        (data.user_type === 1 || data.uses_defaults ? '' : '<button type="button" data-sub-action="inherit">改为跟随统一节点</button>') +
+        '<p><button class="secondary" type="button" data-sub-action="toggle">' + (data.enabled ? '停用订阅' : '启用订阅') + '</button></p>' +
+        '<details><summary>链接泄露处理</summary><p>重置会同时更换订阅链接和该用户的节点密码，并断开旧连接；请重新发送订阅。修改端口不需要重置。</p><button class="warning" type="button" data-sub-action="regenerate">重置订阅链接</button></details>';
+    } else {
+      content.innerHTML = '<p>修改后，所有跟随统一设置的用户刷新订阅即可更新，订阅链接不变。默认 UDP 443。</p>' +
+        '<p class="muted">这里修改下发给客户端的配置。填写新端口前，请确认目标服务器已监听并放行该 UDP 端口。</p>' +
+        '<div class="notice">本机端口跳跃：UDP ' + data.hopping.ports + ' → ' + data.hopping.target + '（30 秒间隔）<p><button type="button" data-hop-toggle="' + (data.hopping.enabled ? 'disable' : 'enable') + '">' + (data.hopping.enabled ? '关闭端口跳跃' : '开启端口跳跃') + '</button></p>仅作用于本机对应地址和入口的节点，切换后请刷新订阅。</div>' +
+        '<form data-sub-defaults-form><div data-sub-node-rows>' + data.nodes.map(subscriptionNodeRow).join('') + '</div>' +
+        '<div class="credential-actions"><button class="secondary" type="button" data-sub-action="add">添加节点</button><button type="submit">保存统一节点配置</button></div></form>';
+    }
+  } catch (error) {
+    if (subscriptionRequest === request) content.textContent = error.name === 'AbortError' ? '请求超时，请关闭后重试' : error.message;
+  } finally { window.clearTimeout(timeout); }
+}
+document.addEventListener('click', async function(event) {
+  const hop = event.target.closest('[data-hop-toggle]');
+  if (hop) {
+    hop.disabled = true;
+    try {
+      await postJson('/port-hopping/' + hop.dataset.hopToggle, {body: new URLSearchParams({csrf: subscriptionCsrf()}).toString(), headers: {'Content-Type': 'application/x-www-form-urlencoded'}});
+      notify('端口跳跃已更新，请刷新订阅', false); await loadSubscription('');
+    } catch (error) { notify(error.message || '设置失败', true); }
+    finally { hop.disabled = false; }
+    return;
+  }
+  const defaults = event.target.closest('[data-subscription-defaults]');
+  if (defaults) { loadSubscription(''); return; }
+  const open = event.target.closest('[data-subscription-user-id]');
+  if (open) { loadSubscription(open.dataset.subscriptionUserId); return; }
+  const remove = event.target.closest('[data-sub-node-remove]');
+  if (remove) { remove.closest('.subscription-node-row').remove(); return; }
+  const button = event.target.closest('[data-sub-action]');
+  if (!button) return;
+  const action = button.dataset.subAction;
+  const content = button.closest('[data-subscription-content]');
+  const userId = content.dataset.userId;
+  const id = content.dataset.subscriptionId;
+  if (action === 'add') {
+    content.querySelector('[data-sub-node-rows]').insertAdjacentHTML('beforeend', subscriptionNodeRow({port:443})); return;
+  }
+  if (action === 'copy') {
+    const copied = await copyText(content.querySelector('.subscription-url').value);
+    notify(copied ? '订阅链接已复制' : '请手动复制订阅链接', !copied); return;
+  }
+  if (action === 'regenerate' && !window.confirm('旧订阅链接和节点密码都将失效，并断开该用户的旧连接，确认重置？')) return;
+  button.disabled = true;
+  try {
+    let path = '/subscriptions/' + id + '/' + action;
+    const form = new URLSearchParams({csrf: subscriptionCsrf()});
+    if (action === 'create') { path = '/subscriptions'; form.set('user_id', userId); }
+    if (action === 'inherit') { path = '/subscriptions/' + id + '/nodes'; form.set('nodes', '[]'); }
+    await postJson(path, {body: form.toString(), headers: {'Content-Type': 'application/x-www-form-urlencoded'}});
+    notify('订阅已更新', false); await loadSubscription(userId);
+  } catch (error) { notify(error.message || '操作失败', true); }
+  finally { button.disabled = false; }
+});
+document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-sub-defaults-form]');
+  if (!form) return;
+  event.preventDefault();
+  const nodes = Array.from(form.querySelectorAll('.subscription-node-row')).map(function(row) {
+    return {label: row.querySelector('[data-sub-node-label]').value.trim(), host: row.querySelector('[data-sub-node-host]').value.trim(),
+      port: Number(row.querySelector('[data-sub-node-port]').value), pin_sha256: row.querySelector('[data-sub-node-pin]').value.trim(),
+      enabled: row.querySelector('[data-sub-node-enabled]').checked};
+  });
+  const button = form.querySelector('[type=submit]'); button.disabled = true;
+  try {
+    await postJson('/subscriptions/defaults', {body: new URLSearchParams({csrf: subscriptionCsrf(), nodes: JSON.stringify(nodes)}).toString(),
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'}});
+    const portDisplay = document.querySelector('[data-subscription-port]');
+    if (portDisplay) portDisplay.textContent = 'UDP ' + Array.from(new Set(nodes.filter(n => n.enabled).map(n => String(n.port)))).join(' / ');
+    notify('已保存，用户刷新原订阅链接即可获取最新配置', false);
+  } catch (error) { notify(error.message || '保存失败', true); }
+  finally { button.disabled = false; }
+});
+
+
+const premiumUserSelect = document.querySelector('[data-user-type-select]');
+if (premiumUserSelect) {
+  const selectedGroup = new URLSearchParams(window.location.search).get('type');
+  if (selectedGroup === 'premium') premiumUserSelect.value = '1';
+  function applyUserPlan() {
+    const form = premiumUserSelect.closest('form');
+    if (premiumUserSelect.value === '1') {
+      form.elements.namedItem('device_limit').value = '100';
+      form.elements.namedItem('traffic_limit_gb').value = '250';
+    }
+  }
+  premiumUserSelect.addEventListener('change', applyUserPlan);
+  applyUserPlan();
+}
+const lineForm = document.querySelector('[data-node-enrollment-form]');
+if (lineForm) {
+  if (new URLSearchParams(window.location.search).get('type') === 'premium') lineForm.elements.namedItem('tier').value = 'premium';
+  function fillRegionDefaults() {
+    const region = lineForm.elements.namedItem('region').value;
+    const premium = lineForm.elements.namedItem('tier').value === 'premium';
+    const names = {hk:'香港', us:'美国', jp:'日本', sg:'新加坡'};
+    if (premium && names[region]) {
+      lineForm.elements.namedItem('name').value = '私家车-' + names[region] + '-专线';
+      if (lineForm.dataset.nodeBaseDomain) lineForm.elements.namedItem('subscription_host').value = region + '.' + lineForm.dataset.nodeBaseDomain;
+    }
+    lineForm.elements.namedItem('region').required = premium;
+  }
+  fillRegionDefaults();
+  lineForm.elements.namedItem('region').addEventListener('change', fillRegionDefaults);
+  lineForm.elements.namedItem('tier').addEventListener('change', fillRegionDefaults);
 }
 """
