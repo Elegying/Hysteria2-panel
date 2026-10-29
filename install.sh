@@ -3882,6 +3882,7 @@ secure_acme_runtime_directories() {
 
 acquire_maintenance_lock() {
   local hy2panel_gid="" lock_metadata lock_status runtime_metadata
+  local -a lock_options=(-n)
   if id -u hy2panel >/dev/null 2>&1; then
     hy2panel_gid="$(id -g hy2panel)" || fail "无法核验面板维护锁组；安装已停止"
   fi
@@ -3913,7 +3914,12 @@ acquire_maintenance_lock() {
   fi
   # Let flock supervise the installer and close its lock descriptor in the
   # child.  A SIGKILL can then never strand the lock in an inherited process.
-  if flock -n -E 75 --close "${MAINTENANCE_LOCK_FILE}" \
+  # The worker can start while registration is still flushing durable state.
+  # Wait for that short transaction instead of failing its first attempt.
+  if (( ${COMPLETE_NODE_ONBOARDING:-0} == 1 )); then
+    lock_options=(-w 30)
+  fi
+  if flock "${lock_options[@]}" -E 75 --close "${MAINTENANCE_LOCK_FILE}" \
     /bin/bash "$0" --maintenance-lock-held "${ORIGINAL_ARGS[@]}"; then
     lock_status=0
   else

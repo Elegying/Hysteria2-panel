@@ -1,6 +1,7 @@
 """Run the generated one-click installer against clean, isolated systemd nodes.
 
-Linux Docker required. No host service or firewall is modified. Only fixture
+Ephemeral Linux CI runner required. No host service or firewall is modified.
+The container shares host net.core sysctls; CI restores these after the test. Only fixture
 asset URLs and the signature trust anchor change: the installer remains signed
 by a real disposable Cosign key. Production OIDC is checked in release CI.
 """
@@ -104,6 +105,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                         '--name', name, '--hostname', name, '--network', network, '--ip', ip,
                         '--tmpfs', '/run', '--tmpfs', '/run/lock',
                         '-v', '/sys/fs/cgroup:/sys/fs/cgroup:rw',
+                        '-v', '/proc/sys/net/core:/proc/sys/net/core:rw',
                         '-v', str(ROOT)+':/workspace:ro', '-v', str(case)+':/fixture',
                         '--add-host', 'panel.e2e.test:11.250.85.2',
                         '--add-host', 'local.e2e.test:11.250.85.2',
@@ -155,6 +157,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                     containers.remove(name)
         except Exception:
             for name in containers:
+                subprocess.run(['docker','exec',name,'sysctl', 'net.core.rmem_max',
+                    'net.core.wmem_max', 'net.core.default_qdisc', 'net.ipv4.tcp_available_congestion_control'])
                 subprocess.run(['docker','exec',name,'journalctl','--no-pager','-n','150',
                     '-u','hysteria2-panel-node-onboarding.service',
                     '-u','hysteria2-panel-node-auth.service',
