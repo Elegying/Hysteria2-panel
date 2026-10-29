@@ -70,7 +70,7 @@ class OnboardingCompletionTests(unittest.TestCase):
             root = Path(directory)
             log = root / 'calls'
             for name, body in {
-                'id': 'echo 0', 'uname': 'echo x86_64',
+                'id': 'echo 0', 'uname': 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi',
                 'mktemp': 'exec /usr/bin/mktemp -d', 'rm': 'exec /bin/rm "$@"',
                 'apt-get': 'echo apt >> "$AUDIT_LOG"; if [ "$1" = install ]; then printf \'#!/bin/sh\\necho curl >> "$AUDIT_LOG"\\nexit 42\\n\' > "$BIN/curl"; /bin/chmod 755 "$BIN/curl"; fi',
                 'sha256sum': 'exit 0',
@@ -78,7 +78,7 @@ class OnboardingCompletionTests(unittest.TestCase):
                 path = root / name
                 path.write_text('#!/bin/sh\n' + body + '\n')
                 path.chmod(0o755)
-            result = subprocess.run(['/bin/bash', '-c', service._deployment_command('a'*40)],
+            result = subprocess.run(['/bin/bash', '-c', service._deployment_command('a'*40).replace('/run/systemd/system', directory)],
                 env={**os.environ, 'PATH': directory, 'BIN': directory, 'AUDIT_LOG': str(log)},
                 capture_output=True, text=True)
             self.assertEqual(42, result.returncode, result.stderr)

@@ -747,6 +747,12 @@ class NodeEnrollmentService:
         return """(
 set -euo pipefail
 if [ "$(id -u)" -ne 0 ]; then echo '请切换到 root 后重新粘贴此代码' >&2; exit 1; fi
+if [ "$(uname -s)" != Linux ] || [ ! -d /run/systemd/system ]; then
+  echo '对接需要使用 systemd 的 Linux 服务器' >&2; exit 1
+fi
+if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
+  echo '完整面板服务器不能作为对接节点' >&2; exit 1
+fi
 join_tmp="$(mktemp -d -t hy2panel-node-join.XXXXXXXX)"
 trap 'rm -rf -- "$join_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in
@@ -1149,6 +1155,12 @@ class DataPlaneBootstrapService:
         return """(
 set -euo pipefail
 if [ "$(id -u)" -ne 0 ]; then echo '请切换到 root 后重新粘贴此代码' >&2; exit 1; fi
+if [ "$(uname -s)" != Linux ] || [ ! -d /run/systemd/system ]; then
+  echo '对接需要使用 systemd 的 Linux 服务器' >&2; exit 1
+fi
+if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
+  echo '完整面板服务器不能作为对接节点' >&2; exit 1
+fi
 bootstrap_tmp="$(mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
 trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in

@@ -118,7 +118,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 openssl
                     'python3 /workspace/tests/onboarding_e2e_panel.py serve > /fixture/panel.log 2>&1')
                 wait(lambda: (case/'join.sh').exists())
                 with (case/'install.log').open('w') as log:
-                    run('docker', 'exec', node, 'bash', '/fixture/join.sh', stdout=log, stderr=subprocess.STDOUT, timeout=900)
+                    process = subprocess.Popen(['docker', 'exec', node, 'bash', '/fixture/join.sh'],
+                        stdout=log, stderr=subprocess.STDOUT)
+                    try:
+                        deadline = time.monotonic() + 600
+                        while process.poll() is None:
+                            failed = subprocess.run(['docker','exec',node,'systemctl','is-failed','--quiet',
+                                'hysteria2-panel-node-onboarding.service'], capture_output=True)
+                            if failed.returncode == 0:
+                                raise RuntimeError('first onboarding attempt failed; refusing to hide it behind timer retries')
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError('generated join command exceeded acceptance deadline')
+                            time.sleep(2)
+                        if process.returncode:
+                            raise RuntimeError('generated join command failed')
+                    finally:
+                        if process.poll() is None:
+                            process.terminate()
+                            process.wait(timeout=10)
                 wait(lambda: subprocess.run(['docker','exec',panel,'python3','/workspace/tests/onboarding_e2e_panel.py','assert'],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0)
                 run('docker','exec',panel,'python3','/workspace/tests/onboarding_e2e_probe.py')
