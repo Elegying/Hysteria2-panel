@@ -4,6 +4,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import secrets
@@ -1385,8 +1386,26 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
                     **({"server_name": node["subscription_host"]} if node.get("tier") == "premium" else {}),
                     **({"port_hopping": True} if node.get("port_hopping") else {}),
                 )
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Node %s canary failed (%s)", node["node_id"], type(exc).__name__)
                 self._reject()
+            # The control loop starts alongside the proxy. Let its first signed
+            # snapshot/accounting upload arrive before atomically publishing.
+            from .distributed import MAX_STATE_AGE_SECONDS
+            deadline = time.monotonic() + 30
+            while True:
+                current = self.database.get_node_for_heartbeat(node["node_id"])
+                fresh_after = int(self.clock()) - MAX_STATE_AGE_SECONDS
+                if current and all(
+                    current.get(field) is not None and current[field] >= fresh_after
+                    for field in ("last_heartbeat_at", "last_snapshot_at", "last_traffic_ack_at")
+                ):
+                    break
+                if time.monotonic() >= deadline:
+                    logging.getLogger(__name__).warning("Node %s control/accounting readiness timed out", node["node_id"])
+                    self._reject()
+                time.sleep(0.25)
+
         acknowledged_at = int(self.clock())
         acknowledged = self.database.acknowledge_data_plane_bootstrap(
             node["node_id"],

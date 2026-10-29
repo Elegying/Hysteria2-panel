@@ -1257,9 +1257,15 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
             connection.execute("UPDATE nodes SET last_heartbeat_at=?, last_snapshot_at=?, last_traffic_ack_at=? WHERE node_id=?",
                 (self.now[0], self.now[0], self.now[0], self.node_id))
         self.service.canary_runner = lambda **kwargs: calls.append(kwargs)
-        result = self.service.ack(
-            self._ack_payload(value=31), remote_ip=self.remote_ip
-        )
+        fresh = self.db.get_node_for_heartbeat(self.node_id)
+        pending = dict(fresh, last_snapshot_at=None)
+        with mock.patch.object(self.db, "get_node_for_heartbeat", side_effect=[fresh, pending, fresh]), \
+             mock.patch("hy2panel.nodes.time.sleep") as sleep:
+            result = self.service.ack(
+                self._ack_payload(value=31), remote_ip=self.remote_ip
+            )
+        sleep.assert_called_once_with(0.25)
+        self.assertEqual("dns_admitted", self.db.get_node_for_heartbeat(self.node_id)["data_plane_state"])
         self.assertEqual(
             {"nodeId": self.node_id, "status": "DIRECT_CANARY_PASSED"}, result
         )
