@@ -133,6 +133,7 @@ os.execv('/usr/sbin/sysctl.real', ['sysctl', *args])
                     run('docker', 'run', '-d', '--privileged', '--cgroupns=host',
                         '--name', name, '--hostname', name, '--network', network, '--ip', ip,
                         '--tmpfs', '/run', '--tmpfs', '/run/lock',
+                        *(['--memory', '512m', '--memory-swap', '512m', '--tmpfs', '/tmp:size=256m'] if name == node else []),
                         '-v', '/sys/fs/cgroup:/sys/fs/cgroup:rw',
                         '-v', str(ROOT)+':/workspace:ro', '-v', str(case)+':/fixture',
                         '--add-host', 'panel.e2e.test:11.250.85.2',

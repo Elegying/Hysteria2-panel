@@ -17,8 +17,7 @@ sys.path.insert(0, '/workspace')
 from hysteria2_panel import Database, PanelApplication, PanelHandler, make_panel_server
 from hy2panel.distributed import DistributedControlService
 from hy2panel.nodes import (NodeEnrollmentService, NodeHeartbeatService,
-    DataPlaneBootstrapService, HysteriaIdentityProvider, HysteriaCanaryRunner,
-    NodeDnsAdmissionReconciler)
+    DataPlaneBootstrapService, HysteriaIdentityProvider, HysteriaCanaryRunner)
 from hy2panel.version import PANEL_VERSION
 
 ROOT = Path('/fixture')
@@ -57,7 +56,7 @@ def main():
     subscription = db.ensure_subscription(user['id'])
     normal_user = db.create_proxy_user('other-tier', user_type=int(tier != 'premium'))
     identity = HysteriaIdentityProvider(ROOT/'tls.crt', ROOT/'tls.key', lambda: 'full')
-    canary = HysteriaCanaryRunner('node.e2e.test', hysteria_path='/fixture/assets/hysteria-linux-amd64')
+    canary = HysteriaCanaryRunner('local.e2e.test', hysteria_path='/fixture/assets/hysteria-linux-amd64')
     canary.TRACE_URLS = {4: URL+'/cdn-cgi/trace', 6: URL+'/cdn-cgi/trace'}
     def local_state():
         now = int(time.time())
@@ -105,10 +104,8 @@ def main():
         'hopping': hopping, 'subscription': subscription['token'],
         'password': user['token'], 'wrong_password': normal_user['token']}))
     (ROOT/'case.json').chmod(0o600)
-    reconciler = NodeDnsAdmissionReconciler(db, 'local.e2e.test')
     def reconcile():
         while True:
-            reconciler.reconcile()
             # The fixture panel has no local proxy; its empty local collector is
             # fresh. Remote accounting still comes only from the real agent.
             with app.usage_manager._user_usage_lock:
