@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.51"
+PANEL_VERSION="0.39.52"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -35,7 +35,7 @@ OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="53fb144bdc70f9c81a553571a9e75e155b585ea1fbe1ef511f640c7c15f7eaa8"
+HY2PANEL_VERSION_SHA256="b221f33e29a9a7d3f345055a585f4759a99bf2de5487d843a1edea9e2c8881b8"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
 HY2PANEL_WEB_ASSETS_SHA256="838f49620a5135212af95f642063e71a54ea516374d618bf2c5393b818576b08"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
@@ -49,11 +49,11 @@ HY2PANEL_DISTRIBUTED_SHA256="63433d694dd2128b659c769681e0f541f1976ae8a8f6265fabc
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="1719935aced8e59bfdc4e9843bb05be29e00146855e263613cc83adf72bf039e"
 HY2PANEL_MOBILE_API_SHA256="720b0bb3f70a49b52aa89060fb57c893e734f704f4ef7b7254667e2c4403069f"
-NODE_AGENT_SHA256="9f01bbe8ba353987d2f17552266a82d45d06b96ddc64d5366e62a48f9d587da8"
+NODE_AGENT_SHA256="d00727a8677cfe4bc81757ebace5ee0890dd479773e96c297c89fc937538341b"
 HYSTERIA_VERSION="2.12.1"
-HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
-HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
-HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"
+HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v1/hysteria-linux"
+HYSTERIA_SHA_AMD64="c06a15759310c7d5b822332430a0158c727d4bcc546d0d3f052d384b90409e47"
+HYSTERIA_SHA_ARM64="b085147285bdb7a7e7e1b00a91f848ae9d2ac3e459e073522ee7a4c007745424"
 COSIGN_VERSION="3.1.3"
 COSIGN_SHA_AMD64="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
 COSIGN_SHA_ARM64="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
@@ -3254,6 +3254,9 @@ User=root
 Group=root
 EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env
 Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
+Environment=HY2_ADAPTIVE_EGRESS_STATE_DIR=/var/lib/hysteria2-panel-egress-node-main
+StateDirectory=hysteria2-panel-egress-node-main
+StateDirectoryMode=0700
 RuntimeDirectory=hysteria2-panel-node-main
 RuntimeDirectoryMode=0700
 ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-main.yaml --runtime-config /run/hysteria2-panel-node-main/config.yaml
@@ -3294,6 +3297,9 @@ User=root
 Group=root
 EnvironmentFile=${NODE_AGENT_CONFIG_DIR}/stats.env
 Environment=HYSTERIA_DISABLE_UPDATE_CHECK=1
+Environment=HY2_ADAPTIVE_EGRESS_STATE_DIR=/var/lib/hysteria2-panel-egress-node-udp443
+StateDirectory=hysteria2-panel-egress-node-udp443
+StateDirectoryMode=0700
 RuntimeDirectory=hysteria2-panel-node-udp443
 RuntimeDirectoryMode=0700
 ExecStart=${PYTHON_BIN} ${NODE_AGENT_OPT_DIR}/node_agent.py run-hysteria --template ${NODE_AGENT_CONFIG_DIR}/hysteria-udp443.yaml --runtime-config /run/hysteria2-panel-node-udp443/config.yaml
@@ -6767,37 +6773,11 @@ ensure_sysctl_directory() {
 }
 
 detect_direct_outbound_mode() {
-  # UDP connect only asks the kernel for a route; it sends no probe packets.
-  # Keep Happy Eyeballs on uncertain / dual-stack hosts. Never change host IPv6.
-  "${PYTHON_BIN}" - <<'PY'
-import errno
-import socket
-import sys
-
-def route_available(family, address):
-    try:
-        with socket.socket(family, socket.SOCK_DGRAM) as connection:
-            connection.connect((address, 9))
-        return True
-    except OSError as error:
-        if error.errno in {
-            errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EADDRNOTAVAIL,
-            errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT,
-        }:
-            return False
-        return None
-
-ipv6 = [route_available(socket.AF_INET6, address) for address in (
-    "2606:4700:4700::1111", "2001:4860:4860::8888",
-)]
-mode = "auto"
-if ipv6 == [False, False] and route_available(socket.AF_INET, "1.1.1.1") is True:
-    mode = "4"
-    print("未检测到 IPv6 出站路由：使用 IPv4 出站。IPv6 字面地址仍需双栈出口或客户端 IPv4 回退。", file=sys.stderr)
-else:
-    print("保留自动双栈出站；本地路由检测不代表 IPv6 互联网连通性已验证。", file=sys.stderr)
-print(mode)
-PY
+  # The managed core verifies actual TCP/UDP responses and changes only new
+  # flows. A local route lookup must never permanently pin a node to IPv4.
+  "${PYTHON_BIN}" - <<'PYCODE'
+print("auto")
+PYCODE
 }
 
 optimize_network_stack() {
@@ -7357,7 +7337,7 @@ if stage_verified_installed_binary \
   echo "复用已安装且哈希匹配的 root-owned Hysteria ${HYSTERIA_VERSION}"
 else
   download_file \
-    "https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/${HYSTERIA_ASSET}" \
+    "${HYSTERIA_DATA_PLANE_URL%/hysteria-linux}/${HYSTERIA_ASSET}" \
     "${TMP_DIR}/hysteria"
   printf '%s  %s\n' "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria" | sha256sum --check --status \
     || fail "Hysteria SHA-256 校验失败"
@@ -7910,6 +7890,9 @@ ${SECONDARY_SERVER_WANTS}
 Type=simple
 User=hy2server
 Group=hy2tls
+Environment=HY2_ADAPTIVE_EGRESS_STATE_DIR=/var/lib/hysteria2-panel-egress-primary
+StateDirectory=hysteria2-panel-egress-primary
+StateDirectoryMode=0700
 ExecStart=/opt/hysteria2-panel/bin/hysteria server -c /etc/hysteria2-panel/hysteria.yaml
 Nice=-5
 Restart=on-failure
@@ -7950,6 +7933,9 @@ Wants=hysteria2-panel-tcp-probe-443.service
 Type=simple
 User=hy2server
 Group=hy2tls
+Environment=HY2_ADAPTIVE_EGRESS_STATE_DIR=/var/lib/hysteria2-panel-egress-secondary
+StateDirectory=hysteria2-panel-egress-secondary
+StateDirectoryMode=0700
 ExecStart=/opt/hysteria2-panel/bin/hysteria server -c /etc/hysteria2-panel/hysteria-443.yaml
 Nice=-5
 Restart=on-failure

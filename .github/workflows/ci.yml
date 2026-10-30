@@ -11,6 +11,35 @@ permissions:
   contents: read
 
 jobs:
+  adaptive-core:
+    name: adaptive-core (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: Build and verify managed data plane
+        env:
+          CORE_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 native/adaptive_egress/build.py --go "$(command -v go)" \
+            --arch "$CORE_ARCH" --output "$RUNNER_TEMP/hysteria-linux-$CORE_ARCH"
+          python3 - <<'PYCODE'
+          import hashlib, os, pathlib, re
+          arch = os.environ['CORE_ARCH']
+          source = pathlib.Path('install.sh').read_text()
+          expected = re.search(r'HYSTERIA_SHA_' + arch.upper() + r'="([a-f0-9]{64})"', source)[1]
+          binary = pathlib.Path(os.environ['RUNNER_TEMP']) / ('hysteria-linux-' + arch)
+          assert hashlib.sha256(binary.read_bytes()).hexdigest() == expected, 'managed core differs from installer pin'
+          PYCODE
+
   release-ref-is-tag:
     name: release-ref-is-tag
     if: github.event_name == 'push' && startsWith(github.ref_name, 'v')

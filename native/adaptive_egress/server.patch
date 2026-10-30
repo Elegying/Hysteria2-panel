@@ -1,0 +1,58 @@
+diff --git a/extras/outbounds/dns_system.go b/extras/outbounds/dns_system.go
+index 09abac9..248b0f9 100644
+--- a/extras/outbounds/dns_system.go
++++ b/extras/outbounds/dns_system.go
+@@ -20,7 +20,7 @@ func NewSystemResolver(next PluggableOutbound) PluggableOutbound {
+ }
+ 
+ func (r *systemResolver) resolve(reqAddr *AddrEx) {
+-	ips, err := net.LookupIP(reqAddr.Host)
++	ips, err := adaptiveServerLookup(reqAddr.Host)
+ 	if err != nil {
+ 		reqAddr.ResolveInfo = &ResolveInfo{Err: err}
+ 		return
+diff --git a/extras/outbounds/ob_direct.go b/extras/outbounds/ob_direct.go
+index d6a27be..9bf703b 100644
+--- a/extras/outbounds/ob_direct.go
++++ b/extras/outbounds/ob_direct.go
+@@ -95,6 +95,7 @@ func (e resolveError) Unwrap() error {
+ }
+ 
+ func NewDirectOutboundWithOptions(opts DirectOutboundOptions) (PluggableOutbound, error) {
++	registerAdaptiveOutbound(opts.Mode, opts.DeviceName, opts.BindIP4, opts.BindIP6)
+ 	dialer4 := &net.Dialer{
+ 		Timeout: defaultDialerTimeout,
+ 	}
+@@ -148,6 +149,7 @@ func NewDirectOutboundWithOptions(opts DirectOutboundOptions) (PluggableOutbound
+ // NewDirectOutboundSimple creates a new directOutbound with the given mode,
+ // without binding to a specific device. Works on all platforms.
+ func NewDirectOutboundSimple(mode DirectOutboundMode) PluggableOutbound {
++	registerAdaptiveOutbound(mode, "", nil, nil)
+ 	d := &net.Dialer{
+ 		Timeout: defaultDialerTimeout,
+ 	}
+@@ -182,7 +184,7 @@ func NewDirectOutboundBindToDevice(mode DirectOutboundMode, deviceName string) (
+ // resolve is our built-in DNS resolver for handling the case when
+ // AddrEx.ResolveInfo is nil.
+ func (d *directOutbound) resolve(reqAddr *AddrEx) {
+-	ips, err := net.LookupIP(reqAddr.Host)
++	ips, err := adaptiveServerLookup(reqAddr.Host)
+ 	if err != nil {
+ 		reqAddr.ResolveInfo = &ResolveInfo{Err: err}
+ 		return
+@@ -196,6 +198,7 @@ func (d *directOutbound) resolve(reqAddr *AddrEx) {
+ }
+ 
+ func (d *directOutbound) TCP(reqAddr *AddrEx) (net.Conn, error) {
++	d = d.adaptiveSnapshot()
+ 	if reqAddr.ResolveInfo == nil {
+ 		// AddrEx.ResolveInfo is nil (no resolver in the pipeline),
+ 		// we need to resolve the address ourselves.
+@@ -407,6 +410,7 @@ func (d *directOutbound) CheckUDP(reqAddr *AddrEx) error {
+ }
+ 
+ func (d *directOutbound) UDP(reqAddr *AddrEx) (UDPConn, error) {
++	d = d.adaptiveSnapshot()
+ 	if d.BindIP4 == nil && d.BindIP6 == nil {
+ 		// No bind address specified, use default dual stack implementation
+ 		c, err := net.ListenUDP("udp", nil)
