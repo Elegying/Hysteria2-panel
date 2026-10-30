@@ -5,3 +5,5 @@
 
 # Preserve the vendored upstream formatting; its blank lines contain tabs.
 qrcodegen.py -whitespace
+# Unified diff context prefixes are patch syntax, not source indentation.
+native/adaptive_egress/*.patch -whitespace

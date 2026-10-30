@@ -16,7 +16,7 @@ class IPv6EgressTests(unittest.TestCase):
     def detect(self, results):
         source = (ROOT / 'install.sh').read_text()
         section = source.split('detect_direct_outbound_mode() {', 1)[1]
-        code = section.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+        code = section.split("<<'PYCODE'\n", 1)[1].split('\nPYCODE\n', 1)[0]
         connection = mock.MagicMock()
         connection.__enter__.return_value = connection
         connection.connect.side_effect = results
@@ -26,9 +26,9 @@ class IPv6EgressTests(unittest.TestCase):
             exec(compile(code, 'installer-egress-detection', 'exec'), {})
         return output.getvalue().strip()
 
-    def test_only_confirmed_ipv4_route_with_missing_ipv6_selects_ipv4(self):
+    def test_installer_does_not_pin_a_family_from_local_route_availability(self):
         missing = OSError(errno.ENETUNREACH, 'no route')
-        self.assertEqual('4', self.detect([missing, missing, None]))
+        self.assertEqual('auto', self.detect([missing, missing, None]))
         self.assertEqual('auto', self.detect([None, None]))
         self.assertEqual('auto', self.detect([missing, None]))
         self.assertEqual('auto', self.detect([missing, missing, missing]))

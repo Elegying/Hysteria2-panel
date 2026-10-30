@@ -688,17 +688,17 @@ restore_upgrade_runtime_state
         for relative_path in tracked:
             self.assertNotIn(b"\r\n", (ROOT / relative_path).read_bytes(), relative_path)
 
-    def test_installer_pins_upstream_release_and_checksums(self):
+    def test_installer_pins_managed_core_and_checksums(self):
         source = INSTALLER.read_text()
 
         self.assertIn('PANEL_VERSION="{}"'.format(PANEL_VERSION), source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
-            'HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"',
+            'HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"',
             source,
         )
         self.assertIn(
-            'HYSTERIA_SHA_ARM64="c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792"',
+            'HYSTERIA_SHA_ARM64="1804ef5397c1e203963684921fcfe4a39fff9d5677afff6290ff50efad17a8f6"',
             source,
         )
         self.assertRegex(source, r'PANEL_SHA256="[0-9a-f]{64}"')
@@ -1414,7 +1414,7 @@ printf 'accepted\\n'
             'stage_verified_installed_binary \\\n  /opt/hysteria2-panel/bin/hysteria "${HYSTERIA_SHA256}" "${TMP_DIR}/hysteria"'
         )
         hysteria_download = source.index(
-            'https://github.com/apernet/hysteria/releases/download', hysteria_reuse
+            '${HYSTERIA_DATA_PLANE_URL%/hysteria-linux}/${HYSTERIA_ASSET}', hysteria_reuse
         )
         cosign_reuse = source.index(
             'stage_verified_installed_binary \\\n  /opt/hysteria2-panel/bin/cosign "${COSIGN_SHA256}" "${TMP_DIR}/cosign"'

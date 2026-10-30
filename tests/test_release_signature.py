@@ -184,6 +184,8 @@ class ReleaseSignatureWorkflowTests(unittest.TestCase):
             "test (3.8)",
             "test (3.12)",
             "test (3.13)",
+            "adaptive-core (amd64)",
+            "adaptive-core (arm64)",
             "browser-smoke",
             "static-analysis",
             "managed-firewall-integration",

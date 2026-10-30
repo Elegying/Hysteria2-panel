@@ -107,6 +107,8 @@ jobs:
             --required "test (3.12)" \
             --required "test (3.13)" \
             --required "test (3.14)" \
+            --required "adaptive-core (amd64)" \
+            --required "adaptive-core (arm64)" \
             --required "browser-smoke" \
             --required mobile-tests \
             --required static-analysis \
