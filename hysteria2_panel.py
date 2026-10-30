@@ -8357,6 +8357,10 @@ class PanelHandler(JsonHandler):
             if route == "domain-usage":
                 self._mobile_response(200, domain_usage_payload(self.app))
                 return
+            if route == "user-subscription":
+                with self.app.user_action_lock:
+                    self._mobile_response(200, self._mobile_subscription_payload(int(parameters[0])))
+                return
             if route == "user-traffic-history":
                 self._mobile_response(200, self.app.database.user_traffic_history(int(parameters[0])))
                 return
@@ -8480,11 +8484,52 @@ class PanelHandler(JsonHandler):
         except (TypeError, ValueError) as exc:
             self._mobile_response(400, error_code="USER_INVALID", message=str(exc))
 
+    def _mobile_subscription_payload(self, user_id):
+        user = self.app.database.get_proxy_user(user_id)
+        sub = self.app.database.get_subscription(user_id=user_id)
+        result = {"exists": sub is not None, "generation": user["generation"],
+                  "userType": user["user_type"], "expiresAt": user["expires_at"]}
+        token, nodes = None, []
+        if sub is not None:
+            token = self.app.database.recover_subscription_token(sub["id"])
+            nodes = self.app.database.list_subscription_nodes(sub["id"])
+            result.update({"enabled": bool(sub["enabled"]),
+                           "url": self._subscription_url(token) if token else None,
+                           "usesDefaults": not nodes,
+                           "premiumReadyCount": len(self.app.database.premium_subscription_nodes())
+                               if user["user_type"] == 1 else 0})
+        result["revision"] = hashlib.sha256(json.dumps(
+            [sub, nodes, token, user["generation"]], sort_keys=True).encode()).hexdigest()
+        return result
+
     def _handle_mobile_user_action(self, session, user_id, action, payload):
         try:
             generation = json_integer(payload.get("generation", ""))
             with self.app.user_action_lock:
                 user = self.app.database.get_proxy_user(user_id)
+                if action.startswith("subscription-"):
+                    current = self._mobile_subscription_payload(user_id)
+                    if user["generation"] != generation or payload.get("revision") != current["revision"]:
+                        raise ConflictError
+                    subscription = self.app.database.get_subscription(user_id=user_id)
+                    if action == "subscription-create":
+                        if subscription is not None:
+                            raise ConflictError
+                        self.app.database.create_subscription(user_id)
+                    else:
+                        if subscription is None:
+                            raise KeyError("subscription not found")
+                        if action in {"subscription-enable", "subscription-disable"}:
+                            self.app.database.set_subscription_enabled(
+                                subscription["id"], action == "subscription-enable")
+                        elif action == "subscription-inherit":
+                            self.app.database.set_subscription_nodes(subscription["id"], [])
+                        elif action == "subscription-regenerate":
+                            rotated = self.app.database.regenerate_subscription_token(subscription["id"])
+                            self._kick_safely(rotated["user_name"])
+                    self._audit_safely(self._mobile_actor(session), action, str(user_id))
+                    self._mobile_response(200, self._mobile_subscription_payload(user_id))
+                    return
                 if action in {"enable", "disable"}:
                     enabled = action == "enable"
                     self.app.database.set_proxy_user_enabled(

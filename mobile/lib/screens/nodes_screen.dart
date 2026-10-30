@@ -271,13 +271,21 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   ('节点 ID', node['nodeId']),
                   (
                     '公网 IP',
-                    node['observedIp'].toString().isNotEmpty
+                    node['observedIp']?.toString().isNotEmpty == true
                         ? node['observedIp']
                         : node['expectedIp'],
                   ),
                   ('主机名', node['hostname']),
                   ('Agent 版本', node['agentVersion']),
-                  ('平台', '${node['platform']} ${node['architecture']}'),
+                  (
+                    '平台',
+                    [node['platform'], node['architecture']]
+                        .where(
+                          (value) =>
+                              value != null && value.toString().isNotEmpty,
+                        )
+                        .join(' '),
+                  ),
                   ('控制协议', node['policyState']),
                   ('数据面', node['dataPlaneState']),
                   ('在线设备', node['onlineDevices'] ?? '—'),
@@ -317,7 +325,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   ),
                   const SizedBox(height: 4),
                   _StatusPill(status: node['status'].toString()),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 12),
                   if (isLocal && node['canEmergencyControl'] == true) ...[
                     GlassControlSurface(
                       child: FilledButton.icon(
@@ -382,6 +390,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   ],
                   ...rows.map(
                     (item) => ListTile(
+                      dense: true,
+                      visualDensity: const VisualDensity(vertical: -2),
                       contentPadding: EdgeInsets.zero,
                       title: Text(item.$1),
                       subtitle: item.$1 == '节点 ID'
@@ -482,7 +492,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
-              toolbarHeight: 64,
+              toolbarHeight: 56,
               pinned: false,
               title: const Text('节点'),
               actions: [
@@ -524,7 +534,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
                   child: GlassCard(
                     child: Padding(
-                      padding: const EdgeInsets.all(16),
+                      padding: const EdgeInsets.all(12),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceAround,
                         children: [
@@ -559,7 +569,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                 )
               else
                 SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                   sliver: GlassSliverList(
                     itemCount: _nodes.length,
                     spacing: 12,
@@ -570,7 +580,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                           onTap: () => _showNode(node),
                           borderRadius: BorderRadius.circular(18),
                           child: Padding(
-                            padding: const EdgeInsets.all(18),
+                            padding: const EdgeInsets.all(12),
                             child: Row(
                               children: [
                                 CircleAvatar(
@@ -605,7 +615,10 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                                       ),
                                       const SizedBox(height: 5),
                                       Text(
-                                        node['observedIp'].toString().isNotEmpty
+                                        node['observedIp']
+                                                    ?.toString()
+                                                    .isNotEmpty ==
+                                                true
                                             ? node['observedIp'].toString()
                                             : node['expectedIp'].toString(),
                                         style: Theme.of(context)
@@ -659,7 +672,7 @@ class _RealtimeTrafficCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => GlassCard(
     child: Padding(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

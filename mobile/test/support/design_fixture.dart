@@ -20,7 +20,23 @@ class DesignFixtureController extends AppController {
   Future<Map<String, dynamic>> getJson(String path) async {
     if (path.endsWith('/capabilities')) {
       return {
-        'features': ['typed-node-enrollment-hopping'],
+        'features': [
+          'typed-node-enrollment-hopping',
+          'mobile-subscription-management',
+        ],
+      };
+    }
+    if (path.endsWith('/subscription')) {
+      return {
+        'exists': true,
+        'enabled': true,
+        'url': 'https://panel.example.com/sub/example',
+        'generation': 0,
+        'revision': 'example',
+        'userType': 0,
+        'expiresAt': null,
+        'usesDefaults': true,
+        'premiumReadyCount': 0,
       };
     }
     if (path.endsWith('/overview')) {

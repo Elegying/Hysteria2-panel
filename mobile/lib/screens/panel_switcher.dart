@@ -4,9 +4,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/app_controller.dart';
 import 'login_screen.dart';
 
-/// The same two slots remain reachable on the home and login screens.
+/// One management account; both user tiers are managed inside this panel.
 class PanelSwitcher extends ConsumerWidget {
   const PanelSwitcher({super.key});
+
+  static Future<void> manage(BuildContext context, WidgetRef ref) =>
+      const PanelSwitcher()._menu(context, ref, 0);
 
   Future<void> _run(
     BuildContext context,
@@ -102,12 +105,12 @@ class PanelSwitcher extends ConsumerWidget {
     final state = ref.watch(appControllerProvider);
     return Row(
       children: [
-        for (var index = 0; index < 2; index++) ...[
+        for (var index = 0; index < 1; index++) ...[
           if (index > 0) const SizedBox(width: 8),
           Expanded(
             child: Semantics(
               selected: state.activePanel == index,
-              hint: '长按管理面板',
+              hint: '管理当前面板登录信息',
               child: OutlinedButton(
                 style: OutlinedButton.styleFrom(
                   minimumSize: const Size(0, 48),
@@ -124,21 +127,7 @@ class PanelSwitcher extends ConsumerWidget {
                     : () => _menu(context, ref, index),
                 onPressed: state.working
                     ? null
-                    : () => _run(context, () async {
-                        if (index == state.activePanel) return;
-                        if (state.panels[index].session == null &&
-                            state.session != null) {
-                          await Navigator.of(context).push<void>(
-                            MaterialPageRoute(
-                              builder: (_) => LoginScreen(panelIndex: index),
-                            ),
-                          );
-                        } else {
-                          await ref
-                              .read(appControllerProvider.notifier)
-                              .selectPanel(index);
-                        }
-                      }),
+                    : () => _menu(context, ref, index),
                 child: Text(
                   state.panels[index].name,
                   style: Theme.of(context).textTheme.labelMedium,

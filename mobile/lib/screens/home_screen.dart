@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
 import '../core/glass.dart';
-import 'panel_switcher.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -424,14 +423,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           slivers: [
             SliverAppBar(
               pinned: false,
-              toolbarHeight: 80,
-              title: const Row(
-                children: [
-                  Text('首页'),
-                  SizedBox(width: 16),
-                  Expanded(child: PanelSwitcher()),
-                ],
-              ),
+              toolbarHeight: 56,
+              title: const Text('首页'),
             ),
             if (_loading && data == null)
               const SliverFillRemaining(
@@ -443,7 +436,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               )
             else if (data != null)
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
                 sliver: SliverList.list(
                   children: [
                     if (_error != null) ...[
@@ -451,11 +444,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       const SizedBox(height: 12),
                     ],
                     _StatusHeader(data: data),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 8),
                     _SummaryGrid(data: data),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 8),
                     _BudgetsCard(data: data),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 8),
                     _SectionCard(
                       title: '服务控制',
                       subtitle: '管理本机服务，或连接新的服务器',
@@ -467,7 +460,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         onEnroll: _showEnrollment,
                       ),
                     ),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 8),
                     _ResourcesCard(
                       data: data,
                       disabled: _acting,
@@ -494,121 +487,51 @@ class _StatusHeader extends StatelessWidget {
     final nodes = Map<String, dynamic>.from(data['nodes'] as Map? ?? {});
     final online = (nodes['online'] as num?) ?? 0;
     final total = (nodes['total'] as num?) ?? 0;
-    final accent = active ? const Color(0xFF8CEAD3) : const Color(0xFFFFBEAD);
-    final scale = MediaQuery.textScalerOf(context).scale(14) / 14;
-    final ring = SizedBox.square(
-      dimension: 106,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          SizedBox.square(
-            dimension: 100,
-            child: CircularProgressIndicator(
-              value: total > 0 ? (online / total).clamp(0, 1) : 0,
-              strokeWidth: 5,
-              strokeCap: StrokeCap.round,
-              color: accent,
-              backgroundColor: Colors.white.withValues(alpha: .12),
-              semanticsLabel: '在线节点 $online / $total',
-            ),
-          ),
-          ExcludeSemantics(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+    return GlassCard(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Text(
-                  '$online',
-                  style: const TextStyle(
-                    fontSize: 32,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
+                Icon(
+                  active ? Icons.check_circle : Icons.error_outline,
+                  color: active
+                      ? Colors.green
+                      : Theme.of(context).colorScheme.error,
+                  size: 20,
                 ),
-                Text(
-                  '/ $total 节点',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFFCCD9E6),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    serviceLabel(data['serviceStatus']),
+                    style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
               ],
             ),
-          ),
-        ],
-      ),
-    );
-    final status = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'NETWORK OVERVIEW',
-          style: TextStyle(
-            color: accent,
-            fontSize: 11,
-            letterSpacing: 1.5,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
-        const SizedBox(height: 16),
-        Text(
-          serviceLabel(data['serviceStatus']),
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 24,
-            fontWeight: FontWeight.w700,
-            height: 1.2,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          data['panelName']?.toString() ?? 'Hysteria 2',
-          style: const TextStyle(color: Color(0xFFCCD9E6), fontSize: 13),
-        ),
-      ],
-    );
-    return GlassSurface(
-      borderRadius: 28,
-      tintColor: const Color(0xD0122F42),
-      child: Padding(
-        padding: const EdgeInsets.all(22),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (scale > 1.3)
-              status
-            else
-              Row(
-                children: [
-                  Expanded(child: status),
-                  const SizedBox(width: 12),
-                  ring,
-                ],
-              ),
-            const SizedBox(height: 22),
-            const Divider(
-              color: Color(0xFF446072),
-              indent: 0,
-              endIndent: 0,
-              height: 1,
+            const SizedBox(height: 4),
+            Text(
+              data['panelName']?.toString() ?? 'Hysteria 2',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
-            const SizedBox(height: 14),
+            const SizedBox(height: 4),
             Wrap(
               spacing: 12,
-              runSpacing: 8,
+              runSpacing: 4,
               children: [
                 Text(
                   '面板 v${data['panelVersion'] ?? '-'}',
-                  style: const TextStyle(
-                    color: Color(0xFFCCD9E6),
-                    fontSize: 12,
-                  ),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                Text(
+                  '节点 $online / $total 在线',
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
                 Text(
                   '最近刷新 ${formatTimestamp(data['refreshedAt'])}',
-                  style: const TextStyle(
-                    color: Color(0xFFCCD9E6),
-                    fontSize: 12,
-                  ),
+                  style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
             ),
@@ -648,7 +571,7 @@ class _SummaryGrid extends StatelessWidget {
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         mainAxisExtent:
-            114 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
+            82 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
       ),
@@ -657,7 +580,7 @@ class _SummaryGrid extends StatelessWidget {
         final item = cards[index];
         return GlassCard(
           child: Padding(
-            padding: const EdgeInsets.all(14),
+            padding: const EdgeInsets.all(10),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.center,
@@ -685,7 +608,7 @@ class _SummaryGrid extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w700,
-                    fontSize: 28,
+                    fontSize: 23,
                     letterSpacing: -.6,
                   ),
                 ),
@@ -713,7 +636,7 @@ class _SectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => GlassCard(
     child: Padding(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

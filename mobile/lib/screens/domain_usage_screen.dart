@@ -103,12 +103,12 @@ class _DomainUsageScreenState extends ConsumerState<DomainUsageScreen> {
                 ],
               ),
               SliverPadding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
                 sliver: SliverList.list(
                   children: [
                     GlassCard(
                       child: Padding(
-                        padding: const EdgeInsets.all(18),
+                        padding: const EdgeInsets.all(12),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [

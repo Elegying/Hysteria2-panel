@@ -30,25 +30,25 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
     splashFactory: InkSparkle.splashFactory,
     textTheme: text.copyWith(
       headlineLarge: text.headlineLarge?.copyWith(
-        fontSize: 34,
+        fontSize: 28,
         fontWeight: FontWeight.w700,
         letterSpacing: -.8,
       ),
       headlineMedium: text.headlineMedium?.copyWith(
-        fontSize: 30,
+        fontSize: 21,
         fontWeight: FontWeight.w700,
         letterSpacing: -.6,
       ),
       titleLarge: text.titleLarge?.copyWith(
-        fontSize: 20,
+        fontSize: 18,
         fontWeight: FontWeight.w600,
         letterSpacing: -.3,
       ),
-      bodyLarge: text.bodyLarge?.copyWith(fontSize: 16, height: 1.4),
-      bodyMedium: text.bodyMedium?.copyWith(height: 1.4),
+      bodyLarge: text.bodyLarge?.copyWith(fontSize: 14, height: 1.3),
+      bodyMedium: text.bodyMedium?.copyWith(height: 1.3),
       bodySmall: text.bodySmall?.copyWith(
         color: scheme.onSurfaceVariant,
-        height: 1.4,
+        height: 1.3,
       ),
     ),
     appBarTheme: AppBarTheme(
@@ -59,7 +59,7 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       backgroundColor: Colors.transparent,
       titleTextStyle: text.titleLarge?.copyWith(
         color: scheme.onSurface,
-        fontSize: 24,
+        fontSize: 21,
         fontWeight: FontWeight.w700,
       ),
       surfaceTintColor: Colors.transparent,
@@ -67,7 +67,8 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: scheme.surface.withValues(alpha: .24),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+      isDense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
       border: fieldBorder,
       enabledBorder: fieldBorder,
       focusedBorder: fieldBorder.copyWith(
@@ -86,16 +87,19 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       style: FilledButton.styleFrom(
         backgroundColor: scheme.primary.withValues(alpha: .16),
         foregroundColor: scheme.onSurface,
-        minimumSize: const Size(48, 50),
+        minimumSize: const Size(48, 44),
         shape: shape,
-        textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        textStyle: text.labelLarge?.copyWith(
+          fontSize: 14,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
         backgroundColor: scheme.primary.withValues(alpha: .16),
         foregroundColor: scheme.onSurface,
-        minimumSize: const Size(48, 50),
+        minimumSize: const Size(48, 44),
         shape: shape,
         side: BorderSide.none,
       ),
@@ -113,12 +117,13 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       endIndent: 16,
     ),
     listTileTheme: const ListTileThemeData(
-      contentPadding: EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+      dense: true,
+      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 0),
     ),
     progressIndicatorTheme: ProgressIndicatorThemeData(
       linearTrackColor: scheme.surfaceContainerHighest,
       borderRadius: BorderRadius.circular(8),
-      linearMinHeight: 6,
+      linearMinHeight: 4,
     ),
     dialogTheme: const DialogThemeData(
       backgroundColor: Colors.transparent,
@@ -138,7 +143,7 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       selectedColor: scheme.primary.withValues(alpha: .25),
       side: BorderSide.none,
       shape: shape,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
     ),
   );
 }

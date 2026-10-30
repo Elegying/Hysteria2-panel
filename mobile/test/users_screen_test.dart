@@ -66,7 +66,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('form-test-user').first);
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ActionChip, '流量'));
+      await tester.tap(find.widgetWithText(OutlinedButton, '流量'));
       await tester.pumpAndSettle();
       expect(find.text('当前面板不支持设置已用流量，请先升级面板'), findsOneWidget);
       expect(find.text('已用流量（GiB）'), findsNothing);
@@ -99,9 +99,9 @@ void main() {
           if (kind == 'edit' || kind == 'traffic') {
             await tester.tap(find.text('form-test-user').first);
             await tester.pumpAndSettle();
-            expect(find.widgetWithText(ActionChip, '扫码'), findsOneWidget);
+            expect(find.widgetWithText(OutlinedButton, '扫码'), findsOneWidget);
             final edit = find.widgetWithText(
-              ActionChip,
+              OutlinedButton,
               kind == 'traffic' ? '流量' : '编辑',
             );
             await tester.ensureVisible(edit);
@@ -195,7 +195,7 @@ void main() {
             findsOneWidget,
           );
           if (kind == 'edit') {
-            expect(find.widgetWithText(ActionChip, '编辑'), findsOneWidget);
+            expect(find.widgetWithText(OutlinedButton, '编辑'), findsOneWidget);
           }
           expect(tester.takeException(), isNull);
           await tester.pumpWidget(const SizedBox.shrink());
@@ -259,7 +259,7 @@ void main() {
         if (editing) {
           await tester.tap(find.text('form-test-user').first);
           await tester.pumpAndSettle();
-          final edit = find.widgetWithText(ActionChip, '编辑');
+          final edit = find.widgetWithText(OutlinedButton, '编辑');
           await tester.ensureVisible(edit);
           await tester.tap(edit);
         } else {

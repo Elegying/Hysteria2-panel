@@ -113,7 +113,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 460),
               child: Form(
@@ -131,15 +131,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         alignment: Alignment.centerLeft,
                         child: SvgPicture.asset(
                           'assets/h2-icon.svg',
-                          width: 64,
-                          height: 64,
+                          width: 48,
+                          height: 48,
                         ),
                       ),
-                      const SizedBox(height: 24),
-                      Text(
-                        '你的网络，\n尽在掌握。',
-                        style: theme.textTheme.headlineLarge,
-                      ),
+                      const SizedBox(height: 16),
+                      Text('统一面板管理', style: theme.textTheme.headlineLarge),
                       const SizedBox(height: 8),
                       Text(
                         'Hysteria2 · 移动管理',
@@ -147,10 +144,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
-                      const SizedBox(height: 28),
+                      const SizedBox(height: 16),
                       GlassCard(
                         child: Padding(
-                          padding: const EdgeInsets.all(20),
+                          padding: const EdgeInsets.all(14),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
@@ -160,7 +157,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                                 '输入服务器地址与管理员账号',
                                 style: theme.textTheme.bodySmall,
                               ),
-                              const SizedBox(height: 22),
+                              const SizedBox(height: 14),
                               GlassControlSurface(
                                 child: TextFormField(
                                   controller: _address,

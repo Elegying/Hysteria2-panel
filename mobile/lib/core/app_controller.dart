@@ -228,7 +228,15 @@ class AppController extends StateNotifier<AppState> {
             )
             .toList();
         if (panels.length != 2) throw const FormatException();
-        final active = document['active'] as int;
+        // Keep the primary login; retire the old dedicated-panel credential.
+        // Persist its revocation before erasing it so offline upgrades retry safely.
+        const active = 0;
+        if (document['active'] != 0 || panels[1].baseUrl.isNotEmpty) {
+          final retired = panels[1].session;
+          panels[1] = emptyPanels[1];
+          await _savePanels(panels, active, revoke: retired);
+          if (!_isCurrent(generation)) return;
+        }
         final session = panels[active].session;
         _dio = session == null ? null : _dioFactory(session.baseUrl);
         state = AppState(

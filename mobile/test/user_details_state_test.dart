@@ -66,6 +66,11 @@ Future<void> openDetails(
     ),
   );
   await tester.pumpAndSettle();
+  await tester.scrollUntilVisible(
+    find.text('details-user'),
+    150,
+    scrollable: find.byType(Scrollable).hitTestable().first,
+  );
   await tester.tap(find.text('details-user').first);
   await tester.pumpAndSettle();
 }
@@ -83,7 +88,7 @@ void main() {
       (tester) async {
         final controller = DetailsController()..enabled = action == '禁用';
         await openDetails(tester, controller);
-        final button = find.widgetWithText(ActionChip, action);
+        final button = find.widgetWithText(OutlinedButton, action);
         await tester.ensureVisible(button);
         await tester.tap(button);
         await tester.pumpAndSettle();
@@ -92,7 +97,7 @@ void main() {
           await tester.pumpAndSettle();
         }
         expect(controller.writes, hasLength(1));
-        expect(tester.widget<ActionChip>(button).onPressed, isNull);
+        expect(tester.widget<OutlinedButton>(button).onPressed, isNull);
         await tester.tap(button);
         await tester.pump();
         expect(controller.writes, hasLength(1));
@@ -103,7 +108,7 @@ void main() {
         // Dismiss the error route before checking the restored operation.
         Navigator.of(tester.element(find.text('操作失败，请重试'))).pop();
         await tester.pumpAndSettle();
-        expect(tester.widget<ActionChip>(button).onPressed, isNotNull);
+        expect(tester.widget<OutlinedButton>(button).onPressed, isNotNull);
         await tester.pumpWidget(const SizedBox.shrink());
       },
     );
@@ -119,20 +124,20 @@ void main() {
     controller.generation = 9;
     await refresh(tester);
     expect(controller.reads, greaterThan(reads));
-    expect(find.widgetWithText(ActionChip, '启用'), findsNothing);
-    await tester.tap(find.widgetWithText(ActionChip, '禁用'));
+    expect(find.widgetWithText(OutlinedButton, '启用'), findsNothing);
+    await tester.tap(find.widgetWithText(OutlinedButton, '禁用'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(TextButton, '取消'));
     await tester.pumpAndSettle();
     expect(controller.writes, isEmpty);
-    await tester.tap(find.widgetWithText(ActionChip, '禁用'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '禁用'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '确认'));
     await tester.pumpAndSettle();
     expect(controller.writes.single['generation'], 9);
     controller.pending.complete({});
     await tester.pumpAndSettle();
-    expect(find.widgetWithText(ActionChip, '禁用'), findsNothing);
+    expect(find.widgetWithText(OutlinedButton, '禁用'), findsNothing);
     expect(find.text('操作已完成'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
   });
@@ -145,7 +150,7 @@ void main() {
       controller.exists = false;
       await refresh(tester);
       expect(find.text('此用户已从面板删除。'), findsOneWidget);
-      expect(find.byType(ActionChip), findsNothing);
+      expect(find.byType(OutlinedButton), findsNothing);
       await tester.tap(find.text('关闭详情'));
       await tester.pumpAndSettle();
       expect(find.text('此用户已从面板删除。'), findsNothing);
@@ -157,7 +162,8 @@ void main() {
   testWidgets('refresh keeps unsaved user form input', (tester) async {
     final controller = DetailsController();
     await openDetails(tester, controller);
-    await tester.tap(find.widgetWithText(ActionChip, '编辑'));
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, '编辑'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '编辑'));
     await tester.pumpAndSettle();
     final field = find.byWidgetPredicate(
       (widget) =>

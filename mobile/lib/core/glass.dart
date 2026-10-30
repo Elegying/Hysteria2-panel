@@ -8,7 +8,7 @@ import 'h2_glass_capture.dart';
 import 'h2_drifting_background.dart';
 
 double appDockExtent(BuildContext context) =>
-    104 + (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(0, 100) * 2;
+    84 + (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(0, 100) * 2;
 
 class RefreshWarning extends StatelessWidget {
   const RefreshWarning({required this.message, super.key});
@@ -99,7 +99,7 @@ class GlassControlSurface extends StatelessWidget {
       blurSigma: 5,
       child: child is TextField || child is TextFormField
           ? Padding(
-              padding: const EdgeInsets.only(top: 10, bottom: 2),
+              padding: const EdgeInsets.only(top: 4, bottom: 2),
               child: Theme(
                 data: Theme.of(context).copyWith(
                   inputDecorationTheme: Theme.of(context).inputDecorationTheme
