@@ -40,6 +40,11 @@ func adaptiveServerState() adaptive.State {
 	return adaptiveExit.Check(context.Background())
 }
 
+func adaptiveLocalName(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	return !strings.Contains(host, ".") || strings.HasSuffix(host, ".local")
+}
+
 func adaptiveServerLookup(host string) ([]net.IP, error) {
 	state := adaptiveServerState()
 	if !state.Verified || !state.IPv4Only {
@@ -55,6 +60,9 @@ func adaptiveServerLookup(host string) ([]net.IP, error) {
 			return nil, err
 		}
 		if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil {
+			if adaptiveLocalName(host) {
+				return nil, &net.DNSError{Err: "IPv4 system resolver unavailable for local name", Name: host, IsTemporary: true}
+			}
 			address = "1.1.1.1:53"
 		}
 		d := &net.Dialer{Timeout: 3 * time.Second}
@@ -68,7 +76,7 @@ func adaptiveServerLookup(host string) ([]net.IP, error) {
 	}
 	// Do not reinterpret NXDOMAIN or export local, single-label names.
 	dnsErr, ok := err.(*net.DNSError)
-	if !ok || dnsErr.IsNotFound || !strings.Contains(host, ".") || strings.HasSuffix(host, ".local") {
+	if !ok || dnsErr.IsNotFound || adaptiveLocalName(host) {
 		return nil, err
 	}
 	fallback := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {

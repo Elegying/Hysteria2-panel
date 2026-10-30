@@ -694,11 +694,11 @@ restore_upgrade_runtime_state
         self.assertIn('PANEL_VERSION="{}"'.format(PANEL_VERSION), source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
-            'HYSTERIA_SHA_AMD64="c06a15759310c7d5b822332430a0158c727d4bcc546d0d3f052d384b90409e47"',
+            'HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"',
             source,
         )
         self.assertIn(
-            'HYSTERIA_SHA_ARM64="b085147285bdb7a7e7e1b00a91f848ae9d2ac3e459e073522ee7a4c007745424"',
+            'HYSTERIA_SHA_ARM64="1804ef5397c1e203963684921fcfe4a39fff9d5677afff6290ff50efad17a8f6"',
             source,
         )
         self.assertRegex(source, r'PANEL_SHA256="[0-9a-f]{64}"')

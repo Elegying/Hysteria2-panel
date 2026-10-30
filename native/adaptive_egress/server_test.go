@@ -62,3 +62,16 @@ func TestPanelAdaptiveLiteralIPv6CannotBecomeIPv4(t *testing.T) {
 		t.Fatal(ips, err)
 	}
 }
+
+func TestPanelAdaptiveLocalDNSNamesNeverUsePublicFallback(t *testing.T) {
+	for _, host := range []string{"printer", "printer.", "printer.local", "PRINTER.LOCAL.", "child.office.Local"} {
+		if !adaptiveLocalName(host) {
+			t.Fatalf("local name eligible for public fallback: %q", host)
+		}
+	}
+	for _, host := range []string{"example.com", "example.com.", "notlocal.example", "local.example"} {
+		if adaptiveLocalName(host) {
+			t.Fatalf("public name classified local: %q", host)
+		}
+	}
+}
