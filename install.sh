@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.50"
+PANEL_VERSION="0.39.51"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,12 +30,12 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="6fa3ee4aabb36e6b999592f3b18501670c36eb5d00ba8a5c97d85454dc3ba08e"
+PANEL_SHA256="30568112d279fea7aa8ae5ab158643878eff1ce2ee6a1f0a526689296729f02e"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="ab6adf6afdd48d9d10b703b6c037a965b44b11dd073d17d0d43c2a9b3e4e7312"
+HY2PANEL_VERSION_SHA256="53fb144bdc70f9c81a553571a9e75e155b585ea1fbe1ef511f640c7c15f7eaa8"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
 HY2PANEL_WEB_ASSETS_SHA256="838f49620a5135212af95f642063e71a54ea516374d618bf2c5393b818576b08"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
@@ -49,7 +49,7 @@ HY2PANEL_DISTRIBUTED_SHA256="63433d694dd2128b659c769681e0f541f1976ae8a8f6265fabc
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="1719935aced8e59bfdc4e9843bb05be29e00146855e263613cc83adf72bf039e"
 HY2PANEL_MOBILE_API_SHA256="720b0bb3f70a49b52aa89060fb57c893e734f704f4ef7b7254667e2c4403069f"
-NODE_AGENT_SHA256="cfba959e6e3d795fc7917e3e1b7df802a20d940ccf5fcc7444ae366842d1f4db"
+NODE_AGENT_SHA256="9f01bbe8ba353987d2f17552266a82d45d06b96ddc64d5366e62a48f9d587da8"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux"
 HYSTERIA_SHA_AMD64="ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7"
@@ -3754,6 +3754,21 @@ install_certbot_dependency() {
     || fail "系统软件源未提供 /usr/bin/certbot；未执行任何远程 ACME 安装脚本"
 }
 
+preflight_public_hostname_separation() {
+  local local_hostname public_name
+  local_hostname="$(hostname)" || fail "无法读取内部主机名，尚未修改部署数据"
+  local_hostname="${local_hostname,,}"
+  local_hostname="${local_hostname%.}"
+  [[ -n "${local_hostname}" ]] || fail "内部主机名为空，尚未修改部署数据"
+  for public_name in "$@"; do
+    public_name="${public_name,,}"
+    public_name="${public_name%.}"
+    if [[ -n "${public_name}" && "${local_hostname}" == "${public_name}" ]]; then
+      fail "内部主机名与公网域名冲突。请先运行 hostnamectl set-hostname hy2-panel-internal，并配置云初始化保留该内部名称后重试。不要修改公网 DNS、证书或订阅链接；尚未停止服务或覆盖用户数据。"
+    fi
+  done
+}
+
 validate_panel_public_host() {
   local hostname="$1" label
   local -a labels
@@ -7249,6 +7264,9 @@ else
   PANEL_PUBLIC_HOST="${PANEL_PUBLIC_HOST,,}"
   validate_panel_public_host "${PANEL_PUBLIC_HOST}" \
     || fail "面板公网域名必须是完整的 ASCII DNS 名称，例如 panel.example.com"
+fi
+preflight_public_hostname_separation "${PANEL_PUBLIC_HOST}" "${PUBLIC_HOST}"
+if [[ "${PANEL_SCHEME}" == "https" ]]; then
   preflight_panel_acme_dns
 fi
 EGRESS_POLICY="${EGRESS_POLICY:-${EXISTING_EGRESS_POLICY}}"

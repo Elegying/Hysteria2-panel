@@ -1582,6 +1582,12 @@ class BackupManager:
         if not isinstance(base_url, str) or len(base_url) > 512:
             raise BackupValidationError("备份订阅地址无效")
         if require_compatible_endpoint:
+            try:
+                ensure_public_hostname_separate(
+                    self.public_host, urllib.parse.urlsplit(self.subscription_base_url).hostname
+                )
+            except (RuntimeError, ValueError) as exc:
+                raise BackupValidationError(str(exc)) from exc
             if base_url and self.subscription_base_url and base_url.rstrip("/") != self.subscription_base_url:
                 raise BackupValidationError("订阅域名、HTTPS 协议和端口必须与原面板一致，才能保留已发出的订阅链接")
             if source["publicHost"].lower() != self.public_host.lower():
@@ -13207,6 +13213,17 @@ def recover_restore_files(
         )
 
 
+def ensure_public_hostname_separate(*public_hosts):
+    """Do not let local-hostname DNS synthesis turn public traffic into LAN traffic."""
+    local = socket.gethostname().lower().rstrip(".")
+    if local and any(str(host).lower().rstrip(".") == local for host in public_hosts if host):
+        raise RuntimeError(
+            "服务器内部主机名与公网域名冲突，可能合成内网 IPv6 并被节点 ACL 拒绝。"
+            "请先通过 hostnamectl set-hostname hy2-panel-internal 设置独立内部主机名，"
+            "并在云初始化配置中保留该名称后重试；不要修改公网 DNS、证书或订阅链接。"
+        )
+
+
 def verify_restore_services(
     settings,
     runner=subprocess.run,
@@ -13217,6 +13234,7 @@ def verify_restore_services(
     interval=0.5,
     sleeper=time.sleep,
 ):
+    ensure_public_hostname_separate(settings.panel_public_host, settings.public_host)
     failure = None
     consecutive = 0
     for attempt in range(max(2, int(attempts))):
@@ -13277,6 +13295,7 @@ def restore_pending(
     runner=subprocess.run,
     quiesce=quiesce_stats_client,
 ):
+    ensure_public_hostname_separate(settings.panel_public_host, settings.public_host)
     with exclusive_maintenance_lock(lock_path, blocking=True), defer_termination_signals():
         manager = BackupManager(
             database=Database(settings.database_path, settings.hmac_key),
