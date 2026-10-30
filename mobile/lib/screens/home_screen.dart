@@ -24,6 +24,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _refreshing = false;
   int _loadGeneration = 0;
   bool _acting = false;
+  bool _enrollmentOpen = false;
   Timer? _timer;
 
   @override
@@ -183,6 +184,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   Future<void> _showEnrollment() async {
+    if (_enrollmentOpen) return;
+    _enrollmentOpen = true;
+    try {
+      await _showEnrollmentDialog();
+    } finally {
+      _enrollmentOpen = false;
+    }
+  }
+
+  Future<void> _showEnrollmentDialog() async {
     try {
       final capabilities = await ref
           .read(appControllerProvider.notifier)
