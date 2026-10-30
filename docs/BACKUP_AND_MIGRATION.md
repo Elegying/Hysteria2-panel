@@ -139,3 +139,14 @@ systemctl status hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-
 测试只使用临时数据库、测试证书和保留地址，不读取真实备份，也不得输出 HMAC、TLS 私钥、用户 token 种子或节点凭据。
 
 异地上传先验证临时对象内容，MOVE 后再回读验证正式对象；内容验证失败不会记录成功或清理旧备份。节点人工用量调整的秒级批次边界见[完整教程](QUICKSTART.md#修改已用流量的时间边界)。
+
+## 公网域名与服务器内部主机名
+
+新部署、升级及恢复前，内部主机名必须与面板域名、普通节点域名分开，例如内部名称使用 `hy2-panel-internal`，公网仍使用原来的面板和节点域名。
+部分系统会为本机主机名合成链路本地 IPv6 地址；节点的内网 ACL 会拒绝它，造成连接本机节点后面板、订阅和账号统计不可用，而专线访问正常。
+
+安装器在停止服务和写入部署数据前检查；恢复上传/预检、实际应用及恢复健康验收也检查。发现冲突会明确拒绝，不修改订阅链接或放宽 ACL。备份下载仍可使用，方便先保存数据。
+
+处理方式：由管理员执行 `hostnamectl set-hostname hy2-panel-internal`；如使用 cloud-init，在 `/etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg` 设置 `preserve_hostname: true`，避免重启时还原旧主机名。清理 DNS 缓存后重试，并在重启后复核 `hostname`。若 `/etc/hosts` 手工将面板域名指向内网地址，也需修正该本机覆盖。
+
+不要修改公网 DNS 名称、订阅 URL、端口、证书或用户密钥来绕过检查。用户备份不迁移操作系统主机名及 cloud-init 设置；新服务器需要独立检查。防护仅检查本机主机名冲突，不替代公网 DNS、代理链路和第三方客户端实际验收。

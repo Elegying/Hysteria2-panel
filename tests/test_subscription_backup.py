@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 import urllib.parse
+from unittest.mock import patch
 from pathlib import Path
 
 import hysteria2_panel as panel
@@ -13,6 +14,25 @@ class SubscriptionBackupTests(unittest.TestCase):
     setUp = fixtures.PanelHttpTests.setUp
     tearDown = fixtures.PanelHttpTests.tearDown
     request = fixtures.PanelHttpTests.request
+
+    def test_hostname_collision_blocks_restore_but_allows_backup(self):
+        user = self.db.create_proxy_user("hostname-guard")
+        subscription = self.db.ensure_subscription(user["id"])
+        manager = self.backup_manager
+        with patch.object(panel.socket, "gethostname", return_value=manager.public_host):
+            archive = manager.create_archive()
+            with self.assertRaisesRegex(panel.BackupValidationError, "主机名"):
+                manager.validate_archive(archive, require_compatible_endpoint=True)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                env = root / "panel.env"
+                env.write_text("unchanged")
+                with self.assertRaisesRegex(panel.BackupValidationError, "主机名"):
+                    manager.apply_archive(archive, env_file=env, backup_root=root / "backup")
+                self.assertEqual(env.read_text(), "unchanged")
+            self.assertEqual(self.db.ensure_subscription(user["id"]), subscription)
+            self.assertEqual(self.db.authenticate_token(user["token"]), "hostname-guard")
+        manager.validate_archive(archive, require_compatible_endpoint=True)
 
     def test_restore_to_new_hmac_keeps_original_subscription_and_proxy_credentials(
         self,
