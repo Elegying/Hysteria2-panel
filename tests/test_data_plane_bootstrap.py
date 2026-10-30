@@ -17,6 +17,12 @@ from pathlib import Path
 from unittest import mock
 
 import node_agent
+from tests.test_panel import (
+    FakeEgressPolicyController,
+    FakeServiceController,
+    FakeSystemMetrics,
+    FakeUpdateController,
+)
 from hysteria2_panel import (
     Database,
     PanelApplication,
@@ -1404,6 +1410,12 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             stats_client=object(),
             secure_cookies=True,
             data_plane_bootstrap_service=self.service,
+            # This fixture checks HTTP pairing actions, not host systemd or
+            # /etc state. Real host probes can outlive the 2s HTTP budget.
+            service_controller=FakeServiceController(),
+            egress_policy_controller=FakeEgressPolicyController(),
+            system_metrics=FakeSystemMetrics(),
+            update_controller=FakeUpdateController(),
         )
         self.server = make_panel_server(("127.0.0.1", 0), self.application)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
