@@ -20,7 +20,7 @@ class MobileSubscriptionManagementTests(unittest.TestCase):
                                                payload, access_token=self.token)
 
     def create(self, **values):
-        status, result = self.request('POST', 'users', dict(name='premium-test', userType=1, **values))
+        status, result = self.request('POST', 'users', dict({'name': 'premium-test', 'userType': 1}, **values))
         self.assertEqual(201, status)
         _, users = self.request('GET', 'users')
         self.assertTrue(users['data']['subscriptionManagement'])
@@ -58,6 +58,68 @@ class MobileSubscriptionManagementTests(unittest.TestCase):
             self.assertEqual(400, error.exception.code)
             error.exception.close()
             self.assertEqual(2, self.fixture.db.get_proxy_user(user['id'])['generation'])
+
+    def test_subscription_management_preserves_links_except_explicit_reset(self):
+        user, url = self.create()
+        path = 'users/{}'.format(user['id'])
+        _, view = self.request('GET', path + '/subscription')
+        data = view['data']
+        password = self.fixture.db.recover_proxy_token(user['id'])
+        self.assertEqual(url, data['url'])
+        for action, enabled in [('disable', False), ('enable', True), ('inherit', True)]:
+            _, result = self.request('POST', path + '/subscription-' + action,
+                {'generation': data['generation'], 'revision': data['revision']})
+            data = result['data']
+            self.assertEqual(enabled, data['enabled'])
+            self.assertEqual(url, data['url'])
+            self.assertEqual(password, self.fixture.db.recover_proxy_token(user['id']))
+        stale = dict(generation=data['generation'], revision=data['revision'])
+        _, result = self.request('POST', path + '/subscription-regenerate', stale)
+        self.assertNotEqual(url, result['data']['url'])
+        self.assertNotEqual(password, self.fixture.db.recover_proxy_token(user['id']))
+        self.assertIsNone(self.fixture.db.get_subscription_by_token(url.rsplit('/', 1)[-1]))
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('POST', path + '/subscription-regenerate', stale)
+        self.assertEqual(409, error.exception.code)
+        error.exception.close()
+
+    def test_subscription_revision_rejects_stale_toggle_and_missing_auth(self):
+        user, url = self.create()
+        path = 'users/{}/subscription'.format(user['id'])
+        _, view = self.request('GET', path)
+        data = view['data']
+        payload = {'generation': data['generation'], 'revision': data['revision']}
+        self.request('POST', path + '-disable', payload)
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('POST', path + '-enable', payload)
+        self.assertEqual(409, error.exception.code)
+        error.exception.close()
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.fixture.mobile_json_request('GET', '/api/v1/mobile/' + path)
+        self.assertEqual(401, error.exception.code)
+        error.exception.close()
+
+    def test_create_missing_subscription_and_restore_inherited_nodes(self):
+        user, _ = self.create(userType=0)
+        path = 'users/{}'.format(user['id'])
+        sub = self.fixture.db.get_subscription(user_id=user['id'])
+        self.fixture.db.delete_subscription(sub['id'])
+        password = self.fixture.db.recover_proxy_token(user['id'])
+        _, view = self.request('GET', path + '/subscription')
+        self.assertFalse(view['data']['exists'])
+        self.assertIsNone(self.fixture.db.get_subscription(user_id=user['id']))
+        _, created = self.request('POST', path + '/subscription-create', {
+            'generation': view['data']['generation'], 'revision': view['data']['revision']})
+        self.assertEqual(password, self.fixture.db.recover_proxy_token(user['id']))
+        sub = self.fixture.db.get_subscription(user_id=user['id'])
+        self.fixture.db.set_subscription_nodes(sub['id'], [{'label': 'Custom',
+            'host': 'example.com', 'port': 443, 'pin_sha256': 'a' * 64, 'enabled': True}])
+        _, view = self.request('GET', path + '/subscription')
+        self.assertFalse(view['data']['usesDefaults'])
+        _, inherited = self.request('POST', path + '/subscription-inherit', {
+            'generation': view['data']['generation'], 'revision': view['data']['revision']})
+        self.assertTrue(inherited['data']['usesDefaults'])
+        self.assertEqual(created['data']['url'], inherited['data']['url'])
 
     def test_node_enrollment_preserves_tier_region_and_hopping(self):
         app = self.fixture.application

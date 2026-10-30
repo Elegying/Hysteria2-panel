@@ -106,7 +106,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('form-test-user').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(ActionChip, '禁用'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '禁用'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '确认'));
     await tester.pumpAndSettle();

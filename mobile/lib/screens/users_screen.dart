@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart' as liquid;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
@@ -12,6 +11,7 @@ import '../core/user_validity.dart';
 import '../core/glass.dart';
 import 'domain_usage_screen.dart';
 import 'user_traffic_history_screen.dart';
+import 'subscription_screen.dart';
 
 String? _userLimitsError(int? devices, int? traffic) {
   if (devices == null || devices < 1 || devices > 100) {
@@ -400,7 +400,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   ),
                   const SizedBox(height: 4),
                   Text(user['enabled'] == true ? '启用中' : '已禁用'),
-                  const SizedBox(height: 18),
+                  const SizedBox(height: 12),
                   _UserFacts(user: user),
                   const SizedBox(height: 20),
                   Text(
@@ -417,9 +417,17 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         child: Text('正在处理，请稍候…'),
                       ),
                     ),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  GridView(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      mainAxisSpacing: 8,
+                      crossAxisSpacing: 8,
+                      mainAxisExtent:
+                          64 +
+                          (MediaQuery.textScalerOf(context).scale(14) - 14) * 3,
+                    ),
                     children: [
                       _ActionChipButton(
                         icon: Icons.share_rounded,
@@ -506,6 +514,23 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                                 user,
                                 () => _editUser(sheetContext, user),
                               ),
+                      ),
+                      _ActionChipButton(
+                        icon: Icons.rss_feed_rounded,
+                        label: '订阅管理',
+                        onTap: busy
+                            ? null
+                            : () async {
+                                await Navigator.of(sheetContext).push<void>(
+                                  MaterialPageRoute(
+                                    builder: (_) => SubscriptionScreen(
+                                      userId: user['id'] as int,
+                                      name: user['name'].toString(),
+                                    ),
+                                  ),
+                                );
+                                if (mounted) await _load(silent: true);
+                              },
                       ),
                       _ActionChipButton(
                         icon: Icons.delete_outline_rounded,
@@ -914,7 +939,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text('固定订阅链接仅分享给该用户。以后刷新订阅即可更新节点，改密不会改变此链接。'),
-              const SizedBox(height: 14),
+              const SizedBox(height: 8),
               SelectableText(uri),
               const SizedBox(height: 16),
               QrImageView(data: uri, size: 230, backgroundColor: Colors.white),
@@ -990,45 +1015,27 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       );
     return SafeArea(
       child: Scaffold(
-        floatingActionButton: Padding(
-          padding: EdgeInsets.only(bottom: appDockExtent(context)),
-          child: liquid.GlassButton.custom(
-            onTap: () {
-              if (_error == null && !_loading) {
-                _createUser();
-              } else {
-                _message(_error ?? '用户信息加载中');
-              }
-            },
-            quality: liquid.GlassQuality.premium,
-            useOwnLayer: true,
-            shape: const liquid.LiquidRoundedSuperellipse(borderRadius: 20),
-            width: 144 + MediaQuery.textScalerOf(context).scale(16) * 2,
-            height: 48 + MediaQuery.textScalerOf(context).scale(16),
-            label: '新增用户',
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.person_add_alt_1_rounded),
-                  SizedBox(width: 8),
-                  Flexible(child: Text('新增用户')),
-                ],
-              ),
-            ),
-          ),
-        ),
         body: RefreshIndicator(
           onRefresh: _load,
           child: CustomScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverAppBar(
-                toolbarHeight: 64,
+                toolbarHeight: 56,
                 pinned: false,
                 title: const Text('用户'),
                 actions: [
+                  TextButton.icon(
+                    onPressed: () {
+                      if (_error == null && !_loading) {
+                        _createUser();
+                      } else {
+                        _message(_error ?? '用户信息加载中');
+                      }
+                    },
+                    icon: const Icon(Icons.person_add_alt_1_rounded, size: 18),
+                    label: const Text('新增用户'),
+                  ),
                   GlassControlSurface(
                     child: IconButton(
                       onPressed: _load,
@@ -1086,99 +1093,6 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                '高流量用户',
-                                style: Theme.of(context).textTheme.titleLarge
-                                    ?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                            GlassControlSurface(
-                              child: TextButton.icon(
-                                onPressed: () => Navigator.of(context).push(
-                                  MaterialPageRoute<void>(
-                                    builder: (_) =>
-                                        const DomainUsageScreen.global(),
-                                  ),
-                                ),
-                                icon: const Icon(Icons.language_rounded),
-                                label: const Text('最常访问'),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 9),
-                        SizedBox(
-                          height:
-                              120 *
-                              MediaQuery.textScalerOf(context).scale(16) /
-                              16,
-                          child: top.isEmpty
-                              ? const GlassCard(
-                                  child: Center(child: Text('暂无用户')),
-                                )
-                              : ListView.separated(
-                                  scrollDirection: Axis.horizontal,
-                                  itemCount: top.take(5).length,
-                                  separatorBuilder: (_, _) =>
-                                      const SizedBox(width: 9),
-                                  itemBuilder: (context, index) {
-                                    final user = top[index];
-                                    return SizedBox(
-                                      width:
-                                          200 +
-                                          (MediaQuery.textScalerOf(context)
-                                                      .scale(16) -
-                                                  16) *
-                                              4,
-                                      child: GlassCard(
-                                        child: InkWell(
-                                          borderRadius: BorderRadius.circular(
-                                            18,
-                                          ),
-                                          onTap: () => _showUser(user),
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(13),
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  '${index + 1}. ${user['name']}',
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                    fontWeight: FontWeight.w700,
-                                                  ),
-                                                ),
-                                                const Spacer(),
-                                                Text(
-                                                  formatBytes(
-                                                    user['usedBytes'],
-                                                  ),
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .titleMedium,
-                                                ),
-                                                Text(
-                                                  '${(user['trafficPercent'] as num? ?? 0).toStringAsFixed(1)}% · ${user['onlineDevices']} 台在线',
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodySmall,
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                        ),
-                        const SizedBox(height: 14),
                         GlassCard(
                           child: Padding(
                             padding: const EdgeInsets.all(12),
@@ -1271,6 +1185,94 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                           ),
                         ),
                         const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '高流量用户',
+                                style: Theme.of(context).textTheme.titleLarge
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            GlassControlSurface(
+                              child: TextButton.icon(
+                                onPressed: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) =>
+                                        const DomainUsageScreen.global(),
+                                  ),
+                                ),
+                                icon: const Icon(Icons.language_rounded),
+                                label: const Text('最常访问'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 9),
+                        SizedBox(
+                          height:
+                              72 *
+                              MediaQuery.textScalerOf(context).scale(16) /
+                              16,
+                          child: top.isEmpty
+                              ? const GlassCard(
+                                  child: Center(child: Text('暂无用户')),
+                                )
+                              : ListView.separated(
+                                  scrollDirection: Axis.horizontal,
+                                  itemCount: top.take(5).length,
+                                  separatorBuilder: (_, _) =>
+                                      const SizedBox(width: 9),
+                                  itemBuilder: (context, index) {
+                                    final user = top[index];
+                                    return SizedBox(
+                                      width:
+                                          166 +
+                                          (MediaQuery.textScalerOf(context)
+                                                      .scale(16) -
+                                                  16) *
+                                              4,
+                                      child: GlassCard(
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(
+                                            18,
+                                          ),
+                                          onTap: () => _showUser(user),
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(10),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  '${index + 1}. ${user['name']}',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  '${formatBytes(user['usedBytes'])} · ${(user['trafficPercent'] as num? ?? 0).toStringAsFixed(1)}%',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodySmall,
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                        const SizedBox(height: 8),
                         Text(
                           '显示 ${filtered.length} / 当前分类 ${_tierUsers.length} 位用户',
                           style: Theme.of(context).textTheme.bodySmall,
@@ -1325,10 +1327,11 @@ class _CompactUserCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(18),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+          padding: const EdgeInsets.fromLTRB(10, 8, 8, 8),
           child: Row(
             children: [
               CircleAvatar(
+                radius: 16,
                 backgroundColor: enabled
                     ? Colors.green.withValues(alpha: .14)
                     : Theme.of(context).colorScheme.errorContainer,
@@ -1411,7 +1414,7 @@ class _UserFacts extends StatelessWidget {
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 2,
         mainAxisExtent:
-            92 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
+            68 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
         crossAxisSpacing: 8,
         mainAxisSpacing: 8,
       ),
@@ -1456,21 +1459,28 @@ class _ActionChipButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => GlassControlSurface(
-    child: ActionChip(
-      backgroundColor: Colors.transparent,
-      side: BorderSide.none,
-      avatar: Icon(
-        icon,
-        size: 18,
-        color: destructive ? Theme.of(context).colorScheme.error : null,
-      ),
-      label: Text(
-        label,
-        style: TextStyle(
-          color: destructive ? Theme.of(context).colorScheme.error : null,
-        ),
-      ),
+    child: OutlinedButton(
       onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        foregroundColor: destructive
+            ? Theme.of(context).colorScheme.error
+            : null,
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 18),
+          const SizedBox(height: 3),
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: destructive ? Theme.of(context).colorScheme.error : null,
+            ),
+          ),
+        ],
+      ),
     ),
   );
 }

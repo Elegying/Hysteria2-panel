@@ -55,6 +55,7 @@ _MOBILE_EXACT_ROUTES = {
     ("POST", "/api/v1/mobile/node-enrollments"): "create-enrollment",
 }
 _MOBILE_ROUTE_PATTERNS = (
+    ("GET", "user-subscription", re.compile(r"/api/v1/mobile/users/(\d{1,19})/subscription")),
     ("GET", "user-traffic-history", re.compile(r"/api/v1/mobile/users/(\d{1,19})/traffic-history")),
     (
         "GET",
@@ -72,7 +73,7 @@ _MOBILE_ROUTE_PATTERNS = (
         "POST",
         "user-action",
         re.compile(
-            r"/api/v1/mobile/users/(\d+)/(enable|disable|share|rotate-secret|reset-traffic)"
+            r"/api/v1/mobile/users/(\d+)/(enable|disable|share|rotate-secret|reset-traffic|subscription-create|subscription-enable|subscription-disable|subscription-inherit|subscription-regenerate)"
         ),
     ),
     ("PATCH", "update-user", re.compile(r"/api/v1/mobile/users/(\d+)")),
@@ -538,6 +539,7 @@ def capabilities_payload(panel_version):
         "platforms": ["android"],
         "features": [
             "stable-user-subscriptions",
+            "mobile-subscription-management",
             "user-tiers-and-validity",
             "typed-node-enrollment-hopping",
             "overview",

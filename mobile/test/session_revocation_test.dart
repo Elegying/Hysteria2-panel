@@ -36,7 +36,7 @@ void main() {
   });
 
   test(
-    'deleting a restored inactive profile revokes its refresh credential',
+    'single-panel migration revokes only the retired secondary credential',
     () async {
       final original = fixture.controller();
       await original.initialize();
@@ -52,15 +52,19 @@ void main() {
       );
       addTearDown(restored.dispose);
       await restored.initialize();
-      await restored.forgetPanel(0);
+      await Future.doWhile(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+        return (await pending()).isNotEmpty;
+      }).timeout(const Duration(seconds: 3));
       expect(logouts, hasLength(1));
-      expect(logouts.single.baseUrl, contains('panel1.example.test'));
+      expect(logouts.single.baseUrl, contains('panel2.example.test'));
       expect(
         logouts.single.data['refreshToken'],
-        'panel1.example.test-refresh',
+        'panel2.example.test-refresh',
       );
-      expect(restored.state.panels[0].session, isNull);
-      expect(restored.state.panels[1].session, isNotNull);
+      expect(restored.state.activePanel, 0);
+      expect(restored.state.panels[0].session, isNotNull);
+      expect(restored.state.panels[1].session, isNull);
       expect(await pending(), isEmpty);
     },
   );

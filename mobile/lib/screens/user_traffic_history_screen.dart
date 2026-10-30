@@ -156,7 +156,7 @@ class _UserTrafficHistoryScreenState
                     ),
                     if (_loading)
                       const Padding(
-                        padding: EdgeInsets.all(16),
+                        padding: EdgeInsets.all(12),
                         child: Center(
                           child: CircularProgressIndicator(
                             semanticsLabel: '正在读取流量记录',
@@ -168,7 +168,7 @@ class _UserTrafficHistoryScreenState
                         padding: const EdgeInsets.only(top: 12),
                         child: GlassCard(
                           child: Padding(
-                            padding: const EdgeInsets.all(16),
+                            padding: const EdgeInsets.all(12),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [

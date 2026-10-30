@@ -48,7 +48,7 @@ class MobileApiContractTests(unittest.TestCase):
             ),
             (
                 "/api/v1/mobile/users/$userId/$endpoint",
-                "users/(\\d+)/(enable|disable|share|rotate-secret|reset-traffic)",
+                "users/(\\d+)/(enable|disable|share|rotate-secret|reset-traffic|subscription-create|subscription-enable|subscription-disable|subscription-inherit|subscription-regenerate)",
             ),
             ("/api/v1/mobile/users/${user['id']}", "users/(\\d+)"),
         )

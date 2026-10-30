@@ -193,7 +193,7 @@ void main() {
     );
     await tester.tap(find.text('示例用户 1'));
     await tester.pumpAndSettle();
-    await tester.tap(find.widgetWithText(ActionChip, '分享'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '分享'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
     expect(find.text('无法打开系统分享，请稍后重试'), findsOneWidget);
@@ -208,7 +208,7 @@ void main() {
       const MethodChannel('dev.fluttercommunity.plus/share'),
       (_) async => 'test-target',
     );
-    await tester.tap(find.widgetWithText(ActionChip, '分享'));
+    await tester.tap(find.widgetWithText(OutlinedButton, '分享'));
     await tester.pumpAndSettle();
     expect(c.writes, 2);
     expect(tester.takeException(), isNull);

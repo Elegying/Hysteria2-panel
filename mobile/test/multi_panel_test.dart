@@ -92,41 +92,43 @@ void main() {
     });
   });
 
-  test('two independent sessions survive switches and restart', () async {
-    final c = controller();
-    addTearDown(c.dispose);
-    await c.initialize();
-    await login(c, 0);
-    await login(c, 1);
-    await c.renamePanel(0, '私家车面板');
-    await c.renamePanel(1, '私家车专线面板');
-    for (final i in [0, 1, 0]) {
-      await c.selectPanel(i);
-      final result = await c.getJson('/overview');
-      expect(result['host'], 'panel${i + 1}.example.test');
+  test(
+    'legacy secondary login is retired on upgrade while primary survives',
+    () async {
+      final c = controller();
+      addTearDown(c.dispose);
+      await c.initialize();
+      await login(c, 0);
+      await login(c, 1);
+      await c.renamePanel(0, '私家车面板');
+      await c.renamePanel(1, '私家车专线面板');
+      for (final i in [0, 1, 0]) {
+        await c.selectPanel(i);
+        final result = await c.getJson('/overview');
+        expect(result['host'], 'panel${i + 1}.example.test');
+        expect(
+          result['authorization'],
+          'Bearer panel${i + 1}.example.test-access',
+        );
+      }
+      final restored = controller();
+      addTearDown(restored.dispose);
+      await restored.initialize();
+      expect(restored.state.activePanel, 0);
+      expect(restored.state.panels[0].name, '私家车面板');
+      expect(restored.state.panels[0].session, isNotNull);
+      expect(restored.state.panels[1].session, isNull);
+      expect(restored.state.panels[1].password, isEmpty);
+      expect(restored.state.panels[1].baseUrl, isEmpty);
+      final preferences = await SharedPreferences.getInstance();
       expect(
-        result['authorization'],
-        'Bearer panel${i + 1}.example.test-access',
+        preferences.getKeys().any(
+          (key) => preferences.get(key).toString().contains('synthetic-secret'),
+        ),
+        isFalse,
       );
-    }
-    final restored = controller();
-    addTearDown(restored.dispose);
-    await restored.initialize();
-    expect(restored.state.activePanel, 0);
-    expect(restored.state.panels.map((p) => p.name), ['私家车面板', '私家车专线面板']);
-    expect(restored.state.panels.every((p) => p.session != null), isTrue);
-    await restored.selectPanel(1);
-    // Restored secondary access token is empty: force its normal refresh path.
-    expect(restored.state.session!.refreshToken, 'panel2.example.test-refresh');
-    expect(restored.state.panels[1].password, 'synthetic-secret-1');
-    final preferences = await SharedPreferences.getInstance();
-    expect(
-      preferences.getKeys().any(
-        (key) => preferences.get(key).toString().contains('synthetic-secret'),
-      ),
-      isFalse,
-    );
-  });
+    },
+  );
 
   test(
     'failed second login leaves first session and saved data intact',

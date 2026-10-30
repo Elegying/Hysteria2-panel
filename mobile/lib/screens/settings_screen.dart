@@ -1,3 +1,5 @@
+import 'panel_switcher.dart';
+
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -212,17 +214,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
       child: CustomScrollView(
         slivers: [
           const SliverAppBar(
-            toolbarHeight: 64,
+            toolbarHeight: 56,
             pinned: false,
             title: Text('设置'),
           ),
           SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
             sliver: SliverList.list(
               children: [
                 GlassCard(
                   child: Padding(
-                    padding: const EdgeInsets.all(18),
+                    padding: const EdgeInsets.all(12),
                     child: Row(
                       children: [
                         SvgPicture.asset(
@@ -252,7 +254,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 8),
                 GlassCard(
                   child: Column(
                     children: [
@@ -260,6 +262,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                         leading: const Icon(Icons.account_circle_outlined),
                         title: Text(session?.username ?? '未知管理员'),
                         subtitle: Text(session?.baseUrl ?? '未连接面板'),
+                        trailing: const Icon(Icons.manage_accounts_outlined),
+                        onTap: () => PanelSwitcher.manage(context, ref),
                       ),
                       const Divider(height: 1),
                       ListTile(
@@ -287,10 +291,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     ],
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 8),
                 GlassCard(
                   child: Padding(
-                    padding: const EdgeInsets.all(18),
+                    padding: const EdgeInsets.all(12),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -330,7 +334,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                               ),
                           ],
                         ),
-                        const SizedBox(height: 18),
+                        const SizedBox(height: 12),
                         Text(
                           '强调色',
                           style: Theme.of(context).textTheme.bodySmall,
@@ -389,7 +393,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     ),
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 8),
                 GlassControlSurface(
                   child: OutlinedButton.icon(
                     onPressed: _logout,

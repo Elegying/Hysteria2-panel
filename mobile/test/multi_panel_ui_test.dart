@@ -124,54 +124,27 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('switch rebuilds overview users nodes settings and panel theme', (
-    tester,
-  ) async {
-    final c = TwoPanels();
-    await mount(tester, c);
-    expect(find.text('当前面板1'), findsOneWidget);
-    await tab(tester, '用户');
-    await tester.scrollUntilVisible(
-      find.text('面板1-示例用户 1'),
-      150,
-      scrollable: find.byType(Scrollable).hitTestable().first,
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('面板1-示例用户 1'), findsWidgets);
-    await tab(tester, '首页');
-    await tester.tap(find.text('面板2').hitTestable().first);
-    await tester.pumpAndSettle();
-    expect(find.text('当前面板2'), findsOneWidget);
-    expect(find.text('当前面板1'), findsNothing);
-    await tab(tester, '用户');
-    await tester.scrollUntilVisible(
-      find.text('面板2-示例用户 1'),
-      150,
-      scrollable: find.byType(Scrollable).hitTestable().first,
-    );
-    await tester.pumpAndSettle();
-    expect(find.text('面板2-示例用户 1'), findsWidgets);
-    expect(find.text('面板1-示例用户 1'), findsNothing);
-    await tab(tester, '节点');
-    expect(find.text('面板2-主节点'), findsWidgets);
-    await tab(tester, '设置');
-    expect(find.text('管理员2'), findsOneWidget);
-    expect(find.text('https://panel2.example.test:19998'), findsOneWidget);
-    expect(
-      Theme.of(tester.element(find.text('管理员2'))).brightness,
-      Brightness.light,
-    );
-    await tab(tester, '首页');
-    await tester.tap(find.text('面板1').hitTestable().first);
-    await tester.pumpAndSettle();
-    await tab(tester, '设置');
-    expect(find.text('管理员1'), findsOneWidget);
-    expect(
-      Theme.of(tester.element(find.text('管理员1'))).brightness,
-      Brightness.dark,
-    );
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'one panel manages both user tiers without a second login entry',
+    (tester) async {
+      final c = TwoPanels();
+      await mount(tester, c);
+      expect(find.text('面板1'), findsNothing);
+      expect(find.text('面板2'), findsNothing);
+      await tab(tester, '用户');
+      expect(find.text('普通用户'), findsOneWidget);
+      expect(find.text('专线用户'), findsOneWidget);
+      await tester.tap(find.text('专线用户'));
+      await tester.pumpAndSettle();
+      expect(c.state.activePanel, 0);
+      await tab(tester, '节点');
+      expect(find.text('面板1-主节点'), findsWidgets);
+      await tab(tester, '设置');
+      expect(find.text('管理员1'), findsOneWidget);
+      expect(find.text('https://panel1.example.test:19998'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'logout restores hidden password and delete erases remembered form',
@@ -209,10 +182,8 @@ void main() {
             .every((f) => f.controller!.text.isEmpty),
         isTrue,
       );
-      await tester.tap(find.text('面板2').hitTestable().first);
-      await tester.pumpAndSettle();
-      expect(find.byType(LoginScreen), findsNothing);
-      expect(find.text('当前面板2'), findsOneWidget);
+      expect(find.text('面板2'), findsNothing);
+      expect(find.byType(LoginScreen), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
   );
@@ -222,14 +193,15 @@ void main() {
     (tester) async {
       final c = TwoPanels();
       await mount(tester, c, width: 320, scale: 2);
-      await tester.longPress(find.text('面板1').hitTestable().first);
+      await tab(tester, '设置');
+      await tester.tap(find.text('管理员1'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('重命名'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '私家车专线面板');
       await tester.tap(find.text('保存'));
       await tester.pumpAndSettle();
-      expect(find.text('私家车专线面板'), findsOneWidget);
+      expect(c.state.panels[0].name, '私家车专线面板');
       expect(c.state.panels[0].name, '私家车专线面板');
       expect(tester.takeException(), isNull);
     },

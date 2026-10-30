@@ -123,7 +123,7 @@ void main() {
         await tester.ensureVisible(find.text('示例用户 1'));
         await tester.tap(find.text('示例用户 1'));
         await tester.pumpAndSettle();
-        await tester.tap(find.widgetWithText(ActionChip, '禁用'));
+        await tester.tap(find.widgetWithText(OutlinedButton, '禁用'));
       } else {
         final trigger = action == '重启服务器'
             ? find.byTooltip(action)

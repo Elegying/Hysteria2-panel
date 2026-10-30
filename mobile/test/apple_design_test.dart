@@ -87,16 +87,8 @@ void main() {
           if (label == '首页') {
             expect(find.byTooltip('刷新'), findsNothing);
             expect(find.byType(PopupMenuButton<String>), findsNothing);
-            final title = find.descendant(
-              of: find.byType(SliverAppBar),
-              matching: find.text(label),
-            );
-            expect(
-              (tester.getCenter(title).dy -
-                      tester.getCenter(find.text('面板1')).dy)
-                  .abs(),
-              lessThan(8),
-            );
+            expect(find.text('面板1'), findsNothing);
+            expect(find.text('面板2'), findsNothing);
           }
           final scrollable = find.byType(Scrollable).first;
           for (var i = 0; i < 4; i++) {
