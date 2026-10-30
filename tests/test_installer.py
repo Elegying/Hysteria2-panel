@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from hy2panel.version import PANEL_VERSION
+from hy2panel.nodes import DataPlaneBootstrapService
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -694,13 +695,20 @@ restore_upgrade_runtime_state
         self.assertIn('PANEL_VERSION="{}"'.format(PANEL_VERSION), source)
         self.assertIn('HYSTERIA_VERSION="2.12.1"', source)
         self.assertIn(
-            'HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"',
+            'HYSTERIA_SHA_AMD64="7f1b8d5bcf483e686f1342c94f91e378da7f5309dca03b2e29c1da5e16a7ce96"',
             source,
         )
         self.assertIn(
-            'HYSTERIA_SHA_ARM64="1804ef5397c1e203963684921fcfe4a39fff9d5677afff6290ff50efad17a8f6"',
+            'HYSTERIA_SHA_ARM64="529fe13a00233fb2930b9d4616af52e7c17d55c83bfd18d051b882ad5bba0454"',
             source,
         )
+        for arch, digest in DataPlaneBootstrapService.HYSTERIA_SHA256.items():
+            self.assertIn('HYSTERIA_SHA_{}="{}"'.format(arch.upper(), digest), source)
+        base = "https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v3/hysteria-linux"
+        self.assertIn('HYSTERIA_DATA_PLANE_URL="{}"'.format(base), source)
+        e2e = (ROOT / "tests/onboarding_e2e.py").read_text()
+        self.assertIn(base + "-amd64", e2e)
+        self.assertIn("installer.replace('" + base + "'", e2e)
         self.assertRegex(source, r'PANEL_SHA256="[0-9a-f]{64}"')
         self.assertRegex(source, r'QRCODEGEN_SHA256="[0-9a-f]{64}"')
         self.assertIn('QRCODEGEN_SOURCE_URL=', source)
