@@ -1167,8 +1167,8 @@ class DataPlaneBootstrapContractTests(unittest.TestCase):
         self.assertEqual("web", result["egressPolicy"])
         self.assertEqual(
             {
-                "amd64": "ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7",
-                "arm64": "c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792",
+                "amd64": "7f1b8d5bcf483e686f1342c94f91e378da7f5309dca03b2e29c1da5e16a7ce96",
+                "arm64": "529fe13a00233fb2930b9d4616af52e7c17d55c83bfd18d051b882ad5bba0454",
             },
             result["hysteriaSha256"],
         )
@@ -1630,8 +1630,8 @@ class NodeDataPlaneConfigTests(unittest.TestCase):
             "configProtocolVersion": 1,
             "hysteriaVersion": "2.12.1",
             "hysteriaSha256": {
-                "amd64": "ffc032c7ca6b78676d337097ca7f61bebc3a90a4f3a656693adf368f304cdbc7",
-                "arm64": "c9cd1af6395eee13a937f429ea71b290e3cc571eea2b4d7f8bc7c49c1d23a792",
+                "amd64": "7f1b8d5bcf483e686f1342c94f91e378da7f5309dca03b2e29c1da5e16a7ce96",
+                "arm64": "529fe13a00233fb2930b9d4616af52e7c17d55c83bfd18d051b882ad5bba0454",
             },
             "ports": {"main": 24443, "udp443": 443},
         }

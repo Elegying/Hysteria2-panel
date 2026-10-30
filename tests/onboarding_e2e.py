@@ -67,12 +67,12 @@ def main():
             shutil.copy2(ROOT/name, assets/name)
         download('https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64',
                  assets/'cosign', NodeEnrollmentService.COSIGN_SHA_AMD64)
-        download('https://github.com/apernet/hysteria/releases/download/app/v2.12.1/hysteria-linux-amd64',
+        download('https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v3/hysteria-linux-amd64',
                  assets/'hysteria-linux-amd64', DataPlaneBootstrapService.HYSTERIA_SHA256['amd64'])
         installer = (ROOT/'install.sh').read_text()
         installer = installer.replace('https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/',
                                       'https://panel.e2e.test:19998/assets/')
-        installer = installer.replace('https://github.com/apernet/hysteria/releases/download/app/v${HYSTERIA_VERSION}/hysteria-linux',
+        installer = installer.replace('https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v3/hysteria-linux',
                                       'https://panel.e2e.test:19998/assets/hysteria-linux')
         (assets/'install.sh').write_text(installer)
         env = {**os.environ, 'COSIGN_PASSWORD': ''}

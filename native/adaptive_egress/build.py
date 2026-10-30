@@ -34,7 +34,7 @@ def build(go, architecture, output):
         environment.update(GOOS='linux', GOARCH=architecture, CGO_ENABLED='0')
         prefix = 'github.com/apernet/hysteria/app/v2/cmd.'
         flags = '-s -w -buildid= ' + ' '.join('-X ' + prefix + key + '=' + value for key, value in {
-            'appVersion': 'v2.12.1-panel.2', 'appType': 'managed', 'appDate': '2026-10-30',
+            'appVersion': 'v2.12.1-panel.3', 'appType': 'managed', 'appDate': '2026-10-30',
             'appToolchain': GO_VERSION, 'appCommit': COMMIT, 'appPlatform': 'linux', 'appArch': architecture,
         }.items())
         subprocess.run([go, 'build', '-buildvcs=false', '-ldflags=' + flags, '-o', str(output), './app'],

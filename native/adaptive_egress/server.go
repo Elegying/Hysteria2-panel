@@ -37,7 +37,7 @@ func adaptiveServerState() adaptive.State {
 			})
 		})
 	})
-	return adaptiveExit.Check(context.Background())
+	return adaptiveExit.Observe()
 }
 
 func adaptiveLocalName(host string) bool {

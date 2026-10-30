@@ -23,6 +23,7 @@
 | [发布与回滚](DEPLOYMENT.md) | 正式 Release、发布门禁、多节点滚动升级和中断恢复 |
 | [重装后的开发与发布恢复](DEVELOPER_RECOVERY.md) | 恢复开发环境、从 GitHub 安全恢复原 Android 签名、继续维护与发布 |
 | [稳定化与发布质量](STABILIZATION.md) | 允许的变更范围、必过检查和发布判定 |
+| [后续验证与发布目标](ROADMAP.md) | 尚未完成的构建与部署验收 |
 | [贡献指南](../CONTRIBUTING.md) | 开发流程、验证要求和提交说明 |
 | [安全政策](../SECURITY.md) | 私密报告漏洞和支持版本 |
 | [变更日志](../CHANGELOG.md) | 每个正式版本的用户可见变化 |
