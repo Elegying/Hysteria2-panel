@@ -3793,8 +3793,8 @@ class Database:
     @staticmethod
     @functools.lru_cache(maxsize=128)
     def _certificate_server_name(certificate_pem):
-        result = subprocess.run(
-            ["openssl", "x509", "-noout", "-text"],
+        result = subprocess.run(  # nosec B603 -- fixed executable and arguments; PEM travels via stdin
+            ["/usr/bin/openssl", "x509", "-noout", "-text"],
             input=certificate_pem, capture_output=True, text=True, check=True, timeout=5,
         )
         extension = re.search(r"X509v3 Subject Alternative Name:[^\n]*\n\s*([^\n]+)", result.stdout)
@@ -4350,16 +4350,14 @@ class Database:
             raise ValueError("invalid traffic tier")
         now = int(time.time()) if now is None else int(now)
         today = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc).date()
-        where = "o.kind IN ('local', 'remote')"
-        params = []
-        if tier == "standard":
-            where += " AND (o.kind = 'local' OR (o.kind = 'remote' AND n.tier = 'standard'))"
-        elif tier == "premium":
-            where += " AND o.kind = 'remote' AND n.tier = 'premium'"
         with self._connect() as connection:
             first = connection.execute(
-                "SELECT MIN(o.created_at) FROM usage_origins o LEFT JOIN nodes n ON n.node_id = o.node_id WHERE " + where,
-                params,
+                """SELECT MIN(o.created_at) FROM usage_origins o
+                LEFT JOIN nodes n ON n.node_id = o.node_id
+                WHERE o.kind IN ('local', 'remote') AND
+                (? IS NULL OR (? = 'standard' AND (o.kind = 'local' OR n.tier = 'standard'))
+                 OR (? = 'premium' AND o.kind = 'remote' AND n.tier = 'premium'))""",
+                (tier, tier, tier),
             ).fetchone()[0]
             if first is None:
                 return {"daily_bytes": None, "sample_days": 0}
@@ -4375,8 +4373,11 @@ class Database:
                 FROM usage_origins AS o JOIN origin_traffic_daily AS d
                     ON d.origin_id = o.origin_id
                 LEFT JOIN nodes AS n ON n.node_id = o.node_id
-                WHERE """ + where + """ AND d.usage_date >= ? AND d.usage_date < ?""",
-                (*params, start.isoformat(), today.isoformat()),
+                WHERE o.kind IN ('local', 'remote') AND
+                (? IS NULL OR (? = 'standard' AND (o.kind = 'local' OR n.tier = 'standard'))
+                 OR (? = 'premium' AND o.kind = 'remote' AND n.tier = 'premium'))
+                AND d.usage_date >= ? AND d.usage_date < ?""",
+                (tier, tier, tier, start.isoformat(), today.isoformat()),
             ).fetchone()[0]
         return {"daily_bytes": int(total) / days, "sample_days": days}
 

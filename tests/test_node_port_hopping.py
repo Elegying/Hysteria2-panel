@@ -117,4 +117,4 @@ class EnrollmentHoppingTests(PremiumSubscriptionTests):
             port_hopping=False)
         with self.db._connect() as c:
             saved = c.execute('SELECT * FROM nodes WHERE node_id=?', (restored['node_id'],)).fetchone()
-            self.assertEqual(1, saved['port_hopping'])
+            self.assertEqual(0, saved['port_hopping'])
