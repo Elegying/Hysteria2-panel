@@ -75,6 +75,7 @@ class PanelMaintenanceQuiesceTests(unittest.TestCase):
                 work_dir=root / "backup-restore", maintenance_lock_path=lock,
                 maintenance_lock_owner=os.geteuid(), maintenance_lock_mode=0o600,
                 restore_marker_path=marker,
+                subscription_base_url="http://panel.example.test:19998",
             )
             env.write_text("HY2PANEL_HMAC_KEY={}\nHY2PANEL_CERT_PIN={}\n".format(
                 (b"r" * 32).hex(), manager._certificate_pin(cert.read_bytes())
@@ -87,6 +88,7 @@ class PanelMaintenanceQuiesceTests(unittest.TestCase):
                 database_path=database.path, hmac_key=b"r" * 32,
                 tls_cert=cert, tls_key=key, public_host="vpn.example.test",
                 hysteria_port=19999, node_name="test-node", local_origin_id="local:" + "a" * 32,
+                panel_public_host="panel.example.test",
                 panel_scheme="http", panel_port=19998, auth_port=19996,
                 stats_url="http://127.0.0.1:19997", stats_443_url="http://127.0.0.1:19995",
                 stats_secret="fixture-secret",

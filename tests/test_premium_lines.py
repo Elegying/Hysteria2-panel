@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 import urllib.error
 
 from tests import test_panel as fixtures
@@ -51,6 +52,77 @@ class PremiumAuthorizationTests(DistributedControlCase):
         self.assertFalse(
             self.db.authorize_local_participant("advanced", {}, self.now[0])
         )
+
+    def test_node_reports_cannot_charge_or_count_other_tier(self):
+        ordinary, premium = self.prepare()
+        for index, node_id in enumerate(self.nodes):
+            traffic = {"ordinary": {"tx": 10, "rx": 0},
+                       "advanced": {"tx": 100, "rx": 0}}
+            domains = [{"user": "ordinary", "domain": "normal.example.test", "tx": 10, "rx": 0},
+                       {"user": "advanced", "domain": "premium.example.test", "tx": 100, "rx": 0}]
+            result = self.db.apply_node_traffic_batch(
+                node_id, format(index + 20, '032x'), traffic, bytes([index + 1]) * 32,
+                self.now[0], domain_usage=domains, observed_at=self.now[0])
+            self.assertTrue(result['committed'])
+            self.assertEqual(1, result['unknownUsers'])
+            self.service.accept_online_snapshot(
+                self.snapshot(node_id, 70 + index, sequence=2,
+                              online={"ordinary": 3, "advanced": 4}),
+                remote_ip="203.0.113.{}".format(index + 1))
+        self.assertEqual(10, self.db.get_proxy_user(ordinary['id'])['tx_bytes'])
+        self.assertEqual(100, self.db.get_proxy_user(premium['id'])['tx_bytes'])
+        self.assertEqual({"ordinary": 3}, self.db.node_online_counts(self.nodes[0]))
+        self.assertEqual({"advanced": 4}, self.db.node_online_counts(self.nodes[1]))
+        self.assertEqual(['normal.example.test'], [x['domain'] for x in self.db.domain_usage_top(ordinary['id'], now=self.now[0])['items']])
+        self.assertEqual(['premium.example.test'], [x['domain'] for x in self.db.domain_usage_top(premium['id'], now=self.now[0])['items']])
+        with self.db._connect() as c:
+            physical = {r['origin_id']: r['total'] for r in c.execute(
+                "SELECT origin_id, SUM(tx_bytes+rx_bytes) AS total FROM origin_traffic_daily GROUP BY origin_id")}
+        self.assertEqual(110, physical['node:' + self.nodes[0]])
+        self.assertEqual(110, physical['node:' + self.nodes[1]])
+
+    def test_local_collection_cannot_charge_premium_user(self):
+        ordinary, premium = self.prepare()
+        local = 'local:' + 'a' * 32
+        self.db.apply_traffic_batch(
+            'b' * 32, {'ordinary': {'tx': 10, 'rx': 0}, 'advanced': {'tx': 100, 'rx': 0}},
+            origin_id=local, origin_kind='local', origin_name='local',
+            domain_usage=[{'user': 'advanced', 'domain': 'premium.example.test', 'tx': 100, 'rx': 0}],
+            fresh_local_collection=True)
+        self.assertEqual(10, self.db.get_proxy_user(ordinary['id'])['tx_bytes'])
+        self.assertEqual(0, self.db.get_proxy_user(premium['id'])['tx_bytes'])
+        self.assertEqual([], self.db.domain_usage_top(premium['id'])['items'])
+
+    def test_stale_cross_tier_online_counts_cannot_block_authentication(self):
+        ordinary, premium = self.prepare()
+        with self.db._connect() as c:
+            c.execute("INSERT INTO node_online_counts(node_id,user_name,count) VALUES (?,?,?)",
+                      (self.nodes[0], 'advanced', 100))
+            c.execute("INSERT INTO node_online_counts(node_id,user_name,count) VALUES (?,?,?)",
+                      (self.nodes[1], 'ordinary', 100))
+        self.local_online['advanced'] = 100
+        self.token = premium['token']
+        self.assertTrue(self.service.authorize(self.auth_payload(self.nodes[1], 90), '203.0.113.2')['ok'])
+        self.token = ordinary['token']
+        self.assertTrue(self.service.authorize(self.auth_payload(self.nodes[0], 91), '203.0.113.1')['ok'])
+        states = self.db.list_node_online_states(self.now[0], 60)
+        self.assertFalse(any(state['online'] for state in states))
+
+    def test_canary_online_snapshot_does_not_reject_or_count_fake_identity(self):
+        self.db.create_proxy_user("ordinary")
+        snapshot = self.snapshot(self.nodes[0], 95, sequence=1,
+                                 online={"ordinary": 2, "__hy2panel_bootstrap_canary__": 1})
+        self.service.accept_online_snapshot(snapshot, '203.0.113.1')
+        self.assertEqual({'ordinary': 2}, self.db.node_online_counts(self.nodes[0]))
+        snapshot = self.snapshot(self.nodes[0], 96, sequence=2,
+                                 online={"unrelated-unknown": 1, "__hy2panel_bootstrap_canary__": 1})
+        from hy2panel.distributed import NodeRequestRejected
+        with self.assertRaises(NodeRequestRejected):
+            self.service.accept_online_snapshot(snapshot, '203.0.113.1')
+
+    def test_canary_identity_cannot_be_created_as_a_user(self):
+        with self.assertRaises(ValueError):
+            self.db.create_proxy_user("__HY2PANEL_BOOTSTRAP_CANARY__")
 
     def test_shared_one_hundred_slots_across_regions(self):
         _, advanced = self.prepare()
@@ -112,7 +184,12 @@ class PremiumAuthorizationTests(DistributedControlCase):
 
 
 class PremiumSubscriptionTests(unittest.TestCase):
-    setUp = fixtures.PanelHttpTests.setUp
+    def setUp(self):
+        fixtures.PanelHttpTests.setUp(self)
+        patcher = mock.patch.object(type(self.db), "_certificate_server_name", return_value="cert.example.test")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     tearDown = fixtures.PanelHttpTests.tearDown
     request = fixtures.PanelHttpTests.request
     authenticated_headers = fixtures.PanelHttpTests.authenticated_headers
@@ -136,7 +213,7 @@ class PremiumSubscriptionTests(unittest.TestCase):
             )
             c.execute(
                 "UPDATE premium_node_profiles SET identity_json=? WHERE node_id=?",
-                (json.dumps({"certificateDerSha256": "ab" * 32}), node["node_id"]),
+                (json.dumps({"certificateDerSha256": "ab" * 32, "certificatePem": "fixture"}), node["node_id"]),
             )
         return node["node_id"]
 
@@ -156,6 +233,7 @@ class PremiumSubscriptionTests(unittest.TestCase):
             )
         for region in ("hk", "us", "jp", "sg"):
             self.assertIn(region + ".example.test:19999", body)
+        self.assertIn("sni=cert.example.test", body)
         self.db.update_premium_node_profile(
             nodes[0], "香港新名字", "new-hk.example.com", 443
         )
@@ -169,7 +247,7 @@ class PremiumSubscriptionTests(unittest.TestCase):
             self.assertNotIn("example.test", body)
             self.assertNotIn("new-hk", body)
 
-    def test_independent_persistent_certificates_and_backup_profiles(self):
+    def test_user_backup_reenrolls_premium_nodes_with_new_certificates(self):
         nodes = []
         for region in ("hk", "us"):
             node = self.db.create_node_enrollment(
@@ -215,21 +293,7 @@ class PremiumSubscriptionTests(unittest.TestCase):
             f.write(z.read("data/panel.db"))
             f.flush()
             with sqlite3.connect(f.name) as c:
-                self.assertEqual(
-                    2,
-                    c.execute("SELECT COUNT(*) FROM premium_node_profiles").fetchone()[
-                        0
-                    ],
-                )
-                self.assertEqual(
-                    first,
-                    json.loads(
-                        c.execute(
-                            "SELECT identity_json FROM premium_node_profiles WHERE node_id=?",
-                            (nodes[0],),
-                        ).fetchone()[0]
-                    ),
-                )
+                self.assertEqual(0, c.execute("SELECT COUNT(*) FROM premium_node_profiles").fetchone()[0])
 
             import hysteria2_panel as panel
 
@@ -249,8 +313,11 @@ class PremiumSubscriptionTests(unittest.TestCase):
                     subscription_host="changed.example.test",
                     subscription_port=8443,
                 )
-                self.assertTrue(replacement["restored_profile"])
-                self.assertEqual(
+                self.assertFalse(replacement["restored_profile"])
+                with restored._connect() as c:
+                    row = c.execute("SELECT name, subscription_host, subscription_port, listen_port, port_hopping FROM nodes WHERE node_id=?", (replacement["node_id"],)).fetchone()
+                    self.assertEqual(("replacement", "changed.example.test", 8443, 8443, 0), tuple(row))
+                self.assertNotEqual(
                     identity,
                     restored.get_or_create_node_identity(
                         replacement["node_id"], policy
@@ -269,9 +336,72 @@ class PremiumSubscriptionTests(unittest.TestCase):
                 with self.request(
                     "/sub/" + subscription["token"] + "?format=raw"
                 ) as response:
-                    self.assertEqual(before, response.read())
+                    after = response.read()
+                    self.assertNotEqual(before, after)
+                    self.assertEqual(2, after.count(b"changed.example.test:8443"))
+                    self.assertIn(b"sni=cert.example.test", after)
             finally:
                 self.application.database = original
+
+    def test_reenrollment_updates_subscription_and_reuses_certificate(self):
+        user = self.db.create_proxy_user("rejoin", user_type=1)
+        token = self.db.ensure_subscription(user["id"])["token"]
+        old_id = self.add_node("us")
+        self.db.delete_node_pairing(old_id, "admin", 2)
+        replacement = self.db.create_node_enrollment(
+            "new line", "1.1.1.1", "admin", "c" * 64, 3, 4,
+            tier="premium", region="us", subscription_host="new.example.test",
+            subscription_port=8443, port_hopping=True)
+        with self.db._connect() as c:
+            profile = c.execute("SELECT * FROM premium_node_profiles WHERE node_id=?", (replacement["node_id"],)).fetchone()
+            self.assertEqual(("new line", "new.example.test", 443, 8443, 1),
+                             (profile["label"], profile["host"], profile["port"], profile["listen_port"], profile["port_hopping"]))
+            self.assertEqual("ab" * 32, json.loads(profile["identity_json"])["certificateDerSha256"])
+            c.execute("UPDATE nodes SET status='pending_verification', verified_at=1, policy_state='protocol_ready', data_plane_state='dns_admitted' WHERE node_id=?", (replacement["node_id"],))
+        with self.request('/sub/' + token, headers={'User-Agent': 'SSRVPN/1.0'}) as response:
+            proxies = json.load(response)['proxies']
+        self.assertEqual(1, len(proxies))
+        self.assertEqual('new.example.test', proxies[0]['server'])
+        self.assertEqual(443, proxies[0]['port'])
+        self.assertEqual('20000-50000', proxies[0]['ports'])
+
+    def test_live_online_totals_are_isolated_by_user_type(self):
+        self.db.create_proxy_user("regular")
+        self.db.create_proxy_user("premium", user_type=1)
+        headers, _ = self.authenticated_headers()
+        live = {"online": {"regular": 2, "premium": 7}, "online_complete": True,
+                "observed_at": 1_700_000_200, "machines": []}
+        with mock.patch.object(self.application.usage_manager, "online_snapshot", return_value=live):
+            for tier, expected in (("standard", 2), ("premium", 7)):
+                with self.request('/api/v1/dashboard-online?type=' + tier, headers=headers) as response:
+                    payload = json.load(response)
+                self.assertEqual(expected, payload['onlineDevices'])
+
+    def test_dashboard_user_counts_follow_the_selected_group(self):
+        self.db.create_proxy_user("regular")
+        self.db.create_proxy_user("premium", user_type=1)
+        self.db.create_proxy_user("premium-two", user_type=1)
+        headers, _ = self.authenticated_headers()
+        with self.request('/?type=standard', headers=headers) as response:
+            normal = response.read().decode()
+        with self.request('/?type=premium', headers=headers) as response:
+            premium = response.read().decode()
+        self.assertIn('共 1 位用户', normal)
+        self.assertIn('共 2 位用户', premium)
+        self.assertNotIn('显示 1 / 全部 3 位用户', normal)
+
+    def test_online_update_refuses_to_orphan_external_node_data(self):
+        with self.db._connect() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS external_subscription_nodes (id INTEGER, nodes_json TEXT, revision INTEGER)")
+            c.execute("INSERT INTO external_subscription_nodes (id, nodes_json, revision) VALUES (1, 'opaque', 1)")
+        headers, csrf = self.authenticated_headers()
+        self.application.update_result = {"update_available": True, "latest": "v99.0.0"}
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request('/updates/apply', {'csrf': csrf},
+                         headers={**headers, 'Accept': 'application/json'})
+        self.assertEqual(409, error.exception.code)
+        self.assertIn('外部节点', error.exception.read().decode())
+        self.assertEqual(0, self.update_controller.queued)
 
     def test_group_reset_never_changes_other_users(self):
         normal = self.db.create_proxy_user("normal")

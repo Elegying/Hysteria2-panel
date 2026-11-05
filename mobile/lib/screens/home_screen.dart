@@ -265,7 +265,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   controller: host,
                   decoration: const InputDecoration(
                     labelText: '订阅节点地址',
-                    hintText: '例如 hk.ssrvpn.vip',
+                    hintText: '例如 node.example.com',
                   ),
                 ),
                 SwitchListTile(
@@ -376,8 +376,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   const SizedBox(height: 12),
                   SelectableText(
                     command,
-                    style: Theme.of(context).textTheme.bodySmall
-                        ?.copyWith(fontFamily: 'monospace'),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
                   ),
                 ],
               ),
@@ -551,6 +552,9 @@ class _SummaryGrid extends StatelessWidget {
     final users = Map<String, dynamic>.from(data['users'] as Map? ?? {});
     final nodes = Map<String, dynamic>.from(data['nodes'] as Map? ?? {});
     final traffic = Map<String, dynamic>.from(data['traffic'] as Map? ?? {});
+    final trafficByTier = Map<String, dynamic>.from(
+      data['trafficByTier'] as Map? ?? {},
+    );
     final cards = [
       ('当前用户', '${users['total'] ?? 0}', Icons.people_rounded),
       ('在线设备', '${users['onlineDevices'] ?? 0}', Icons.devices_rounded),
@@ -559,11 +563,23 @@ class _SummaryGrid extends StatelessWidget {
         '${nodes['online'] ?? 0} / ${nodes['total'] ?? 0}',
         Icons.dns_rounded,
       ),
-      (
-        '总流量',
-        formatBytes(traffic['totalBytes']),
-        Icons.swap_vert_circle_rounded,
-      ),
+      if (trafficByTier.isNotEmpty) ...[
+        (
+          '普通用户流量',
+          formatBytes((trafficByTier['standard'] as Map?)?['totalBytes']),
+          Icons.swap_vert_circle_rounded,
+        ),
+        (
+          '专线用户流量',
+          formatBytes((trafficByTier['premium'] as Map?)?['totalBytes']),
+          Icons.swap_vert_circle_rounded,
+        ),
+      ] else
+        (
+          '总流量',
+          formatBytes(traffic['totalBytes']),
+          Icons.swap_vert_circle_rounded,
+        ),
     ];
     return GridView.builder(
       shrinkWrap: true,
@@ -646,8 +662,9 @@ class _SectionCard extends StatelessWidget {
               Expanded(
                 child: Text(
                   title,
-                  style: Theme.of(context).textTheme.titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w700),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ),
               if (action != null) ...[const SizedBox(width: 10), action!],

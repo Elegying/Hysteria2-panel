@@ -50,6 +50,7 @@ class ForecastTests(unittest.TestCase):
                 lifecycle_state, data_plane_state, created_at)
                 VALUES (?, 'forecast-edge', 'pending_verification', 'protocol_ready',
                 'active', 'dns_admitted', ?)""", ('b' * 32, self.now - 86400))
+            connection.execute('UPDATE usage_origins SET node_id=? WHERE origin_id=?', ('b' * 32, self.remote))
         first = machine_forecasts(app, self.db.list_nodes(), now=self.now)
         self.assertIn('5月28日', first[self.local]['text'])
         self.assertIn('2 台', first[self.local]['basis'])
@@ -62,6 +63,33 @@ class ForecastTests(unittest.TestCase):
         self.assertIn('5月23日', second[self.local]['text'])
         self.assertIn('1 台', second[self.local]['basis'])
         self.assertEqual(200, self.db.recent_daily_traffic_average(self.now)['daily_bytes'])
+
+    def test_forecasts_do_not_mix_standard_and_premium_traffic(self):
+        premium = 'node:' + 'c' * 32
+        self.db.register_usage_origin(premium, 'remote', 'premium',
+                                      node_id='c' * 32, created_at=self.now - 8 * 86400)
+        with self.db._connect() as connection:
+            for node_id, tier in (('b' * 32, 'standard'), ('c' * 32, 'premium')):
+                connection.execute("""INSERT INTO nodes(node_id, name, status, policy_state,
+                    lifecycle_state, data_plane_state, tier, created_at)
+                    VALUES (?, ?, 'pending_verification', 'protocol_ready',
+                    'active', 'dns_admitted', ?, ?)""", (node_id, tier, tier, self.now - 8 * 86400))
+            connection.execute('UPDATE usage_origins SET node_id=? WHERE origin_id=?', ('b' * 32, self.remote))
+            connection.execute('INSERT INTO origin_traffic_daily VALUES (?, ?, ?, ?, ?)',
+                               (premium, '2033-05-17', 14000, 0, self.now - 1))
+        self.assertEqual(200, self.db.recent_daily_traffic_average(self.now, tier='standard')['daily_bytes'])
+        self.assertEqual(2000, self.db.recent_daily_traffic_average(self.now, tier='premium')['daily_bytes'])
+        self.db.set_origin_budget(premium, 1000, 80, 'admin', self.now, manual_used_bytes=0)
+        app = SimpleNamespace(database=self.db,
+                              usage_manager=SimpleNamespace(local_origin_id=self.local),
+                              service_controller=SimpleNamespace(status=lambda: 'active'))
+        result = machine_forecasts(app, self.db.list_nodes(), now=self.now)
+        self.assertIn('普通线路', result[self.local]['basis'])
+        self.assertIn('2 台', result[self.local]['basis'])
+        self.assertIn('专线', result[premium]['basis'])
+        self.assertIn('1 台', result[premium]['basis'])
+        self.assertIn('5月28日', result[self.local]['text'])
+        self.assertIn('5月18日', result[premium]['text'])
 
     def test_reset_horizon_unlimited_zero_and_exhausted_states(self):
         budget = self.db.get_origin_budget(self.local, self.now)
@@ -143,7 +171,7 @@ class ForecastTests(unittest.TestCase):
             item = _traffic_budgets(app, snapshot)[0]
         self.assertEqual('203.0.113.5', item['serverIp'])
         self.assertEqual((600, 300), (item['txBytes'], item['rxBytes']))
-        self.assertIn('5月23日', item['budget']['forecastText'])
+        self.assertIn('5月28日', item['budget']['forecastText'])
         self.assertIn('还缺 1 G', item['budget']['forecastText'])
         self.assertNotIn('UTC', item['budget']['forecastText'])
         self.assertEqual('', item['budget']['forecastBasis'])

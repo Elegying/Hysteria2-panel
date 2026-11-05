@@ -1955,6 +1955,7 @@ class OperationsTests(unittest.TestCase):
             public_host="vpn.example.test",
             hysteria_port=19999,
             node_name="test-node",
+            panel_public_host="panel.example.test",
             panel_scheme="http",
             panel_port=19998,
             auth_port=19996,
@@ -4828,8 +4829,12 @@ class OperationsTests(unittest.TestCase):
             "latest": "v0.12.0",
             "updated": True,
         }
+        database = mock.Mock()
+        database.has_external_subscription_state.return_value = False
         with mock.patch.object(
             hysteria2_panel.Settings, "from_mapping", return_value=settings
+        ), mock.patch.object(
+            hysteria2_panel, "Database", return_value=database
         ), mock.patch.object(
             hysteria2_panel, "UpdateController", return_value=controller
         ), mock.patch.object(
@@ -4842,6 +4847,20 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(0, result)
         controller.pending_target.assert_called_once_with()
         installer.apply.assert_called_once_with("v0.12.0")
+
+    def test_apply_update_cli_rejects_external_nodes_without_compatible_release(self):
+        settings = mock.Mock()
+        database = mock.Mock()
+        database.has_external_subscription_state.return_value = True
+        installer = mock.Mock()
+        with mock.patch.object(hysteria2_panel.Settings, 'from_mapping', return_value=settings), \
+             mock.patch.object(hysteria2_panel, 'Database', return_value=database), \
+             mock.patch.object(hysteria2_panel, 'UpdateInstaller', return_value=installer), \
+             mock.patch.object(hysteria2_panel.os, 'geteuid', return_value=0, create=True), \
+             mock.patch('builtins.print'):
+            result = hysteria2_panel.main(['apply-update', '--queued-target'])
+        self.assertEqual(1, result)
+        installer.apply.assert_not_called()
 
     def test_update_installer_downloads_only_the_fixed_release_and_runs_noninteractively(self):
         requests = []
@@ -5235,10 +5254,8 @@ class BackupManagerTests(unittest.TestCase):
             packaged_database = self.root / "packaged.db"
             packaged_database.write_bytes(package.read("data/panel.db"))
 
-        self.assertEqual(1, manifest["formatVersion"])
+        self.assertEqual(3, manifest["formatVersion"])
         self.assertEqual("vpn.example.test", manifest["source"]["publicHost"])
-        self.assertEqual(19999, manifest["source"]["hysteriaPort"])
-        self.assertEqual(self.manager.node_name, manifest["source"]["nodeName"])
         self.assertEqual(1, manifest["proxyUserCount"])
         with sqlite_connection(packaged_database) as connection:
             for table in ("admins", "sessions", "audit_log"):
@@ -5248,7 +5265,7 @@ class BackupManagerTests(unittest.TestCase):
                     table,
                 )
         inspected = self.manager.validate_archive(archive)
-        self.assertEqual(manifest["certificate"]["pinSHA256"], inspected["certificate"]["pinSHA256"])
+        self.assertEqual(manifest, inspected)
 
     def test_archive_limit_can_hold_the_largest_valid_uncompressed_backup(self):
         self.assertGreaterEqual(
@@ -5524,7 +5541,7 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(self.certificate.read_bytes(), destination_cert.read_bytes())
         self.assertEqual(self.private_key.read_bytes(), destination_key.read_bytes())
         self.assertIn("HY2PANEL_HMAC_KEY={}".format(self.hmac_key.hex()), env_file.read_text())
-        self.assertIn("HY2PANEL_CERT_PIN={}".format(result["certificate"]["pinSHA256"]), env_file.read_text())
+        self.assertIn("HY2PANEL_CERT_PIN={}".format(destination._certificate_pin(destination_cert.read_bytes())), env_file.read_text())
         self.assertTrue((Path(result["automaticBackup"]) / "panel.db").is_file())
 
     def test_restore_imports_user_totals_without_source_machine_state(self):
@@ -5768,7 +5785,7 @@ class BackupManagerTests(unittest.TestCase):
 
         restored = Database(destination_db.path, self.hmac_key)
         self.assertEqual(subscription['token'], restored.ensure_subscription(self.user['id'])['token'])
-        self.assertEqual(443, restored.get_subscription_defaults()[0]['port'])
+        self.assertIsNone(restored.get_subscription_defaults())
         restored_users = {user["name"]: user for user in restored.list_proxy_users_for_usage()}
         self.assertEqual(set(issued_tokens), set(restored_users))
         for name, token in issued_tokens.items():
@@ -5935,7 +5952,7 @@ class BackupManagerTests(unittest.TestCase):
         failed = {"value": False}
 
         def fail_once(path, source_path):
-            if Path(path) == destination_cert and not failed["value"]:
+            if Path(path) == destination_db.path and not failed["value"]:
                 failed["value"] = True
                 raise OSError("simulated disk failure")
             return replace_file(path, source_path)
@@ -6045,6 +6062,7 @@ class BackupManagerTests(unittest.TestCase):
         self._exercise_explicit_restore(legacy=True)
 
     def _exercise_explicit_restore(self, legacy=False):
+        self.manager.subscription_base_url = "http://panel.example.test:19998"
         archive = self.manager.create_archive()
         if legacy:
             with zipfile.ZipFile(archive) as package:
@@ -6089,6 +6107,7 @@ class BackupManagerTests(unittest.TestCase):
             hysteria_port=19999,
             node_name="test-node",
             local_origin_id="local:" + "e" * 32,
+            subscription_base_url="http://panel.example.test:19998",
             work_dir=destination_root / "backup-restore",
             maintenance_lock_path=destination_root / "maintenance.lock",
             maintenance_lock_owner=os.geteuid(),
@@ -6117,6 +6136,7 @@ class BackupManagerTests(unittest.TestCase):
             hysteria_port=19999,
             node_name="test-node",
             local_origin_id="local:" + "e" * 32,
+            panel_public_host="panel.example.test",
             panel_scheme="http",
             panel_port=19998,
             auth_port=19996,
@@ -6428,7 +6448,7 @@ class PanelHttpTests(unittest.TestCase):
                 "machineForecasts": {
                     self.application.usage_manager.local_origin_id: {
                         "text": "未设置预算，暂不预测",
-                        "basis": "按近 0 个完整日均值、1 台供流机器均分预测",
+                        "basis": "按普通线路近 0 个完整日均值、1 台供流机器均分预测",
                         "budget": mock.ANY,
                     }
                 },

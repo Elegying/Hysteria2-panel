@@ -74,7 +74,7 @@ systemctl is-active hysteria2-panel-node-auth hysteria2-panel-node-control
 
 ## 5. 一键备份与还原
 
-在“数据迁移”下载 ZIP，放到加密磁盘或离线介质。备份包含用户、用户流量、用户名隔离信息、HMAC 和 Hysteria TLS 身份；**不包含**管理员密码、远端节点身份、机器预算/机器日账本、面板 HTTPS 私钥或 WebDAV 凭据。完整 ZIP 可以恢复用户连接身份，必须按密码级别保管。
+在“数据迁移”下载 ZIP，放到加密磁盘或离线介质。备份包含用户、用户流量、用户名隔离信息、HMAC、订阅身份和面板本机 Hysteria 证书私钥；**不包含**管理员密码、远端节点身份、机器预算/机器日账本、面板 HTTPS 私钥或 WebDAV 凭据。完整 ZIP 可以恢复用户连接身份，必须按密码级别保管。
 
 ### 原面板还原演练
 
@@ -90,7 +90,7 @@ systemctl is-active hysteria2-panel-node-auth hysteria2-panel-node-control
 
 ### 新面板迁移
 
-新机先配置独立面板域名、安装 HTTPS 面板，再恢复用户 ZIP，验证后才接入节点和切换用户域名 DNS。目标管理员与机器配置保留；节点身份不在便携备份中，必须重新对接。原有固定端点/证书身份兼容性以恢复预检为准。
+新机保持原订阅域名、协议和端口，安装 HTTPS 面板，再恢复用户 ZIP，验证后才接入节点和切换用户域名 DNS。目标管理员与机器配置保留；节点身份不在便携备份中，必须重新对接。本机代理地址和 UDP 端口须保持不变，恢复本机证书后普通用户无需刷新即可重连；远端节点重新对接后需刷新订阅。
 
 异地备份由每日 timer 调度，在 root-only 配置中提供 HTTPS WebDAV。上传临时对象后，先回读并比对 SHA-256，再原子 MOVE；正式对象再次回读成功后才记录成功并清理旧备份。未配置 WebDAV 不等于已经具备异地容灾，详见[备份与迁移](BACKUP_AND_MIGRATION.md)。
 
