@@ -510,6 +510,14 @@ def overview_payload(application, panel_version):
             "rxBytes": total_rx,
             "totalBytes": total_tx + total_rx,
         },
+        "trafficByTier": {
+            tier: {
+                "txBytes": sum(user["txBytes"] for user in users if user["userType"] == user_type),
+                "rxBytes": sum(user["rxBytes"] for user in users if user["userType"] == user_type),
+                "totalBytes": sum(user["usedBytes"] for user in users if user["userType"] == user_type),
+            }
+            for tier, user_type in (("standard", 0), ("premium", 1))
+        },
         "nodes": {
             "total": nodes["total"],
             "online": nodes["online"],

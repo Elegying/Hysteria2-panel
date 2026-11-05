@@ -91,7 +91,10 @@ class SubscriptionBackupTests(unittest.TestCase):
                 "HY2PANEL_HMAC_KEY=" + key.hex() + "\nHY2PANEL_CERT_PIN=old\n"
             )
             env.chmod(0o600)
+            original_cert, original_key = self.backup_manager.tls_cert.read_bytes(), self.backup_manager.tls_key.read_bytes()
             manager.apply_archive(archive, env_file=env, backup_root=root / "backups")
+            self.assertEqual(original_cert, cert.read_bytes())
+            self.assertEqual(original_key, private.read_bytes())
             restored = panel.Database(target.path, self.db.hmac_key)
             restored.initialize()
             self.assertIn(self.db.hmac_key.hex(), env.read_text())
@@ -99,14 +102,16 @@ class SubscriptionBackupTests(unittest.TestCase):
             self.assertEqual(1893456000, restored.get_proxy_user(advanced["id"])["starts_at"])
             self.assertEqual(1, restored.get_proxy_user(advanced["id"])["user_type"])
             with restored._connect() as connection:
-                self.assertEqual("hk.example.test", connection.execute("SELECT host FROM premium_node_profiles").fetchone()[0])
+                self.assertEqual(0, connection.execute("SELECT count(*) FROM premium_node_profiles").fetchone()[0])
             self.assertEqual(sub, restored.ensure_subscription(user["id"]))
             self.assertEqual(custom_sub, restored.ensure_subscription(custom["id"]))
             self.assertEqual("migrated", restored.authenticate_token(user["token"]))
-            self.assertEqual(
-                self.db.list_subscription_nodes(custom_sub["id"]),
-                restored.list_subscription_nodes(custom_sub["id"]),
-            )
+            self.assertEqual([], restored.list_subscription_nodes(custom_sub["id"]))
+            self.assertIsNone(restored.get_subscription_defaults())
+            self.assertEqual(100, restored.get_proxy_user(advanced["id"])["device_limit"])
+            self.assertEqual(123, restored.get_proxy_user(user["id"])["tx_bytes"])
+            self.assertEqual(456, restored.get_proxy_user(user["id"])["rx_bytes"])
+            restored.set_subscription_defaults(nodes)
             original = self.application.database
             self.application.database = restored
             try:
@@ -134,6 +139,35 @@ class SubscriptionBackupTests(unittest.TestCase):
                 self.assertEqual(sub, restored.ensure_subscription(user["id"]))
             finally:
                 self.application.database = original
+
+    def test_backup_preserves_local_identity_and_requires_original_endpoints(self):
+        import zipfile
+        manager = self.backup_manager
+        manager.subscription_base_url = "https://subscriptions.example.test:19999"
+        with patch.object(panel.PortHoppingController, "status", return_value={"enabled": True}):
+            archive = manager.create_archive()
+        with zipfile.ZipFile(archive) as package:
+            self.assertEqual({"manifest.json", "data/panel.db", "secrets/hmac-key.hex", "tls/server.crt", "tls/server.key"}, set(package.namelist()))
+            manifest = json.loads(package.read("manifest.json"))
+            self.assertEqual(3, manifest["formatVersion"])
+            self.assertTrue(manifest["source"]["portHoppingEnabled"])
+            self.assertEqual(manager.subscription_base_url, manifest["source"]["subscriptionBaseUrl"])
+            self.assertEqual(manager.tls_cert.read_bytes(), package.read("tls/server.crt"))
+            self.assertEqual(manager.tls_key.read_bytes(), package.read("tls/server.key"))
+        original_host, original_port = manager.public_host, manager.hysteria_port
+        manager.public_host = "replacement.example.test"
+        with self.assertRaisesRegex(panel.BackupValidationError, "域名"):
+            manager.validate_archive(archive, require_compatible_endpoint=True)
+        manager.public_host = original_host
+        manager.hysteria_port = 24443
+        with self.assertRaisesRegex(panel.BackupValidationError, "端口"):
+            manager.validate_archive(archive, require_compatible_endpoint=True)
+        manager.hysteria_port = original_port
+        manager.validate_archive(archive, require_compatible_endpoint=True)
+        for address in ("", "http://subscriptions.example.test:19999", "https://subscriptions.example.test:24443"):
+            manager.subscription_base_url = address
+            with self.subTest(address=address), self.assertRaisesRegex(panel.BackupValidationError, "订阅"):
+                manager.validate_archive(archive, require_compatible_endpoint=True)
 
     def test_invalid_subscription_identity_rejected_before_restore(self):
         user = self.db.create_proxy_user("broken")

@@ -332,14 +332,8 @@ class PortableBackupCompactionTests(unittest.TestCase):
                     package.read("secrets/hmac-key.hex").decode("ascii").strip()
                 ),
             )
-            self.assertEqual(
-                self.certificate.read_bytes(), package.read("tls/server.crt")
-            )
-            self.assertEqual(
-                self.private_key.read_bytes(), package.read("tls/server.key")
-            )
             manifest = json.loads(package.read("manifest.json"))
-            self.assertEqual(1, manifest["formatVersion"])
+            self.assertEqual(3, manifest["formatVersion"])
             self.assertEqual("users", manifest["dataScope"])
             self.assertEqual("Fixture node", manifest["source"]["nodeName"])
 

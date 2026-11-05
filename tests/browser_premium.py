@@ -251,10 +251,12 @@ try:
     browser.evaluate("document.querySelector('.node-onboarding-dialog').showModal()")
     browser.value("#node-tier", "premium", "change")
     browser.value("#node-region", "hk", "change")
-    assert (
-        browser.evaluate('document.querySelector("#node-host").value')
-        == "hk.example.test"
-    )
+    assert browser.evaluate('document.querySelector("#node-host").value') == ""
+    assert browser.evaluate('document.querySelector("#node-host").required')
+    browser.value("#node-host", "custom.example.test", "input")
+    browser.value("#node-region", "jp", "change")
+    assert browser.evaluate('document.querySelector("#node-host").value') == "custom.example.test"
+    browser.value("#node-region", "hk", "change")
     assert (
         browser.evaluate('document.querySelector("#node-name").value')
         == "私家车-香港-专线"

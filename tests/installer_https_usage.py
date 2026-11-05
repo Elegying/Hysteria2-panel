@@ -137,6 +137,7 @@ def main():
                 Path(values['HY2PANEL_TLS_CERT']), Path(values['HY2PANEL_TLS_KEY']),
                 values['HY2PANEL_PUBLIC_HOST'], int(values['HY2PANEL_HYSTERIA_PORT']),
                 work_dir=Path(work),
+                subscription_base_url="https://panel.installer.test:31998",
             )
             archive = manager._create_archive_locked()
             with zipfile.ZipFile(archive) as package:
@@ -163,7 +164,12 @@ def main():
                 pending.chmod(0o600)
                 owner = database.path.stat()
                 os.chown(pending, owner.st_uid, owner.st_gid)
-                run('systemctl', 'start', 'hysteria2-panel-restore.service')
+                try:
+                    run('systemctl', 'start', 'hysteria2-panel-restore.service')
+                except subprocess.CalledProcessError:
+                    subprocess.run(['journalctl', '-u', 'hysteria2-panel-restore.service',
+                                    '--no-pager', '-n', '80'], check=False)
+                    raise
                 assert expect(user['token'], 200)['data']['usedBytes'] == 30
                 deadline = time.monotonic() + 90
                 while Path('/etc/hysteria2-panel/.restore-active').exists():

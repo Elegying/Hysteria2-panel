@@ -52,6 +52,8 @@ class AptRepairTests(unittest.TestCase):
         result, after, reports, backups, command = self.run_repair(text)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(2, after.count('[check-valid-until=no]'))
+        self.assertEqual(2, after.count('https://archive.debian.org/debian-security/'))
+        self.assertNotIn('snapshot.debian.org', after)
         self.assertIn('# deb http://deb.debian.org/debian bullseye-backports main', after)
         self.assertIn('deb https://example.org/debian bullseye-backports main', after)
         self.assertIn('deb http://deb.debian.org/debian bullseye main', after)

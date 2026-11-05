@@ -124,6 +124,7 @@ SCRYPT_R = 8
 SCRYPT_P = 1
 PBKDF2_ITERATIONS = 600000
 NAME_PATTERN = re.compile(r"^[^\x00-\x1f\x7f]{1,64}$")
+BOOTSTRAP_CANARY_USER = "__hy2panel_bootstrap_canary__"
 ASCII_NOCASE_TRANSLATION = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 LOGGER = logging.getLogger("hysteria2-panel")
 DOMAIN_USAGE_MAX_DOMAINS_PER_ORIGIN_USER = 500
@@ -145,7 +146,7 @@ DEFAULT_DEVICE_LIMIT = 3
 DEFAULT_TRAFFIC_LIMIT_BYTES = 250 * 1024**3
 MAX_DEVICE_LIMIT = 100
 MAX_TRAFFIC_LIMIT_BYTES = 1024 * 1024**4
-BACKUP_FORMAT_VERSION = 1
+BACKUP_FORMAT_VERSION = 3
 MAX_BACKUP_CONTENT_BYTES = 128 * 1024**2
 MAX_BACKUP_ARCHIVE_BYTES = MAX_BACKUP_CONTENT_BYTES + 3 * 1024**2
 BACKUP_IO_CHUNK_BYTES = 1024 * 1024
@@ -744,7 +745,8 @@ class BackupManager:
         ("admins", "DELETE FROM admins"),
     )
     RUNTIME_TABLES = frozenset(name for name, _statement in RUNTIME_TABLE_CLEANUP)
-    USER_TABLES = ("premium_node_profiles", "proxy_users", "retired_proxy_names", "subscriptions", "subscription_nodes", "subscription_defaults")
+    USER_TABLES = ("proxy_users", "retired_proxy_names", "subscriptions")
+    NODE_TABLES = ("subscription_nodes", "subscription_defaults", "premium_node_profiles")
     MACHINE_TABLES = (
         "origin_traffic_budgets", "origin_traffic_daily",
         "usage_origin_users", "usage_origins",
@@ -922,7 +924,7 @@ class BackupManager:
             raise BackupValidationError("便携备份数据表分类存在冲突")
         expected = restored | cls.RUNTIME_TABLES
         actual = cls._application_tables(connection)
-        if actual != expected:
+        if actual - {"external_subscription_nodes"} != expected:
             raise BackupValidationError("数据库包含未分类或缺失的数据表")
         return actual
 
@@ -988,7 +990,7 @@ class BackupManager:
                     ).fetchone()[0]
                     if count != 0:
                         raise BackupValidationError("精简数据库仍包含运行时数据")
-                for table in self.MACHINE_TABLES:
+                for table in self.NODE_TABLES + self.MACHINE_TABLES:
                     if connection.execute(
                         "SELECT 1 FROM {} LIMIT 1".format(table)  # nosec B608
                     ).fetchone() is not None:
@@ -1007,8 +1009,10 @@ class BackupManager:
                 connection.execute("BEGIN IMMEDIATE")
                 for _table, statement in self.RUNTIME_TABLE_CLEANUP:
                     connection.execute(statement)
-                for table in self.MACHINE_TABLES:
+                for table in self.NODE_TABLES + self.MACHINE_TABLES:
                     connection.execute("DELETE FROM {}".format(table))  # nosec B608
+                if "external_subscription_nodes" in self._application_tables(connection):
+                    connection.execute("DELETE FROM external_subscription_nodes")
                 if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
                     raise BackupValidationError("精简数据库外键一致性检查失败")
         except sqlite3.DatabaseError as exc:
@@ -1529,17 +1533,6 @@ class BackupManager:
             ascii_lower = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
             users = {name.translate(ascii_lower): value for name, value in users.items()}
             with sqlite_connection(str(incoming_path)) as source:
-                connected_profiles = current.execute("""SELECT p.node_id,p.identity_json
-                    FROM premium_node_profiles p JOIN nodes n ON n.node_id=p.node_id
-                    WHERE n.status!='revoked' AND n.policy_state='protocol_ready'""").fetchall()
-                if connected_profiles:
-                    has_profiles = source.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='premium_node_profiles'").fetchone()
-                    if not has_profiles:
-                        raise BackupValidationError("备份缺少当前专线证书，请先解除对接再恢复")
-                    for profile in connected_profiles:
-                        saved = source.execute("SELECT identity_json FROM premium_node_profiles WHERE node_id=?", (profile["node_id"],)).fetchone()
-                        if saved is None or saved[0] != profile["identity_json"]:
-                            raise BackupValidationError("备份专线证书与已对接节点不一致，请先恢复再重新对接")
                 for name, fingerprint in source.execute(
                     "SELECT name, token_fingerprint FROM proxy_users"
                 ):
@@ -1588,7 +1581,7 @@ class BackupManager:
                 )
             except (RuntimeError, ValueError) as exc:
                 raise BackupValidationError(str(exc)) from exc
-            if base_url and self.subscription_base_url and base_url.rstrip("/") != self.subscription_base_url:
+            if base_url.rstrip("/") != self.subscription_base_url.rstrip("/"):
                 raise BackupValidationError("订阅域名、HTTPS 协议和端口必须与原面板一致，才能保留已发出的订阅链接")
             if source["publicHost"].lower() != self.public_host.lower():
                 raise BackupValidationError(
@@ -2005,6 +1998,16 @@ class BackupManager:
                 )
 
     def _stage_user_restore(self, incoming_path, destination_path, restored_hmac):
+        # This version cannot interpret or re-encrypt external node credentials.
+        # Refuse opaque credentials in either database; user backups do not
+        # migrate external node credentials or re-encrypt destination data.
+        for database_path in (incoming_path, destination_path):
+            with sqlite_connection(str(database_path)) as check:
+                exists = check.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_subscription_nodes'"
+                ).fetchone()
+                if exists and check.execute("SELECT 1 FROM external_subscription_nodes LIMIT 1").fetchone():
+                    raise BackupValidationError("当前版本不支持外部节点数据，无法安全恢复；请使用支持该功能的面板版本")
         incoming = Database(incoming_path, restored_hmac)
         incoming.initialize()
         with sqlite_connection(str(incoming_path)) as source:
@@ -2036,7 +2039,7 @@ class BackupManager:
                 "sessions", "mobile_sessions", "domain_usage_monthly", "user_traffic_hourly",
                 "node_online_counts", "node_online_snapshots", "node_usage_checkpoints",
                 "node_auth_decisions", "local_auth_leases", "usage_origin_users",
-                "subscription_nodes", "subscriptions", "subscription_defaults", "premium_node_profiles",
+                "subscription_nodes", "subscriptions",
                 "proxy_users", "retired_proxy_names",
             ):
                 destination.execute("DELETE FROM {}".format(table))  # nosec B608
@@ -3284,6 +3287,8 @@ class Database:
         starts_at=None,
     ):
         name = _validate_name(name)
+        if name.casefold() == BOOTSTRAP_CANARY_USER.casefold():
+            raise ValueError("该用户名保留用于节点连通性检测")
         device_limit = int(device_limit)
         traffic_limit_bytes = int(traffic_limit_bytes)
         if not 1 <= device_limit <= MAX_DEVICE_LIMIT:
@@ -3785,6 +3790,19 @@ class Database:
                 (json.dumps(identity), node_id))
             return identity
 
+    @staticmethod
+    @functools.lru_cache(maxsize=128)
+    def _certificate_server_name(certificate_pem):
+        result = subprocess.run(  # nosec B603 -- fixed executable and arguments; PEM travels via stdin
+            ["/usr/bin/openssl", "x509", "-noout", "-text"],
+            input=certificate_pem, capture_output=True, text=True, check=True, timeout=5,
+        )
+        extension = re.search(r"X509v3 Subject Alternative Name:[^\n]*\n\s*([^\n]+)", result.stdout)
+        names = re.findall(r"DNS:([A-Za-z0-9][A-Za-z0-9.-]*)", extension.group(1) if extension else "")
+        if not names:
+            raise ValueError("节点证书缺少 DNS 名称")
+        return names[0].lower()
+
     def premium_subscription_nodes(self):
         with self._connect() as connection:
             rows = connection.execute("""SELECT n.*, p.label AS line_label, p.host AS line_host,
@@ -3802,10 +3820,20 @@ class Database:
             identity = json.loads(row["line_identity"])
             result.append({"node_id": row["node_id"], "label": row["line_label"],
                 "host": row["line_host"], "port": row["line_port"],
-                "pin_sha256": identity["certificateDerSha256"], "enabled": True,
+                "pin_sha256": identity["certificateDerSha256"], "sni": self._certificate_server_name(identity["certificatePem"]), "enabled": True,
                 **({"hop_ports": "20000-50000"} if row["port_hopping"] else {})})
             seen.add(row["region"])
         return result
+
+    def has_external_subscription_state(self):
+        """Detect external-node data that an older update might silently hide."""
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_subscription_nodes'"
+            ).fetchone()
+            return bool(exists and connection.execute(
+                "SELECT 1 FROM external_subscription_nodes LIMIT 1"
+            ).fetchone())
 
     def get_subscription_defaults(self):
         with self._connect() as connection:
@@ -4316,13 +4344,20 @@ class Database:
             )
         return results
 
-    def recent_daily_traffic_average(self, now=None):
-        """Use complete UTC days, including zero-use days, without manual edits."""
+    def recent_daily_traffic_average(self, now=None, tier=None):
+        """Use complete UTC days; optionally isolate physical traffic by node tier."""
+        if tier not in (None, "standard", "premium"):
+            raise ValueError("invalid traffic tier")
         now = int(time.time()) if now is None else int(now)
         today = datetime.datetime.fromtimestamp(now, tz=datetime.timezone.utc).date()
         with self._connect() as connection:
             first = connection.execute(
-                "SELECT MIN(created_at) FROM usage_origins WHERE kind IN ('local', 'remote')"
+                """SELECT MIN(o.created_at) FROM usage_origins o
+                LEFT JOIN nodes n ON n.node_id = o.node_id
+                WHERE o.kind IN ('local', 'remote') AND
+                (? IS NULL OR (? = 'standard' AND (o.kind = 'local' OR n.tier = 'standard'))
+                 OR (? = 'premium' AND o.kind = 'remote' AND n.tier = 'premium'))""",
+                (tier, tier, tier),
             ).fetchone()[0]
             if first is None:
                 return {"daily_bytes": None, "sample_days": 0}
@@ -4337,9 +4372,12 @@ class Database:
                 """SELECT COALESCE(SUM(d.tx_bytes + d.rx_bytes), 0)
                 FROM usage_origins AS o JOIN origin_traffic_daily AS d
                     ON d.origin_id = o.origin_id
-                WHERE o.kind IN ('local', 'remote')
-                    AND d.usage_date >= ? AND d.usage_date < ?""",
-                (start.isoformat(), today.isoformat()),
+                LEFT JOIN nodes AS n ON n.node_id = o.node_id
+                WHERE o.kind IN ('local', 'remote') AND
+                (? IS NULL OR (? = 'standard' AND (o.kind = 'local' OR n.tier = 'standard'))
+                 OR (? = 'premium' AND o.kind = 'remote' AND n.tier = 'premium'))
+                AND d.usage_date >= ? AND d.usage_date < ?""",
+                (tier, tier, tier, start.isoformat(), today.isoformat()),
             ).fetchone()[0]
         return {"daily_bytes": int(total) / days, "sample_days": days}
 
@@ -4669,8 +4707,11 @@ class Database:
             ]
             counts = {}
             for row in connection.execute(
-                """SELECT node_id, user_name, count FROM node_online_counts
-                ORDER BY node_id, user_name COLLATE NOCASE"""
+                """SELECT c.node_id, c.user_name, c.count FROM node_online_counts c
+                JOIN nodes n ON n.node_id = c.node_id
+                JOIN proxy_users u ON u.name = c.user_name COLLATE NOCASE
+                WHERE u.user_type = CASE WHEN n.tier = 'premium' THEN 1 ELSE 0 END
+                ORDER BY c.node_id, c.user_name COLLATE NOCASE"""
             ):
                 counts.setdefault(row["node_id"], {})[row["user_name"]] = int(
                     row["count"]
@@ -4710,7 +4751,7 @@ class Database:
     @staticmethod
     def _record_domain_usage(
         connection, origin_id, records, observed_at, updated_at,
-        fresh_local_collection=False,
+        fresh_local_collection=False, allowed_user_type=None,
     ):
         validate_domain_records(records)
         if not records:
@@ -4720,14 +4761,15 @@ class Database:
             return
         known_users = {
             row["name"].translate(ASCII_NOCASE_TRANSLATION): row
-            for row in connection.execute("SELECT name, domain_usage_reset_at FROM proxy_users")
+            for row in connection.execute("SELECT name, domain_usage_reset_at, user_type FROM proxy_users")
         }
         touched_users = set()
         for record in records:
             user = known_users.get(record["user"].translate(
                 ASCII_NOCASE_TRANSLATION
             ))
-            if user is None or (
+            if user is None or (allowed_user_type is not None
+                                and int(user["user_type"]) != allowed_user_type) or (
                 not fresh_local_collection
                 and user["domain_usage_reset_at"] is not None
                 and observed_at <= user["domain_usage_reset_at"]
@@ -4873,7 +4915,7 @@ class Database:
         ):
             raise ValueError("traffic origin is invalid")
         domain_usage = [] if domain_usage is None else validate_domain_records(domain_usage)
-        now = int(time.time())
+        now = int(time.time()) if accounting_at is None else int(accounting_at)
         # Legacy adapters/journals have no sampling boundary to compare against.
         has_observation_time = observed_at is not None
         observed_at = now if observed_at is None else int(observed_at)
@@ -4895,10 +4937,12 @@ class Database:
                     raise ValueError("traffic counters must be non-negative integers")
                 user = connection.execute(
                     """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes,
-                        traffic_adjusted_at
+                        traffic_adjusted_at, user_type
                     FROM proxy_users WHERE name = ? COLLATE NOCASE""",
                     (name,),
                 ).fetchone()
+                if user is not None and origin_kind == "local" and int(user["user_type"]) != 0:
+                    user = None
                 account_traffic = user is not None and (
                     (origin_kind == "local" and fresh_local_collection
                      and (accounting_at is None or user_traffic_month(observed_at)
@@ -4949,6 +4993,7 @@ class Database:
             self._record_domain_usage(
                 connection, origin_id, domain_usage, observed_at, now,
                 fresh_local_collection=(origin_kind == "local" and fresh_local_collection),
+                allowed_user_type=0 if origin_kind == "local" else None,
             )
             connection.execute(
                 "INSERT INTO applied_traffic_batches(batch_id, applied_at) VALUES (?, ?)",
@@ -5104,10 +5149,6 @@ class Database:
                 active = connection.execute("SELECT 1 FROM nodes WHERE tier='premium' AND region=? AND status!='revoked'", (region,)).fetchone()
                 if active:
                     raise ValueError("该地区已有专线节点，请先移除旧对接后再替换")
-                if saved:
-                    name, subscription_host, subscription_port = saved["label"], saved["host"], saved["port"]
-                    listen_port = saved["listen_port"]
-                    port_hopping = bool(saved["port_hopping"])
             connection.execute(
                 """INSERT INTO nodes(
                     node_id, name, expected_ip, status, created_at, tier, region, subscription_host, subscription_port, listen_port, port_hopping
@@ -5115,7 +5156,12 @@ class Database:
                 (node_id, name, expected_ip, created_at, tier, region, subscription_host, subscription_port, listen_port, int(port_hopping)),
             )
             if saved:
-                connection.execute("UPDATE premium_node_profiles SET node_id=? WHERE node_id=?", (node_id,saved["node_id"]))
+                connection.execute(
+                    """UPDATE premium_node_profiles SET node_id=?, label=?, host=?, port=?,
+                    listen_port=?, port_hopping=? WHERE node_id=?""",
+                    (node_id, name, subscription_host, subscription_port,
+                     listen_port, int(port_hopping), saved["node_id"]),
+                )
             elif tier == "premium":
                 connection.execute("""INSERT INTO premium_node_profiles(node_id, region, label, host, port, listen_port, port_hopping)
                     VALUES (?, ?, ?, ?, ?, ?, ?)""", (node_id, region, name, subscription_host, subscription_port, listen_port, int(port_hopping)))
@@ -5924,7 +5970,7 @@ class Database:
                     connection, node_id, "online", nonce_digest, accepted_at
                 )
                 node = connection.execute(
-                    """SELECT policy_state, lifecycle_state FROM nodes
+                    """SELECT policy_state, lifecycle_state, tier FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -5945,6 +5991,11 @@ class Database:
                     row["name"]
                     for row in connection.execute("SELECT name FROM proxy_users")
                 }
+                # The bootstrap canary is an internal, transient Hysteria ID.
+                # It can overlap an online poll before or just after enrollment.
+                if BOOTSTRAP_CANARY_USER not in known_names:
+                    online = {name: count for name, count in online.items()
+                              if name != BOOTSTRAP_CANARY_USER}
                 unknown_names = set(online) - known_names
                 if unknown_names:
                     retired_names = {
@@ -5962,6 +6013,13 @@ class Database:
                     # Keep the full live-user snapshot fresh without restoring
                     # a retired identity or trusting genuinely unknown names.
                     online = {name: count for name, count in online.items() if name in known_names}
+                allowed_names = {
+                    row["name"] for row in connection.execute(
+                        "SELECT name FROM proxy_users WHERE user_type = ?",
+                        (1 if node["tier"] == "premium" else 0,),
+                    )
+                }
+                online = {name: count for name, count in online.items() if name in allowed_names}
                 previous_counts = {
                     row["user_name"]: row["count"]
                     for row in connection.execute(
@@ -6153,8 +6211,9 @@ class Database:
                             WHERE c.user_name = ? COLLATE NOCASE
                                 AND n.policy_state = 'protocol_ready'
                                 AND n.status = 'pending_verification'
+                                AND n.tier = ?
                                 AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')""",
-                            (user_name,),
+                            (user_name, tier),
                         ).fetchone()[0]
                         pending = connection.execute(
                             """SELECT COUNT(*) FROM node_auth_decisions
@@ -6167,9 +6226,10 @@ class Database:
                             WHERE user_name = ? COLLATE NOCASE AND expires_at >= ?""",
                             (user_name, int(now)),
                         ).fetchone()[0]
-                        online_count = int(local_online.get(user_name, 0)) + int(
-                            remote_online
-                        )
+                        online_count = (int(local_online.get(user_name, 0))
+                                        if tier == "standard" else 0) + int(remote_online)
+                        if tier == "premium":
+                            local_pending = 0
                         reserved_retry = (
                             existing is not None and existing["allowed"]
                             and existing["user_name"] == user_name
@@ -6295,6 +6355,7 @@ class Database:
                     WHERE c.user_name = ? COLLATE NOCASE
                         AND n.policy_state = 'protocol_ready'
                         AND n.status = 'pending_verification'
+                        AND n.tier = 'standard'
                         AND n.lifecycle_state IN ('active', 'draining', 'stopping', 'disconnecting')""",
                     (user["name"],),
                 ).fetchone()[0]
@@ -6365,7 +6426,7 @@ class Database:
                     connection, node_id, "traffic", nonce_digest, accepted_at
                 )
                 node = connection.execute(
-                    """SELECT name, policy_state FROM nodes
+                    """SELECT name, policy_state, tier FROM nodes
                     WHERE node_id = ? AND status = 'pending_verification'
                         AND verified_at IS NOT NULL""",
                     (node_id,),
@@ -6428,7 +6489,7 @@ class Database:
                 users = {
                     row["name"]: row
                     for row in connection.execute(
-                        """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes, traffic_adjusted_at
+                        """SELECT name, tx_bytes, rx_bytes, traffic_limit_bytes, traffic_adjusted_at, user_type
                         FROM proxy_users"""
                     )
                 }
@@ -6457,6 +6518,8 @@ class Database:
                 )
                 for name, counters in traffic.items():
                     user = users.get(name)
+                    if user is not None and int(user["user_type"]) != (1 if node["tier"] == "premium" else 0):
+                        user = None
                     if user is None:
                         unknown_users += 1
                     tx = int(counters["tx"])
@@ -6497,6 +6560,7 @@ class Database:
                     domain_usage,
                     observed_at,
                     int(accepted_at),
+                    allowed_user_type=1 if node["tier"] == "premium" else 0,
                 )
                 connection.execute(
                     """INSERT INTO node_traffic_batches(
@@ -7326,10 +7390,12 @@ def validate_subscription_nodes(nodes, allow_empty=False):
     return normalized
 
 
-def build_connection_uri(host, port, auth, pin_sha256, label, hop_ports=None, shadowrocket=False):
+def build_connection_uri(host, port, auth, pin_sha256, label, hop_ports=None, shadowrocket=False, sni=None):
     bracketed_host = "[{}]".format(host) if ":" in host and not host.startswith("[") else host
     encoded_auth = urllib.parse.quote(auth, safe="")
     parameters = {"insecure": "1", "pinSHA256": pin_sha256}
+    if sni:
+        parameters["sni"] = sni
     if shadowrocket and hop_ports == PortHoppingController.PORTS:
         parameters.update(mport=hop_ports, keepalive="30")
     query = urllib.parse.urlencode(parameters)
@@ -9604,7 +9670,7 @@ class PanelHandler(JsonHandler):
                         proxy_token,
                         node["pin_sha256"],
                         node["label"],
-                        hop_ports=node.get("hop_ports"), shadowrocket=shadowrocket,
+                        hop_ports=node.get("hop_ports"), shadowrocket=shadowrocket, sni=node.get("sni"),
                     )
                 )
             if not lines:
@@ -9619,6 +9685,7 @@ class PanelHandler(JsonHandler):
                 proxies = [{"name": n["label"], "type": "hysteria2", "server": n["host"],
                             "port": n["port"], "password": proxy_token, "skip-cert-verify": True,
                             "fingerprint": n["pin_sha256"].replace(":", ""),
+                            **({"sni": n["sni"]} if n.get("sni") else {}),
                             **({"ssrvpn-account-usage": {"version": 1,
                                 "origin": self.app.subscription_base_url.rstrip("/")}}
                                if "ssrvpn" in agent and self.app.subscription_base_url.startswith("https://") else {}),
@@ -9839,8 +9906,10 @@ class PanelHandler(JsonHandler):
                     "",  # UDP 443 is no longer a user-list filter.
                     query.get("type", [""])[0],
                 )
+                group_type = 1 if selected["type_filter"] == "premium" else 0
                 payload = dashboard_online_payload(
-                    [user["name"] for user in users], snapshot
+                    [user["name"] for user in users
+                     if int(user.get("user_type", 0)) == group_type], snapshot
                 )
                 online_users = {user["name"]: user for user in payload["users"]}
                 payload["users"] = [
@@ -10621,6 +10690,13 @@ class PanelHandler(JsonHandler):
                     self._error_page(409, "请先检查更新并确认存在新版本")
                 return
             try:
+                if self.app.database.has_external_subscription_state():
+                    message = "当前面板含外部节点配置，在线更新暂不可用；请先同步并验证支持该功能的正式版本"
+                    if "application/json" in self.headers.get("Accept", ""):
+                        self.send_json(409, {"error": message})
+                    else:
+                        self._error_page(409, message)
+                    return
                 target = update_result["latest"]
                 self.app.update_controller.queue(target)
                 self._audit_safely(
@@ -13501,6 +13577,8 @@ def main(argv=None):
                 raise RuntimeError("apply-update must run as root")
             if EgressPolicyManager.TRANSACTION_PATH.exists():
                 raise RuntimeError("egress policy recovery must complete before update")
+            if Database(settings.database_path, settings.hmac_key).has_external_subscription_state():
+                raise RuntimeError("external node configuration requires a compatible synchronized release before online update")
             target = UpdateController().pending_target() if args.queued_target else None
             result = UpdateInstaller().apply(target)
             print(json.dumps(result, separators=(",", ":")))

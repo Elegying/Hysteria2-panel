@@ -13,6 +13,13 @@ def machine_forecasts(application, nodes, budgets=None, service_status=None, now
     """Cache polling projections for one minute; membership changes invalidate them."""
     now = int(time.time()) if now is None else int(now)
     local_id = getattr(application.usage_manager, "local_origin_id", "")
+    node_tiers = {
+        "node:" + node["node_id"]: (
+            "premium" if node.get("tier") == "premium" else "standard"
+        ) for node in nodes
+    }
+    if local_id:
+        node_tiers[local_id] = "standard"
     serving = {
         "node:" + node["node_id"] for node in nodes
         if node.get("status") == "pending_verification"
@@ -24,7 +31,7 @@ def machine_forecasts(application, nodes, budgets=None, service_status=None, now
         service_status = application.service_controller.status()
     if local_id and service_status == "active":
         serving.add(local_id)
-    key = (now // 60, local_id, tuple(sorted(serving)))
+    key = (now // 60, local_id, tuple(sorted(serving)), tuple(sorted(node_tiers.items())))
     cached = getattr(application, "_machine_forecast_cache", None)
     cache_result = budgets is None
     if cache_result and cached and cached[0] == key:
@@ -34,18 +41,26 @@ def machine_forecasts(application, nodes, budgets=None, service_status=None, now
                              if node.get("status") != "revoked"} | ({local_id} if local_id else set()))
         budgets = {budget["origin_id"]: budget for budget in
                    application.database.list_origin_budgets(origin_ids, now)}
-    average = application.database.recent_daily_traffic_average(now)
-    basis = "按近 {} 个完整日均值、{} 台供流机器均分预测".format(
-        average["sample_days"], len(serving)
-    )
-    result = {origin_id: {
-        "text": budget_forecast(budget, average["daily_bytes"],
-                                len(serving) if origin_id in serving else 0, now),
-        "basis": basis,
-        "budget": {name: budget[name] for name in (
-            "used_bytes", "limit_bytes", "percent", "status", "period_start", "period_end"
-        )},
-    } for origin_id, budget in budgets.items()}
+    tiers = {node_tiers.get(origin_id) for origin_id in budgets} - {None}
+    averages = {tier: application.database.recent_daily_traffic_average(now, tier=tier)
+                for tier in tiers}
+    counts = {tier: sum(node_tiers.get(origin_id) == tier for origin_id in serving)
+              for tier in tiers}
+    result = {}
+    for origin_id, budget in budgets.items():
+        tier = node_tiers.get(origin_id)
+        average = averages.get(tier, {"daily_bytes": None, "sample_days": 0})
+        count = counts.get(tier, 0)
+        result[origin_id] = {
+            "text": budget_forecast(budget, average["daily_bytes"],
+                                    count if origin_id in serving else 0, now),
+            "basis": "按{}近 {} 个完整日均值、{} 台供流机器均分预测".format(
+                "专线" if tier == "premium" else "普通线路",
+                average["sample_days"], count),
+            "budget": {name: budget[name] for name in (
+                "used_bytes", "limit_bytes", "percent", "status", "period_start", "period_end"
+            )},
+        }
     if cache_result:
         application._machine_forecast_cache = (key, result)
     else:
@@ -112,7 +127,9 @@ def select_dashboard_users(
     return {
         "users": listed_users,
         "filtered_total": len(listed_users),
-        "total_users": len(all_users),
+        "total_users": sum(int(user.get("user_type", 0)) ==
+                           (1 if type_filter == "premium" else 0)
+                           for user in all_users),
         "sort_by": sort_by,
         "sort_order": sort_order,
         "search_query": search_query,
@@ -186,7 +203,9 @@ def render_dashboard(
     online_filter = user_selection["online_filter"]
     udp443_filter = user_selection["udp443_filter"]
     type_filter = user_selection["type_filter"]
-    summary = summarize_dashboard([user["name"] for user in all_users], snapshot)
+    group_users = [user for user in all_users
+                   if int(user.get("user_type", 0)) == (1 if type_filter == "premium" else 0)]
+    summary = summarize_dashboard([user["name"] for user in group_users], snapshot)
     try:
         service_status = self.app.service_controller.status()
     except Exception:
@@ -346,7 +365,6 @@ def render_dashboard(
             user_selection["filtered_total"], user_selection["total_users"]
         )
     filter_values = {
-        "node_base_domain": html.escape(self.app.public_host.split(".", 1)[1] if "." in self.app.public_host and not self.app.public_host.replace(".", "").isdigit() else "", quote=True),
         "group_node_settings": '<button class="secondary" type="button" data-dialog-open="node-onboarding-dialog">专线节点管理</button>' if type_filter == "premium" else '<button class="secondary" type="button" data-subscription-defaults>订阅节点设置</button>',
 
         "active_user_group": "premium" if type_filter == "premium" else "standard",
@@ -803,8 +821,8 @@ def render_dashboard(
 <section id="overview" class="metrics" aria-label="服务概览">
 <div class="metric"><span>不活跃用户</span><strong>{inactive_users}</strong><small class="muted">上传与下载均为 0</small></div>
 <div class="metric"><span>在线设备</span><strong data-live-online-total aria-live="polite">{online_devices}</strong>{online_note}</div>
-<div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">全部用户累计上传</small></div>
-<div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">全部用户累计下载</small></div>
+<div class="metric"><span>总上传流量</span><strong>{total_tx}</strong><small class="muted">当前分组累计上传</small></div>
+<div class="metric"><span>总下载流量</span><strong>{total_rx}</strong><small class="muted">当前分组累计下载</small></div>
 </section>
 <div id="nodes">{machine_stats_section}</div>
 <section class="operations dashboard-trio">
@@ -823,11 +841,11 @@ def render_dashboard(
 </section>
 <dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">数据节点对接</h2><p class="muted">生成代码后，在目标服务器以 root 粘贴运行一次即可。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">关闭</button></div>
 <p class="notice"><strong>生成前请先完成 DNS 设置：</strong>请自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS，也不会把 DNS 作为对接成功条件。</p>
-<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form data-node-base-domain="{node_base_domain}"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-tier">节点类型</label><select id="node-tier" name="tier"><option value="standard">普通节点</option><option value="premium">专线节点</option></select></div><div><label for="node-region">地区</label><select id="node-region" name="region"><option value="">请选择</option><option value="hk">香港</option><option value="us">美国</option><option value="jp">日本</option><option value="sg">新加坡</option></select></div><div><label for="node-host">订阅节点地址</label><input id="node-host" name="subscription_host" placeholder="例如 hk.ssrvpn.vip"></div><div><label for="node-hopping">端口跳跃</label><select id="node-hopping" name="port_hopping"><option value="1">开启</option><option value="0">关闭</option></select><small class="muted">端口自动配置，无需填写</small></div><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="填写服务器实际公网 IPv4 或 IPv6"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
+<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-tier">节点类型</label><select id="node-tier" name="tier"><option value="standard">普通节点</option><option value="premium">专线节点</option></select></div><div><label for="node-region">地区</label><select id="node-region" name="region"><option value="">请选择</option><option value="hk">香港</option><option value="us">美国</option><option value="jp">日本</option><option value="sg">新加坡</option></select></div><div><label for="node-host">订阅节点地址</label><input id="node-host" name="subscription_host" placeholder="例如 node.example.com"></div><div><label for="node-hopping">端口跳跃</label><select id="node-hopping" name="port_hopping"><option value="1">开启</option><option value="0">关闭</option></select><small class="muted">端口自动配置，无需填写</small></div><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="填写服务器实际公网 IPv4 或 IPv6"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">在目标服务器粘贴运行</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><p class="muted" data-node-enrollment-expiry role="status"></p></section>
 <div class="node-list-head"><h3>节点状态</h3><span class="muted">卸载完成后自动移出列表；刷新可查看新注册节点</span></div><div class="node-list">{node_rows}</div></div></dialog>
-<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">备份普通/专线用户、固定订阅、节点配置和证书，恢复后沿用原订阅链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
-<div class="migration-guide"><section><h3>备份包含</h3><p>用户、开通/到期时间、累计流量、固定订阅身份、普通节点配置、各地区专线配置及独立证书私钥、订阅名称和跳跃开关。请离线妥善保存。</p></section><section><h3>恢复影响</h3><p>恢复会替换用户和订阅配置、签名密钥及证书，并短暂重启服务。保留目标管理员和机器计费记录；不恢复节点在线状态及旧授权。专线节点重新对接时按地区沿用备份中的证书和配置。</p></section><section><h3>迁移步骤</h3><p>保持节点域名 <code>{public_host}</code> 与 UDP 端口 <code>{port}</code> 不变，旧客户端配置才可继续使用。</p><ol><li>为新服务器配置与旧面板相同的订阅域名、HTTPS 和端口。</li><li>恢复备份，再按原地区重新对接专线节点；验证原订阅链接和节点连接。</li><li>验证正常后切换 DNS；旧机保留到缓存请求和连接退出。不要让两套独立面板同时处理认证统计。</li></ol></section></div>
+<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">备份用户、订阅身份和本机节点身份，普通用户无需刷新即可重连本机节点。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
+<div class="migration-guide"><section><h3>备份包含</h3><p>用户、开通/到期时间、累计流量、流量额度、设备数限制及固定订阅身份。另含本机节点证书、私钥和端口跳跃开关，不含远端节点配置。请离线妥善保存。</p></section><section><h3>恢复影响</h3><p>恢复会替换用户、订阅身份及签名密钥，并短暂重启服务。保留目标管理员和机器计费记录，恢复来源本机证书及连接身份；远端服务器重新对接后刷新原订阅获取新节点。</p></section><section><h3>迁移步骤</h3><p>保持原订阅地址、本机代理地址和 UDP 端口不变，并将原域名指向新服务器。格式 3 不兼容旧备份，请更新后重新备份。</p><ol><li>为新服务器配置与旧面板相同的订阅域名、HTTPS 和端口。</li><li>恢复备份，再按原地区重新对接专线节点；验证原订阅链接和节点连接。</li><li>验证正常后切换 DNS；旧机保留到缓存请求和连接退出。不要让两套独立面板同时处理认证统计。</li></ol></section></div>
 <div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载迁移备份</button></form></article>
 <article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article><article class="detail wide-detail"><h3>每日异地备份</h3><p><strong class="{offsite_backup_class}">{offsite_backup_label}</strong></p><details class="advanced-help"><summary>高级配置说明</summary><p class="muted">{offsite_backup_detail}。凭据只允许保存在服务器的 <code>/etc/hysteria2-panel/offsite-backup.json</code>（root:root 0600），不会进入网页、数据库或备份。</p></details></article></div></div></dialog>
 <dialog id="traffic-history-dialog" class="migration-dialog" aria-labelledby="traffic-history-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="traffic-history-title">用户流量</h2><p class="muted">本月记录 · 北京时间 · 每月 1 日清理。日占比按本月记录，小时占比按当天记录。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭流量详情">关闭</button></div><p class="muted">仅展示功能启用后采集的数据，无记录日期不代表历史用量为零。按采样时刻归入时段。</p><div data-traffic-history-content aria-live="polite"></div></div></dialog>

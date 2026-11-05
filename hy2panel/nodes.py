@@ -1383,7 +1383,7 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
                     main_port=self._main_port(node),
                     token=payload["bootstrapToken"],
                     pin_sha256=identity["certificateDerSha256"],
-                    **({"server_name": node["subscription_host"]} if node.get("tier") == "premium" else {}),
+                    **({"server_name": self.database._certificate_server_name(identity["certificatePem"])} if node.get("tier") == "premium" else {}),
                     **({"port_hopping": True} if node.get("port_hopping") else {}),
                 )
             except Exception as exc:

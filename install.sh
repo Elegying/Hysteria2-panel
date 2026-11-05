@@ -30,25 +30,25 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="30568112d279fea7aa8ae5ab158643878eff1ce2ee6a1f0a526689296729f02e"
+PANEL_SHA256="43bf5fdd01c87cd532a05fbc128c73121d2b25f902c611e40906bff159173a4f"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
 HY2PANEL_VERSION_SHA256="b221f33e29a9a7d3f345055a585f4759a99bf2de5487d843a1edea9e2c8881b8"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
-HY2PANEL_WEB_ASSETS_SHA256="838f49620a5135212af95f642063e71a54ea516374d618bf2c5393b818576b08"
+HY2PANEL_WEB_ASSETS_SHA256="2e0d4c6ea8d206be8d2b9f3cb9cb95779a055400cde85cddc27c41bd893e1be3"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
-HY2PANEL_NODES_SHA256="fbaa534ec94c2bb88b16fe1407afa5f91cb2c9805c9ac5cc66e25aedf8b0dabd"
+HY2PANEL_NODES_SHA256="6fb85b47f15dbabcc5a60d1576c5a02a0479b7e5fa8bbe4bad19cf071b91a07b"
 HY2PANEL_DISTRIBUTED_SHA256="63433d694dd2128b659c769681e0f541f1976ae8a8f6265fabc24e7a4b33a2e4"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="1719935aced8e59bfdc4e9843bb05be29e00146855e263613cc83adf72bf039e"
-HY2PANEL_MOBILE_API_SHA256="720b0bb3f70a49b52aa89060fb57c893e734f704f4ef7b7254667e2c4403069f"
+HY2PANEL_DASHBOARD_SHA256="fcc18de25324c75612945d086a7d7589ccb8ab2e0cb366cc20c29f50132591ee"
+HY2PANEL_MOBILE_API_SHA256="294fe3ac8ea19f87fca43c1b0689f4e9c8eab048528616ef46fec93a2ebb264a"
 NODE_AGENT_SHA256="d00727a8677cfe4bc81757ebace5ee0890dd479773e96c297c89fc937538341b"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v2/hysteria-linux"
@@ -3534,9 +3534,9 @@ root, release, backups = map(Path, sys.argv[1:])
 release_values = dict(re.findall(r'^([A-Z_]+)=["\']?([^\n"\']*)', release.read_text(), re.M))
 if release_values.get('ID') != 'debian' or release_values.get('VERSION_ID') != '11':
     sys.exit(1)
-# A fixed official snapshot retains Debian's signed package manifest and hashes.
+# The official EOL archive retains Debian's signed package manifest and hashes.
 # Expiry is disabled only for this frozen source, never signature verification.
-snapshot = 'https://snapshot.debian.org/archive/debian-security/20260831T235959Z/'
+snapshot = 'https://archive.debian.org/debian-security/'
 if datetime.date.today() < datetime.date(2026, 9, 1):
     sys.exit(1)
 if root.is_symlink() or (root / 'sources.list.d').is_symlink():
@@ -7416,6 +7416,45 @@ printf '%s  %s\n' "${HY2PANEL_MOBILE_API_SHA256}" "${TMP_DIR}/hy2panel/mobile_ap
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/qrcodegen.py" || fail "二维码编码器语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/tcp_probe.py" || fail "TCP 探测源码语法检查失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hy2panel/"*.py || fail "面板模块语法检查失败"
+
+# Existing external-node credentials must not be orphaned by an older release.
+check_external_nodes_upgrade_compatibility() {
+  "${PYTHON_BIN}" - "$1" "$2" <<'PYGUARD'
+import ast
+import pathlib
+import sqlite3
+import sys
+
+path, source_path = map(pathlib.Path, sys.argv[1:])
+connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+try:
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_subscription_nodes'"
+    ).fetchone()
+    if not exists or not connection.execute("SELECT 1 FROM external_subscription_nodes LIMIT 1").fetchone():
+        raise SystemExit(0)
+finally:
+    connection.close()
+source = source_path.read_text(encoding="utf-8")
+tree = ast.parse(source)
+functions = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+# A future release must explicitly declare that it preserves encrypted external
+# credentials during both upgrades and backup/restore. Function names alone are
+# insufficient because a stub or incomplete migration would silently lose data.
+compatible = any(
+    isinstance(node, ast.Assign)
+    and any(isinstance(target, ast.Name) and target.id == "EXTERNAL_SUBSCRIPTION_BACKUP_FORMAT" for target in node.targets)
+    and isinstance(node.value, ast.Constant) and type(node.value.value) is int and node.value.value == 1
+    for node in tree.body
+)
+if not compatible or not {"get_external_nodes", "publish_external_nodes", "decode_external_nodes"}.issubset(functions) or "external_subscription_nodes" not in source:
+    raise SystemExit("目标版本未声明可完整保留外部节点数据，拒绝升级以避免丢失配置")
+PYGUARD
+}
+if (( EXISTING_INSTALL == 1 )) && [[ -f /var/lib/hysteria2-panel/panel.db ]]; then
+  check_external_nodes_upgrade_compatibility /var/lib/hysteria2-panel/panel.db "${TMP_DIR}/hysteria2_panel.py" \
+    || fail "外部节点兼容性校验失败，已保留当前面板和数据"
+fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="/var/backups/hysteria2-panel/${timestamp}-$(openssl rand -hex 4)"

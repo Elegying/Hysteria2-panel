@@ -695,7 +695,7 @@ document.addEventListener('submit', async function(event) {
       throw new Error('部署代码响应无效');
     }
     code.value = payload.deploymentCommand;
-    expiry.textContent = (payload.restoredProfile ? '已沿用备份中该地区的节点配置与证书。' : '') + '对接码将在 ' + new Date(Number(payload.expiresAt) * 1000).toLocaleTimeString() + ' 过期，且只能使用一次。';
+    expiry.textContent = (payload.restoredProfile ? '已沿用该地区原有证书，节点配置以本次填写为准。' : '') + '对接码将在 ' + new Date(Number(payload.expiresAt) * 1000).toLocaleTimeString() + ' 过期，且只能使用一次。';
     result.hidden = false;
     let copied = false;
     try {
@@ -1158,9 +1158,9 @@ if (lineForm) {
     const names = {hk:'香港', us:'美国', jp:'日本', sg:'新加坡'};
     if (premium && names[region]) {
       lineForm.elements.namedItem('name').value = '私家车-' + names[region] + '-专线';
-      if (lineForm.dataset.nodeBaseDomain) lineForm.elements.namedItem('subscription_host').value = region + '.' + lineForm.dataset.nodeBaseDomain;
     }
     lineForm.elements.namedItem('region').required = premium;
+    lineForm.elements.namedItem('subscription_host').required = premium;
   }
   fillRegionDefaults();
   lineForm.elements.namedItem('region').addEventListener('change', fillRegionDefaults);
