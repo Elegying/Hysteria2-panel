@@ -745,6 +745,7 @@ class BackupManager:
         ("admins", "DELETE FROM admins"),
     )
     RUNTIME_TABLES = frozenset(name for name, _statement in RUNTIME_TABLE_CLEANUP)
+    EXCLUDED_NODE_TABLES = frozenset({"external_subscription_nodes"})
     USER_TABLES = ("proxy_users", "retired_proxy_names", "subscriptions")
     NODE_TABLES = ("subscription_nodes", "subscription_defaults", "premium_node_profiles")
     MACHINE_TABLES = (
@@ -924,7 +925,7 @@ class BackupManager:
             raise BackupValidationError("便携备份数据表分类存在冲突")
         expected = restored | cls.RUNTIME_TABLES
         actual = cls._application_tables(connection)
-        if actual - {"external_subscription_nodes"} != expected:
+        if actual - cls.EXCLUDED_NODE_TABLES != expected:
             raise BackupValidationError("数据库包含未分类或缺失的数据表")
         return actual
 
@@ -1998,16 +1999,13 @@ class BackupManager:
                 )
 
     def _stage_user_restore(self, incoming_path, destination_path, restored_hmac):
-        # This version cannot interpret or re-encrypt external node credentials.
-        # Refuse opaque credentials in either database; user backups do not
-        # migrate external node credentials or re-encrypt destination data.
-        for database_path in (incoming_path, destination_path):
-            with sqlite_connection(str(database_path)) as check:
-                exists = check.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_subscription_nodes'"
-                ).fetchone()
-                if exists and check.execute("SELECT 1 FROM external_subscription_nodes LIMIT 1").fetchone():
-                    raise BackupValidationError("当前版本不支持外部节点数据，无法安全恢复；请使用支持该功能的面板版本")
+        # User archives must not import machine-owned upstream credentials.
+        with sqlite_connection(str(incoming_path)) as check:
+            exists = check.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='external_subscription_nodes'"
+            ).fetchone()
+            if exists and check.execute("SELECT 1 FROM external_subscription_nodes LIMIT 1").fetchone():
+                raise BackupValidationError("用户备份不允许包含外部节点配置")
         incoming = Database(incoming_path, restored_hmac)
         incoming.initialize()
         with sqlite_connection(str(incoming_path)) as source:
@@ -2027,6 +2025,20 @@ class BackupManager:
             destination.execute("PRAGMA journal_mode = DELETE")
             destination.execute("PRAGMA foreign_keys = ON")
             destination.execute("BEGIN IMMEDIATE")
+            # Restore switches the panel HMAC key. Preserve target configuration
+            # under that key in the same transaction as the restored users.
+            external = destination.execute(
+                "SELECT nodes_json FROM external_subscription_nodes WHERE id=1"
+            ).fetchone()
+            if external:
+                try:
+                    nodes = decode_external_nodes(external[0], self.hmac_key)
+                    encrypted = encode_external_nodes(nodes, restored_hmac)
+                except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                    raise BackupValidationError("目标外部节点配置无法安全迁移密钥") from exc
+                destination.execute(
+                    "UPDATE external_subscription_nodes SET nodes_json=? WHERE id=1", (encrypted,)
+                )
             previous_names = [row[0] for row in destination.execute(
                 "SELECT name FROM proxy_users ORDER BY id"
             )]
@@ -2549,6 +2561,11 @@ class Database:
                     identity_json TEXT,
                     listen_port INTEGER NOT NULL DEFAULT 19999,
                     port_hopping INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS external_subscription_nodes (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    nodes_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS subscription_defaults (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -3824,6 +3841,24 @@ class Database:
                 **({"hop_ports": "20000-50000"} if row["port_hopping"] else {})})
             seen.add(row["region"])
         return result
+
+    def get_external_nodes(self):
+        with self._connect() as connection:
+            row = connection.execute("SELECT nodes_json, revision FROM external_subscription_nodes WHERE id=1").fetchone()
+        return {"nodes": decode_external_nodes(row[0], self.hmac_key), "revision": row[1]} if row else {"nodes": [], "revision": 0}
+
+    def publish_external_nodes(self, nodes, revision):
+        normalized = validate_external_nodes(nodes)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT revision FROM external_subscription_nodes WHERE id=1").fetchone()
+            current = row[0] if row else 0
+            if type(revision) is not int or revision != current:
+                raise ValueError("配置已被其他管理员修改，请重新打开后编辑")
+            connection.execute("INSERT INTO external_subscription_nodes(id,nodes_json,revision) VALUES(1,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET nodes_json=excluded.nodes_json,revision=excluded.revision",
+                (encode_external_nodes(normalized, self.hmac_key), current + 1))
+        return current + 1
 
     def has_external_subscription_state(self):
         """Detect external-node data that an older update might silently hide."""
@@ -7366,6 +7401,138 @@ def handle_auth_payload(database, raw_body, usage_manager=None, require_udp_443=
     return 200, {"ok": bool(user_id), "id": user_id or ""}
 
 
+EXTERNAL_SUBSCRIPTION_BACKUP_FORMAT = 1
+
+
+class ExternalNodeValidationError(ValueError):
+    """Safe, credential-free validation message for the external-node editor."""
+
+
+def external_nodes_cipher(payload, key, nonce, decrypt=False):
+    """Use the existing OpenSSL dependency; key material travels only over a pipe.
+
+    A random 256-bit nonce derives a fresh passphrase per encrypted snapshot.
+    The caller authenticates the complete envelope before any decryption.
+    """
+    password = hmac.new(key, b"external-nodes/encryption/v1:" + nonce, hashlib.sha256).hexdigest().encode()
+    reader, writer = os.pipe()
+    try:
+        os.write(writer, password + b"\n")
+        os.close(writer)
+        writer = None
+        # Fixed executable/argv; credentials and content are supplied through pipes.
+        command = ["/usr/bin/openssl", "enc", "-aes-256-cbc", "-nosalt", "-pbkdf2", "-iter", "10000",
+            "-md", "sha256", "-pass", "fd:" + str(reader), "-d" if decrypt else "-e"]
+        result = subprocess.run(command, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(reader,), timeout=10, check=False)  # nosec B603
+        if result.returncode:
+            raise ValueError("外部节点凭据加解密失败")
+        return result.stdout
+    finally:
+        os.close(reader)
+        if writer is not None:
+            os.close(writer)
+
+
+def encode_external_nodes(nodes, key):
+    nonce = secrets.token_bytes(32)
+    ciphertext = external_nodes_cipher(json.dumps(nodes, ensure_ascii=False).encode(), key, nonce)
+    tag = hmac.new(key, b"external-nodes/authentication/v1:" + nonce + ciphertext, hashlib.sha256).digest()
+    return json.dumps({"version": 1, "payload": base64.b64encode(nonce + tag + ciphertext).decode()})
+
+
+def decode_external_nodes(value, key):
+    try:
+        envelope = json.loads(value)
+        if not isinstance(envelope, dict) or envelope.get("version") != 1:
+            raise ValueError
+        payload = base64.b64decode(envelope["payload"], validate=True)
+        nonce, tag, ciphertext = payload[:32], payload[32:64], payload[64:]
+        expected = hmac.new(key, b"external-nodes/authentication/v1:" + nonce + ciphertext, hashlib.sha256).digest()
+        if len(payload) < 80 or not hmac.compare_digest(tag, expected):
+            raise ValueError
+        return validate_external_nodes(json.loads(external_nodes_cipher(ciphertext, key, nonce, decrypt=True)))
+    except (ValueError, TypeError, KeyError, OSError, subprocess.SubprocessError):
+        raise ValueError("外部节点配置损坏或密钥不匹配") from None
+
+
+def parse_anytls_uri(uri, label=None):
+    """Parse a bounded AnyTLS URI; errors must never contain credentials."""
+    if not isinstance(uri, str) or not uri or len(uri) > 4096 or any(ord(c) < 32 for c in uri):
+        raise ExternalNodeValidationError("链接为空、过长或包含控制字符")
+    if re.search(r"%(?![0-9a-fA-F]{2})", uri):
+        raise ExternalNodeValidationError("链接包含无效的百分号编码")
+    try:
+        parsed = urllib.parse.urlsplit(uri)
+        host, port = parsed.hostname, parsed.port
+        password = urllib.parse.unquote(parsed.username or "", errors="strict")
+        name = urllib.parse.unquote(parsed.fragment, errors="strict") if label is None else label
+        pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True, max_num_fields=16, errors="strict")
+    except (ValueError, UnicodeError):
+        raise ExternalNodeValidationError("链接结构或编码无效") from None
+    if parsed.scheme != "anytls" or parsed.password is not None or parsed.path not in ("", "/"):
+        raise ExternalNodeValidationError("仅支持 anytls://密码@地址:端口 格式")
+    if not host or not re.fullmatch(r"[A-Za-z0-9.:-]+", host) or len(host) > 253 or not port or not password:
+        raise ExternalNodeValidationError("地址、端口或密码无效")
+    if any(ord(c) < 32 or ord(c) == 127 for c in password):
+        raise ExternalNodeValidationError("密码包含控制字符")
+    if not isinstance(name, str) or not name.strip() or len(name.strip()) > 80 or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        raise ExternalNodeValidationError("名称不能为空，最多 80 字且不能包含控制字符")
+    params = dict(pairs)
+    if len(params) != len(pairs) or set(params) - {"peer", "sni", "insecure", "udp", "fingerprint"}:
+        raise ExternalNodeValidationError("链接包含重复或暂不支持的参数")
+    if params.get("peer") and params.get("sni") and params["peer"] != params["sni"]:
+        raise ExternalNodeValidationError("peer 与 sni 不一致")
+    sni = params.get("peer", params.get("sni", ""))
+    fingerprint = params.get("fingerprint", "")
+    if sni and (len(sni) > 253 or not re.fullmatch(r"[A-Za-z0-9.:-]+", sni)):
+        raise ExternalNodeValidationError("TLS 服务器名称无效")
+    if fingerprint and fingerprint not in {"chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized"}:
+        raise ExternalNodeValidationError("暂不支持此 TLS 客户端指纹")
+    if any(params.get(key, "0") not in ("0", "1") for key in ("insecure", "udp")):
+        raise ExternalNodeValidationError("insecure 和 udp 必须为 0 或 1")
+    canonical = {"insecure": params.get("insecure", "0"), "udp": params.get("udp", "1")}
+    if sni:
+        canonical["peer"] = sni
+    if fingerprint:
+        canonical["fingerprint"] = fingerprint
+    address = "[{}]".format(host) if ":" in host else host
+    uri = "anytls://{}@{}:{}?{}#{}".format(urllib.parse.quote(password, safe=""), address, port,
+        urllib.parse.urlencode(canonical), urllib.parse.quote(name.strip(), safe=""))
+    return {"label": name.strip(), "uri": uri, "host": host, "port": port,
+        "password": password, "sni": sni, "insecure": canonical["insecure"] == "1",
+        "udp": canonical["udp"] == "1", "fingerprint": fingerprint}
+
+
+def validate_external_nodes(nodes):
+    if not isinstance(nodes, list) or len(nodes) > 32:
+        raise ExternalNodeValidationError("最多支持 32 个外部节点")
+    result, names = [], set()
+    for index, node in enumerate(nodes, 1):
+        try:
+            if not isinstance(node, dict) or type(node.get("enabled", True)) is not bool:
+                raise ExternalNodeValidationError("节点格式无效")
+            parsed = parse_anytls_uri(node.get("uri"), node.get("label"))
+            if parsed["label"] in names:
+                raise ExternalNodeValidationError("节点名称重复")
+            names.add(parsed["label"])
+            result.append({"label": parsed["label"], "uri": parsed["uri"], "enabled": node.get("enabled", True)})
+        except ValueError as exc:
+            raise ExternalNodeValidationError("第 {} 条：{}".format(index, exc)) from None
+    return result
+
+
+def external_mihomo_proxy(node):
+    parsed = parse_anytls_uri(node["uri"], node["label"])
+    result = {"name": parsed["label"], "type": "anytls", "server": parsed["host"],
+        "port": parsed["port"], "password": parsed["password"], "udp": parsed["udp"],
+        "skip-cert-verify": parsed["insecure"]}
+    if parsed["sni"]:
+        result["sni"] = parsed["sni"]
+    if parsed["fingerprint"]:
+        result["client-fingerprint"] = parsed["fingerprint"]
+    return result
+
+
 def validate_subscription_nodes(nodes, allow_empty=False):
     if not isinstance(nodes, list) or len(nodes) > 32 or (not nodes and not allow_empty):
         raise ValueError("需要 1–32 个节点")
@@ -8291,7 +8458,7 @@ class PanelHandler(JsonHandler):
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
             raise ValueError("invalid content length") from exc
-        if content_length < 0 or content_length > 16384:
+        if content_length < 0 or content_length > (512 * 1024 if self._path() in {"/subscriptions/external", "/subscriptions/external/preview"} else 16384):
             raise ValueError("invalid content length")
         parsed = urllib.parse.parse_qs(
             self.rfile.read(content_length).decode("utf-8"),
@@ -9638,6 +9805,24 @@ class PanelHandler(JsonHandler):
                 with self.app.database._connect() as connection:
                     premium_hosts = {r[0].lower() for r in connection.execute("SELECT host FROM premium_node_profiles")}
                 nodes = [n for n in nodes if n["host"].lower() not in premium_hosts]
+            external_nodes = []
+            external_unavailable = False
+            if int(subscription["user_type"]) == 1:
+                try:
+                    external_nodes = [dict(n) for n in self.app.database.get_external_nodes()["nodes"] if n["enabled"]]
+                except (ValueError, OSError, sqlite3.Error, subprocess.SubprocessError):
+                    # Keep healthy self-hosted subscriptions available. Never log credentials.
+                    external_unavailable = True
+                    LOGGER.warning("External subscription nodes unavailable; serving self-hosted nodes only")
+            # Keep self-hosted names stable; resolve external collisions deterministically.
+            names = {"订阅节点", "DIRECT", "REJECT", "GLOBAL", "PASS", "COMPATIBLE", "REJECT-DROP"}
+            names.update(n["label"] for n in nodes if n["enabled"])
+            for node in external_nodes:
+                original, suffix = node["label"], 1
+                while node["label"] in names:
+                    node["label"] = "{} (外部 {})".format(original[:65], suffix)
+                    suffix += 1
+                names.add(node["label"])
             nodes = [dict(node) for node in nodes if node["enabled"]]
             hopping = self.app.port_hopping_controller.status()
             with self.app.database._connect() as connection:
@@ -9654,7 +9839,7 @@ class PanelHandler(JsonHandler):
             proxy_token = self.app.database.recover_proxy_token(
                 subscription["user_id"]
             )
-            if proxy_token is None:
+            if proxy_token is None and nodes:
                 self._send_subscription_error(503, "订阅凭据不可用")
                 return
             agent = self.headers.get("User-Agent", "").lower()
@@ -9673,7 +9858,11 @@ class PanelHandler(JsonHandler):
                         hop_ports=node.get("hop_ports"), shadowrocket=shadowrocket, sni=node.get("sni"),
                     )
                 )
+            lines.extend(parse_anytls_uri(n["uri"], n["label"])["uri"] for n in external_nodes)
             if not lines:
+                if external_unavailable:
+                    self._send_subscription_error(503, "外部节点暂时不可用，请稍后重试")
+                    return
                 self._send_subscription_error(404, "订阅未配置任何节点")
                 return
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -9690,8 +9879,9 @@ class PanelHandler(JsonHandler):
                                 "origin": self.app.subscription_base_url.rstrip("/")}}
                                if "ssrvpn" in agent and self.app.subscription_base_url.startswith("https://") else {}),
                             **({"ports": n["hop_ports"], "hop-interval": 30} if n.get("hop_ports") else {})} for n in nodes]
+                proxies.extend(external_mihomo_proxy(n) for n in external_nodes)
                 body = json.dumps({"proxies": proxies, "proxy-groups": [{"name": "订阅节点", "type": "select",
-                    "proxies": [n["label"] for n in nodes]}], "rules": ["MATCH,订阅节点"]}, ensure_ascii=False).encode()
+                    "proxies": [n["name"] for n in proxies]}], "rules": ["MATCH,订阅节点"]}, ensure_ascii=False).encode()
                 content_type = "application/yaml; charset=utf-8"
             elif output_format in ("base64", "raw"):
                 if shadowrocket:
@@ -9701,6 +9891,8 @@ class PanelHandler(JsonHandler):
                               if subscription["expires_at"] is not None else "永久")
                     status = "STATUS=剩余 {:.2f} / {:.0f} GiB · 已用 {:.2f} GiB · {}".format(
                         max(0, total - used) / 1024**3, total / 1024**3, used / 1024**3, expiry)
+                    if external_nodes:
+                        status += " · 仅自建节点统计，外部流量未知"
                     lines.insert(0, status)
                 body = "\n".join(lines).encode("utf-8")
                 if output_format == "base64":
@@ -9718,6 +9910,8 @@ class PanelHandler(JsonHandler):
                 usage += "; expire={}".format(subscription["expires_at"])
             if not shadowrocket or output_format == "clash":
                 self.send_header("Subscription-Userinfo", usage)
+            if external_nodes:
+                self.send_header("X-Traffic-Scope", "self-hosted-only; external-usage=unknown")
             self.send_header("Profile-Update-Interval", "1")
             self.send_header("Profile-Title", "base64:" + base64.b64encode(self.app.subscription_name.encode()).decode())
             self.send_header(
@@ -9863,6 +10057,16 @@ class PanelHandler(JsonHandler):
                 "starts_date": datetime.datetime.fromtimestamp(user["starts_at"], datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d") if user["starts_at"] else "",
                 "expires_date": expires_date,
             })
+            return
+        if path == "/subscriptions/external":
+            if not self._require_session():
+                return
+            state = self.app.database.get_external_nodes()
+            # The admin list never returns upstream credentials. Blank URI retains them.
+            self.send_json(200, {"revision": state["revision"], "nodes": [
+                {"id": i, "label": n["label"], "enabled": n["enabled"],
+                 **{k: parse_anytls_uri(n["uri"])[k] for k in ("host", "port", "insecure")}}
+                for i, n in enumerate(state["nodes"])]})
             return
         if path == "/subscriptions/defaults":
             if not self._require_session():
@@ -10141,6 +10345,44 @@ class PanelHandler(JsonHandler):
                 self.send_json(200, result)
             except (RuntimeError, OSError, subprocess.SubprocessError):
                 self.send_json(503, {"error": "端口跳跃应用失败，请检查服务端任务日志"})
+            return
+        if path in {"/subscriptions/external", "/subscriptions/external/preview"}:
+            try:
+                with self.app.user_action_lock:
+                    state = self.app.database.get_external_nodes()
+                    revision = int(form.get("revision", "-1"))
+                    if revision != state["revision"]:
+                        raise ExternalNodeValidationError("配置已变更，请重新打开后编辑")
+                    if "nodes" not in form:
+                        raise ExternalNodeValidationError("缺少 nodes 字段；清空节点请明确提交空列表")
+                    nodes = json.loads(form["nodes"])
+                    if not isinstance(nodes, list) or len(nodes) > 32:
+                        raise ExternalNodeValidationError("最多支持 32 个外部节点")
+                    resolved = []
+                    for node in nodes:
+                        if not isinstance(node, dict):
+                            raise ExternalNodeValidationError("节点格式无效")
+                        node = dict(node)
+                        if not node.get("uri"):
+                            index = node.get("id")
+                            if type(index) is not int or not 0 <= index < len(state["nodes"]):
+                                raise ExternalNodeValidationError("缺少节点链接")
+                            node["uri"] = state["nodes"][index]["uri"]
+                        resolved.append(node)
+                    normalized = validate_external_nodes(resolved)
+                    if path.endswith("/preview"):
+                        self.send_json(200, {"nodes": [{"label": n["label"], "enabled": n["enabled"],
+                            **{k: parse_anytls_uri(n["uri"])[k] for k in ("host", "port", "insecure")}}
+                            for n in normalized]})
+                        return
+                    revision = self.app.database.publish_external_nodes(normalized, revision)
+                self._audit_safely(session["username"], "external_nodes_published", str(len(normalized)))
+                self.send_json(200, {"ok": True, "revision": revision})
+            except ExternalNodeValidationError as exc:
+                self.send_json(400, {"error": str(exc)})
+            except (ValueError, TypeError, KeyError):
+                # Parser errors are safe, but JSON decoding errors may contain submitted secrets.
+                self.send_json(400, {"error": "节点配置无效或版本已变更，请检查链接、名称和参数；必要时重新打开编辑"})
             return
         if path == "/subscriptions/defaults":
             try:

@@ -95,6 +95,43 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 .expiry-note{position:absolute;left:11px;right:2px;top:calc(50% + 8px);font-size:10px;line-height:12px;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:auto}
 @media(max-width:640px){.expiry-note{left:0;top:calc(50% + 2px);font-size:9px;line-height:11px}[data-live-user-name]>strong{transform:translateY(-5px)}}
 
+/* Aligned management dialogs share the panel's existing colors and controls. */
+.node-management-dialog{width:min(960px,calc(100% - 32px));max-height:min(90dvh,900px)}
+.node-management-dialog .dialog-head{align-items:center;padding-top:20px;padding-bottom:18px;margin-bottom:20px}
+.node-management-dialog .dialog-head h2{font-size:22px;line-height:1.35;margin:0 0 6px}
+.node-management-dialog .dialog-head p{font-size:13px;line-height:1.6;margin:0;max-width:650px}
+.node-management-dialog .management-notice{padding:12px 16px;margin:0 0 18px;background:#102237;border:1px solid #2c465f;border-radius:12px;font-size:13px;line-height:1.65}
+.management-notice strong{display:block;color:#dce8f8;font-size:13px;margin-bottom:3px}.management-notice p{margin:0;color:var(--muted)}
+.management-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.management-section-head h3{font-size:15px;margin:0}.management-section-head>span{font-size:12px}.management-section-head p{font-size:12px;margin:4px 0 0}
+.node-management-dialog .node-enrollment-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:start;margin:0 0 24px;padding:20px;border-color:#2b4058;border-radius:14px}
+.node-enrollment-grid>.management-section-head{grid-column:1/-1;padding-bottom:14px;border-bottom:1px solid #253b52;margin-bottom:2px}
+.node-management-dialog .node-enrollment-grid>div{min-width:0}.node-management-dialog label{font-size:13px;font-weight:600}
+.node-management-dialog input:not([type=checkbox]),.node-management-dialog select{height:44px;padding:10px 12px;font-size:14px;border-color:#36506a;border-radius:9px}
+.node-management-dialog textarea{padding:11px 12px;border-color:#36506a;border-radius:10px;font-size:13px;line-height:1.6;resize:vertical}
+.node-management-dialog button{min-height:40px;padding:9px 14px;font-size:13px;white-space:nowrap}
+.node-management-dialog .dialog-close{min-width:64px;height:38px;min-height:38px;border-radius:10px;padding:8px 14px;font-size:13px}
+.management-form-footer{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding-top:16px;border-top:1px solid #253b52;font-size:12px}.management-form-footer button{min-width:132px}
+.node-management-dialog .node-list-head{margin:0 0 12px;align-items:center}.node-list-head h3{margin:0;font-size:15px}.node-list-head>span{font-size:12px}
+.node-management-dialog .node-list{gap:12px}.node-management-dialog .node-row{grid-template-columns:minmax(0,1fr) auto;gap:12px 16px;padding:16px;background:#101f31;border-color:#2b4058}
+.node-management-dialog .node-row strong{font-size:14px;overflow-wrap:anywhere}.node-management-dialog .node-row small{font-size:12px;line-height:1.65;margin-top:5px}
+.node-management-dialog .node-row>span{font-size:12px;padding:5px 9px;border-radius:7px;background:#152e36;align-self:start;white-space:normal;text-align:center}
+.node-management-dialog .node-actions{grid-column:1/-1;display:flex;justify-content:flex-end;gap:8px;padding-top:12px;border-top:1px solid #25394e;align-items:flex-start}
+.node-management-dialog .node-actions form{width:auto}.node-management-dialog .node-actions button{min-height:36px;padding:7px 12px;font-size:12px}
+.node-line-settings{min-width:0}.node-line-settings summary{cursor:pointer;list-style:none;border:1px solid #344e68;border-radius:9px;padding:7px 12px;min-height:36px;font-size:12px;background:#192c40;font-weight:650}.node-line-settings summary::marker{content:""}.node-line-settings summary::-webkit-details-marker{display:none}.node-line-settings summary::after{content:" +";color:var(--muted)}.node-line-settings[open]{flex-basis:100%;margin-top:4px}.node-line-settings[open] summary::after{content:" −"}
+.node-management-dialog .node-line-form{display:grid;grid-template-columns:1fr 1.2fr .5fr;gap:12px;padding:16px 0 0}.node-line-form small{grid-column:1/-1}.node-line-form button{grid-column:1/-1;justify-self:end}
+.external-editor{border:0;margin:0;padding:0;min-width:0}.external-import{padding:18px 20px;border:1px solid #2b4058;border-radius:14px;background:#0b1929}.external-import .management-section-head{margin-bottom:14px}.external-input-label{margin:0}.external-input-label textarea{display:block;min-height:104px;margin-top:7px}
+.external-import-toolbar{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-top:14px}.external-import-toolbar label{width:min(100%,300px);margin:0}.external-import-toolbar select{display:block;margin-top:6px}.external-import-toolbar button{height:44px}
+.external-list-heading{margin:24px 0 12px}.external-count{flex-shrink:0;font-size:12px;border:1px solid #324b64;border-radius:7px;background:#13283d;padding:4px 9px;color:#afc3dc;font-variant-numeric:tabular-nums}
+.external-node-list{display:grid;gap:12px}.external-node-list:empty::before{content:"暂无外部节点，请先导入链接";padding:28px 16px;text-align:center;color:var(--muted);border:1px dashed #36506a;border-radius:12px;font-size:13px}
+.external-node-card{min-width:0;border:1px solid #2b4058;border-radius:13px;background:#101f31;padding:16px 18px}.external-node-heading{display:flex;align-items:center;gap:10px;margin-bottom:14px;min-width:0}.external-protocol{color:#9bc3ff;font-size:10px;letter-spacing:.04em;font-weight:700;background:#18314d;border:1px solid #2e4b6c;padding:3px 7px;border-radius:5px}.external-node-heading code{font-size:12px;color:var(--muted);overflow-wrap:anywhere;min-width:0}
+.external-node-fields{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.4fr);gap:16px}.external-node-fields label{margin:0;min-width:0}.external-node-fields input,.external-node-fields textarea{display:block;margin-top:7px}.external-node-fields textarea{min-height:76px}.field-optional{font-size:11px;color:var(--muted);font-weight:400;margin-left:5px}
+.external-node-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px;padding-top:12px;border-top:1px solid #25394e}.node-management-dialog .external-enabled{display:flex;align-items:center;gap:8px;margin:0;font-size:12px;white-space:nowrap}.external-enabled input[type=checkbox]{width:16px;height:16px;min-height:0;margin:0;accent-color:var(--accent)}
+.external-node-actions{display:flex;gap:6px}.node-management-dialog .external-node-actions button{min-height:32px;padding:5px 10px;font-size:12px}.node-management-dialog .external-remove{color:#e8a5b0;background:transparent;border-color:#63414f}
+.external-preview-result{font-size:13px;overflow-wrap:anywhere;line-height:1.65}.external-preview-result:not(:empty){padding:14px 16px;margin-top:16px;background:#10283a;border:1px solid #2d4a62;border-radius:10px}.external-preview-result p{margin:0}.external-preview-result ul{margin:8px 0 0;padding-left:20px}
+.external-publish-bar{position:sticky;bottom:0;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:16px;margin:20px -24px -24px;padding:16px 24px;border-top:1px solid #2b4058;background:#102034;box-shadow:0 -8px 24px rgba(4,12,23,.18)}.external-publish-bar p{margin:0;font-size:12px}.external-publish-bar p span{font-size:11px;color:#8195ad}.external-publish-bar>div{display:flex;gap:8px}
+@media(max-width:760px){.node-management-dialog .node-enrollment-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.node-management-dialog .node-list-head{align-items:flex-start}.node-management-dialog .node-line-form{grid-template-columns:1fr 1fr}.node-line-form label:last-of-type{grid-column:1/-1}}
+@media(max-width:540px){.node-management-dialog{width:calc(100% - 16px);max-height:calc(100dvh - 16px)}.node-management-dialog .dialog-head{padding:16px 18px;margin-bottom:16px}.node-management-dialog .dialog-head h2{font-size:19px}.node-management-dialog .dialog-head p{font-size:12px}.node-management-dialog .node-enrollment-grid{grid-template-columns:1fr;gap:14px;padding:16px}.management-section-head{align-items:flex-start}.management-section-head>span{font-size:11px;text-align:right}.management-form-footer{flex-direction:column;align-items:stretch;gap:10px}.management-form-footer button{width:100%}.node-management-dialog .node-list-head{gap:5px}.node-management-dialog .node-row{padding:14px;gap:10px}.node-management-dialog .node-actions{justify-content:flex-start;flex-wrap:wrap}.node-management-dialog .node-actions form{flex:1 1 auto}.node-management-dialog .node-actions form button{width:100%}.node-line-settings{flex:1 1 auto}.node-line-settings summary{text-align:center}.node-management-dialog .node-line-form{grid-template-columns:1fr}.external-import{padding:16px}.external-import-toolbar{flex-direction:column;align-items:stretch;gap:12px}.external-import-toolbar label{width:100%}.external-node-card{padding:14px}.external-node-fields{grid-template-columns:1fr;gap:12px}.external-node-heading{gap:8px}.external-node-heading code{font-size:11px}.external-node-footer{flex-wrap:wrap;gap:10px}.external-node-actions{margin-left:auto}.external-publish-bar{bottom:0;margin:18px -18px -18px;padding:14px 18px;flex-direction:column;align-items:stretch;gap:10px}.external-publish-bar p br,.external-publish-bar p span{display:none}.external-publish-bar>div{display:grid;grid-template-columns:1fr 1.3fr}.external-publish-bar button{padding:9px 8px}.external-list-heading{margin-top:20px}}
+
 """
 
 PAGE_SCRIPT = """
@@ -1030,6 +1067,126 @@ function subscriptionNodeRow(node) {
     '<label><input type="checkbox" data-sub-node-enabled' + (node.enabled === false ? '' : ' checked') + '>启用</label>' +
     '<button type="button" class="secondary" data-sub-node-remove>移除此节点</button></fieldset>';
 }
+const externalDialog = document.getElementById('external-nodes-dialog');
+let externalRevision = 0;
+let externalPreview = null;
+let externalLoading = false;
+let externalGeneration = 0;
+function externalRow(node) {
+  return '<section class="external-node-card" data-external-row' + (node.id == null ? '' : ' data-id="' + node.id + '"') + '>' +
+    '<div class="external-node-heading"><span class="external-protocol">AnyTLS</span><code>' + escapeHtmlAttr(node.host ? node.host + ':' + node.port : '新节点 · 校验后显示地址') + '</code></div>' +
+    '<div class="external-node-fields"><label>展示名称<input data-ext-label maxlength="80" value="' + escapeHtmlAttr(node.label) + '"></label>' +
+    '<label>替换链接 <span class="field-optional">可选</span><textarea data-ext-uri rows="2" autocomplete="off" spellcheck="false" placeholder="留空保留原配置；粘贴新 AnyTLS 链接可替换">' + escapeHtmlAttr(node.uri || '') + '</textarea></label></div>' +
+    '<div class="external-node-footer"><label class="external-enabled"><input type="checkbox" data-ext-enabled' + (node.enabled === false ? '' : ' checked') + '>启用节点</label>' +
+    '<div class="external-node-actions"><button type="button" class="secondary" data-ext-move="up">上移</button><button type="button" class="secondary" data-ext-move="down">下移</button><button type="button" class="secondary external-remove" data-ext-remove>移除</button></div></div></section>';
+}
+function invalidateExternalPreview() {
+  externalPreview = null;
+  if (!externalDialog) return;
+  const count = externalDialog.querySelector('[data-ext-count]');
+  const rows = externalDialog.querySelector('[data-ext-rows]');
+  if (count && rows) count.textContent = rows.children.length + ' / 32';
+  const publish = externalDialog.querySelector('[data-ext-publish]');
+  if (publish) publish.disabled = true;
+  const preview = externalDialog.querySelector('[data-ext-preview-result]');
+  if (preview) preview.textContent = '修改尚未发布，请先校验预览。';
+}
+async function loadExternalNodes() {
+  if (!externalDialog || externalLoading) return;
+  externalLoading = true;
+  const generation = externalGeneration;
+  externalPreview = null;
+  if (!externalDialog.open) externalDialog.showModal();
+  const content = externalDialog.querySelector('[data-external-content]');
+  content.textContent = '正在加载…';
+  try {
+    const response = await fetch('/subscriptions/external', {credentials: 'same-origin', headers: {'Accept': 'application/json'}});
+    if (response.redirected || !response.ok) throw new Error('读取失败，请检查登录状态');
+    const data = await response.json();
+    if (!externalDialog.open || generation !== externalGeneration) return;
+    externalRevision = data.revision;
+    content.innerHTML = '<fieldset data-ext-editor class="external-editor"><section class="external-import"><div class="management-section-head"><h3>批量导入</h3><span class="muted">每行一个链接</span></div>' +
+      '<label class="external-input-label">AnyTLS 链接<textarea data-ext-batch rows="3" autocomplete="off" spellcheck="false" placeholder="在此粘贴 anytls:// 链接，每行一个"></textarea></label>' +
+      '<div class="external-import-toolbar"><label>导入方式<select data-ext-mode><option value="append">追加到当前外部节点</option><option value="replace">替换全部外部节点</option></select></label>' +
+      '<button type="button" class="secondary" data-ext-import>导入到草稿</button></div></section>' +
+      '<div class="management-section-head external-list-heading"><div><h3>节点列表</h3><p class="muted">可改名、排序或替换链接。已有密码不回显。</p></div><span class="external-count" data-ext-count>' + data.nodes.length + ' / 32</span></div>' +
+      '<div class="external-node-list" data-ext-rows>' + data.nodes.map(externalRow).join('') + '</div>' +
+      '<div class="external-preview-result" data-ext-preview-result role="status" aria-live="polite"></div>' +
+      '<div class="external-publish-bar"><p class="muted">修改后先预览，再发布<br><span>关闭窗口会丢弃未发布草稿</span></p><div><button type="button" class="secondary" data-ext-preview>校验并预览</button><button type="button" data-ext-publish disabled>发布给专线用户</button></div></div></fieldset>';
+  } catch (error) { content.textContent = error.message || '读取失败'; }
+  finally { externalLoading = false; }
+}
+if (externalDialog) {
+  externalDialog.addEventListener('input', invalidateExternalPreview);
+  externalDialog.addEventListener('change', invalidateExternalPreview);
+  externalDialog.addEventListener('close', function() {
+    externalGeneration += 1;
+    externalPreview = null;
+    externalDialog.querySelector('[data-external-content]').textContent = '';
+  });
+  externalDialog.addEventListener('click', async function(event) {
+    const button = event.target.closest('button');
+    if (!button || button.disabled) return;
+    const rows = externalDialog.querySelector('[data-ext-rows]');
+    if (button.hasAttribute('data-ext-import')) {
+      const input = externalDialog.querySelector('[data-ext-batch]');
+      const links = input.value.split(/\\r?\\n/).map(x => x.trim()).filter(Boolean);
+      const replace = externalDialog.querySelector('[data-ext-mode]').value === 'replace';
+      if (!links.length || links.length + (replace ? 0 : rows.children.length) > 32) { notify('请输入链接，总数最多 32 个', true); return; }
+      const draft = links.map(function(uri, index) {
+        let label = '外部节点 ' + (index + 1);
+        try { const fragment = new URL(uri).hash.slice(1); if (fragment) label = decodeURIComponent(fragment); } catch (_) {}
+        return externalRow({uri: uri, label: label});
+      }).join('');
+      if (replace) rows.innerHTML = draft; else rows.insertAdjacentHTML('beforeend', draft);
+      input.value = ''; invalidateExternalPreview(); return;
+    }
+    const row = button.closest('[data-external-row]');
+    if (button.hasAttribute('data-ext-remove')) { row.remove(); invalidateExternalPreview(); return; }
+    if (button.hasAttribute('data-ext-move')) {
+      if (button.dataset.extMove === 'up' && row.previousElementSibling) rows.insertBefore(row, row.previousElementSibling);
+      else if (button.dataset.extMove === 'down' && row.nextElementSibling) rows.insertBefore(row.nextElementSibling, row);
+      invalidateExternalPreview(); return;
+    }
+    const publish = button.hasAttribute('data-ext-publish');
+    if (!publish && !button.hasAttribute('data-ext-preview')) return;
+    if (externalDialog.querySelector('[data-ext-batch]').value.trim()) { notify('请先将批量链接导入到草稿', true); return; }
+    const nodes = Array.from(rows.children).map(function(row) {
+      const node = {label: row.querySelector('[data-ext-label]').value.trim(), uri: row.querySelector('[data-ext-uri]').value.trim(), enabled: row.querySelector('[data-ext-enabled]').checked};
+      if (row.hasAttribute('data-id')) node.id = Number(row.dataset.id);
+      return node;
+    });
+    const snapshot = JSON.stringify(nodes);
+    if (publish && snapshot !== externalPreview) { invalidateExternalPreview(); return; }
+    const editor = externalDialog.querySelector('[data-ext-editor]');
+    editor.disabled = true;
+    const generation = externalGeneration;
+    try {
+      const response = await fetch('/subscriptions/external' + (publish ? '' : '/preview'), {
+        method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({csrf: subscriptionCsrf(), revision: String(externalRevision), nodes: snapshot}).toString()
+      });
+      if (response.redirected) throw new Error('登录已失效，请重新登录');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '操作失败');
+      if (!externalDialog.open || generation !== externalGeneration) return;
+      if (publish) {
+        notify('已发布，专线用户刷新原订阅即可获取；自建节点不变', false);
+        await loadExternalNodes();
+      } else {
+        externalPreview = snapshot;
+        externalDialog.querySelector('[data-ext-preview-result]').innerHTML = '<p>发布后：' + data.nodes.filter(n => n.enabled).length + ' 个启用的外部节点，追加到所有有效专线用户订阅。自建节点统计不变。</p>' +
+          '<ul>' + data.nodes.map(n => '<li>' + escapeHtmlAttr(n.label) + ' · ' + escapeHtmlAttr(n.host) + ':' + n.port + (n.enabled ? ' · 启用' : ' · 停用') + (n.insecure ? ' · 跳过证书验证' : '') + '</li>').join('') + '</ul>';
+        externalDialog.querySelector('[data-ext-publish]').disabled = false;
+      }
+    } catch (error) { invalidateExternalPreview(); notify(error.message || '操作失败', true); }
+    finally { editor.disabled = false; }
+  });
+}
+document.addEventListener('click', function(event) {
+  if (event.target.closest('[data-external-open]')) loadExternalNodes();
+});
+
 async function loadSubscription(userId) {
   if (!subscriptionDialog) return;
   const content = subscriptionDialog.querySelector('[data-subscription-content]');
@@ -1057,6 +1214,7 @@ async function loadSubscription(userId) {
       content.innerHTML = '<label>固定订阅链接<textarea class="subscription-url" readonly>' + escapeHtmlAttr(url) + '</textarea></label>' +
         '<button type="button" data-sub-action="copy">复制订阅链接</button>' +
         '<p>在客户端添加订阅。刷新后更新节点、已用和剩余流量；支持 Mihomo / Clash Meta 和通用 Base64 订阅。</p>' +
+        (data.user_type === 1 ? '<p class="muted">流量信息仅统计自建节点；外部节点用量和剩余流量未知。</p>' : '') +
         '<p>状态：' + (data.enabled ? '启用' : '停用') + ' · ' + (data.user_type === 1 ? '高级专线 · 已就绪 ' + data.premium_ready_count + '/4 地区，共享套餐' : (data.uses_defaults ? '跟随普通节点设置' : '独立节点配置')) + '</p>' +
         (data.user_type === 1 || data.uses_defaults ? '' : '<button type="button" data-sub-action="inherit">改为跟随统一节点</button>') +
         '<p><button class="secondary" type="button" data-sub-action="toggle">' + (data.enabled ? '停用订阅' : '启用订阅') + '</button></p>' +

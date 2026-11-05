@@ -267,6 +267,25 @@ try:
     assert browser.evaluate('new FormData(document.querySelector("[data-node-enrollment-form]")).get("port_hopping")') == "0"
     browser.value("#node-hopping", "1", "change")
     browser.screenshot("premium-node-enrollment.png")
+    browser.click("#node-onboarding-dialog [data-dialog-close]")
+    browser.click('[data-external-open]')
+    browser.wait("document.querySelector('[data-ext-batch]') !== null")
+    browser.value('[data-ext-batch]', 'anytls://browser-fixture@upstream.example.test:443#Browser%20node')
+    browser.click('[data-ext-import]')
+    browser.click('[data-ext-preview]')
+    browser.wait("!document.querySelector('[data-ext-publish]').disabled")
+    assert fixture.db.get_external_nodes()['revision'] == 0
+    browser.click('[data-ext-publish]')
+    browser.wait("document.querySelector('[data-external-row][data-id]') !== null")
+    assert fixture.db.get_external_nodes()['revision'] == 1
+    assert browser.evaluate("document.querySelector('[data-ext-uri]').value") == ''
+    assert browser.evaluate("!document.querySelector('[data-external-content]').textContent.includes('browser-fixture')")
+    for width in (1380, 390):
+        browser.call('Emulation.setDeviceMetricsOverride',
+            {'width': width, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False})
+        assert browser.evaluate("document.querySelector('#external-nodes-dialog').scrollWidth <= document.querySelector('#external-nodes-dialog').clientWidth")
+        browser.screenshot('external-nodes-' + str(width) + '.png')
+    browser.click('#external-nodes-dialog [data-dialog-close]')
     assert not browser.errors, browser.errors
     print(
         json.dumps(
