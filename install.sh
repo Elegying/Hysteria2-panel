@@ -3534,9 +3534,9 @@ root, release, backups = map(Path, sys.argv[1:])
 release_values = dict(re.findall(r'^([A-Z_]+)=["\']?([^\n"\']*)', release.read_text(), re.M))
 if release_values.get('ID') != 'debian' or release_values.get('VERSION_ID') != '11':
     sys.exit(1)
-# A fixed official snapshot retains Debian's signed package manifest and hashes.
+# The official EOL archive retains Debian's signed package manifest and hashes.
 # Expiry is disabled only for this frozen source, never signature verification.
-snapshot = 'https://snapshot.debian.org/archive/debian-security/20260831T235959Z/'
+snapshot = 'https://archive.debian.org/debian-security/'
 if datetime.date.today() < datetime.date(2026, 9, 1):
     sys.exit(1)
 if root.is_symlink() or (root / 'sources.list.d').is_symlink():
