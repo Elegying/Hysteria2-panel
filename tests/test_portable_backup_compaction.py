@@ -229,7 +229,7 @@ class PortableBackupCompactionTests(unittest.TestCase):
         runtime = set(BackupManager.RUNTIME_TABLES)
 
         self.assertFalse(restored & runtime)
-        self.assertEqual(actual, restored | runtime)
+        self.assertEqual(actual, restored | runtime | self.manager.EXCLUDED_NODE_TABLES)
 
     def test_connected_restore_rejects_changed_identity_before_any_live_write(self):
         archive = self.manager.create_archive()

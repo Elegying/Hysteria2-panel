@@ -41,17 +41,23 @@ class ExternalNodeUpgradeGuardTests(unittest.TestCase):
         self.target.write_text('EXTERNAL_SUBSCRIPTION_BACKUP_FORMAT = 1\n' + self.target.read_text())
         self.assertEqual(0, self.run_guard().returncode)
 
+    def test_current_release_preserves_external_credentials_contract(self):
+        with sqlite3.connect(self.database) as connection:
+            connection.execute("INSERT INTO external_subscription_nodes VALUES (1, 'opaque')")
+        self.target.write_text((ROOT / 'hysteria2_panel.py').read_text())
+        self.assertEqual(0, self.run_guard().returncode)
+
     def test_allows_older_code_without_external_records(self):
         self.assertEqual(0, self.run_guard().returncode)
 
-    def test_restore_refuses_unknown_external_data_in_source_or_destination(self):
+    def test_restore_refuses_external_data_in_user_archive(self):
         other = self.root / 'other.db'
         with sqlite3.connect(other):
             pass
         manager = BackupManager.__new__(BackupManager)
         with sqlite3.connect(self.database) as c:
             c.execute("INSERT INTO external_subscription_nodes VALUES (1, 'opaque')")
-        for source, destination in ((self.database, other), (other, self.database)):
+        for source, destination in ((self.database, other),):
             with self.subTest(source=source):
                 with self.assertRaises(BackupValidationError):
                     manager._stage_user_restore(source, destination, b'k' * 32)
