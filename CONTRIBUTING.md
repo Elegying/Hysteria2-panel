@@ -93,3 +93,11 @@ shellcheck install.sh tests/firewall_integration.sh tests/systemd_integration.sh
 ## 发布说明
 
 正式版本只能从最新受保护 `main` 提交创建严格的 `vX.Y.Z` 标签，并完成[发布与回滚](docs/DEPLOYMENT.md)中的全部远端门禁。普通贡献者不需要自行创建标签或 Release。
+
+## 共享逻辑与安装清单
+
+- HTTP 层负责认证、参数解析和响应；网页与 Android 共用的计算、监控读模型放在 `hy2panel` 对应业务模块，不让移动模块导入网页渲染模块。
+- 新增移动能力时同时维护路由、Bearer 鉴权、capabilities、`docs/API.md` 和行为测试。只读能力不能隐式触发探测、重启或其他写操作。
+- 修改安装分发的 Python 源码后运行 `python3 ops/source_manifest.py --write`，再运行 `python3 ops/source_manifest.py` 检查。默认模式不写文件；新增模块缺少安装清单项时会失败。
+- 更新源码哈希不等于发布。安装入口、固定版本源码、签名资产及二进制必须来自同一次正式发布；不移动已发布标签，不关闭哈希或签名校验来绕过失败。
+- 整理账本、认证、升级/恢复代码时保留故障恢复和并发边界测试；完整安装 E2E 仅在可销毁的 systemd Linux 环境执行。

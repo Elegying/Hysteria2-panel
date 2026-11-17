@@ -755,6 +755,7 @@ restore_upgrade_runtime_state
             "hy2panel/dashboard.py": "HY2PANEL_DASHBOARD_SHA256",
             "hy2panel/diagnostics.py": "HY2PANEL_DIAGNOSTICS_SHA256",
             "hy2panel/mobile_api.py": "HY2PANEL_MOBILE_API_SHA256",
+            "hy2panel/admin_api.py": "HY2PANEL_ADMIN_API_SHA256",
         }
 
         for relative_path, variable in modules.items():
@@ -3186,6 +3187,11 @@ systemctl() {{
   if [[ "$1" == "kill" ]]; then
     printf 'KILL:%s\n' "$*" >> "$CAPTURE"
     printf 'inactive\n' > "$STATE_FILE"
+    return 0
+  fi
+  # A real host may have either maintenance timer installed. Keep the mock
+  # independent of the host while allowing only the expected timer stops.
+  if [[ "$1" == "stop" && ( "$2" == hysteria2-panel-node-dns-admission.timer || "$2" == hysteria2-panel-offsite-backup.timer ) ]]; then
     return 0
   fi
   if [[ "$1" == "is-active" ]]; then

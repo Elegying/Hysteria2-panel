@@ -69,6 +69,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Verify installer source manifest
+        run: python ops/source_manifest.py
       - name: Run unit and integration tests
         run: python -m unittest discover -s tests -v
       - name: Reject leaked SQLite connections on modern Python

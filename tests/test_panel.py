@@ -5092,6 +5092,9 @@ class FakeEgressPolicyController:
         self.actions = []
         self.state = "web"
 
+    def inspect(self):
+        return {"state": self.state, "configured_policy": self.state}
+
     def status(self):
         return self.state
 
@@ -6386,7 +6389,7 @@ class PanelHttpTests(unittest.TestCase):
         response = self.request("/", headers=headers)
         body = response.read().decode()
 
-        self.assertIn('href="/#servers" data-console-refresh>刷新状态</a>', body)
+        self.assertIn('href="/#nodes" data-console-refresh>刷新状态</a>', body)
         self.assertIn('data-dialog-open="node-onboarding-dialog"', body)
         self.assertIn('id="node-onboarding-dialog"', body)
         self.assertIn('data-node-enrollment-form', body)
@@ -6395,8 +6398,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn("正在对接", body)
         self.assertIn("待注册 &lt;节点&gt;", body)
         self.assertNotIn("待注册 <节点>", body)
-        self.assertIn("生成前请先完成 DNS 设置", body)
-        self.assertIn("一键对接", body)
+        self.assertIn("域名准备", body)
+        self.assertIn("生成对接命令", body)
         self.assertIn("一键断连", body)
         self.assertIn("删除对接", body)
         self.assertNotIn("核对短码", body)
@@ -6471,6 +6474,13 @@ class PanelHttpTests(unittest.TestCase):
             data = json.load(response)
             self.assertEqual({"network", "checks"}, set(data))
             self.assertEqual("no-store", response.headers["Cache-Control"])
+        with self.request("/api/v1/line-monitor?range=today", headers=headers) as response:
+            data = json.load(response)
+            self.assertEqual(60, data["today"]["step"])
+            self.assertIn("network", data["today"])
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request("/api/v1/line-monitor?range=invalid", headers=headers)
+        self.assertEqual(400, error.exception.code)
         with self.request("/api/v1/line-monitor") as response:
             self.assertEqual("/login", urllib.parse.urlsplit(response.url).path)
         route = "/usage-origins/node:" + "a" * 32 + "/diagnostics"
@@ -7781,8 +7791,8 @@ class PanelHttpTests(unittest.TestCase):
             "总流量",
             "分享",
             "重置",
-            "一键备份",
-            "一键恢复",
+            "下载备份 ZIP",
+            "上传并恢复",
         ):
             self.assertIn(label, body)
         self.assertIn('value="3"', body)
@@ -8138,7 +8148,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertNotIn("data-data-plane-bootstrap-form", body)
         self.assertNotIn("data-data-plane-canary-form", body)
         self.assertNotIn("data-node-dns-action-form", body)
-        migration_steps = ('为新服务器配置与旧面板相同的订阅域名、HTTPS 和端口。', '恢复备份，再按原地区重新对接专线节点；验证原订阅链接和节点连接。', '验证正常后切换 DNS；旧机保留到缓存请求和连接退出。不要让两套独立面板同时处理认证统计。')
+        migration_steps = ('保持原订阅域名、本机代理地址、HTTPS 和 UDP 端口一致。', '恢复备份，重新对接远端节点，验证原订阅链接与连接。', '确认正常后切换 DNS，等待旧连接退出后再停用旧机；避免两套面板同时处理认证统计。')
         for step in migration_steps:
             self.assertIn('<li>' + step + '</li>', body)
         self.assertLess(body.index(migration_steps[0]), body.index(migration_steps[1]))
@@ -8847,17 +8857,23 @@ class PanelHttpTests(unittest.TestCase):
         with self.db._connect() as connection:
             connection.execute("UPDATE proxy_users SET user_type=1 WHERE id=?", (premium["id"],))
         self.db.add_traffic({"normal": {"tx": 1, "rx": 2}, "premium": {"tx": 10, "rx": 20}})
+        self.db.create_proxy_user("idle")
         headers, _ = self.authenticated_headers()
         for query in ("/", "/?type=premium&q=missing"):
             with self.request(query, headers=headers) as response:
                 body = response.read().decode()
+            self.assertIn('title="当前周期累计上传和下载均为 0 的用户">不活跃用户</span><strong>1</strong>', body)
+            self.assertIn('<span>总上传流量</span><strong>11 B</strong>', body)
+            self.assertIn('<span>总下载流量</span><strong>22 B</strong>', body)
             rank = body.split('<div class="rank-list">')[1].split('</section>')[0]
             self.assertLess(rank.index('>premium</span>'), rank.index('>normal</span>'))
             self.assertIn('class="rank-type">专线', rank)
             self.assertIn('class="rank-type">普通', rank)
             self.assertNotIn('/users/', rank)
             self.assertIn('id="users" class="card" data-console-views="users"', body)
-            self.assertIn('data-console-nav="servers"', body)
+            self.assertNotIn('data-console-nav="servers"', body)
+            self.assertIn('class="node-resource-grid"', body)
+            self.assertIn('<h2>备份与恢复</h2>', body)
         self.assertTrue(normal)
 
     def test_total_traffic_header_sorts_users_in_both_directions(self):

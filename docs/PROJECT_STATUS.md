@@ -1,5 +1,7 @@
 # Hysteria2-panel 项目状态与下一步
 
+后续审查见 [2026-11-17 代码与部署审查](CODE_AND_DEPLOYMENT_AUDIT_20261117.md)及 [Android 接口准备情况](ANDROID_API_READINESS.md)。下文保留原历史基线，不代表当前上线或发布状态。
+
 更新于 2026-11-16。状态以本地 `main` 的 `cf81a6c` 为基准。
 
 ## 项目目标

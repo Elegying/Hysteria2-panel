@@ -1,79 +1,12 @@
 """Dashboard rendering isolated from the HTTP transport entrypoint."""
 
-import datetime
 import html
-import math
 import json
 import time
 import urllib.parse
 from dataclasses import dataclass
 
-from .budgets import budget_forecast, provider_traffic_bytes
-
-
-def machine_forecasts(application, nodes, budgets=None, service_status=None, now=None):
-    """Cache polling projections for one minute; membership changes invalidate them."""
-    now = int(time.time()) if now is None else int(now)
-    local_id = getattr(application.usage_manager, "local_origin_id", "")
-    node_tiers = {
-        "node:" + node["node_id"]: (
-            "premium" if node.get("tier") == "premium" else "standard"
-        ) for node in nodes
-    }
-    if local_id:
-        node_tiers[local_id] = "standard"
-    serving = {
-        "node:" + node["node_id"] for node in nodes
-        if node.get("status") == "pending_verification"
-        and node.get("policy_state") == "protocol_ready"
-        and node.get("lifecycle_state") in {"active", "draining"}
-        and node.get("data_plane_state") in {"dns_admitted", "direct_canary_passed"}
-    }
-    if service_status is None:
-        service_status = application.service_controller.status()
-    if local_id and service_status == "active":
-        serving.add(local_id)
-    key = (now // 60, local_id, tuple(sorted(serving)), tuple(sorted(node_tiers.items())))
-    cached = getattr(application, "_machine_forecast_cache", None)
-    cache_result = budgets is None
-    if cache_result and cached and cached[0] == key:
-        return cached[1]
-    if budgets is None:
-        origin_ids = sorted({"node:" + node["node_id"] for node in nodes
-                             if node.get("status") != "revoked"} | ({local_id} if local_id else set()))
-        budgets = {budget["origin_id"]: budget for budget in
-                   application.database.list_origin_budgets(origin_ids, now)}
-    tiers = {node_tiers.get(origin_id) for origin_id in budgets} - {None}
-    averages = {tier: application.database.recent_daily_traffic_average(now, tier=tier)
-                for tier in tiers}
-    counts = {tier: sum(node_tiers.get(origin_id) == tier for origin_id in serving)
-              for tier in tiers}
-    result = {}
-    for origin_id, budget in budgets.items():
-        tier = node_tiers.get(origin_id)
-        average = averages.get(tier, {"daily_bytes": None, "sample_days": 0})
-        count = counts.get(tier, 0)
-        reset_at = datetime.datetime.strptime(
-            budget["period_end"], "%Y-%m-%d"
-        ).replace(tzinfo=datetime.timezone.utc).timestamp()
-        live_budget = {name: budget[name] for name in (
-            "used_bytes", "limit_bytes", "percent", "status", "period_start", "period_end"
-        )}
-        live_budget["reset_days"] = max(0, math.ceil((reset_at - now) / 86400))
-        result[origin_id] = {
-            "text": budget_forecast(budget, average["daily_bytes"],
-                                    count if origin_id in serving else 0, now),
-            "basis": "按{}近 {} 个完整日均值、{} 台供流机器均分预测".format(
-                "专线" if tier == "premium" else "普通线路",
-                average["sample_days"], count),
-            "budget": live_budget,
-        }
-    if cache_result:
-        application._machine_forecast_cache = (key, result)
-    else:
-        # A caller-supplied subset must not poison polling or retain pre-edit data.
-        application._machine_forecast_cache = None
-    return result
+from .budgets import machine_forecasts, provider_traffic_bytes
 
 
 def select_dashboard_users(
@@ -498,7 +431,7 @@ def render_dashboard(
                 percent=budget["percent"],
             )
             forecast = forecasts[origin["origin_id"]]
-            budget_line += '<span class="machine-forecast-detail"> · <span data-machine-forecast>{}</span></span>'.format(
+            budget_line += '<span class="machine-forecast-detail"><span data-machine-forecast>{}</span></span>'.format(
                 html.escape(forecast["text"])
             )
             budget_detail = '<span data-machine-budget-period>剩余 {} 天重置</span>'.format(
@@ -518,10 +451,30 @@ def render_dashboard(
         origin_key = html.escape(origin["origin_id"].replace(":", "-"), quote=True)
         speed_widget = '<div class="machine-speed" title="主路由网卡速度，包含代理与系统流量；与月度计费流量口径不同。每 5 秒刷新，保留最近 5 分钟。"><div class="machine-speed-values"><span data-speed-rx>↓ 入站 —</span><span data-speed-tx>↑ 出站 —</span></div><svg data-speed-chart preserveAspectRatio="none" viewBox="0 0 240 42" role="img" aria-label="最近 5 分钟网卡入站与出站速度"><path class="speed-grid" d="M0 12H240M0 32H240"/><path data-speed-rx-area class="speed-rx-area"/><path data-speed-tx-area class="speed-tx-area"/><path data-speed-rx-line class="speed-rx-line"/><path data-speed-tx-line class="speed-tx-line"/></svg><small data-speed-time>网卡速度 · 等待采样</small></div>' if monitorable else ""
         diagnostic_action = ('<button type="button" class="line-check-button" data-dialog-open="line-check-{origin_key}"><span data-line-status>线路待检测</span><span aria-hidden="true"> ›</span></button>'.format(origin_key=origin_key) if monitorable else "")
+        server_tools = ""
+        if monitorable:
+            is_local = origin["origin_id"] == local_origin_id
+            resource_cells = []
+            for label, key in [("CPU", "cpu_percent"), ("内存", "memory_percent"), ("磁盘", "disk_percent")]:
+                value = resources.get(key) if is_local and metrics_available else None
+                text = "{:.1f}%".format(value) if value is not None else "—"
+                resource_cells.append('<div data-resource="{}"><span class="muted">{}</span><strong>{}</strong><progress max="100" value="0"></progress><small data-resource-detail></small></div>'.format(key.split('_')[0], label, text))
+            resource_note = "每 5 秒刷新" if is_local else "等待资源上报"
+            actions = '<button class="secondary compact-button" type="button" data-dialog-open="node-onboarding-dialog">对接管理</button>'
+            if is_local:
+                actions = '<button class="secondary compact-button" type="button" data-dialog-open="server-details-dialog">服务与版本</button>'
+                for action, label in [("start", "启动服务"), ("restart", "重启服务"), ("stop", "停止服务")]:
+                    confirmation = ' data-confirm="此操作将影响本机代理连接，确定继续吗？"' if action != "start" else ""
+                    actions += '<form method="post" action="/service/{}"{}><input type="hidden" name="csrf" value="{}"><button class="secondary compact-button" type="submit">{}</button></form>'.format(action, confirmation, csrf, label)
+                actions += '<form method="post" action="/system/reboot" data-confirm="重启面板服务器将中断本机连接并短暂影响远端认证，确定继续吗？"><input type="hidden" name="csrf" value="{}"><button class="danger compact-button" type="submit">重启服务器</button></form>'.format(csrf)
+            else:
+                for action, label in [("restart", "重启服务"), ("reboot", "重启服务器")]:
+                    actions += '<form data-server-operation method="post" action="/nodes/{node}/operations/{action}"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="confirm" value="{node}"><button class="secondary compact-button" type="submit" disabled>{label}</button></form>'.format(node=html.escape(node_by_origin[origin['origin_id']]['node_id'], quote=True), action=action, csrf=csrf, label=label)
+            server_tools = '<div class="node-server-tools"><div class="node-resource-head"><strong>服务器资源</strong><a href="#nodes" data-resource-refresh>刷新</a></div><div class="node-resource-grid">{}</div><div class="resource-uptime">运行时长 <strong data-resource-uptime>—</strong></div><small class="muted" data-resource-state>{}</small><div class="node-quick-actions">{}</div><small data-operation-status role="status"></small></div>'.format("".join(resource_cells), resource_note, actions)
         machine_rows.append(
-            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong>{server_ip}<small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div>{speed_widget}<span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><div class="machine-reset-check"><small class="muted">{budget_detail}</small>{diagnostic_action}</div>{budget_action}</div></article>""".format(
+            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong>{server_ip}<small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div>{speed_widget}<span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><div class="machine-reset-check"><small class="muted">{budget_detail}</small>{diagnostic_action}</div>{budget_action}</div>{server_tools}</article>""".format(
                 origin_id=html.escape(origin["origin_id"], quote=True),
-                speed_widget=speed_widget, diagnostic_action=diagnostic_action,
+                speed_widget=speed_widget, diagnostic_action=diagnostic_action, server_tools=server_tools,
                 name=html.escape(str(origin.get("display_name") or "未命名节点")),
                 server_ip=('<span class="muted machine-ip"> · {}</span>'.format(html.escape(server_ip)) if server_ip else ""),
                 kind=kind_label,
@@ -556,7 +509,7 @@ def render_dashboard(
         else ""
     )
     machine_stats_section = "" if not machine_origins else (
-        """<section class="card machine-stats" aria-label="节点统计与流量预算"><div class="section-head machine-section-head"><div><h2>节点管理</h2></div><div class="button-row"><span class="machine-count">{count} 台机器</span><button class="compact-button" type="button" data-dialog-open="node-onboarding-dialog">添加 / 管理节点</button></div></div>{warning}<div class="machine-budget-list">{rows}</div>{dialogs}</section>""".format(
+        """<section class="card machine-stats" aria-label="节点统计与流量预算"><div class="section-head machine-section-head"><div><h2>节点管理</h2></div><div class="button-row"><span class="machine-count">{count} 台机器</span><button class="compact-button" type="button" data-dialog-open="node-onboarding-dialog">添加节点</button></div></div>{warning}<div class="machine-budget-list">{rows}</div>{dialogs}</section>""".format(
             warning=machine_warning,
             count=sum(origin.get("kind") in {"local", "remote"} for origin in machine_origins),
             rows="".join(machine_rows),
@@ -916,28 +869,7 @@ unicode: "eef7"
   <path d="M12 4l-8 4l8 4l8 -4l-8 -4" />
   <path d="M4 12l8 4l8 -4" />
   <path d="M4 16l8 4l8 -4" />
-</svg>订阅管理</a><a href="#servers" data-console-nav="servers"><!--
-category: Devices
-tags: [storage, hosting, www]
-version: "1.0"
-unicode: "eb1f"
--->
-<svg aria-hidden="true"
-  xmlns="http://www.w3.org/2000/svg"
-  width="24"
-  height="24"
-  viewBox="0 0 24 24"
-  fill="none"
-  stroke="currentColor"
-  stroke-width="2"
-  stroke-linecap="round"
-  stroke-linejoin="round"
->
-  <path d="M3 4m0 3a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v2a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3z" />
-  <path d="M3 12m0 3a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v2a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3z" />
-  <path d="M7 8l0 .01" />
-  <path d="M7 16l0 .01" />
-</svg>服务器管理</a><a href="#settings" data-console-nav="settings"><!--
+</svg>订阅管理</a><a href="#settings" data-console-nav="settings"><!--
 category: System
 tags: [cog, edit, gear, preferences, tools]
 version: "1.0"
@@ -958,21 +890,21 @@ unicode: "eb20"
   <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" />
 </svg>设置</a></nav><small>Hysteria2 · v{version}</small></aside><header class="topbar"><h1 data-console-title>总览</h1><span class="topbar-spacer"></span>
 <span class="pill">服务状态 <strong>{service_label}</strong></span><span class="pill">在线刷新 <strong data-live-refreshed>{refreshed}</strong></span><span class="pill">当前用户 <strong>{total_users}</strong></span>
-<button class="secondary topbar-action" type="button" data-dialog-open="migration-dialog">数据迁移</button><form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
+<form class="logout-form" method="post" action="/logout"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">退出登录</button></form></header>
 <section id="overview" class="metrics" data-console-views="overview" aria-label="服务概览">
 <div class="metric"><span>在线节点</span><strong data-console-node-count>{initial_node_count}</strong><small class="muted">按节点上报状态</small></div>
 <div class="metric"><span>在线设备</span><strong data-console-online data-live-online-total>{initial_online}</strong>{online_note}</div>
 <div class="metric"><span>用户</span><strong>{all_user_count}</strong><small class="muted">普通与专线用户</small></div>
-<div class="metric"><span>入站</span><strong class="rate-rx" data-total-rx>—</strong><small class="muted">服务器网卡方向</small></div>
+<div class="metric"><span title="当前周期累计上传和下载均为 0 的用户">不活跃用户</span><strong>{all_inactive_users}</strong><small class="muted">本周期累计流量为 0</small></div><div class="metric"><span>总上传流量</span><strong>{all_total_tx}</strong><small class="muted">全部用户 · 当前周期</small></div><div class="metric"><span>总下载流量</span><strong>{all_total_rx}</strong><small class="muted">全部用户 · 当前周期</small></div><div class="metric"><span>入站</span><strong class="rate-rx" data-total-rx>—</strong><small class="muted">服务器网卡方向</small></div>
 <div class="metric"><span>出站</span><strong class="rate-tx" data-total-tx>—</strong><small class="muted">服务器网卡方向</small></div>
 </section>
-<section class="card aggregate-chart" data-console-views="overview" aria-label="全网实时速率"><div class="section-head"><h2>全网实时速率 <small>（近 5 分钟）</small></h2><div class="aggregate-current"><span class="rate-rx">↓ 入站（服务器方向）：<strong data-chart-rx>—</strong></span><span class="rate-tx">↑ 出站（服务器方向）：<strong data-chart-tx>—</strong></span></div></div><div class="aggregate-plot"><div class="aggregate-y-axis" data-aggregate-axis aria-hidden="true"></div><div class="aggregate-canvas"><svg viewBox="0 0 1000 160" preserveAspectRatio="none" role="img" aria-label="最近 5 分钟全网网卡入站和出站速率"><defs><linearGradient id="aggregate-rx-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00d8c0" stop-opacity=".32"/><stop offset="100%" stop-color="#00d8c0" stop-opacity=".02"/></linearGradient><linearGradient id="aggregate-tx-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#b39cff" stop-opacity=".28"/><stop offset="100%" stop-color="#b39cff" stop-opacity=".03"/></linearGradient></defs><path data-aggregate-grid class="speed-grid"/><path data-aggregate-rx-area class="aggregate-rx-area"/><path data-aggregate-tx-area class="aggregate-tx-area"/><path class="speed-rx-line" data-aggregate-rx/><path class="speed-tx-line" data-aggregate-tx/></svg><div class="aggregate-x-axis" data-aggregate-times aria-hidden="true"></div></div><div class="aggregate-series-key"><span class="rate-rx">入站</span><span class="rate-tx">出站</span></div></div><span class="muted aggregate-state" data-aggregate-state>等待采样</span></section>
-<div id="nodes" data-console-views="overview nodes">{machine_stats_section}</div>
-<section id="servers" class="operations dashboard-trio" data-console-views="servers"><div class="server-scope notice">本机服务器 · {local_server_address}。下方启停、重启与资源信息仅针对面板所在服务器；远端节点可在对接管理中查看状态和安全断连。</div>
+<section class="card aggregate-chart" data-console-views="overview" aria-label="全网实时速率"><div class="section-head"><div class="chart-title-range"><h2>全网实时速率</h2><span hidden data-chart-range-label>（近 5 分钟）</span><div class="chart-range-buttons" role="group" aria-label="流量图时间范围"><button type="button" class="secondary" data-chart-range="5m" aria-pressed="true">近 5 分钟</button><button type="button" class="secondary" data-chart-range="today" aria-pressed="false">今日</button></div><span class="chart-refresh">每 5 秒更新</span></div><div class="aggregate-current"><span class="rate-rx">↓ 入站 <strong data-chart-rx>—</strong></span><span class="rate-tx">↑ 出站 <strong data-chart-tx>—</strong></span></div></div><div class="aggregate-plot"><div class="aggregate-y-axis" data-aggregate-axis aria-hidden="true"></div><div class="aggregate-canvas"><svg viewBox="0 0 1000 160" preserveAspectRatio="none" role="img" aria-label="最近 5 分钟全网网卡入站和出站速率"><defs><linearGradient id="aggregate-rx-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#00d8c0" stop-opacity=".32"/><stop offset="100%" stop-color="#00d8c0" stop-opacity=".02"/></linearGradient><linearGradient id="aggregate-tx-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#b39cff" stop-opacity=".28"/><stop offset="100%" stop-color="#b39cff" stop-opacity=".03"/></linearGradient></defs><path data-aggregate-grid class="speed-grid"/><path data-aggregate-rx-area class="aggregate-rx-area"/><path data-aggregate-tx-area class="aggregate-tx-area"/><path class="speed-rx-line" data-aggregate-rx/><path class="speed-tx-line" data-aggregate-tx/></svg><div class="aggregate-x-axis" data-aggregate-times aria-hidden="true"></div></div><div class="aggregate-series-key"><span class="rate-rx">入站</span><span class="rate-tx">出站</span></div></div><div class="aggregate-footer"><time data-chart-date></time><span class="muted aggregate-state" data-aggregate-state>等待采样</span></div></section>
+<section class="card panel-control" data-console-views="nodes"><div class="section-head"><div><h2>面板管控</h2><small class="muted">{local_server_address} · 本机代理服务</small></div><span class="service-badge{service_class}">{service_label}</span></div><div class="panel-control-body"><div class="button-row"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动</button></form><form method="post" action="/service/stop" data-confirm="停止本机代理服务将中断本机连接，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止</button></form><form method="post" action="/service/restart" data-confirm="重启本机代理服务将短暂中断本机连接，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="secondary" type="submit">重启</button></form></div><div class="panel-control-info"><div><span>服务端口</span><div class="panel-port-action"><strong data-subscription-port>UDP {subscription_ports}</strong><button class="secondary" type="button" data-subscription-defaults>节点设置</button></div></div><div><span>BBR</span><strong>Hysteria BBR</strong><small>内核 {tcp_cc} / {qdisc}</small></div><div><span>节点证书</span><strong class="{certificate_class}">{certificate_text}</strong></div></div></div></section><div id="nodes" data-console-views="overview nodes">{machine_stats_section}</div>
+<dialog id="server-details-dialog" class="migration-dialog server-details-dialog" aria-label="本机服务器详情"><div class="dialog-shell"><div class="dialog-head"><h2>本机服务器详情</h2><button type="button" class="dialog-close" data-dialog-close>关闭</button></div><div class="operations dashboard-trio"><div class="server-scope notice">本机服务器 · {local_server_address}。下方启停、重启与资源信息仅针对面板所在服务器；远端节点可在对接管理中查看状态和安全断连。</div>
 <article class="card"><div class="section-head"><div><h2>本机服务控制</h2><p class="muted">启停、重启和版本检查集中在这里。</p></div><span class="service-badge{service_class}">{service_label}</span></div>
 <div class="button-row service-actions"><form method="post" action="/service/start"><input type="hidden" name="csrf" value="{csrf}"><button class="success" type="submit">启动</button></form>
 <form method="post" action="/service/restart" data-confirm="重启本机 Hysteria 服务会短暂中断本机代理连接，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="warning" type="submit">重启代理服务</button></form>
-<form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止</button></form><a class="button secondary" href="/#servers" data-console-refresh>刷新状态</a><button class="secondary" type="button" data-dialog-open="node-onboarding-dialog"{onboarding_disabled}>对接管理</button></div>
+<form method="post" action="/service/stop" data-confirm="停止后所有连接会中断，确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><button class="danger" type="submit">停止</button></form><a class="button secondary" href="/#nodes" data-console-refresh>刷新状态</a><button class="secondary" type="button" data-dialog-open="node-onboarding-dialog"{onboarding_disabled}>对接管理</button></div>
 <div class="service-details primary-details"><div class="detail compact-detail"><span class="muted">流量统计</span><strong class="{stats_class}">{stats}</strong></div><div class="detail compact-detail port-detail"><div><span class="muted">服务端口</span><strong data-subscription-port>UDP {subscription_ports}</strong></div><button class="secondary" type="button" data-subscription-defaults>节点设置</button></div></div>
 
 <div class="service-details version-details"><div class="detail compact-detail bbr-detail"><span class="muted">BBR 状态</span><strong class="ok">Hysteria BBR</strong><small class="muted">standard · 内核 {tcp_cc} / {qdisc}</small></div><div class="detail compact-detail version-panel"><div class="version-row"><div><span class="muted">当前版本</span><strong>v{version}</strong></div><div class="button-row version-actions"><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button class="compact-button" type="submit">检查更新</button></form>{update_action}</div></div><p class="muted">{update_text}</p><p class="update-state" data-update-status data-state="{update_state}" role="status" aria-live="polite">{update_status_text}</p></div></div></article>
@@ -980,48 +912,50 @@ unicode: "eb20"
 <div class="resource"><span class="muted">CPU 使用率</span><strong>{cpu}</strong></div><div class="resource"><span class="muted">内存占用</span><strong>{memory}</strong><small class="muted">{memory_used} / {memory_total}</small></div>
 <div class="resource"><span class="muted">磁盘占用</span><strong>{disk}</strong><small class="muted">{disk_used} / {disk_total}</small></div><div class="resource"><span class="muted">运行时长</span><strong>{uptime}</strong></div>
 <div class="resource certificate-resource"><span class="muted">节点证书</span><strong class="{certificate_class}">{certificate_text}</strong></div></div></article>
-<article class="card server-maintenance"><h2>日常维护</h2><p class="muted">备份用户及订阅身份，查看远端节点心跳与对接状态。</p><div class="button-row"><button type="button" data-dialog-open="migration-dialog">备份与恢复</button><button class="secondary" type="button" data-dialog-open="node-onboarding-dialog">远端节点状态</button></div><p class="muted">远端服务器重启与日志暂不提供网页操作。</p></article></section>
+</div></div></dialog>
 <section class="card traffic-card" data-console-views="overview"><div class="section-head"><div><h2>流量前五排行</h2><p class="muted">所有用户当前累计上传与下载总量 · 每月重置</p></div></div><div class="rank-row rank-header"><span>排名</span><span>用户</span><span>类型</span><span>累计流量</span><span>相对用量</span></div><div class="rank-list">{rank_rows}</div></section>
 <section id="subscriptions" data-console-views="subscriptions"><p class="muted module-intro">统一管理订阅线路。现有用户的订阅链接保持不变。</p><div class="console-config-grid">
 <article class="card"><span class="config-kicker">STANDARD</span><h2>普通线路</h2><p class="muted">配置统一下发的节点名称、地址与端口，管理本机端口跳跃。用户刷新原订阅后生效。</p><button type="button" data-subscription-defaults>普通线路配置</button></article>
 <article class="card"><span class="config-kicker">PREMIUM</span><h2>自建专线</h2><p class="muted">查看专线节点对接状态，调整各节点的订阅名称、地址与端口。</p><button type="button" data-dialog-open="node-onboarding-dialog">专线节点配置</button></article>
 <article class="card"><span class="config-kicker">ANYTLS</span><h2>外部线路</h2><p class="muted">批量导入、排序与预览外部 AnyTLS 节点，发布到有效专线用户的原订阅。</p><button type="button" data-dialog-open="external-nodes-dialog" data-external-open>外部 AnyTLS 节点</button></article>
 <article class="card"><span class="config-kicker">SUBSCRIPTIONS</span><h2>用户订阅</h2><p class="muted">从用户列表查看固定订阅链接、二维码与启用状态。敏感链接只在打开详情后显示。</p><a class="button secondary" href="#users">查看用户订阅</a></article></div></section>
-<section id="settings" data-console-views="settings"><div class="console-config-grid"><article class="card"><h2>面板信息</h2><dl class="console-settings-list"><div><dt>当前版本</dt><dd>v{version}</dd></div><div><dt>节点地址</dt><dd>{public_host}</dd></div><div><dt>订阅入口</dt><dd>UDP {subscription_ports}</dd></div></dl><a class="button secondary" href="#servers">版本与服务器维护</a></article>
-<article class="card"><h2>监控与检测</h2><dl class="console-settings-list"><div><dt>线路检测</dt><dd>仅手动触发</dd></div><div><dt>速率刷新</dt><dd>每 5 秒</dd></div><div><dt>图表范围</dt><dd>最近 5 分钟</dd></div></dl><p class="muted">速率按服务器网卡方向统计，包含系统通信。TCP 可达不代表国内 UDP 一定可用。</p><a class="button secondary" href="#nodes">查看节点与检测结果</a></article>
-<article class="card"><h2>数据与迁移</h2><p class="muted">下载用户及订阅身份备份，或从已有备份恢复。恢复前请阅读弹窗中的影响说明。</p><button type="button" data-dialog-open="migration-dialog">数据迁移</button></article></div></section>
-<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">数据节点对接</h2><p class="muted">生成代码后，在目标服务器以 root 粘贴运行一次即可。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">关闭</button></div>
-<p class="notice"><strong>生成前请先完成 DNS 设置：</strong>请自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS，也不会把 DNS 作为对接成功条件。</p>
-<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-tier">节点类型</label><select id="node-tier" name="tier"><option value="standard">普通节点</option><option value="premium">专线节点</option></select></div><div><label for="node-region">地区</label><select id="node-region" name="region"><option value="">请选择</option><option value="hk">香港</option><option value="us">美国</option><option value="jp">日本</option><option value="sg">新加坡</option></select></div><div><label for="node-host">订阅节点地址</label><input id="node-host" name="subscription_host" placeholder="例如 node.example.com"></div><div><label for="node-hopping">端口跳跃</label><select id="node-hopping" name="port_hopping"><option value="1">开启</option><option value="0">关闭</option></select><small class="muted">端口自动配置，无需填写</small></div><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="填写服务器实际公网 IPv4 或 IPv6"></div><button type="submit"{onboarding_disabled}>一键对接</button></form>
+<section id="settings" data-console-views="settings"><div class="console-config-grid"><article class="card"><h2>面板信息</h2><dl class="console-settings-list"><div><dt>当前版本</dt><dd>v{version}</dd></div><div><dt>节点地址</dt><dd>{public_host}</dd></div><div><dt>节点 UDP 端口</dt><dd>{subscription_ports}</dd></div></dl><p class="muted">{update_text}</p><form method="post" action="/updates/check"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">检查更新</button></form></article>
+<article class="card"><h2>监控与检测</h2><dl class="console-settings-list"><div><dt>线路检测</dt><dd>仅手动触发</dd></div><div><dt>速率刷新</dt><dd>每 5 秒</dd></div><div><dt>图表范围</dt><dd>近 5 分钟 / 今日</dd></div></dl><p class="muted">速率按服务器网卡方向统计，包含系统通信。TCP 可达不代表国内 UDP 一定可用。</p><a class="button secondary" href="#nodes">查看节点与检测结果</a></article>
+<article class="card"><h2>备份与恢复</h2><p class="muted">下载用户及订阅身份备份，或从已有备份恢复。恢复前请阅读弹窗中的影响说明。</p><button type="button" data-dialog-open="migration-dialog">备份与恢复</button></article></div></section>
+<dialog id="node-onboarding-dialog" class="migration-dialog node-onboarding-dialog" aria-labelledby="node-onboarding-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="node-onboarding-title">添加服务器节点</h2><p class="muted">填写服务器信息，生成命令后在目标服务器执行。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭节点操作弹窗">关闭</button></div>
+<p class="notice onboarding-dns"><strong>域名准备</strong> 使用域名时，请先将 A / AAAA 记录解析到目标 IP。DNS 由你维护，面板不会自动修改。</p>
+<form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-tier">节点类型</label><select id="node-tier" name="tier"><option value="standard">普通节点</option><option value="premium">专线节点</option></select></div><div><label for="node-region">地区</label><select id="node-region" name="region"><option value="">请选择</option><option value="hk">香港</option><option value="us">美国</option><option value="jp">日本</option><option value="sg">新加坡</option></select></div><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="服务器公网 IPv4 或 IPv6"></div><div><label for="node-host">订阅节点地址</label><input id="node-host" name="subscription_host" placeholder="例如 node.example.com"></div><div><label for="node-hopping">端口跳跃</label><select id="node-hopping" name="port_hopping"><option value="1">开启</option><option value="0">关闭</option></select><small class="muted">端口自动配置，无需填写</small></div><button type="submit"{onboarding_disabled}>生成对接命令</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">在目标服务器粘贴运行</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><p class="muted" data-node-enrollment-expiry role="status"></p></section>
-<div class="node-list-head"><h3>节点状态</h3><span class="muted">卸载完成后自动移出列表；刷新可查看新注册节点</span></div><div class="node-list">{node_rows}</div></div></dialog>
+<div class="node-list-head"><h3>已对接服务器</h3><span class="muted">卸载完成后自动移出列表；刷新可查看新注册节点</span></div><div class="node-list">{node_rows}</div></div></dialog>
 <dialog id="external-nodes-dialog" class="migration-dialog node-management-dialog" aria-labelledby="external-nodes-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="external-nodes-title">外部 AnyTLS 节点</h2><p class="muted">追加到有效专线用户的原订阅，自建节点保持不变。普通用户不可获取。</p></div><button type="button" class="dialog-close" data-dialog-close aria-label="关闭外部节点管理">关闭</button></div>
 <div class="notice management-notice"><strong>仅向专线用户分发</strong><p>外部流量不计入面板统计。停用或到期后无法刷新订阅，已保存的上游凭据不会自动失效。</p></div>
 <div data-external-content>正在加载…</div></div></dialog>
-<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">用户数据迁移</h2><p class="muted">备份用户、订阅身份和本机节点身份，普通用户无需刷新即可重连本机节点。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
-<div class="migration-guide"><section><h3>备份包含</h3><p>用户、开通/到期时间、累计流量、流量额度、设备数限制及固定订阅身份。另含本机节点证书、私钥和端口跳跃开关，不含远端节点配置。请离线妥善保存。</p></section><section><h3>恢复影响</h3><p>恢复会替换用户、订阅身份及签名密钥，并短暂重启服务。保留目标管理员和机器计费记录，恢复来源本机证书及连接身份；远端服务器重新对接后刷新原订阅获取新节点。</p></section><section><h3>迁移步骤</h3><p>保持原订阅地址、本机代理地址和 UDP 端口不变，并将原域名指向新服务器。格式 3 不兼容旧备份，请更新后重新备份。</p><ol><li>为新服务器配置与旧面板相同的订阅域名、HTTPS 和端口。</li><li>恢复备份，再按原地区重新对接专线节点；验证原订阅链接和节点连接。</li><li>验证正常后切换 DNS；旧机保留到缓存请求和连接退出。不要让两套独立面板同时处理认证统计。</li></ol></section></div>
-<div class="migration-grid"><article class="detail"><h3>一键备份</h3><p class="muted">生成经过完整性校验的 ZIP 文件并直接下载。</p><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载迁移备份</button></form></article>
-<article class="detail"><h3>一键恢复</h3><p class="muted">上传本面板生成的 ZIP。恢复会短暂重启服务，完成后旧会话失效。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">ZIP 备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><p><button class="warning" type="submit">上传并恢复</button></p><p class="muted" data-restore-status role="status"></p></form></article><article class="detail wide-detail"><h3>每日异地备份</h3><p><strong class="{offsite_backup_class}">{offsite_backup_label}</strong></p><details class="advanced-help"><summary>高级配置说明</summary><p class="muted">{offsite_backup_detail}。凭据只允许保存在服务器的 <code>/etc/hysteria2-panel/offsite-backup.json</code>（root:root 0600），不会进入网页、数据库或备份。</p></details></article></div></div></dialog>
+<dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">备份与恢复</h2><p class="muted">保存用户与订阅数据，用于恢复或迁移面板。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
+<div class="backup-summary"><strong>恢复前请确认</strong><span>恢复会替换用户和订阅数据，并短暂重启服务。管理员账号保留，完成后需重新登录。</span></div>
+<div class="migration-grid"><article class="detail backup-action-card"><span class="backup-kicker">备份</span><h3>下载备份</h3><p class="muted">导出经过完整性校验的 ZIP，建议在重要操作前保存一份。</p><div class="backup-content-note">包含用户、流量与额度、固定订阅身份，以及本机节点证书和端口跳跃设置。<br>不包含远端节点配置。</div><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载备份 ZIP</button></form></article>
+<article class="detail backup-action-card"><span class="backup-kicker">恢复</span><h3>从备份恢复</h3><p class="muted">选择本面板导出的 ZIP 文件，确认后开始恢复。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><button class="warning" type="submit">上传并恢复</button><p class="muted" data-restore-status role="status"></p></form></article></div>
+<details class="backup-help"><summary>备份范围与迁移说明</summary><div class="migration-guide"><section><h3>恢复范围</h3><p>恢复用户、开通与到期时间、累计流量、额度、设备限制及订阅身份，同时恢复本机节点证书、私钥和签名密钥。保留目标管理员和机器计费记录；备份含敏感凭据，请离线妥善保存。</p></section><section><h3>迁移到新服务器</h3><ol><li>保持原订阅域名、本机代理地址、HTTPS 和 UDP 端口一致。</li><li>恢复备份，重新对接远端节点，验证原订阅链接与连接。</li><li>确认正常后切换 DNS，等待旧连接退出后再停用旧机；避免两套面板同时处理认证统计。</li></ol><p>本机连接身份保持一致时，普通用户无需刷新即可重连本机；远端节点重新对接后需刷新原订阅。仅支持当前格式 3 备份，旧格式请先更新原面板并重新备份。</p></section></div></details>
+<div class="offsite-backup-row"><div><strong>每日异地备份</strong><span class="{offsite_backup_class}">{offsite_backup_label}</span></div><details class="advanced-help"><summary>配置说明</summary><p class="muted">{offsite_backup_detail}。凭据仅存于服务器 <code>/etc/hysteria2-panel/offsite-backup.json</code>（root:root 0600），不会写入网页或备份。</p></details></div></div></dialog>
 <dialog id="traffic-history-dialog" class="migration-dialog" aria-labelledby="traffic-history-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="traffic-history-title">用户流量</h2><p class="muted">本月记录 · 北京时间 · 每月 1 日清理。日占比按本月记录，小时占比按当天记录。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭流量详情">关闭</button></div><p class="muted">仅展示功能启用后采集的数据，无记录日期不代表历史用量为零。按采样时刻归入时段。</p><div data-traffic-history-content aria-live="polite"></div></div></dialog>
 <dialog id="credentials-dialog" class="migration-dialog credentials-dialog" aria-labelledby="credentials-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="credentials-title" data-credentials-title>订阅信息</h2><p class="muted">连接地址包含认证凭据，请只分享给受信任的人。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭订阅信息弹窗">关闭</button></div>
 <div class="qr-panel" data-qr-panel hidden><canvas id="credentials-qr" class="qr-canvas" role="img" aria-label="订阅链接二维码"></canvas><p class="muted">可直接扫描导入，或保存 PNG 到受信任的设备。</p></div>
 <label for="credentials-uri">固定订阅链接</label><textarea id="credentials-uri" rows="5" readonly></textarea><div class="credential-actions"><button type="button" data-copy-target="credentials-uri">复制订阅链接</button><button class="secondary" type="button" data-save-qr hidden>保存二维码 PNG</button></div><p class="notice" data-credentials-notice>关闭弹窗后会刷新当前用户列表。</p></div></dialog>
-<dialog id="subscription-dialog" class="migration-dialog" aria-labelledby="subscription-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="subscription-title">订阅管理</h2><p class="muted">用户链接保持不变；修改统一节点后，用户刷新订阅即可同步配置和流量信息。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭订阅管理">关闭</button></div>
+<dialog id="subscription-dialog" class="migration-dialog" aria-labelledby="subscription-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="subscription-title">订阅管理</h2><p class="muted">配置下发给客户端的节点，保存后需刷新订阅。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭订阅管理">关闭</button></div>
 <input type="hidden" name="csrf" value="{csrf}" data-subscription-csrf>
 <div data-subscription-content><p class="muted">正在加载订阅信息…</p></div>
 </div></dialog>
 <dialog id="create-user-dialog" class="migration-dialog create-dialog" aria-labelledby="create-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="create-user-title">添加用户</h2><p class="muted">设置用户名称、设备数和总流量限制。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭添加用户弹窗">关闭</button></div>
 <form class="create-grid" method="post" action="/users" data-create-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><div class="wide"><label for="name">用户名称</label><input id="name" name="name" required maxlength="64" placeholder="例如：Alice 手机" autofocus></div>
 <div><label for="user_type">账号类型</label><select id="user_type" name="user_type" data-user-type-select><option value="0">普通用户</option><option value="1">专线用户</option></select></div>
-<div><label for="device_limit">限制设备数</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
+<div><label for="device_limit">设备上限</label><input id="device_limit" name="device_limit" type="number" min="1" max="100" value="3" required></div>
 <div><label for="starts_at">开通日期（可选）</label><input id="starts_at" name="starts_at" type="date"><small class="muted">留空立即开通；北京时间所选日期 00:00 生效。</small></div><div data-expiry-field><label for="expires_at">到期日期（可选）</label><input id="expires_at" name="expires_at" type="date" data-expiry-input><small class="muted">留空为永久；北京时间所选日期 00:00 到期停用。</small></div>
 <div><label for="traffic_limit_gb">总流量（GiB）</label><input id="traffic_limit_gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="250" required></div><button type="submit">添加用户</button></form></div></dialog>
-<dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户</h2><p class="muted">修改额度、开通和到期日期，不会改变已发放订阅链接。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">关闭</button></div>
-<form class="create-grid" method="post" action="/users/{first_edit_id}/edit" data-edit-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><input type="hidden" name="generation" value="{first_edit_generation}"><div class="wide"><label for="edit-user-name">用户名</label><div class="edit-lookup"><input id="edit-user-name" data-edit-user-name-input maxlength="64" autocomplete="off" placeholder="输入完整用户名"><button class="secondary" type="button" data-edit-user-load>加载用户</button></div><p class="muted" data-edit-user-status role="status">输入完整用户名后加载设置。</p></div><fieldset class="create-grid wide edit-fields" data-edit-user-fields disabled aria-label="用户设置">
-<div><label for="edit-device-limit">限制设备数</label><input id="edit-device-limit" name="device_limit" type="number" min="1" max="100" value="{first_edit_device_limit}" required></div>
+<dialog id="edit-user-dialog" class="migration-dialog create-dialog" aria-labelledby="edit-user-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="edit-user-title">编辑用户</h2><p class="muted">调整额度与有效期，订阅链接保持不变。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭编辑用户弹窗">关闭</button></div>
+<form class="create-grid" method="post" action="/users/{first_edit_id}/edit" data-edit-user-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="inline" value="1"><input type="hidden" name="generation" value="{first_edit_generation}"><div class="wide"><label for="edit-user-name">用户名</label><div class="edit-lookup"><input id="edit-user-name" data-edit-user-name-input maxlength="64" autocomplete="off" placeholder="输入完整用户名"><button class="secondary" type="button" data-edit-user-load>加载用户</button></div><p class="muted" data-edit-user-status role="status">输入用户名，点击加载。</p></div><fieldset class="create-grid wide edit-fields" data-edit-user-fields disabled aria-label="用户设置">
+<div><label for="edit-device-limit">设备上限</label><input id="edit-device-limit" name="device_limit" type="number" min="1" max="100" value="{first_edit_device_limit}" required></div>
 <div><label for="edit-traffic-limit-gb">总流量（GiB）</label><input id="edit-traffic-limit-gb" name="traffic_limit_gb" type="number" min="1" max="1048576" value="{first_edit_traffic_limit_gb}" required></div>
-<div><label for="edit-starts-at">开通日期（可选）</label><input id="edit-starts-at" name="starts_at" type="date"></div><div data-edit-expiry-field><label for="edit-expires-at">到期日期（可选）</label><input id="edit-expires-at" name="expires_at" type="date" value="{first_edit_expiry_date}"><small class="muted">清空后保存即设为永久；北京时间所选日期 00:00 到期停用。已停用账号续期后需点击启用。</small></div><div><label for="edit-used-traffic-gib">已用流量（GiB）</label><input id="edit-used-traffic-gib" name="used_traffic_gib" type="number" min="0" max="1048576" step="any" value="{first_edit_used_traffic_gib}" required><small class="muted">设置用户当前已用总量，支持小数；设为 0 即清零。</small></div></fieldset><button class="wide" type="submit" disabled>保存修改</button></form>
-<p class="notice">设备数按在线 Hysteria 客户端实例估算；标准通用节点链接不包含硬件设备指纹。</p></div></dialog>
+<div><label for="edit-starts-at">开通日期（可选）</label><input id="edit-starts-at" name="starts_at" type="date"></div><div data-edit-expiry-field><label for="edit-expires-at">到期日期（可选）</label><input id="edit-expires-at" name="expires_at" type="date" value="{first_edit_expiry_date}"><small class="muted">留空为永久；北京时间当天 00:00 到期。已停用用户续期后需重新启用。</small></div><div><label for="edit-used-traffic-gib">已用流量（GiB）</label><input id="edit-used-traffic-gib" name="used_traffic_gib" type="number" min="0" max="1048576" step="any" value="{first_edit_used_traffic_gib}" required><small class="muted">支持小数，填 0 清零。</small></div></fieldset><button class="wide" type="submit" disabled>保存修改</button></form>
+<p class="notice">设备数按在线客户端连接统计。</p></div></dialog>
 <p class="toast" data-page-status role="status" aria-live="polite" hidden></p>
 <section id="users" class="card" data-console-views="users"><div class="section-head user-section-head"><div class="user-heading"><div class="user-group-heading"><h2>用户管理</h2><nav class="user-group-tabs" aria-label="用户分组"><a class="button {standard_tab_class}" aria-current="{standard_tab_current}" href="/?type=standard#users">普通用户</a><a class="button {premium_tab_class}" aria-current="{premium_tab_current}" href="/?type=premium#users">专线用户</a></nav></div><p class="muted">创建用户并设置并发设备和总流量限制。用户流量每月 1 日 00:00（北京时间）自动清零。</p></div>
 <div class="section-actions">{group_node_settings}<button type="button" data-dialog-open="create-user-dialog">添加用户</button><button class="secondary" type="button" data-dialog-open="edit-user-dialog"{edit_disabled}>编辑用户</button><form method="post" action="/users/reset-traffic" data-confirm="确定重置当前分组所有用户的上传和下载流量吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="user_group" value="{active_user_group}"><button class="danger" type="submit">重置本组流量</button></form></div></div>
@@ -1051,6 +985,9 @@ unicode: "eb20"
                            if o.get("kind") in {"local", "remote"} and o.get("online_state") == "fresh")
                        if any(o.get("online_state") == "fresh" for o in machine_origins) else "—",
         all_user_count=len(all_users),
+        all_inactive_users=sum(int(u.get("tx_bytes") or 0)+int(u.get("rx_bytes") or 0) == 0 for u in all_users),
+        all_total_tx=_human_bytes(sum(int(u.get("tx_bytes") or 0) for u in all_users)),
+        all_total_rx=_human_bytes(sum(int(u.get("rx_bytes") or 0) for u in all_users)),
         total_users=summary["total_users"],
         inactive_users=summary["inactive_users"],
         online_devices=summary["online_devices"],

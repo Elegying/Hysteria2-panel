@@ -30,7 +30,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.57"
+AGENT_VERSION = "0.39.58"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -95,6 +95,66 @@ HOSTNAME_PATTERN = re.compile(
 )
 
 
+_RESOURCE_CPU = None
+
+
+def read_resource_sample(root=Path('/'), clock=time.time):
+    """Read Linux host resources without shell commands; CPU uses counter deltas."""
+    global _RESOURCE_CPU
+    try:
+        values = [int(v) for v in (root / 'proc/stat').read_text().splitlines()[0].split()[1:9]]
+        total, idle = sum(values), values[3] + values[4]
+        previous = _RESOURCE_CPU
+        _RESOURCE_CPU = (total, idle)
+        cpu = None
+        if previous and total > previous[0] and idle >= previous[1]:
+            cpu = round(max(0, min(100, 100*(1-(idle-previous[1])/(total-previous[0])))), 1)
+        memory = {line.split(':')[0]: int(line.split()[1]) for line in (root/'proc/meminfo').read_text().splitlines()}
+        mem = 100*(1-memory['MemAvailable']/memory['MemTotal'])
+        disk = shutil.disk_usage(root)
+        uptime = int(float((root/'proc/uptime').read_text().split()[0]))
+        return dict(cpu=cpu, memory=round(max(0, min(100, mem)), 1),
+                    disk=round(100*disk.used/disk.total, 1), uptime=uptime, observedAt=int(clock()),
+                    memoryUsed=max(0, memory["MemTotal"]-memory["MemAvailable"])*1024,
+                    memoryTotal=memory["MemTotal"]*1024, diskUsed=disk.used, diskTotal=disk.total)
+    except (OSError, ValueError, KeyError, IndexError, ZeroDivisionError):
+        return None
+
+
+def queue_server_operation(command, state_dir, runner=subprocess.run, clock=time.time):
+    """At-most-once scheduling: persist intent before invoking fixed systemd argv."""
+    kind, payload = command['kind'], command['payload']
+    if kind not in {'RESTART_SERVICE', 'REBOOT_SERVER'} or set(payload) != {'expiresAt'}:
+        raise ProtocolError('invalid server operation')
+    if type(payload['expiresAt']) is not int or not 0 <= payload['expiresAt']-clock() <= 180:
+        raise ProtocolError('server operation expired')
+    command_id = command['commandId']
+    if not NODE_ID_PATTERN.fullmatch(command_id):
+        raise ProtocolError('invalid operation id')
+    marker = Path(state_dir) / ('operation-' + command_id + '.json')
+    if marker.exists():
+        saved = json.loads(marker.read_text())
+        if saved == {'kind': kind, 'state': 'scheduled'}:
+            return
+        raise ProtocolError('operation outcome uncertain; do not replay')
+    with open(marker, 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as handle:
+        json.dump({'kind': kind, 'state': 'intent'}, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    _fsync_directory(marker.parent)
+    action = ['reboot'] if kind == 'REBOOT_SERVER' else ['restart', *DATA_PLANE_UNITS]
+    result = runner(['/usr/bin/systemd-run', '--quiet', '--on-active=5s',
+                     '--unit=hy2-maintenance-' + command_id, '/bin/systemctl', *action],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, timeout=15, check=False)
+    if result.returncode:
+        raise ProtocolError('server operation could not be scheduled')
+    with marker.open('w') as handle:
+        json.dump({'kind': kind, 'state': 'scheduled'}, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def read_network_sample(root=Path('/')):
     """Read default-route NIC counters; no quota counters or clear-on-read stats."""
     try:
@@ -133,6 +193,10 @@ class HeartbeatError(RuntimeError):
 
 class ProtocolError(RuntimeError):
     """Distributed control failed without exposing credentials or node identity."""
+
+
+class SessionsNotDrainedError(ProtocolError):
+    """Maintenance was refused because live sessions could still emit traffic."""
 
 
 class ProtocolNotSupported(ProtocolError):
@@ -2226,6 +2290,7 @@ class NodeControlTransport:
         self._session = None
         self._expires_at = 0
         self.network_sample_supported = False
+        self.resource_sample_supported = False
         # CPython gh-116810 leaks native memory merely reading SSLSocket.session.
         # Conservatively skip it on older runtimes, including vendor backports.
         self._resume_tls = (
@@ -2264,6 +2329,7 @@ class NodeControlTransport:
                 with connection.getresponse() as response:
                     status = response.status
                     self.network_sample_supported = (getattr(response, "getheader", lambda _name: None)("X-Hy2-Network-Telemetry") == "1")
+                    self.resource_sample_supported = (getattr(response, "getheader", lambda _name: None)("X-Hy2-Server-Operations") == "1")
                     body = response.read(maximum + 1)
                 if len(body) > maximum:
                     raise ProtocolError("the panel returned an invalid node response")
@@ -2313,6 +2379,10 @@ class NodeProtocolClient:
     @property
     def supports_network_sample(self):
         return bool(self._control_transport and self._control_transport.network_sample_supported)
+
+    @property
+    def supports_resource_sample(self):
+        return bool(self._control_transport and self._control_transport.resource_sample_supported)
 
     def _post(self, purpose, fields):
         started = time.monotonic()
@@ -2450,7 +2520,7 @@ class NodeProtocolClient:
                 online_snapshot is not None
                 and (
                     not isinstance(online_snapshot, dict)
-                    or set(online_snapshot) - {"networkSample"}
+                    or set(online_snapshot) - {"networkSample", "resourceSample"}
                     != {
                         "snapshotId",
                         "sequence",
@@ -2965,6 +3035,19 @@ def execute_control_command(
         raise ProtocolError("node command is invalid")
     kind = command["kind"]
     payload = command["payload"]
+    if kind in {'RESTART_SERVICE', 'REBOOT_SERVER'}:
+        if protocol_state is None or flush_traffic is None or quiesce_traffic is None:
+            raise ProtocolError('server operation callbacks unavailable')
+        if not isinstance(payload, dict) or set(payload) != {'expiresAt'}:
+            raise ProtocolError('invalid server operation payload')
+        if type(payload['expiresAt']) is not int or not 0 <= payload['expiresAt']-time.time() <= 180:
+            raise ProtocolError('server operation expired')
+        marker = protocol_state.path.parent / ('operation-' + command['commandId'] + '.json')
+        if not marker.exists():
+            quiesce_traffic()
+            flush_traffic()
+        queue_server_operation(command, protocol_state.path.parent)
+        return
     if kind == "KICK_USERS" and isinstance(payload, dict) and set(payload) == {"users"}:
         stats_client.kick(payload["users"])
         # Hysteria consumes one kick marker per connection traffic event. Keep
@@ -3424,7 +3507,7 @@ class NodeControlCycle:
             )
             if online:
                 if not kick_users:
-                    raise ProtocolError("node still has online devices; retaining service")
+                    raise SessionsNotDrainedError("node still has online devices; retaining service")
                 for offset in range(0, len(online), 100):
                     self.stats_client.kick(online[offset:offset + 100])
             if not self._can_collect():
@@ -3436,7 +3519,7 @@ class NodeControlCycle:
             if quiet >= 3:
                 return
             sleeper(max(0, float(interval)))
-        raise ProtocolError("data-plane sessions did not drain; traffic and services retained")
+        raise SessionsNotDrainedError("data-plane sessions did not drain; traffic and services retained")
 
     def flush_traffic(self):
         if not self._can_collect():
@@ -3499,6 +3582,10 @@ class NodeControlCycle:
                 network_sample = (read_network_sample() if getattr(self.protocol_client, "supports_network_sample", False) else None)
                 if network_sample is not None:
                     snapshot["networkSample"] = network_sample
+                if getattr(self.protocol_client, "supports_resource_sample", False):
+                    resource_sample = read_resource_sample()
+                    if resource_sample is not None:
+                        snapshot["resourceSample"] = resource_sample
                 encoded_size = len(
                     json.dumps(
                         {
@@ -3608,9 +3695,14 @@ class NodeControlCycle:
                         queue_uninstall=self.queue_uninstall,
                         quiesce_traffic=self.quiesce_traffic,
                     )
-                except Exception:
+                except Exception as exc:
                     self._kick_quiet_since.pop(command_id, None)
-                    ok, error_code = False, "EXECUTION_FAILED"
+                    ok = False
+                    error_code = (
+                        "SESSIONS_NOT_DRAINED"
+                        if isinstance(exc, SessionsNotDrainedError)
+                        else "EXECUTION_FAILED"
+                    )
                 else:
                     if outcome == "deferred-ack":
                         self._kick_quiet_since.pop(command_id, None)

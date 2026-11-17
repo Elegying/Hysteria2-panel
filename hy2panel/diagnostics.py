@@ -1,6 +1,7 @@
 """Bounded, evidence-based line diagnostics. Never change routing or subscriptions."""
 
 import collections
+from contextlib import closing
 import gzip
 import hashlib
 import ipaddress
@@ -10,9 +11,11 @@ import math
 import re
 import secrets
 import socket
+import sqlite3
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -76,10 +79,19 @@ def valid_network_sample(sample):
 
 
 class NetworkHistory:
-    def __init__(self, clock=time.time):
+    def __init__(self, clock=time.time, history_path=None):
         self.clock = clock
         self.lock = threading.Lock()
         self.rows = {}
+        self.history_path = history_path
+        if history_path is not None:
+            try:
+                with closing(sqlite3.connect(str(history_path), timeout=1)) as connection, connection:
+                    connection.execute("CREATE TABLE IF NOT EXISTS network_minutes (origin TEXT, minute INTEGER, rx REAL, tx REAL, count INTEGER, invalid INTEGER, PRIMARY KEY(origin,minute))")
+                    connection.execute("CREATE INDEX IF NOT EXISTS network_minutes_time ON network_minutes(minute)")
+            except sqlite3.Error:
+                logging.getLogger(__name__).exception("network history initialization failed")
+                self.history_path = None
 
     def accept(self, origin_id, sample):
         if not valid_network_sample(sample):
@@ -115,6 +127,18 @@ class NetworkHistory:
             row["last"] = dict(sample)
             row["received"] = now
             row["points"].append({"at": round(now, 3), "rx": rx, "tx": tx})
+            if self.history_path is not None:
+                try:
+                    minute = int(now)//60*60
+                    day_start = (int(now)+28800)//86400*86400-28800
+                    with closing(sqlite3.connect(str(self.history_path), timeout=1)) as connection, connection:
+                        connection.execute("DELETE FROM network_minutes WHERE minute < ?", (day_start,))
+                        connection.execute("""INSERT INTO network_minutes VALUES (?,?,?,?,?,?)
+                            ON CONFLICT(origin,minute) DO UPDATE SET rx=rx+excluded.rx,
+                            tx=tx+excluded.tx,count=count+excluded.count,invalid=MAX(invalid,excluded.invalid)""",
+                            (origin_id, minute, rx or 0, tx or 0, int(rx is not None and tx is not None), int(rx is None or tx is None)))
+                except sqlite3.Error:
+                    logging.getLogger(__name__).exception("network history persistence failed")
 
     def snapshot(self, origin_ids):
         now = self.clock()
@@ -137,6 +161,21 @@ class NetworkHistory:
                     "points": points,
                 }
             return result
+
+    def today(self, origin_ids):
+        now = self.clock()
+        start = (int(now)+28800)//86400*86400-28800
+        result = {key: {"points": []} for key in origin_ids}
+        if self.history_path is not None:
+            try:
+                with closing(sqlite3.connect(str(self.history_path), timeout=1)) as connection, connection:
+                    for origin, minute, rx, tx, count, invalid in connection.execute(
+                        "SELECT origin,minute,rx,tx,count,invalid FROM network_minutes WHERE minute>=? AND minute<=? ORDER BY minute", (start, int(now))):
+                        if origin in result:
+                            result[origin]["points"].append(dict(at=minute, rx=rx/count if count and not invalid else None, tx=tx/count if count and not invalid else None))
+            except sqlite3.Error:
+                logging.getLogger(__name__).exception("network history read failed")
+        return {"start": start, "end": now, "step": 60, "network": result}
 
 
 class DiagnosticGrants:
@@ -373,7 +412,8 @@ class LineMonitor:
     def __init__(self, application, client=None):
         self.app = application
         self.client = client or GlobalpingClient()
-        self.history = NetworkHistory()
+        database_path = getattr(application.database, "path", None)
+        self.history = NetworkHistory(history_path=Path(database_path).with_name("network-history.db") if database_path else None)
         self.grants = application.database.diagnostic_grants
         self.lock = threading.Lock()
         self.results = {}
@@ -601,7 +641,7 @@ class LineMonitor:
             with self.lock:
                 self.busy = None
 
-    def snapshot(self, origin_ids):
+    def snapshot(self, origin_ids, today=False):
         now = time.time()
         with self.lock:
             results = {
@@ -615,7 +655,10 @@ class LineMonitor:
             }
             if self.busy in origin_ids:
                 results.setdefault(self.busy, {"running": True, "checkedAt": None})
-        return {"network": self.history.snapshot(origin_ids), "checks": results}
+        result = {"network": self.history.snapshot(origin_ids), "checks": results}
+        if today:
+            result["today"] = self.history.today(origin_ids)
+        return result
 
     def run(self, stop_event):
         self.stop_event = stop_event
@@ -655,3 +698,89 @@ class LineMonitor:
         job = self.job
         if job is not None:
             job.join(timeout=29)
+
+
+def valid_resources(sample):
+    return (isinstance(sample, dict)
+            and set(sample) in ({'cpu', 'memory', 'disk', 'uptime', 'observedAt'},
+                               {'cpu', 'memory', 'disk', 'uptime', 'observedAt', 'memoryUsed', 'memoryTotal', 'diskUsed', 'diskTotal'})
+            and all(type(sample[key]) is int and 0 <= sample[key] <= 2**63-1
+                    for key in ('memoryUsed', 'memoryTotal', 'diskUsed', 'diskTotal') if key in sample)
+            and all(sample.get(prefix+'Used', 0) <= sample.get(prefix+'Total', 0)
+                    for prefix in ('memory', 'disk'))
+            and type(sample['observedAt']) is int
+            and type(sample['uptime']) is int and 0 <= sample['uptime'] < 2**40
+            and all(sample[key] is None or (
+                type(sample[key]) in (int, float) and math.isfinite(sample[key])
+                and 0 <= sample[key] <= 100) for key in ('cpu', 'memory', 'disk')))
+
+
+class ServerMonitor:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.samples = {}
+
+    def accept(self, node_id, sample, now=None):
+        now = int(time.time()) if now is None else now
+        if not valid_resources(sample) or abs(now - sample['observedAt']) > 30:
+            return False
+        with self.lock:
+            previous = self.samples.get(node_id)
+            if previous and previous['observedAt'] >= sample['observedAt']:
+                return False
+            self.samples[node_id] = dict(sample)
+        return True
+
+    def snapshot(self, node_ids, now=None):
+        now = int(time.time()) if now is None else now
+        with self.lock:
+            self.samples = {key: value for key, value in self.samples.items()
+                            if now - value['observedAt'] <= 300}
+            return {key: dict(self.samples[key], fresh=0 <= now-self.samples[key]['observedAt'] <= 30)
+                    for key in node_ids if key in self.samples}
+
+
+def server_monitor_payload(application):
+    """Shared read model for cookie-authenticated web and bearer-authenticated apps."""
+    nodes = [node for node in application.database.list_nodes()
+             if node['status'] != 'revoked']
+    node_ids = [node['node_id'] for node in nodes]
+    resources = application.database.server_monitor.snapshot(node_ids)
+    operations = {}
+    with application.database._connect() as connection:
+        for node_id in node_ids:
+            row = connection.execute(
+                "SELECT kind, acked_at, last_error, created_at FROM node_commands "
+                "WHERE node_id=? AND kind IN ('RESTART_SERVICE', 'REBOOT_SERVER') "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1", (node_id,),
+            ).fetchone()
+            if row:
+                operations[node_id] = dict(row)
+    try:
+        sample = application.system_metrics.snapshot()
+        local = {
+            'cpu': sample['cpu_percent'], 'memory': sample['memory_percent'],
+            'disk': sample['disk_percent'], 'memoryUsed': sample['memory_used'],
+            'memoryTotal': sample['memory_total'], 'diskUsed': sample['disk_used'],
+            'diskTotal': sample['disk_total'], 'uptimeLabel': sample['uptime'],
+            'fresh': True, 'observedAt': int(time.time()),
+        }
+    except Exception:
+        # Remote telemetry must remain available if local metrics are unavailable.
+        local = {'fresh': False}
+    return {'servers': resources, 'local': local, 'operations': operations}
+
+
+def line_monitor_payload(application, request_path):
+    """Read existing samples/results only; this never starts network probes."""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(request_path).query)
+    ranges = query.get('range', ['5m'])
+    if len(ranges) != 1 or ranges[0] not in {'5m', 'today'}:
+        raise ValueError('无效时间范围')
+    origin_ids = [application.usage_manager.local_origin_id] + [
+        'node:' + node['node_id'] for node in application.database.list_nodes()
+        if node['status'] != 'revoked'
+    ]
+    if ranges[0] == 'today':
+        return application.line_monitor.snapshot(origin_ids, today=True)
+    return application.line_monitor.snapshot(origin_ids)

@@ -1,9 +1,10 @@
-"""Pure helpers for per-origin provider traffic budgets."""
+"""Provider traffic budget calculations and shared forecast projections."""
 
 import calendar
 import datetime
 import math
 import re
+import time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
@@ -131,3 +132,68 @@ def budget_forecast(budget, daily_bytes, node_count, now):
         now + seconds, tz=datetime.timezone.utc
     )
     return "预计 {}月{}日用尽".format(exhausted_at.month, exhausted_at.day) + suffix
+
+
+def machine_forecasts(application, nodes, budgets=None, service_status=None, now=None):
+    """Cache polling projections for one minute; membership changes invalidate them."""
+    now = int(time.time()) if now is None else int(now)
+    local_id = getattr(application.usage_manager, "local_origin_id", "")
+    node_tiers = {
+        "node:" + node["node_id"]: (
+            "premium" if node.get("tier") == "premium" else "standard"
+        ) for node in nodes
+    }
+    if local_id:
+        node_tiers[local_id] = "standard"
+    serving = {
+        "node:" + node["node_id"] for node in nodes
+        if node.get("status") == "pending_verification"
+        and node.get("policy_state") == "protocol_ready"
+        and node.get("lifecycle_state") in {"active", "draining"}
+        and node.get("data_plane_state") in {"dns_admitted", "direct_canary_passed"}
+    }
+    if service_status is None:
+        service_status = application.service_controller.status()
+    if local_id and service_status == "active":
+        serving.add(local_id)
+    key = (now // 60, local_id, tuple(sorted(serving)), tuple(sorted(node_tiers.items())))
+    cached = getattr(application, "_machine_forecast_cache", None)
+    cache_result = budgets is None
+    if cache_result and cached and cached[0] == key:
+        return cached[1]
+    if budgets is None:
+        origin_ids = sorted({"node:" + node["node_id"] for node in nodes
+                             if node.get("status") != "revoked"} | ({local_id} if local_id else set()))
+        budgets = {budget["origin_id"]: budget for budget in
+                   application.database.list_origin_budgets(origin_ids, now)}
+    tiers = {node_tiers.get(origin_id) for origin_id in budgets} - {None}
+    averages = {tier: application.database.recent_daily_traffic_average(now, tier=tier)
+                for tier in tiers}
+    counts = {tier: sum(node_tiers.get(origin_id) == tier for origin_id in serving)
+              for tier in tiers}
+    result = {}
+    for origin_id, budget in budgets.items():
+        tier = node_tiers.get(origin_id)
+        average = averages.get(tier, {"daily_bytes": None, "sample_days": 0})
+        count = counts.get(tier, 0)
+        reset_at = datetime.datetime.strptime(
+            budget["period_end"], "%Y-%m-%d"
+        ).replace(tzinfo=datetime.timezone.utc).timestamp()
+        live_budget = {name: budget[name] for name in (
+            "used_bytes", "limit_bytes", "percent", "status", "period_start", "period_end"
+        )}
+        live_budget["reset_days"] = max(0, math.ceil((reset_at - now) / 86400))
+        result[origin_id] = {
+            "text": budget_forecast(budget, average["daily_bytes"],
+                                    count if origin_id in serving else 0, now),
+            "basis": "按{}近 {} 个完整日均值、{} 台供流机器均分预测".format(
+                "专线" if tier == "premium" else "普通线路",
+                average["sample_days"], count),
+            "budget": live_budget,
+        }
+    if cache_result:
+        application._machine_forecast_cache = (key, result)
+    else:
+        # A caller-supplied subset must not poison polling or retain pre-edit data.
+        application._machine_forecast_cache = None
+    return result
