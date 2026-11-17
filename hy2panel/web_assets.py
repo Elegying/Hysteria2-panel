@@ -728,7 +728,7 @@ document.addEventListener('submit', async function(event) {
   try {
     const payload = await submitInlineForm(form);
     if (generation !== nodeEnrollmentGeneration || !dialog.open) return;
-    if (!payload || typeof payload.deploymentCommand !== 'string' || !payload.deploymentCommand.startsWith('(\\nset -euo pipefail')) {
+    if (!payload || typeof payload.deploymentCommand !== 'string' || !(payload.deploymentCommand.startsWith('(\\nset -euo pipefail') || payload.deploymentCommand.startsWith('(export HY2PANEL_PANEL_URL='))) {
       throw new Error('部署代码响应无效');
     }
     code.value = payload.deploymentCommand;

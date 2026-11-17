@@ -330,7 +330,7 @@ try:
     browser.value('#node-expected-ip','9.9.9.9')
     browser.click('[data-node-enrollment-form] button')
     browser.wait('document.querySelector("[data-node-enrollment-result]").hidden === false')
-    assert browser.evaluate('document.getElementById("node-deployment-code").value').startswith('(\nset -euo pipefail')
+    assert browser.evaluate('document.getElementById("node-deployment-code").value').startswith('(export HY2PANEL_PANEL_URL=')
     browser.click('#node-onboarding-dialog [data-dialog-close]')
     browser.wait('!document.getElementById("node-onboarding-dialog").open && document.getElementById("node-deployment-code").value === ""')
     passed('对接管理打开、生成代码、关闭清除')

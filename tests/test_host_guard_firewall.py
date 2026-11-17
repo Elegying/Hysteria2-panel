@@ -408,6 +408,10 @@ ip6tables-save() { printf '%s\\n' '*filter' ':INPUT ACCEPT [0:0]' 'COMMIT'; }
         result, calls = self.run_guard(payload)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual([], calls)
+        payload["nftables"][-2]["rule"]["expr"][2]["match"]["right"]["range"] = [2000, 50000]
+        result, calls = self.run_guard(payload)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], calls)
         payload["nftables"][-1]["rule"]["expr"][-1]["redirect"]["port"] = 22
         result, calls = self.run_guard(payload)
         self.assertEqual(97, result.returncode, result.stderr)

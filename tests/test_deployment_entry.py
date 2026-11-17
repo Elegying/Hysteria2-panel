@@ -51,4 +51,4 @@ class CompactEntryTests(unittest.TestCase):
         body = source.split('uninstall_node() {', 1)[1].split('\n}\n', 1)[0]
         self.assertIn('shared-host.conf', body)
         self.assertLess(body.index('rm -f -- "${shared_dropin}"'),
-                        body.index('for directory in "${uninstall_directories[@]}"'))
+                        body.rindex('for directory in "${uninstall_directories[@]}"'))
