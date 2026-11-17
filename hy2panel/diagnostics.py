@@ -391,15 +391,15 @@ class LineMonitor:
         addresses = self.app.system_metrics.server_ips()
         ip = next((value for value in addresses if self._public(value)), None)
         if ip:
+            hopping = self.app.port_hopping_controller.status()
             result[local_id] = {
                 "ip": ip,
                 "scope": "local",
                 "host": self.app.public_host,
                 "pin": self.app.pin_sha256,
                 "port": self.app.hysteria_port,
-                "hopping": bool(
-                    self.app.port_hopping_controller.status().get("enabled")
-                ),
+                "hopping": bool(hopping.get("enabled")),
+                "hopStart": 2000 if hopping.get("ports") == "2000-50000" else 20000,
             }
         for node in self.app.database.list_nodes():
             if (
@@ -412,6 +412,12 @@ class LineMonitor:
             if not self._public(ip):
                 continue
             identity = json.loads(node.get("identity_json") or "{}")
+            version = str(node.get("agent_version") or "").split(".")
+            modern_hopping = (
+                len(version) == 3
+                and all(part.isdigit() for part in version)
+                and tuple(map(int, version)) >= (0, 39, 53)
+            )
             result["node:" + node["node_id"]] = {
                 "ip": ip,
                 "scope": node["node_id"],
@@ -419,6 +425,7 @@ class LineMonitor:
                 "pin": identity.get("certificateDerSha256") or self.app.pin_sha256,
                 "port": int(node.get("listen_port") or 19999),
                 "hopping": bool(node.get("port_hopping")),
+                "hopStart": 2000 if modern_hopping else 20000,
             }
         return result
 
@@ -454,7 +461,12 @@ class LineMonitor:
             daemon=True,
             name="line-diagnostic",
         )
-        self.job.start()
+        try:
+            self.job.start()
+        except RuntimeError:
+            with self.lock:
+                self.busy = None
+            return False, "检测服务繁忙，请稍后重试"
         return True, "检测已开始"
 
     def _check(self, origin_id, target):
@@ -491,7 +503,14 @@ class LineMonitor:
             ports = list(
                 dict.fromkeys(
                     [443, target["port"]]
-                    + ([2000 + secrets.randbelow(48001)] if target["hopping"] else [])
+                    + (
+                        [
+                            target.get("hopStart", 2000)
+                            + secrets.randbelow(50001 - target.get("hopStart", 2000))
+                        ]
+                        if target["hopping"]
+                        else []
+                    )
                 )
             )
             for port in ports:

@@ -545,7 +545,7 @@ def render_dashboard(
                 '<p class="notice" data-check-verdict>国内 UDP / Hysteria2 实际使用尚未验证。</p>'
                 '<div class="line-check-sections"><section><h3>国内能否到达节点</h3><p class="muted">Globalping 大陆运营商探针 · TCP 检测</p><div data-check-domestic>等待检测</div></section>'
                 '<section><h3>代理能否连接并出网</h3><p class="muted">面板服务器发起真实 Hysteria2 连接、校验证书指纹，并通过代理访问 HTTPS。</p><div data-check-proxy>等待检测</div><p data-check-dns></p></section></div>'
-                '<p class="muted">TCP 成功不等于 UDP 可用；境外或本机出网成功不证明国内用户可用。免费源不能运行 Hysteria2 客户端，国内 UDP 状态保留“未验证”。端口跳跃为随机端口抽测，未覆盖整个范围。</p>'
+                '<p class="muted">TCP 成功不等于 UDP 可用；境外或本机出网成功不证明国内用户可用。免费源不能运行 Hysteria2 客户端，国内 UDP 状态保留“未验证”。账号到期、配额和设备上限还会影响个别用户。端口跳跃为随机端口抽测，未覆盖整个范围。</p>'
                 '<form method="post" action="/usage-origins/{origin}/diagnostics" data-line-check-form><input type="hidden" name="csrf" value="{csrf}"><button type="submit">立即检测</button><span class="muted" data-check-action aria-live="polite">自动每 15 分钟检测；可手动重测。</span></form></div></dialog>'.format(
                     key=html.escape(origin["origin_id"].replace(":", "-"), quote=True),
                     origin=html.escape(origin["origin_id"], quote=True), csrf=csrf,
