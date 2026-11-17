@@ -753,6 +753,7 @@ restore_upgrade_runtime_state
             "hy2panel/distributed.py": "HY2PANEL_DISTRIBUTED_SHA256",
             "hy2panel/domain_usage.py": "HY2PANEL_DOMAIN_USAGE_SHA256",
             "hy2panel/dashboard.py": "HY2PANEL_DASHBOARD_SHA256",
+            "hy2panel/diagnostics.py": "HY2PANEL_DIAGNOSTICS_SHA256",
             "hy2panel/mobile_api.py": "HY2PANEL_MOBILE_API_SHA256",
         }
 

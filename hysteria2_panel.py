@@ -114,6 +114,7 @@ from hy2panel.operations import (
 )
 from hy2panel.release import UpdateChecker, UpdateInstaller
 from hy2panel.systemd import SystemdNotifier
+from hy2panel.diagnostics import DiagnosticGrants, LineMonitor
 from hy2panel.version import PANEL_VERSION
 from hy2panel.web_assets import FAVICON_SVG, LOGIN_STYLE, PAGE_SCRIPT, PAGE_STYLE
 from offsite_backup import OffsiteBackupRunner
@@ -2496,6 +2497,7 @@ class Database:
             raise ValueError("hmac key must contain at least 32 bytes")
         self.hmac_key = hmac_key
         self._dummy_password_hash = _dummy_admin_password_hash()
+        self.diagnostic_grants = DiagnosticGrants()
 
     @contextlib.contextmanager
     def _connect(self):
@@ -6200,6 +6202,8 @@ class Database:
                         int(now),
                     ),
                 ).fetchone()
+                if self.diagnostic_grants.allows(node_id, token):
+                    canary_grant = {"expires_at": int(now) + 10}
                 allowed = canary_grant is not None
                 user_name = (
                     "__hy2panel_bootstrap_canary__" if allowed else None
@@ -7405,6 +7409,10 @@ def handle_auth_payload(database, raw_body, usage_manager=None, require_udp_443=
         payload["auth"].encode("utf-8")
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError):
         return 400, {"error": {"code": "INVALID_REQUEST", "message": "Invalid request"}}
+    if (database.diagnostic_grants.allows("local", payload["auth"])
+            and usage_manager is not None and not usage_manager._quiescing.is_set()
+            and not EGRESS_SWITCH_ACTIVE_MARKER.exists()):
+        return 200, {"ok": True, "id": BOOTSTRAP_CANARY_USER}
     user_id = database.authenticate_token(
         payload["auth"], require_udp_443=require_udp_443
     )
@@ -7730,11 +7738,13 @@ class JsonHandler(BaseHTTPRequestHandler):
         self.send_header("X-Request-ID", self._request_id())
         super().end_headers()
 
-    def send_json(self, status, payload):
+    def send_json(self, status, payload, headers=None):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -8139,6 +8149,8 @@ class PanelApplication:
         self._active_mutations = 0
         self._maintenance_active = False
         self.user_action_lock = threading.Lock()
+        self.line_monitor = LineMonitor(self)
+        self.database.network_history = self.line_monitor.history
 
     def begin_mutation(self):
         with self._mutation_gate_condition:
@@ -9327,7 +9339,7 @@ class PanelHandler(JsonHandler):
                 "node request was rejected",
             )
             return
-        self.send_json(200, result)
+        self.send_json(200, result, headers={"X-Hy2-Network-Telemetry": "1"})
 
     def _handle_data_plane_node_request(self, method_name):
         service = self.app.data_plane_bootstrap_service
@@ -10104,6 +10116,14 @@ class PanelHandler(JsonHandler):
                 return
             self.send_json(200, self.app.update_controller.status())
             return
+        if path == "/api/v1/line-monitor":
+            if not self._require_session():
+                return
+            origin_ids = [self.app.usage_manager.local_origin_id] + [
+                "node:" + node["node_id"] for node in self.app.database.list_nodes()
+                if node["status"] != "revoked"]
+            self.send_json(200, self.app.line_monitor.snapshot(origin_ids))
+            return
         if path == "/api/v1/dashboard-online":
             session = self._require_session()
             if not session:
@@ -10258,6 +10278,11 @@ class PanelHandler(JsonHandler):
         self._error_page(404, "页面不存在")
 
     def _dispatch_authenticated_post(self, path, session, form):
+        diagnostic = re.fullmatch(r"/usage-origins/((?:local|node):[0-9a-f]{32})/diagnostics", path)
+        if diagnostic:
+            accepted, message = self.app.line_monitor.request(diagnostic.group(1))
+            self.send_json(202 if accepted else 409, {"accepted": accepted, "message": message})
+            return
         line_match = re.fullmatch(r"/nodes/([0-9a-f]{32})/line-config", path)
         if line_match:
             try:
@@ -11547,9 +11572,15 @@ class UsageManager:
         }
         observed_at = int(self.wall_clock())
         online = self.stats_client.online()
-        self._user_usage_online = (observed_at, dict(online))
+        # Internal diagnostics never consume a user's device slot or appear in
+        # the device count. Only a currently issued local grant may stay online.
+        diagnostic_active = self.database.diagnostic_grants.active("local")
+        public_online = {name: count for name, count in online.items() if name != BOOTSTRAP_CANARY_USER}
+        self._user_usage_online = (observed_at, public_online)
         blocked = []
         for name, count in online.items():
+            if name == BOOTSTRAP_CANARY_USER and diagnostic_active:
+                continue
             user = users.get(name)
             if count > 0 and (
                 not user
@@ -11880,7 +11911,8 @@ class UsageManager:
 
         completed = False
         try:
-            local_online = self.stats_client.online()
+            local_online = {name: count for name, count in self.stats_client.online().items()
+                            if name != BOOTSTRAP_CANARY_USER}
             now = int(self.wall_clock())
             node_states = self.database.list_node_online_states(
                 now, MAX_STATE_AGE_SECONDS
@@ -12579,6 +12611,10 @@ def run_supervised_services(
             daemon=True,
         ),
     ]
+    monitor = getattr(application, "line_monitor", None)
+    if monitor is not None and monitor.enabled:
+        workers.append(threading.Thread(target=monitor.run, args=(stop_event,),
+                                        name="line-monitor", daemon=True))
     started_workers = []
     started_servers = []
     if threading.current_thread() is threading.main_thread():
@@ -12787,6 +12823,7 @@ def _run_service_with_database(settings, database):
         node_control_service=node_control_service,
         data_plane_bootstrap_service=data_plane_bootstrap_service,
     )
+    application.line_monitor.enabled = True
     application.subscription_base_url = "{}://{}:{}".format(
         settings.panel_scheme, settings.panel_public_host, settings.panel_port)
     panel_server = make_panel_server((settings.panel_host, settings.panel_port), application)
