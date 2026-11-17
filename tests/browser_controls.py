@@ -475,8 +475,8 @@ try:
     fixture.application._machine_forecast_cache = None
     browser.wait('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent === "预计重置前够用"')
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-budget-usage]') + ').textContent') == '100 B / 97.7 KiB · 0.1%'
-    expected_period = fixture.db.get_origin_budget(local_origin)['period_end']
-    assert expected_period in browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-budget-period]') + ').textContent')
+    reset_text = browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-budget-period]') + ').textContent')
+    assert reset_text.startswith('剩余 ') and reset_text.endswith(' 天重置'), reset_text
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' progress') + ').value') == 0.1
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent') == '预计重置前够用'
     browser.call('Emulation.setDeviceMetricsOverride', {'width':390,'height':844,'deviceScaleFactor':1,'mobile':True})
