@@ -537,7 +537,8 @@ for _ in range(1000):
             (root / "worker.py").write_text(worker)
             header += "\nflock() { " + shlex.quote(flock) + ' "$@"; }\n'
             functions = "\n".join(installer_function(name) for name in (
-                "rollback_join_node_install", "install_join_node", "wait_for_node_onboarding", "acquire_maintenance_lock"
+                "preflight_public_hostname_separation", "rollback_join_node_install",
+                "install_join_node", "wait_for_node_onboarding", "acquire_maintenance_lock"
             ))
             functions = functions.replace("/run/systemd/system", "${WORK}/systemd")
             script = root / "driver.sh"
