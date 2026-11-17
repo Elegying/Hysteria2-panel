@@ -12,6 +12,7 @@ from tests.test_premium_lines import PremiumSubscriptionTests
 class NftRunner:
     def __init__(self):
         self.present = False
+        self.legacy = False
         self.corrupt = False
         self.fail_apply = False
         self.writes = []
@@ -25,7 +26,7 @@ class NftRunner:
             chain = {'family': 'inet', 'table': agent.NODE_HOPPING_TABLE,
                      'name': 'prerouting', 'type': 'nat', 'hook': 'prerouting',
                      'prio': -100, 'policy': 'accept', 'handle': 1}
-            rows = [{'chain': chain}] + [{'rule': rule} for rule in agent.node_hopping_rules()]
+            rows = [{'chain': chain}] + [{'rule': rule} for rule in agent.node_hopping_rules(legacy=self.legacy)]
             if self.corrupt:
                 rows[-1]['rule']['expr'][-1]['redirect']['port'] = 22
         else:
@@ -33,7 +34,8 @@ class NftRunner:
             if command[1] == '-f':
                 if self.fail_apply:
                     raise subprocess.CalledProcessError(1, command)
-                self.present = not kwargs['input'].startswith('delete')
+                self.present = 'chain prerouting' in kwargs['input']
+                self.legacy = False
             return mock.Mock(stdout='', returncode=0)
         return mock.Mock(stdout=json.dumps({'nftables': rows}), returncode=0)
 
@@ -60,6 +62,20 @@ class NodeHoppingTests(unittest.TestCase):
             self.assertEqual('delete table inet hy2_port_hopping\n', runner.writes[-1][1])
             self.assertTrue(all('flush ruleset' not in text and 'unrelated' not in text
                                 for _, text in runner.writes))
+
+    def test_legacy_table_is_replaced_atomically_before_new_range_is_used(self):
+        runner = NftRunner()
+        runner.present = runner.legacy = True
+        with tempfile.TemporaryDirectory() as folder:
+            agent.configure_node_hopping(True, runner=runner,
+                lock_path=str(Path(folder) / 'lock'))
+        self.assertTrue(runner.present)
+        self.assertFalse(runner.legacy)
+        self.assertEqual(2, len(runner.writes))
+        program = runner.writes[-1][1]
+        self.assertTrue(program.startswith('delete table inet hy2_port_hopping\n'))
+        self.assertIn('udp dport 2000-50000', program)
+        self.assertIn('tcp dport 20000-50000', program)
 
     def test_unowned_table_failure_and_health_mismatch_fail_closed(self):
         runner = NftRunner()
