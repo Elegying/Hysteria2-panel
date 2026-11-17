@@ -55,6 +55,13 @@ App 将未确认撤销的凭证与本地登录清除一起写入系统安全存�
 
 域名流量接口是近似聚合，不是访问日志。采集端只读取 Hysteria 官方 `/dump/streams` 中采样时仍活动的 TCP 流，在内存中计算字节增量后只上传 `{user, domain, tx, rx}`；中央端每个来源/用户/月最多保留 500 个域名并只查询当前月 TOP10。IP 目标、原始流快照、URL 路径、请求内容、时间明细和 Cookie 均不落库；UDP/QUIC 目标及两次采样之间已经结束的短连接不会被统计。
 
+### 监控读取扩展（当前工作区，待发布）
+
+- `GET /api/v1/mobile/server-monitor`：全部有效节点资源、详细容量和最近运维状态。能力 `server-resource-monitor`。
+- `GET /api/v1/mobile/line-monitor?range=5m|today`：读取网卡历史和已有检测结果，**不会启动探测**。能力 `network-history-today`、`line-diagnostics-read`；非法范围返回 `400 RANGE_INVALID`。
+
+接口沿用 Bearer 认证及统一 envelope，与网页共用数据生成函数。字段、缺测处理、当前 Android 覆盖和待补接口见 [Android 改版接口准备情况](ANDROID_API_READINESS.md)。
+
 ### 返回格式
 
 ```json
@@ -236,3 +243,7 @@ Hysteria 流量统计客户端只接受带明确端口、无路径的 `http://12
 - 无采集记录的日期 `hasRecords=false`，不能推断功能启用前的历史流量为零。手动修改额度或清零不改写已记录的使用历史；每月 1 日清理过期记录。
 
 网页 `/api/v1/dashboard-online` 的 `onlineDevices` 始终汇总全部现存账号；查询参数仅筛选、排序 `users`，不改变全局总数或 `machines` 的统计范围。
+
+## v0.39.58 移动管理功能覆盖
+
+网页管理功能的 Bearer 接口、请求字段、文件传输及确认规则见 [移动管理 API](MOBILE_ADMIN_API.md)，功能映射见 [Android API 准备情况](ANDROID_API_READINESS.md)。新增接口不改变既有用户身份或订阅链接；Android 页面将在后续改版中接入。

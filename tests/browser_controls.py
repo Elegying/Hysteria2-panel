@@ -83,12 +83,17 @@ class Browser:
         view = self.evaluate("""selector => {
             const candidates = Array.from(document.querySelectorAll(selector));
             if (candidates.some(e => e.getBoundingClientRect().height > 0)) return null;
+            if (candidates.some(e => e.closest('.node-server-tools'))) return 'nodes';
             const target = candidates.find(e => e.closest('[data-console-views]'));
             return target ? target.closest('[data-console-views]').dataset.consoleViews.split(' ')[0] : null;
         }""".replace('selector =>', '(selector =>') + ')(' + json.dumps(selector) + ')')
         if view:
             self.click('[data-console-nav="' + view + '"]')
             self.wait('document.body.dataset.consoleView === ' + json.dumps(view))
+        in_server_dialog = self.evaluate('Boolean(document.querySelector(' + json.dumps(selector) + ')?.closest("#server-details-dialog"))')
+        if in_server_dialog and not self.evaluate('document.querySelector("#server-details-dialog").open'):
+            self.click('[data-console-nav="nodes"]')
+            self.click('[data-dialog-open="server-details-dialog"]')
         tag = str(time.time_ns())
         point = self.evaluate('''(async () => {
             window.__auditDocument = %s;
@@ -197,10 +202,10 @@ try:
     assert browser.evaluate('document.querySelector("[data-ext-publish]").disabled')
     browser.click('#external-nodes-dialog [data-dialog-close]')
     browser.click('[data-console-nav="settings"]')
-    browser.click('#settings a[href="#servers"]')
-    browser.wait('document.body.dataset.consoleView === "servers"')
+    browser.click('#settings form[action="/updates/check"] button', navigation=True)
+    browser.wait('document.body.dataset.consoleView === "settings"')
     browser.click('[data-console-nav="overview"]')
-    passed('六模块导航、外部订阅入口加载、无效链接预览阻止发布、设置页跳转')
+    passed('五模块导航、外部订阅入口加载、无效链接预览阻止发布、设置页跳转')
 
     aggregation = browser.evaluate("""(() => {
       const card = document.querySelector('.machine-budget-row');
@@ -223,6 +228,16 @@ try:
     })()""")
     assert aggregation == {'total':'24.00 Mbps','partial':'—','gaps':2,'empty':''}, aggregation
     passed('全网速率准确求和、断档不连线、缺失不伪造零速')
+
+    reset_gap = browser.evaluate("""(() => {
+      const cards=[...document.querySelectorAll('.machine-budget-row')].filter(c=>c.querySelector('.machine-speed'));
+      const now=Date.now()/1000;
+      const network=Object.fromEntries(cards.map(c=>[c.dataset.originId,{fresh:true,observedAt:now,rx:1,tx:1,points:[{at:now-5,rx:100,tx:100},{at:now,rx:null,tx:null}]}]));
+      applyAggregateNetwork({network});
+      return document.querySelector('[data-aggregate-rx]').getAttribute('d');
+    })()""")
+    assert '1000.0' not in reset_gap, reset_gap
+    passed('最新采样无效时保留断档，不沿用上一条有效速率')
 
     assert browser.evaluate('document.querySelector("[data-egress-form]") === null')
     passed('旧 FULL 开关已移除')

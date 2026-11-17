@@ -114,7 +114,10 @@ from hy2panel.operations import (
 )
 from hy2panel.release import UpdateChecker, UpdateInstaller
 from hy2panel.systemd import SystemdNotifier
-from hy2panel.diagnostics import DiagnosticGrants, LineMonitor
+from hy2panel.diagnostics import (
+    DiagnosticGrants, LineMonitor, line_monitor_payload, server_monitor_payload,
+)
+from hy2panel.admin_api import AdminApi, AdminApiError, fields, match_admin_route
 from hy2panel.version import PANEL_VERSION
 from hy2panel.web_assets import FAVICON_SVG, LOGIN_STYLE, PAGE_SCRIPT, PAGE_STYLE
 from offsite_backup import OffsiteBackupRunner
@@ -6196,6 +6199,15 @@ class Database:
                     or node["lifecycle_state"] not in {"active", "draining"}
                 ):
                     raise sqlite3.IntegrityError("node is not protocol ready")
+                # Block new admissions only on this server while its fixed
+                # operation drains sessions, and briefly after scheduling.
+                if connection.execute(
+                    """SELECT 1 FROM node_commands WHERE node_id=?
+                    AND kind IN ('RESTART_SERVICE','REBOOT_SERVER') AND last_error IS NULL
+                    AND ((acked_at IS NULL AND created_at>?) OR acked_at>?) LIMIT 1""",
+                    (node_id, int(now)-120, int(now)-15),
+                ).fetchone():
+                    raise sqlite3.IntegrityError("server maintenance admission is closed")
                 existing = connection.execute(
                     """SELECT decision_id, allowed, user_name, expires_at
                     FROM node_auth_decisions
@@ -6647,6 +6659,9 @@ class Database:
 
     @staticmethod
     def _validate_node_command(kind, payload):
+        if kind in {"RESTART_SERVICE", "REBOOT_SERVER"}:
+            return (isinstance(payload, dict) and set(payload) == {"expiresAt"}
+                    and type(payload["expiresAt"]) is int and payload["expiresAt"] > 0)
         if kind == "KICK_USERS":
             return (
                 isinstance(payload, dict)
@@ -7177,6 +7192,11 @@ class Database:
             ).fetchone()
             if node is None:
                 raise ValueError("node is not protocol ready")
+            if kind in {"RESTART_SERVICE", "REBOOT_SERVER"}:
+                if connection.execute("SELECT 1 FROM node_commands WHERE node_id=? AND (acked_at IS NULL OR created_at>?) LIMIT 1", (node_id, int(created_at)-60)).fetchone():
+                    raise ValueError("该服务器有待处理操作或仍在冷却，请稍后再试")
+                if connection.execute("SELECT lifecycle_state FROM nodes WHERE node_id=?", (node_id,)).fetchone()[0] != "active":
+                    raise ValueError("仅可操作正常运行的节点")
             connection.execute(
                 """INSERT INTO node_commands(
                     command_id, node_id, kind, payload, created_at, next_attempt_at
@@ -7210,6 +7230,10 @@ class Database:
                 commands = []
                 for row in rows:
                     payload = json.loads(row["payload"])
+                    if row["kind"] in {"RESTART_SERVICE", "REBOOT_SERVER"} and payload.get("expiresAt", 0) < accepted_at:
+                        connection.execute("UPDATE node_commands SET acked_at=?, last_error='EXPIRED' WHERE command_id=?", (int(accepted_at), row["command_id"]))
+                        continue
+
                     if row["kind"] == "KICK_USERS" and row["quota_generations"] is not None:
                         generations = json.loads(row["quota_generations"])
                         eligible = []
@@ -7347,6 +7371,9 @@ class Database:
                         "DELETE FROM node_commands WHERE acked_at < ?",
                         (int(accepted_at) - 30 * 86400,),
                     )
+                    return True
+                if row["kind"] in {"RESTART_SERVICE", "REBOOT_SERVER"}:
+                    connection.execute("UPDATE node_commands SET acked_at=?,last_error=? WHERE command_id=? AND node_id=?", (int(accepted_at), error_code or "FAILED", command_id, node_id))
                     return True
                 connection.execute(
                     """UPDATE node_commands SET last_error = ?
@@ -8161,6 +8188,8 @@ class PanelApplication:
         self._active_mutations = 0
         self._maintenance_active = False
         self.user_action_lock = threading.Lock()
+        from hy2panel.diagnostics import ServerMonitor
+        self.database.server_monitor = ServerMonitor()
         self.line_monitor = LineMonitor(self)
         self.database.network_history = self.line_monitor.history
 
@@ -8603,7 +8632,63 @@ class PanelHandler(JsonHandler):
         )
         return False
 
+    def _mobile_admin_api(self, session):
+        return AdminApi(
+            self.app, self._mobile_actor(session), self._audit_safely,
+            {"subscription_nodes": validate_subscription_nodes,
+             "external_nodes": validate_external_nodes,
+             "parse_external": parse_anytls_uri},
+            lambda: self.server.begin_maintenance_request(self.connection),
+            self._kick_safely, self._default_subscription_nodes,
+        )
+
+    def _handle_mobile_admin_request(self, method, route, parameters):
+        session = self._require_mobile_session()
+        if not session:
+            return
+        if route == "restore":
+            if self.headers.get("X-HY2Panel-Confirm") != "RESTORE":
+                self._mobile_response(400, error_code="CONFIRMATION_REQUIRED", message="请确认恢复备份")
+                return
+            self._handle_restore_upload(mobile=True, session=session)
+            return
+        started = False
+        try:
+            api = self._mobile_admin_api(session)
+            if method == "GET":
+                self._mobile_response(200, api.read(route))
+                return
+            payload = self._mobile_read_json(maximum=65536)
+            if payload is None:
+                return
+            if not self._mobile_mutation_started():
+                return
+            started = True
+            if route == "backup":
+                fields(payload)
+                self._handle_backup(session, mobile=True)
+                return
+            status, result = api.write(route, parameters, payload)
+            self._mobile_response(status, result)
+        except AdminApiError as exc:
+            self._mobile_response(exc.status, error_code=exc.code, message=str(exc))
+        except sqlite3.IntegrityError:
+            self._mobile_response(409, error_code="STATE_CONFLICT", message="当前状态不允许此操作，请刷新后重试")
+        except (ValueError, TypeError, KeyError, OverflowError):
+            # Do not echo parser exceptions: submitted node URIs may contain secrets.
+            self._mobile_response(400, error_code="REQUEST_INVALID", message="请求参数或目标状态无效")
+        except Exception:
+            LOGGER.exception("mobile administrative operation failed")
+            self._mobile_response(503, error_code="ACTION_UNAVAILABLE", message="操作未完成，请刷新状态并检查服务日志")
+        finally:
+            if started:
+                self.app.finish_mutation()
+
     def _handle_mobile_get(self, path):
+        admin_route, parameters = match_admin_route("GET", path)
+        if admin_route:
+            self._handle_mobile_admin_request("GET", admin_route, parameters)
+            return
         route, parameters = match_mobile_route("GET", path)
         if route == "capabilities":
             self._mobile_response(200, capabilities_payload(PANEL_VERSION))
@@ -8647,6 +8732,17 @@ class PanelHandler(JsonHandler):
                 return
             if route == "nodes":
                 self._mobile_response(200, nodes_payload(self.app))
+                return
+            if route == "server-monitor":
+                self._mobile_response(200, server_monitor_payload(self.app))
+                return
+            if route == "line-monitor":
+                try:
+                    payload = line_monitor_payload(self.app, self.path)
+                except ValueError as exc:
+                    self._mobile_response(400, error_code="RANGE_INVALID", message=str(exc))
+                    return
+                self._mobile_response(200, payload)
                 return
             if route == "update-status":
                 self._mobile_response(200, self.app.update_controller.status())
@@ -8873,6 +8969,10 @@ class PanelHandler(JsonHandler):
             self._mobile_response(500, error_code="USER_ACTION_FAILED", message="用户操作未完成")
 
     def _handle_mobile_post(self, path):
+        admin_route, parameters = match_admin_route("POST", path)
+        if admin_route:
+            self._handle_mobile_admin_request("POST", admin_route, parameters)
+            return
         payload = self._mobile_read_json(maximum=32768)
         if payload is None:
             return
@@ -9351,7 +9451,7 @@ class PanelHandler(JsonHandler):
                 "node request was rejected",
             )
             return
-        self.send_json(200, result, headers={"X-Hy2-Network-Telemetry": "1"})
+        self.send_json(200, result, headers={"X-Hy2-Network-Telemetry": "1", "X-Hy2-Server-Operations": "1"})
 
     def _handle_data_plane_node_request(self, method_name):
         service = self.app.data_plane_bootstrap_service
@@ -10128,13 +10228,20 @@ class PanelHandler(JsonHandler):
                 return
             self.send_json(200, self.app.update_controller.status())
             return
+        if path == "/api/v1/server-monitor":
+            if not self._require_session():
+                return
+            self.send_json(200, server_monitor_payload(self.app))
+            return
         if path == "/api/v1/line-monitor":
             if not self._require_session():
                 return
-            origin_ids = [self.app.usage_manager.local_origin_id] + [
-                "node:" + node["node_id"] for node in self.app.database.list_nodes()
-                if node["status"] != "revoked"]
-            self.send_json(200, self.app.line_monitor.snapshot(origin_ids))
+            try:
+                payload = line_monitor_payload(self.app, self.path)
+            except ValueError as exc:
+                self.send_json(400, {"message": str(exc)})
+                return
+            self.send_json(200, payload)
             return
         if path == "/api/v1/dashboard-online":
             session = self._require_session()
@@ -10290,6 +10397,24 @@ class PanelHandler(JsonHandler):
         self._error_page(404, "页面不存在")
 
     def _dispatch_authenticated_post(self, path, session, form):
+        operation = re.fullmatch(r"/nodes/([0-9a-f]{32})/operations/(restart|reboot)", path)
+        if operation:
+            node_id, action = operation.groups()
+            sample = self.app.database.server_monitor.snapshot([node_id]).get(node_id, {})
+            if not sample.get('fresh'):
+                self.send_json(409, {'message': '节点离线或尚未上报新版运维能力'})
+                return
+            if form.get('confirm') != node_id:
+                self.send_json(400, {'message': '请确认目标服务器'})
+                return
+            try:
+                command = self.app.database.queue_node_command(node_id, 'RESTART_SERVICE' if action == 'restart' else 'REBOOT_SERVER', {'expiresAt': int(time.time())+120}, int(time.time()))
+            except ValueError as exc:
+                self.send_json(409, {'message': str(exc)})
+                return
+            self._audit_safely(session['username'], 'server_operation_queued', node_id + ':' + action)
+            self.send_json(202, {'message': '操作已排队，等待节点确认', 'commandId': command['commandId']})
+            return
         diagnostic = re.fullmatch(r"/usage-origins/((?:local|node):[0-9a-f]{32})/diagnostics", path)
         if diagnostic:
             accepted, message = self.app.line_monitor.request(diagnostic.group(1))
@@ -10497,9 +10622,11 @@ class PanelHandler(JsonHandler):
             return
         self._error_page(404, "页面不存在")
 
-    def _handle_backup(self, session):
+    def _handle_backup(self, session, mobile=False):
+        fail = (lambda status, message: self._mobile_response(status, error_code="BACKUP_FAILED", message=message)) if mobile else self._error_page
+        actor = self._mobile_actor(session) if mobile else session["username"]
         if self.app.backup_manager is None:
-            self._error_page(503, "备份功能尚未配置")
+            fail(503, "备份功能尚未配置")
             return
         self.server.begin_maintenance_request(self.connection)
         try:
@@ -10508,35 +10635,38 @@ class PanelHandler(JsonHandler):
                     self.app.backup_manager.create_archive
                 )
             self._send_archive(archive)
-            self._audit_safely(session["username"], "backup_downloaded", "proxy-users")
+            self._audit_safely(actor, "backup_downloaded", "proxy-users")
         except MaintenanceBusyError:
-            self._error_page(503, "维护任务正在运行，请稍后重试备份")
+            fail(503, "维护任务正在运行，请稍后重试备份")
         except Exception:
             LOGGER.exception("backup creation failed")
-            self._error_page(500, "备份生成失败，请检查服务日志")
+            fail(500, "备份生成失败，请检查服务日志")
 
-    def _handle_restore_upload(self):
-        session = self._require_session()
+    def _handle_restore_upload(self, mobile=False, session=None):
+        fail = (lambda status, message: self._mobile_response(status, error_code="RESTORE_FAILED", message=message)) if mobile else self._error_page
+        session = session if mobile else self._require_session()
         if not session:
             return
-        submitted = self.headers.get("X-HY2Panel-CSRF", "")
-        if not submitted or not hmac.compare_digest(session["csrf_token"], submitted):
-            self._error_page(403, "安全校验失败，请刷新页面后重试")
-            return
+        actor = self._mobile_actor(session) if mobile else session["username"]
+        if not mobile:
+            submitted = self.headers.get("X-HY2Panel-CSRF", "")
+            if not submitted or not hmac.compare_digest(session["csrf_token"], submitted):
+                fail(403, "安全校验失败，请刷新页面后重试")
+                return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip()
         if content_type != "application/zip":
-            self._error_page(400, "仅支持本面板生成的 ZIP 备份文件")
+            fail(400, "仅支持本面板生成的 ZIP 备份文件")
             return
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             content_length = -1
         if self.app.backup_manager is None:
-            self._error_page(503, "恢复功能尚未配置")
+            fail(503, "恢复功能尚未配置")
             return
         self.server.begin_maintenance_request(self.connection)
         if not self.app.begin_maintenance():
-            self._error_page(503, "维护操作正在进行，请稍后重试")
+            fail(503, "维护操作正在进行，请稍后重试")
             return
         staged = False
         try:
@@ -10546,10 +10676,10 @@ class PanelHandler(JsonHandler):
             staged = True
             self.app.restore_controller.queue()
             self._audit_safely(
-                session["username"], "restore_queued", manifest["createdAt"]
+                actor, "restore_queued", manifest["createdAt"]
             )
         except BackupValidationError as exc:
-            self._error_page(400, str(exc))
+            fail(400, str(exc))
             return
         except Exception:
             if staged:
@@ -10558,10 +10688,13 @@ class PanelHandler(JsonHandler):
                 except FileNotFoundError:
                     pass
             LOGGER.exception("restore queue failed")
-            self._error_page(500, "恢复任务启动失败，请检查服务日志")
+            fail(500, "恢复任务启动失败，请检查服务日志")
             return
         finally:
             self.app.finish_maintenance()
+        if mobile:
+            self._mobile_response(202, {"status": "queued", "message": "恢复任务已启动，请稍后重新登录"})
+            return
         if self._wants_json():
             self.send_json(
                 202,

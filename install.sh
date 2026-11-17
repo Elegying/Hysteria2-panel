@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.57"
+PANEL_VERSION="0.39.58"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -29,16 +29,17 @@ HY2PANEL_DISTRIBUTED_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyst
 HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/domain_usage.py"
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_DIAGNOSTICS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/diagnostics.py"
+HY2PANEL_ADMIN_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/admin_api.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="1e8f5f1b0aa5f1223bc0e99894c37805cbae42e6488f8565e7b3bfb927eb496d"
+PANEL_SHA256="14644a797296306bc2d89a2318c49364ccc6508632ba6034721fca51945c4275"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="40b064d78a5e30daff302d7c4d1e862de32cc43965987697be34f6c3eafeb808"
-HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
-HY2PANEL_WEB_ASSETS_SHA256="1ed9d4fa7bb5d7310ae49efeaf3d1880252c66506ae958ab9d6c63da43c92746"
+HY2PANEL_VERSION_SHA256="63ff36fcbf3e3e9262657848c2295ebfd980a2b04d6243eabcd5e3d06e721762"
+HY2PANEL_BUDGETS_SHA256="b449af46564537e59185940739ff433ac154936b15aa99bb92d738af4886f459"
+HY2PANEL_WEB_ASSETS_SHA256="87df4f3f3ae093278baf0d411ff6cabf11fa3b90432a8f4827bda8321b85d540"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
@@ -46,12 +47,13 @@ HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f06
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
 HY2PANEL_NODES_SHA256="3bffd1d7885df115aefb2b7a6e8d152b195ed4a373fb5dd35d2bddc4f43585e4"
-HY2PANEL_DISTRIBUTED_SHA256="ba6199918ead0dd0857bb95c9a37cd1f0ee49f27732888196e154fefe2dc6cca"
+HY2PANEL_DISTRIBUTED_SHA256="e3e556fdf8e64dafb585dc5510a63cd00540e65f969b755980a611197cb282c7"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="55aa6bdb49179580cb9542c08ee4779c251979483701fcfb00894e7d6dbafe05"
-HY2PANEL_DIAGNOSTICS_SHA256="a2ebdbb496423b3aca0847ba30434b9c9177101e199e9dadfd88dbdea480f696"
-HY2PANEL_MOBILE_API_SHA256="294fe3ac8ea19f87fca43c1b0689f4e9c8eab048528616ef46fec93a2ebb264a"
-NODE_AGENT_SHA256="9ccaf6e038cd5269c414d10aecd015b428069ebaffb8e4200eebfe8493551af9"
+HY2PANEL_DASHBOARD_SHA256="4b6354ff973fef47378935702492bfd75260031d9620fc66a46f7c1da26bed8c"
+HY2PANEL_DIAGNOSTICS_SHA256="c431e8d916833b93b54cfc30f80b94c64e9609acb6a1fce34de9a6968d8bd010"
+HY2PANEL_ADMIN_API_SHA256="e590d6714cd76ad511040d2008f48277812406a6151c8610782587e631de3dc4"
+HY2PANEL_MOBILE_API_SHA256="1e0a1f68c23324105e4f084b52ded3e3fb2fe9e6e7f172970b7a230563acb712"
+NODE_AGENT_SHA256="66a131518c5d4940d236570b15c41cc20c65a9c3c0e379f5e6a8056e25148886"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v2/hysteria-linux"
 HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"
@@ -4427,6 +4429,7 @@ verify_fresh_install_commit_payload() {
     '/opt/hysteria2-panel/hy2panel/dashboard.py|root:root:644:1|1'
     '/opt/hysteria2-panel/hy2panel/diagnostics.py|root:root:644:1|1'
     '/opt/hysteria2-panel/hy2panel/domain_usage.py|root:root:644:1|1'
+    '/opt/hysteria2-panel/hy2panel/admin_api.py|root:root:644:1|1'
     '/opt/hysteria2-panel/hy2panel/mobile_api.py|root:root:644:1|1'
     '/etc/hysteria2-panel/panel.env|root:hy2panel:640:1|1'
     '/etc/hysteria2-panel/hysteria.yaml|root:hy2tls:640:1|1'
@@ -7466,6 +7469,7 @@ download_file "${HY2PANEL_DISTRIBUTED_SOURCE_URL}" "${TMP_DIR}/hy2panel/distribu
 download_file "${HY2PANEL_DOMAIN_USAGE_SOURCE_URL}" "${TMP_DIR}/hy2panel/domain_usage.py"
 download_file "${HY2PANEL_DASHBOARD_SOURCE_URL}" "${TMP_DIR}/hy2panel/dashboard.py"
 download_file "${HY2PANEL_DIAGNOSTICS_SOURCE_URL}" "${TMP_DIR}/hy2panel/diagnostics.py"
+download_file "${HY2PANEL_ADMIN_API_SOURCE_URL}" "${TMP_DIR}/hy2panel/admin_api.py"
 download_file "${HY2PANEL_MOBILE_API_SOURCE_URL}" "${TMP_DIR}/hy2panel/mobile_api.py"
 printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum --check --status \
   || fail "面板源码 SHA-256 校验失败"
@@ -7505,6 +7509,8 @@ printf '%s  %s\n' "${HY2PANEL_DASHBOARD_SHA256}" "${TMP_DIR}/hy2panel/dashboard.
   || fail "hy2panel/dashboard.py SHA-256 校验失败"
 printf '%s  %s\n' "${HY2PANEL_DIAGNOSTICS_SHA256}" "${TMP_DIR}/hy2panel/diagnostics.py" | sha256sum --check --status \
   || fail "hy2panel/diagnostics.py SHA-256 校验失败"
+printf '%s  %s\n' "${HY2PANEL_ADMIN_API_SHA256}" "${TMP_DIR}/hy2panel/admin_api.py" | sha256sum --check --status \
+  || fail "hy2panel/admin_api.py SHA-256 校验失败"
 printf '%s  %s\n' "${HY2PANEL_MOBILE_API_SHA256}" "${TMP_DIR}/hy2panel/mobile_api.py" | sha256sum --check --status \
   || fail "hy2panel/mobile_api.py SHA-256 校验失败"
 "${PYTHON_BIN}" -m py_compile "${TMP_DIR}/hysteria2_panel.py" || fail "面板源码语法检查失败"

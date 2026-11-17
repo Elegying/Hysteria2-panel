@@ -55,6 +55,28 @@ class NetworkTests(unittest.TestCase):
         )
         self.assertIsNone(history.snapshot(["local:x"])["local:x"]["rx"])
 
+    def test_today_persists_means_gaps_and_beijing_day_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "history.db"
+            now = [57595.0]  # Five seconds before Beijing midnight.
+            history = NetworkHistory(clock=lambda: now[0], history_path=path)
+            history.accept("a", sample())
+            now[0] += 5
+            history.accept("a", sample(15000, 5100, 2700))
+            now[0] += 5
+            history.accept("a", sample(20000, 15100, 7700))
+            restored = NetworkHistory(clock=lambda: now[0], history_path=path)
+            result = restored.today(["a", "missing"])
+            self.assertEqual(57600, result["start"])
+            self.assertEqual([dict(at=57600, rx=1500, tx=750)], result["network"]["a"]["points"])
+            self.assertEqual([], result["network"]["missing"]["points"])
+            now[0] += 60
+            history.accept("a", sample(80000, 16000, 8000))
+            self.assertIsNone(history.today(["a"])["network"]["a"]["points"][-1]["rx"])
+            now[0] = 144000
+            history.accept("a", sample(90000, 17000, 9000))
+            self.assertEqual([144000], [p["at"] for p in restored.today(["a"])["network"]["a"]["points"]])
+
     def test_only_default_route_interfaces_and_same_collector_on_agent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

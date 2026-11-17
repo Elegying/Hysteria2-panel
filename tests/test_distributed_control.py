@@ -180,7 +180,11 @@ class SignedNodeRequestTests(DistributedControlCase):
             }
         )
 
+        from hy2panel.diagnostics import ServerMonitor
+        self.db.server_monitor = ServerMonitor()
+        payload['onlineSnapshot']['resourceSample'] = dict(cpu=25, memory=40, disk=60, uptime=100, observedAt=self.now[0])
         result = self.service.control_cycle(payload, remote_ip="203.0.113.1")
+        self.assertEqual(25, self.db.server_monitor.snapshot([self.nodes[0]], self.now[0])[self.nodes[0]]['cpu'])
 
         self.assertEqual("9" * 32, result["cycleId"])
         self.assertEqual("8" * 32, result["traffic"][0]["batchId"])
@@ -330,6 +334,14 @@ class DistributedAuthorizationTests(DistributedControlCase):
             }
         )
         return payload
+
+    def test_server_maintenance_blocks_only_target_admissions_and_releases_on_failure(self):
+        command = self.db.queue_node_command(self.nodes[0], 'REBOOT_SERVER', {'expiresAt': self.now[0]+120}, self.now[0])
+        with self.assertRaises(NodeRequestRejected):
+            self.service.authorize(self.auth_payload(self.nodes[0], 190), remote_ip='203.0.113.1')
+        self.assertTrue(self.service.authorize(self.auth_payload(self.nodes[1], 191), remote_ip='203.0.113.2')['ok'])
+        self.assertTrue(self.db.ack_node_command(self.nodes[0], command['commandId'], False, 'EXECUTION_FAILED', 'f'*64, self.now[0]))
+        self.assertTrue(self.service.authorize(self.auth_payload(self.nodes[0], 192), remote_ip='203.0.113.1')['ok'])
 
     def test_two_nodes_concurrently_allow_exactly_the_remaining_device_limit(self):
         barrier = threading.Barrier(5)

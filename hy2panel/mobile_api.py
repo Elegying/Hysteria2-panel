@@ -1,7 +1,6 @@
 """Stable JSON projections for the Hysteria2 Manager Android client."""
 
-from .budgets import provider_traffic_bytes
-from .dashboard import machine_forecasts
+from .budgets import machine_forecasts, provider_traffic_bytes
 
 import base64
 import hashlib
@@ -46,6 +45,8 @@ _MOBILE_EXACT_ROUTES = {
     ("GET", "/api/v1/mobile/users"): "users",
     ("GET", "/api/v1/mobile/domain-usage"): "domain-usage",
     ("GET", "/api/v1/mobile/nodes"): "nodes",
+    ("GET", "/api/v1/mobile/server-monitor"): "server-monitor",
+    ("GET", "/api/v1/mobile/line-monitor"): "line-monitor",
     ("GET", "/api/v1/mobile/updates/status"): "update-status",
     ("POST", "/api/v1/mobile/auth/login"): "login",
     ("POST", "/api/v1/mobile/auth/refresh"): "refresh",
@@ -558,6 +559,21 @@ def capabilities_payload(panel_version):
             "one-click-node-pairing",
             "local-node-control",
             "node-realtime-traffic",
+            "server-resource-monitor",
+            "network-history-today",
+            "line-diagnostics-read",
+            "admin-settings",
+            "node-budget-management",
+            "manual-line-diagnostics",
+            "remote-server-operations",
+            "node-lifecycle-management",
+            "subscription-node-management",
+            "external-node-management",
+            "local-port-hopping-management",
+            "egress-policy-management",
+            "traffic-reset-all",
+            "backup-restore",
+            "panel-update-management",
             "service-control",
             "server-reboot",
             "app-update-check",

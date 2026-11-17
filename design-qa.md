@@ -1,79 +1,13 @@
-# 历史验收：v0.38.0 节点统计与流量预算
+# Panoramic traffic chart acceptance
 
-## 验收基准
-
-- 参考图：`.codex-artifacts/design-qa/reference.png`（1194 × 732）。
-- 桌面实现：`.codex-artifacts/design-qa/web-budget-desktop.png`（597 × 238，浏览器截图缩放后与参考图统一宽度比对）。
-- 并排证据：`.codex-artifacts/design-qa/reference-vs-web.png`（1194 × 1208）。
-- 手机实现：`.codex-artifacts/design-qa/web-budget-mobile.png`（390 × 844）。
-- 手机弹窗：`.codex-artifacts/design-qa/web-budget-mobile-dialog.png`（390 × 844）。
-- 页面状态：面板本机节点 1 台在线，通用远程测试节点 47 台在线；本机使用 1.6 TiB / 4.9 TiB，远程使用 3.0 TiB / 10.0 TiB。视觉证据保留在本机且不提交 Git，避免公开用户截图中的真实节点标签。
-
-## 视觉与交互结果
-
-- 整体层级：标题、说明、节点名称、在线数、预算进度、用量数字的阅读顺序与参考图一致。
-- 字体与间距：桌面端使用更紧凑的管理面板密度；手机端节点分组、进度条和编辑按钮保持清晰间距，没有文字覆盖或操作区重叠。
-- 色彩：沿用现有深色主题和蓝紫进度条；正常状态与预算数字使用绿色，保持状态语义一致。
-- 内容：新增上传、下载、账期、下次重置和最后上报时间，以满足管理场景的信息完整性。
-- 响应式：390 × 844 视口中两台节点均为单列显示，编辑预算按钮全宽，弹窗四个输入项与保存按钮完整可见。
-- 交互：两台节点均可打开各自的预算弹窗；关闭按钮有效；输入控件和保存按钮具有可访问名称。
-- 浏览器控制台：0 个 warning，0 个 error。
-
-## 差异说明
-
-- 网页端比参考图更紧凑，目的是降低控制台首屏占用；这属于明确的产品约束，不是视觉偏差。
-- 网页端保留上传/下载拆分与账期信息，避免为了外观完全一致而损失现有管理能力。
-- 未发现 P0、P1、P2 级视觉问题。
-
----
-
-# Android 分段底部导航视觉 QA
-
-## 对照证据
-
-- 源视觉真值、实现截图、滚动到底部的避让截图和并排对照图保留在本地 QA 工作区，不提交到公开仓库。
-- 视口：390 × 844 CSS px，dpr 1。
-- 源图像素：852 × 1846；按原始纵横比归一到 390 × 844。
-- 实现图像素：390 × 844，无设备外框。
-- 状态：深色主题，首页选中，四个导航入口全部可见。
-
-## Findings
-
-- 无 P0/P1/P2 问题。
-- [P3] 离屏 Flutter 测试截图使用确定性 Ahem 字形，中文显示为方块。这是截图环境限制，不是 Android 界面缺陷；同一 Flutter 代码在浏览器运行时已确认中文字形、换行和字重正常。
-
-## 必查界面
-
-- 字体与排版：底栏使用现有 Material `labelSmall`，选中态 700 字重，未选中态 500 字重，单行文字无截断。应用字体族未变更。
-- 间距与布局节奏：四个导航块高 54dp，水平间距 8dp，左右边距 16dp，圆角 16dp。滚动到底部后，最后内容卡片完整停在导航上方，不发生覆盖。
-- 颜色与视觉令牌：复用现有深蓝液态玻璃渐变、边框、阴影和主色透明选中态，未引入新颜色体系。
-- 图像与图标：界面无需新增栅格图像资产；四个导航项继续使用 Flutter Material 图标，没有占位符、表情符号或手工 SVG。
-- 文案与内容：保留“首页 / 用户 / 节点 / 设置”，未改动业务页文案和数据层级。
-
-## 交互检查
-
-- 点击“节点”后选中索引正确切换到 2。
-- 点击两个导航块之间的透明 8dp 间隙不会误触任何页面。
-- 四个入口均保留语义化按钮和选中状态。
-- `Scaffold.bottomNavigationBar` 为导航预留布局空间，不再通过 `Stack + Positioned` 盖在业务内容上。
-
-## 对照历史
-
-1. 原实现使用 `Stack + Positioned`，整块导航浮在页面内容上，存在明确 P1 遮挡。
-2. 修复后改为原生底部布局占位，并拆分为四个独立玻璃面。
-3. 390 × 844 首页对照和滚动到底部对照均未发现可执行的 P0/P1/P2 问题。
-
-## Implementation Checklist
-
-- [x] 去除整块底部遮罩。
-- [x] 改为四个独立液态玻璃导航块。
-- [x] 将视觉高度收紧到 54dp。
-- [x] 统一底部安全区和内容避让。
-- [x] 移除用户页原有的 100dp 重复留白。
-- [x] Flutter analyze、组件测试和 Android arm64 Release APK 构建通过。
-
-## Follow-up Polish
-
-- 真机开发包安装被 Redmi Note 8 的“USB 安装”权限拒绝。这不阻塞布局 QA；如需真机截图，开启该权限后可补做。
+- Source visual truth: local design reference retained outside the public repository.
+- Implementation: output/console-preview/panoramic-selected.png
+- Viewport: 1536 × 1024 CSS pixels, density 1. Source 2172 × 724 raster; component fitted proportionally into existing desktop dashboard width (1282 CSS px).
+- State: desktop overview, near-five-minute selected, synthetic local telemetry. Source and implementation opened together for comparison. Full view confirms chart integration; chart region confirms header controls, right-aligned rates, angular cyan/lavender traces, grid, legend, and footer date.
+- Findings: no actionable P0/P1/P2 issues. Actual sample values and timestamps intentionally differ from design mock. Extra footer data availability is retained for operational accuracy.
+- Interaction checks: today selected and minute history loaded; five-minute switch restored; SVG accessible name follows selected range. Ruff and whitespace checks passed.
+- Comparison history: first rendered comparison passed; no visual fixes required after comparison.
+- Scope: local only, existing backend preserved. No deployment.
+- Follow-up polish: mobile excluded as requested.
 
 final result: passed

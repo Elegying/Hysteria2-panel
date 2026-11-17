@@ -13,6 +13,7 @@ import time
 from .nodes import OpenSSLSignatureVerifier
 from .domain_usage import validate_domain_records
 from .diagnostics import valid_network_sample
+from .diagnostics import valid_resources
 
 
 NODE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
@@ -423,7 +424,8 @@ class DistributedControlService:
             ):
                 self._reject()
         if snapshot is not None and (
-            set(snapshot) not in (CONTROL_ONLINE_FIELDS, CONTROL_ONLINE_FIELDS | {"networkSample"})
+            set(snapshot) - {"networkSample", "resourceSample"} != CONTROL_ONLINE_FIELDS
+            or ("resourceSample" in snapshot and not valid_resources(snapshot["resourceSample"]))
             or ("networkSample" in snapshot and not valid_network_sample(snapshot["networkSample"]))
             or not _object_id(snapshot.get("snapshotId"))
             or not _timestamp(snapshot.get("sequence"))
@@ -479,6 +481,9 @@ class DistributedControlService:
             history = getattr(self.database, "network_history", None)
             if history is not None and "networkSample" in snapshot:
                 history.accept("node:" + node["node_id"], snapshot["networkSample"])
+            monitor = getattr(self.database, "server_monitor", None)
+            if monitor is not None and "resourceSample" in snapshot:
+                monitor.accept(node["node_id"], snapshot["resourceSample"], now)
             online_result = {
                 "snapshotId": snapshot["snapshotId"],
                 "sequence": snapshot["sequence"],
