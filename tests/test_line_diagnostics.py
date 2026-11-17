@@ -186,6 +186,27 @@ class ProbeTests(unittest.TestCase):
             any(c.args[0] == "measurements" for c in client.request.call_args_list)
         )
 
+    def test_sampling_never_starts_diagnostics_even_after_old_auto_interval(self):
+        app = SimpleNamespace(
+            database=SimpleNamespace(diagnostic_grants=DiagnosticGrants()),
+            usage_manager=SimpleNamespace(local_origin_id="local:1"),
+        )
+        client, _ = self.client()
+        monitor = LineMonitor(app, client)
+        monitor.enabled = True
+        stop = mock.Mock()
+        stop.is_set.side_effect = [False, False, False, True]
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch("time.monotonic", return_value=10**12))
+            stack.enter_context(mock.patch.object(monitor, "targets", return_value={"local:1": {"ip": "8.8.8.8"}}))
+            stack.enter_context(mock.patch("hy2panel.diagnostics.read_network_sample", return_value=sample()))
+            accept = stack.enter_context(mock.patch.object(monitor.history, "accept"))
+            request = stack.enter_context(mock.patch.object(monitor, "request"))
+            monitor.run(stop)
+        self.assertEqual(3, accept.call_count)
+        request.assert_not_called()
+        client.request.assert_not_called()
+
     def test_local_hopping_requires_external_evidence_instead_of_false_failure(self):
         grants = DiagnosticGrants()
         app = SimpleNamespace(database=SimpleNamespace(diagnostic_grants=grants))

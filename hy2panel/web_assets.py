@@ -133,7 +133,7 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 @media(max-width:760px){.node-management-dialog .node-enrollment-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.node-management-dialog .node-list-head{align-items:flex-start}.node-management-dialog .node-line-form{grid-template-columns:1fr 1fr}.node-line-form label:last-of-type{grid-column:1/-1}}
 @media(max-width:540px){.node-management-dialog{width:calc(100% - 16px);max-height:calc(100dvh - 16px)}.node-management-dialog .dialog-head{padding:16px 18px;margin-bottom:16px}.node-management-dialog .dialog-head h2{font-size:19px}.node-management-dialog .dialog-head p{font-size:12px}.node-management-dialog .node-enrollment-grid{grid-template-columns:1fr;gap:14px;padding:16px}.management-section-head{align-items:flex-start}.management-section-head>span{font-size:11px;text-align:right}.management-form-footer{flex-direction:column;align-items:stretch;gap:10px}.management-form-footer button{width:100%}.node-management-dialog .node-list-head{gap:5px}.node-management-dialog .node-row{padding:14px;gap:10px}.node-management-dialog .node-actions{justify-content:flex-start;flex-wrap:wrap}.node-management-dialog .node-actions form{flex:1 1 auto}.node-management-dialog .node-actions form button{width:100%}.node-line-settings{flex:1 1 auto}.node-line-settings summary{text-align:center}.node-management-dialog .node-line-form{grid-template-columns:1fr}.external-import{padding:16px}.external-import-toolbar{flex-direction:column;align-items:stretch;gap:12px}.external-import-toolbar label{width:100%}.external-node-card{padding:14px}.external-node-fields{grid-template-columns:1fr;gap:12px}.external-node-heading{gap:8px}.external-node-heading code{font-size:11px}.external-node-footer{flex-wrap:wrap;gap:10px}.external-node-actions{margin-left:auto}.external-publish-bar{bottom:0;margin:18px -18px -18px;padding:14px 18px;flex-direction:column;align-items:stretch;gap:10px}.external-publish-bar p br,.external-publish-bar p span{display:none}.external-publish-bar>div{display:grid;grid-template-columns:1fr 1.3fr}.external-publish-bar button{padding:9px 8px}.external-list-heading{margin-top:20px}}
 
-.machine-budget-head{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(145px,1fr) auto;gap:16px;align-items:center}.machine-budget-head>div:first-child{min-width:0}.machine-ip{overflow-wrap:anywhere}.machine-speed{min-width:0}.machine-speed-values{display:flex;justify-content:space-between;gap:8px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}.machine-speed-values [data-speed-rx]{color:#58d6bd}.machine-speed-values [data-speed-tx]{color:#a6bbff}.machine-speed svg{display:block;width:100%;height:42px;overflow:visible}.machine-speed svg path{fill:none;vector-effect:non-scaling-stroke}.speed-grid{stroke:#283c53;stroke-width:.7}.speed-rx-line{stroke:#58d6bd;stroke-width:1.6}.speed-tx-line{stroke:#a6bbff;stroke-width:1.6}.machine-speed small{font-size:10px!important;color:#8fa1b7;text-align:right;line-height:1.2}.machine-speed[data-stale="true"] svg{opacity:.35}.machine-reset-check{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.line-check-button{font-size:12px;min-height:30px;padding:4px 9px;background:#16283d;border:1px solid #304760;color:#b7c8df;border-radius:8px}.line-check-button.warning{color:#f1ce82}.line-check-button.bad{color:#ffacb5}.line-check-dialog{width:min(740px,calc(100% - 24px));max-height:calc(100dvh - 32px)}.line-check-dialog .dialog-shell{overflow:auto}.line-check-dialog h3{font-size:15px;margin:0 0 8px}.line-check-dialog p{font-size:13px;line-height:1.7}.line-check-sections{display:grid;grid-template-columns:1fr 1fr;gap:20px}.line-check-sections section{min-width:0}.line-check-evidence{font-size:12px;line-height:1.8;margin:7px 0;overflow-wrap:anywhere}.line-check-dialog form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.line-check-dialog [data-check-action]{font-size:12px}
+.machine-budget-head{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(145px,1fr) auto;gap:16px;align-items:center}.machine-budget-head>div:first-child{min-width:0}.machine-ip{overflow-wrap:anywhere}.machine-speed{min-width:0}.machine-speed-values{display:flex;justify-content:space-between;gap:8px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}.machine-speed-values [data-speed-rx]{color:#58d6bd}.machine-speed-values [data-speed-tx]{color:#a6bbff}.machine-speed svg{display:block;width:100%;height:42px;overflow:visible}.machine-speed svg path{fill:none;vector-effect:non-scaling-stroke}.speed-grid{stroke:#283c53;stroke-width:.7}.speed-rx-line{stroke:#58d6bd;stroke-width:1.6}.speed-tx-line{stroke:#a6bbff;stroke-width:1.6}.machine-speed small{font-size:10px!important;color:#8fa1b7;text-align:right;line-height:1.2}.machine-speed[data-stale="true"] svg{opacity:.35}.machine-reset-check{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.line-check-button{font-size:12px;min-height:30px;padding:4px 9px;background:#16283d;border:1px solid #304760;color:#b7c8df;border-radius:8px}.line-check-button.ok{color:#58d6bd;border-color:#357c6b;background:#132d2c}.line-check-button.warning{color:#f1ce82}.line-check-button.bad{color:#ffacb5;border-color:#85404b;background:#351e2a}.line-check-dialog{width:min(740px,calc(100% - 24px));max-height:calc(100dvh - 32px)}.line-check-dialog .dialog-shell{overflow:auto}.line-check-dialog h3{font-size:15px;margin:0 0 8px}.line-check-dialog p{font-size:13px;line-height:1.7}.line-check-sections{display:grid;grid-template-columns:1fr 1fr;gap:20px}.line-check-sections section{min-width:0}.line-check-evidence{font-size:12px;line-height:1.8;margin:7px 0;overflow-wrap:anywhere}.line-check-dialog form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.line-check-dialog [data-check-action]{font-size:12px}
 @media(max-width:1150px) and (min-width:961px){.machine-budget-head{grid-template-columns:minmax(0,1fr) auto}.machine-speed{grid-row:2;grid-column:1/-1}.machine-speed svg{height:36px}}
 @media(max-width:600px){.machine-budget-head{grid-template-columns:minmax(0,1fr) auto;gap:10px}.machine-speed{grid-row:2;grid-column:1/-1}.machine-speed svg{height:42px}.line-check-sections{grid-template-columns:1fr}.machine-reset-check{gap:4px}.line-check-button{font-size:11px}.line-check-dialog .dialog-shell{padding:18px}}
 """
@@ -1327,17 +1327,24 @@ if (lineForm) {
   lineForm.elements.namedItem('region').addEventListener('change', fillRegionDefaults);
   lineForm.elements.namedItem('tier').addEventListener('change', fillRegionDefaults);
 }
+function lineTcpVerdict(check) {
+  if (check && check.running) return {text:'正在检测…', kind:'muted'};
+  if (!check || !check.checkedAt) return {text:'线路待检测', kind:'muted'};
+  if (check.stale) return {text:'结果已过期 · 请重测', kind:'muted'};
+  const rows = (check.domestic || []).flatMap(function(group) { return group.rows || []; });
+  if (rows.some(function(row) { return row.state === 'fail'; })) return {text:'TCP阻断', kind:'bad'};
+  if (rows.length === 3 * (check.expectedPorts || 2) && rows.every(function(row) { return row.state === 'pass'; }) && !check.domesticError) return {text:'TCP 可达', kind:'ok'};
+  return {text:'检测不完整 · 请重测', kind:'muted'};
+}
 function lineVerdict(check) {
-  if (!check || !check.checkedAt) return {text:check && check.running ? '正在检测…' : '线路待检测', kind:'warning'};
-  if (check.stale) return {text:'结果已过期 · 请重测', kind:'warning'};
+  if (!check || !check.checkedAt || check.stale || check.running) return lineTcpVerdict(check);
   const rows = (check.domestic || []).flatMap(function(group) { return group.rows || []; });
   const proxy = check.proxy || [];
   if (proxy.some(function(row) { return row.state === 'fail'; })) return {text:'代理实测异常', kind:'bad'};
   if (check.dns === 'fail') return {text:'域名未包含本节点', kind:'bad'};
   if (rows.some(function(row) { return row.state === 'fail'; })) return {
     text:check.failureRounds >= 2 && (check.tcpReference || []).length === (check.expectedPorts || 2) && check.tcpReference.every(function(row) { return row.state === 'pass'; }) && proxy.length && proxy.some(function(row) { return row.state === 'pass'; }) && proxy.every(function(row) { return row.state === 'pass' || row.state === 'unknown'; }) ? '疑似国内路径受阻' : '国内 TCP 异常 · 待复测', kind:'bad'};
-  if (rows.length === 3 * (check.expectedPorts || 2) && rows.every(function(row) { return row.state === 'pass'; }) && !check.domesticError) return {text:'TCP 可达 · 国内 UDP 未验证', kind:'warning'};
-  return {text:'检测不完整 · 无法判定', kind:'warning'};
+  return lineTcpVerdict(check);
 }
 function networkRate(value) {
   if (!Number.isFinite(value) || value < 0) return '—';
@@ -1377,8 +1384,9 @@ function applyLineMonitor(payload) {
     }
     const check = payload.checks[id];
     const verdict = lineVerdict(check);
+    const tcpVerdict = lineTcpVerdict(check);
     const status = card.querySelector('[data-line-status]');
-    if (status) { status.textContent = check && check.running ? '正在检测…' : verdict.text; status.parentElement.className = 'line-check-button ' + verdict.kind; }
+    if (status) { status.textContent = tcpVerdict.text; status.parentElement.className = 'line-check-button ' + tcpVerdict.kind; }
     const dialog = Array.from(document.querySelectorAll('[data-line-dialog]')).find(function(d) { return d.dataset.lineDialog === id; });
     if (!dialog || !check || !check.checkedAt) return;
     dialog.querySelector('[data-check-time]').textContent = '检测时间：' + liveTime(check.checkedAt, true) + (check.stale ? ' · 已过期' : '');

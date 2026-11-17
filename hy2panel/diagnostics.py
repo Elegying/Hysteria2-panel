@@ -384,7 +384,6 @@ class LineMonitor:
         self.stop_event = threading.Event()
         self.job = None
         self.client.cancelled = self.stop_event.is_set
-        self.auto_after = time.monotonic() + 30
 
     def targets(self):
         result = {}
@@ -626,7 +625,6 @@ class LineMonitor:
                 local_id = self.app.usage_manager.local_origin_id
                 self.history.accept(local_id, read_network_sample())
                 targets = self.targets()
-                now = time.time()
                 with self.lock:
                     for origin_id, target in targets.items():
                         if (
@@ -635,13 +633,8 @@ class LineMonitor:
                         ):
                             self.results.pop(origin_id, None)
                             self.last_requested.pop(origin_id, None)
-                for origin_id in targets:
-                    if (
-                        time.monotonic() >= self.auto_after
-                        and now - self.last_requested.get(origin_id, 0) >= 900
-                    ):
-                        self.request(origin_id)
-                        break
+                # Sampling is passive. Only an explicit administrator request
+                # starts network diagnostics; opening the dashboard never does.
                 with self.lock:
                     self.results = {
                         key: value

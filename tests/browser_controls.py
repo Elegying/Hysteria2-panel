@@ -490,10 +490,21 @@ try:
     browser.evaluate('applyLineMonitor(' + json.dumps(chart_payload) + ')')
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-speed-rx]') + ').textContent.includes("10.00 Mbps")')
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-speed-rx-line]') + ').getAttribute("d").includes("L")')
-    assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-line-status]') + ').textContent.includes("UDP 未验证")')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-line-status]') + ').textContent') == 'TCP 可达'
+    assert browser.evaluate('getComputedStyle(document.querySelector(' + json.dumps(local_card+' .line-check-button') + ')).color') == 'rgb(88, 214, 189)'
+    chart_payload['checks'][local_origin]['domestic'][0]['rows'][0]['state'] = 'fail'
+    browser.evaluate('applyLineMonitor(' + json.dumps(chart_payload) + ')')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-line-status]') + ').textContent') == 'TCP阻断'
+    assert browser.evaluate('getComputedStyle(document.querySelector(' + json.dumps(local_card+' .line-check-button') + ')).color') == 'rgb(255, 172, 181)'
+    chart_payload['checks'][local_origin]['domestic'][0]['rows'][0]['state'] = 'unknown'
+    browser.evaluate('applyLineMonitor(' + json.dumps(chart_payload) + ')')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-line-status]') + ').textContent') == '检测不完整 · 请重测'
+    chart_payload['checks'][local_origin]['domestic'][0]['rows'][0]['state'] = 'pass'
+    browser.evaluate('applyLineMonitor(' + json.dumps(chart_payload) + ')')
     browser.evaluate('document.querySelector(' + json.dumps(local_card+' .line-check-button') + ').click()')
     browser.wait('Boolean(document.querySelector(".line-check-dialog[open]"))')
     assert browser.evaluate('document.querySelector(".line-check-dialog[open]").textContent.includes("不能据此承诺所有用户可用")')
+    assert browser.evaluate('document.querySelector(".line-check-dialog[open] [data-check-action]").textContent') == '仅手动检测；点击后开始。'
     browser.screenshot('line-diagnostics-desktop.png')
     browser.evaluate('document.querySelector(".line-check-dialog[open] [data-dialog-close]").click()')
     passed('网卡实时折线图与检测证据边界')
