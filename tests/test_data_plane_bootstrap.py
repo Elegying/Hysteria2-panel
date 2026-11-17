@@ -145,8 +145,8 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
                    pin_sha256="ab" * 32, port_hopping=True)
         self.assertEqual([19999, 443, 2000, 2100, 50000],
                          [call.args[1] for call in probe.call_args_list])
-        random_port.assert_called_once_with(47999)
-        self.assertEqual([2000, 2100, 50000],
+        self.assertEqual([mock.call(47999), mock.call(29999)], random_port.call_args_list)
+        self.assertEqual([20000, 20100, 50000],
                          [call.args[0][1] for call in tcp.call_args_list])
 
     def test_rejects_non_public_target_and_wrong_egress(self):

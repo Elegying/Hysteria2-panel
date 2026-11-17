@@ -263,9 +263,11 @@ class HysteriaCanaryRunner:
         ports = [main_port, 443]
         if port_hopping:
             ports.extend((2000, 2001 + secrets.randbelow(47999), 50000))
-        for index, port in enumerate(ports):
+        for port in ports:
             self._check_entrypoint(node_ip, port, token, pin_sha256, trace_url, server_name)
-            if port_hopping and index >= 2:
+        if port_hopping:
+            # TCP diagnostics retain their separate 20000-50000 range.
+            for port in (20000, 20001 + secrets.randbelow(29999), 50000):
                 with socket.create_connection((node_ip, port), timeout=3):
                     pass
 
