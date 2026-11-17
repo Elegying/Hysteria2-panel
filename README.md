@@ -51,7 +51,7 @@
 以 root 执行以下短命令，入口脚本会下载固定版本安装器并验证签名。
 
 ```bash
-(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.53/bootstrap.sh -o "$f" && bash "$f")
+(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.54/bootstrap.sh -o "$f" && bash "$f")
 ```
 
 <details>
@@ -116,11 +116,11 @@ Debian 11 归档修复仅匹配普通 `.list` 文件中的已知官方旧安全�
 
 ## 更严格的固定版本验签安装
 
-生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.53`；安装其他版本时，请同时修改 `version`：
+生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.54`；安装其他版本时，请同时修改 `version`：
 
 ```bash
 set -euo pipefail
-version=0.39.53
+version=0.39.54
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -302,3 +302,7 @@ Shadowrocket 订阅使用专用 `STATUS=` 行显示中文剩余/总量、已用�
 格式 3 备份保留用户、订阅身份，以及面板本机节点的证书、私钥和连接参数，不携带远端节点配置或授权。保持原订阅地址和本机代理地址、UDP 端口，恢复后原本机节点配置可继续使用，无需刷新订阅。远端服务器重新对接后仍需刷新原订阅获取新节点。DNS 切换不保证已有连接零中断，项目不支持两套独立数据库同时处理认证统计。对接时可选择端口跳跃，端口由系统自动配置；开启后用户刷新原订阅即可获取跳跃范围。
 
 SSRVPN 默认接收 Clash 格式，跳跃开启时下发配置的主端口与 `ports: 2000-50000`；客户端的统计绑定需要包含相应节点主机和主端口。
+
+### 线路检测与实时网速
+
+节点卡片支持大陆三网 TCP 探测、从面板发起的 Hysteria2 出网实测与主路由网卡折线图。国内 UDP 未经真实客户端测试时明确标记未验证；不修改订阅或负载分配。[检测口径与限制](docs/LINE_DIAGNOSTICS.md)。

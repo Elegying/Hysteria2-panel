@@ -43,17 +43,17 @@ curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   -o "$join_tmp/cosign"
 printf '%s  %s\n' "$cosign_sha" "$join_tmp/cosign" | sha256sum --check --status
 chmod 0700 "$join_tmp/cosign"
-curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 'https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.53/install.sh' -o "$join_tmp/install.sh"
-curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 'https://github.com/Elegying/Hysteria2-panel/releases/download/v0.39.53/install.sh.sigstore.json' -o "$join_tmp/install.sh.sigstore.json"
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 'https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.54/install.sh' -o "$join_tmp/install.sh"
+curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 'https://github.com/Elegying/Hysteria2-panel/releases/download/v0.39.54/install.sh.sigstore.json' -o "$join_tmp/install.sh.sigstore.json"
 "$join_tmp/cosign" verify-blob "$join_tmp/install.sh" \
   --bundle "$join_tmp/install.sh.sigstore.json" \
-  --certificate-identity 'https://github.com/Elegying/Hysteria2-panel/.github/workflows/release-signature.yml@refs/tags/v0.39.53' \
+  --certificate-identity 'https://github.com/Elegying/Hysteria2-panel/.github/workflows/release-signature.yml@refs/tags/v0.39.54' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 bash -n "$join_tmp/install.sh"
 /bin/rm -f -- "$join_tmp/cosign" "$join_tmp/install.sh.sigstore.json"
 export HY2PANEL_PANEL_URL
 export HY2PANEL_ENROLLMENT_TOKEN
-export PANEL_REF='v0.39.53'
+export PANEL_REF='v0.39.54'
 /bin/bash "$join_tmp/install.sh" "${@}"
 unset HY2PANEL_ENROLLMENT_TOKEN
 )

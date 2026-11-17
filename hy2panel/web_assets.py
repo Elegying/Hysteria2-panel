@@ -133,6 +133,9 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 @media(max-width:760px){.node-management-dialog .node-enrollment-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.node-management-dialog .node-list-head{align-items:flex-start}.node-management-dialog .node-line-form{grid-template-columns:1fr 1fr}.node-line-form label:last-of-type{grid-column:1/-1}}
 @media(max-width:540px){.node-management-dialog{width:calc(100% - 16px);max-height:calc(100dvh - 16px)}.node-management-dialog .dialog-head{padding:16px 18px;margin-bottom:16px}.node-management-dialog .dialog-head h2{font-size:19px}.node-management-dialog .dialog-head p{font-size:12px}.node-management-dialog .node-enrollment-grid{grid-template-columns:1fr;gap:14px;padding:16px}.management-section-head{align-items:flex-start}.management-section-head>span{font-size:11px;text-align:right}.management-form-footer{flex-direction:column;align-items:stretch;gap:10px}.management-form-footer button{width:100%}.node-management-dialog .node-list-head{gap:5px}.node-management-dialog .node-row{padding:14px;gap:10px}.node-management-dialog .node-actions{justify-content:flex-start;flex-wrap:wrap}.node-management-dialog .node-actions form{flex:1 1 auto}.node-management-dialog .node-actions form button{width:100%}.node-line-settings{flex:1 1 auto}.node-line-settings summary{text-align:center}.node-management-dialog .node-line-form{grid-template-columns:1fr}.external-import{padding:16px}.external-import-toolbar{flex-direction:column;align-items:stretch;gap:12px}.external-import-toolbar label{width:100%}.external-node-card{padding:14px}.external-node-fields{grid-template-columns:1fr;gap:12px}.external-node-heading{gap:8px}.external-node-heading code{font-size:11px}.external-node-footer{flex-wrap:wrap;gap:10px}.external-node-actions{margin-left:auto}.external-publish-bar{bottom:0;margin:18px -18px -18px;padding:14px 18px;flex-direction:column;align-items:stretch;gap:10px}.external-publish-bar p br,.external-publish-bar p span{display:none}.external-publish-bar>div{display:grid;grid-template-columns:1fr 1.3fr}.external-publish-bar button{padding:9px 8px}.external-list-heading{margin-top:20px}}
 
+.machine-budget-head{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(145px,1fr) auto;gap:16px;align-items:center}.machine-budget-head>div:first-child{min-width:0}.machine-ip{overflow-wrap:anywhere}.machine-speed{min-width:0}.machine-speed-values{display:flex;justify-content:space-between;gap:8px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}.machine-speed-values [data-speed-rx]{color:#58d6bd}.machine-speed-values [data-speed-tx]{color:#a6bbff}.machine-speed svg{display:block;width:100%;height:42px;overflow:visible}.machine-speed svg path{fill:none;vector-effect:non-scaling-stroke}.speed-grid{stroke:#283c53;stroke-width:.7}.speed-rx-line{stroke:#58d6bd;stroke-width:1.6}.speed-tx-line{stroke:#a6bbff;stroke-width:1.6}.machine-speed small{font-size:10px!important;color:#8fa1b7;text-align:right;line-height:1.2}.machine-speed[data-stale="true"] svg{opacity:.35}.machine-reset-check{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.line-check-button{font-size:12px;min-height:30px;padding:4px 9px;background:#16283d;border:1px solid #304760;color:#b7c8df;border-radius:8px}.line-check-button.warning{color:#f1ce82}.line-check-button.bad{color:#ffacb5}.line-check-dialog{width:min(740px,calc(100% - 24px));max-height:calc(100dvh - 32px)}.line-check-dialog .dialog-shell{overflow:auto}.line-check-dialog h3{font-size:15px;margin:0 0 8px}.line-check-dialog p{font-size:13px;line-height:1.7}.line-check-sections{display:grid;grid-template-columns:1fr 1fr;gap:20px}.line-check-sections section{min-width:0}.line-check-evidence{font-size:12px;line-height:1.8;margin:7px 0;overflow-wrap:anywhere}.line-check-dialog form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.line-check-dialog [data-check-action]{font-size:12px}
+@media(max-width:1150px) and (min-width:961px){.machine-budget-head{grid-template-columns:minmax(0,1fr) auto}.machine-speed{grid-row:2;grid-column:1/-1}.machine-speed svg{height:36px}}
+@media(max-width:600px){.machine-budget-head{grid-template-columns:minmax(0,1fr) auto;gap:10px}.machine-speed{grid-row:2;grid-column:1/-1}.machine-speed svg{height:42px}.line-check-sections{grid-template-columns:1fr}.machine-reset-check{gap:4px}.line-check-button{font-size:11px}.line-check-dialog .dialog-shell{padding:18px}}
 """
 
 PAGE_SCRIPT = """
@@ -1324,4 +1327,120 @@ if (lineForm) {
   lineForm.elements.namedItem('region').addEventListener('change', fillRegionDefaults);
   lineForm.elements.namedItem('tier').addEventListener('change', fillRegionDefaults);
 }
+function lineVerdict(check) {
+  if (!check || !check.checkedAt) return {text:check && check.running ? '正在检测…' : '线路待检测', kind:'warning'};
+  if (check.stale) return {text:'结果已过期 · 请重测', kind:'warning'};
+  const rows = (check.domestic || []).flatMap(function(group) { return group.rows || []; });
+  const proxy = check.proxy || [];
+  if (proxy.some(function(row) { return row.state === 'fail'; })) return {text:'代理实测异常', kind:'bad'};
+  if (check.dns === 'fail') return {text:'域名未包含本节点', kind:'bad'};
+  if (rows.some(function(row) { return row.state === 'fail'; })) return {
+    text:check.failureRounds >= 2 && (check.tcpReference || []).length === (check.expectedPorts || 2) && check.tcpReference.every(function(row) { return row.state === 'pass'; }) && proxy.length && proxy.every(function(row) { return row.state === 'pass'; }) ? '疑似国内路径受阻' : '国内 TCP 异常 · 待复测', kind:'bad'};
+  if (rows.length === 3 * (check.expectedPorts || 2) && rows.every(function(row) { return row.state === 'pass'; }) && !check.domesticError) return {text:'TCP 可达 · 国内 UDP 未验证', kind:'warning'};
+  return {text:'检测不完整 · 无法判定', kind:'warning'};
+}
+function networkRate(value) {
+  if (!Number.isFinite(value) || value < 0) return '—';
+  const mbps = value * 8 / 1000000;
+  return mbps >= 1 ? mbps.toFixed(2) + ' Mbps' : (value * 8 / 1000).toFixed(1) + ' Kbps';
+}
+function applyLineMonitor(payload) {
+  if (!payload || typeof payload.network !== 'object' || typeof payload.checks !== 'object') return;
+  document.querySelectorAll('.machine-budget-row[data-origin-id]').forEach(function(card) {
+    const id = card.dataset.originId;
+    const network = payload.network[id] || {fresh:false,points:[]};
+    const fresh = network.fresh === true && Number.isFinite(network.observedAt);
+    const speed = card.querySelector('.machine-speed');
+    if (speed) {
+      speed.dataset.stale = String(!fresh);
+      speed.querySelector('[data-speed-rx]').textContent = '↓ 入站 ' + networkRate(fresh ? network.rx : null);
+      speed.querySelector('[data-speed-tx]').textContent = '↑ 出站 ' + networkRate(fresh ? network.tx : null);
+      speed.querySelector('[data-speed-time]').textContent = fresh ? '最近 5 分钟 · ' + liveTime(network.observedAt, false) : '网卡速度 · 数据缺失';
+      const now = Date.now() / 1000;
+      const points = (Array.isArray(network.points) ? network.points : []).filter(function(p) {
+        return p && Number.isFinite(p.at) && now - p.at >= -5 && now - p.at <= 300;
+      });
+      const valid = function(value) { return Number.isFinite(value) && value >= 0; };
+      const scale = Math.max(1, ...points.flatMap(function(p) { return [p.rx, p.tx].filter(valid); }));
+      ['rx','tx'].forEach(function(direction) {
+        let path = '', previous = null;
+        points.forEach(function(p) {
+          if (!valid(p[direction])) { previous = null; return; }
+          const x = Math.max(0, Math.min(240, 240 - (now - p.at) * .8));
+          const y = 40 - p[direction] / scale * 36;
+          path += (previous !== null && p.at - previous <= 20 ? 'L' : 'M') + x.toFixed(2) + ' ' + y.toFixed(2) + ' ';
+          previous = p.at;
+        });
+        speed.querySelector('[data-speed-' + direction + '-line]').setAttribute('d', path);
+      });
+      speed.querySelector('svg').setAttribute('aria-label', '最近 5 分钟网卡速度，入站 ' + networkRate(fresh ? network.rx : null) + '，出站 ' + networkRate(fresh ? network.tx : null));
+    }
+    const check = payload.checks[id];
+    const verdict = lineVerdict(check);
+    const status = card.querySelector('[data-line-status]');
+    if (status) { status.textContent = check && check.running ? '正在检测…' : verdict.text; status.parentElement.className = 'line-check-button ' + verdict.kind; }
+    const dialog = Array.from(document.querySelectorAll('[data-line-dialog]')).find(function(d) { return d.dataset.lineDialog === id; });
+    if (!dialog || !check || !check.checkedAt) return;
+    dialog.querySelector('[data-check-time]').textContent = '检测时间：' + liveTime(check.checkedAt, true) + (check.stale ? ' · 已过期' : '');
+    dialog.querySelector('[data-check-verdict]').textContent = verdict.text + '。国内 Hysteria2 实际连接仍未验证，不能据此承诺所有用户可用。';
+    const domestic = dialog.querySelector('[data-check-domestic]');
+    domestic.replaceChildren();
+    (check.domestic || []).forEach(function(group) {
+      (group.rows || []).forEach(function(row) {
+        const line = document.createElement('p');
+        line.className = 'line-check-evidence ' + ({pass:'ok',fail:'bad',unknown:'muted'}[row.state] || 'muted');
+        line.textContent = row.operator + (row.city ? ' · ' + row.city : '') + ' · TCP ' + row.port + '：' + ({pass:'可达',fail:'无响应',unknown:'未取得有效结果'}[row.state] || '未验证') +
+          (Number.isFinite(row.latencyMs) ? ' · ' + row.latencyMs.toFixed(1) + ' ms' : '') + (Number.isFinite(row.loss) ? ' · 丢包 ' + row.loss + '%' : '');
+        domestic.appendChild(line);
+      });
+      if (typeof group.measurementId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(group.measurementId)) {
+        const link = document.createElement('a');
+        link.href = 'https://api.globalping.io/v1/measurements/' + group.measurementId;
+        link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '查看原始探测证据'; link.className = 'line-check-evidence'; domestic.appendChild(link);
+      }
+    });
+    if (check.domesticError) { const line = document.createElement('p'); line.className = 'line-check-evidence warning'; line.textContent = check.domesticError; domestic.appendChild(line); }
+    const proxy = dialog.querySelector('[data-check-proxy]');
+    proxy.replaceChildren();
+    const source = document.createElement('p'); source.className = 'line-check-evidence muted'; source.textContent = '探测来源：' + check.source; proxy.appendChild(source);
+    (check.tcpReference || []).forEach(function(row) {
+      const line = document.createElement('p'); line.className = 'line-check-evidence muted';
+      line.textContent = '面板侧 TCP ' + row.port + ' 基准：' + (row.state === 'pass' ? '可达' : '失败，不能据此推断国内封锁'); proxy.appendChild(line);
+    });
+    (check.proxy || []).forEach(function(row) {
+      const line = document.createElement('p'); line.className = 'line-check-evidence ' + (row.state === 'pass' ? 'ok' : 'bad');
+      line.textContent = 'UDP ' + row.port + '：' + (row.state === 'pass' ? '代理认证与 HTTPS 出网成功' : (row.reason || '连接或出网失败')); proxy.appendChild(line);
+    });
+    dialog.querySelector('[data-check-dns]').textContent = '面板侧域名解析：' + ({pass:'包含当前节点 IP',fail:'未包含当前节点 IP',unknown:'未取得结果'}[check.dns] || '未验证');
+  });
+}
+let lineMonitorBusy = false;
+async function refreshLineMonitor() {
+  if (lineMonitorBusy || document.hidden || !document.querySelector('[data-speed-chart]')) return;
+  lineMonitorBusy = true;
+  const controller = new AbortController(); const timer = setTimeout(function() { controller.abort(); }, 3000);
+  try {
+    const response = await fetch('/api/v1/line-monitor', {credentials:'same-origin',cache:'no-store',signal:controller.signal});
+    if (!response.ok) throw new Error('unavailable');
+    applyLineMonitor(await response.json());
+  } catch (error) {
+    document.querySelectorAll('.machine-speed').forEach(function(speed) {
+      speed.dataset.stale = 'true'; speed.querySelector('[data-speed-rx]').textContent = '↓ 入站 —'; speed.querySelector('[data-speed-tx]').textContent = '↑ 出站 —'; speed.querySelector('[data-speed-time]').textContent = '实时数据暂不可用';
+    });
+    document.querySelectorAll('[data-line-status]').forEach(function(status) { status.textContent = '检测状态暂不可用'; });
+  } finally { clearTimeout(timer); lineMonitorBusy = false; }
+}
+document.addEventListener('submit', async function(event) {
+  const form = event.target.closest('[data-line-check-form]'); if (!form) return;
+  event.preventDefault(); const button = form.querySelector('button[type="submit"]'); const feedback = form.querySelector('[data-check-action]');
+  if (button.disabled) return; button.disabled = true;
+  const controller = new AbortController(); const timer = setTimeout(function() { controller.abort(); }, 10000);
+  try {
+    const response = await fetch(form.action, {method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(new FormData(form)),signal:controller.signal});
+    const result = await response.json(); feedback.textContent = result.message || '检测请求未完成'; await refreshLineMonitor();
+  } catch (error) { feedback.textContent = '请求未完成，请稍后查看检测结果'; }
+  finally { clearTimeout(timer); button.disabled = false; }
+});
+if (document.querySelector('[data-speed-chart]')) { refreshLineMonitor(); setInterval(refreshLineMonitor, 5000); document.addEventListener('visibilitychange', refreshLineMonitor); }
+
 """

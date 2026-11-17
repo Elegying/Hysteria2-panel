@@ -479,6 +479,24 @@ try:
     assert reset_text.startswith('剩余 ') and reset_text.endswith(' 天重置'), reset_text
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' progress') + ').value') == 0.1
     assert browser.evaluate('document.querySelector(' + json.dumps(local_card + ' [data-machine-forecast]') + ').textContent') == '预计重置前够用'
+    check_now = int(time.time())
+    chart_payload = {'network': {local_origin: {'fresh':True,'observedAt':check_now,'rx':1250000,'tx':2500000,
+        'points':[{'at':check_now-15,'rx':100000,'tx':2000000},{'at':check_now-10,'rx':1000000,'tx':300000},
+                  {'at':check_now-5,'rx':800000,'tx':1200000},{'at':check_now,'rx':1250000,'tx':2500000}]}},
+        'checks': {local_origin: {'checkedAt':check_now,'dns':'pass','source':'面板本机自检（不经过国内网络）',
+        'proxy':[{'port':443,'state':'pass'}],'domestic':[{'measurementId':'example','rows':[
+        {'operator':operator,'city':'测试城市','port':port,'state':'pass','latencyMs':180,'loss':0}
+        for port in (443,19999) for operator in ('电信','联通','移动')]}]}}}
+    browser.evaluate('applyLineMonitor(' + json.dumps(chart_payload) + ')')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-speed-rx]') + ').textContent.includes("10.00 Mbps")')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-speed-rx-line]') + ').getAttribute("d").includes("L")')
+    assert browser.evaluate('document.querySelector(' + json.dumps(local_card+' [data-line-status]') + ').textContent.includes("UDP 未验证")')
+    browser.evaluate('document.querySelector(' + json.dumps(local_card+' .line-check-button') + ').click()')
+    browser.wait('Boolean(document.querySelector(".line-check-dialog[open]"))')
+    assert browser.evaluate('document.querySelector(".line-check-dialog[open]").textContent.includes("不能据此承诺所有用户可用")')
+    browser.screenshot('line-diagnostics-desktop.png')
+    browser.evaluate('document.querySelector(".line-check-dialog[open] [data-dialog-close]").click()')
+    passed('网卡实时折线图与检测证据边界')
     browser.call('Emulation.setDeviceMetricsOverride', {'width':390,'height':844,'deviceScaleFactor':1,'mobile':True})
     browser.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
     browser.evaluate('document.querySelector(' + json.dumps(local_card) + ').scrollIntoView({behavior:"instant",block:"center"})')

@@ -6468,6 +6468,25 @@ class PanelHttpTests(unittest.TestCase):
             payload,
         )
 
+    def test_line_monitor_auth_csrf_and_registered_target_boundary(self):
+        headers, csrf = self.authenticated_headers()
+        with self.request("/api/v1/line-monitor", headers=headers) as response:
+            data = json.load(response)
+            self.assertEqual({"network", "checks"}, set(data))
+            self.assertEqual("no-store", response.headers["Cache-Control"])
+        with self.request("/api/v1/line-monitor") as response:
+            self.assertEqual("/login", urllib.parse.urlsplit(response.url).path)
+        route = "/usage-origins/node:" + "a" * 32 + "/diagnostics"
+        with mock.patch.object(self.application.line_monitor, "request", return_value=(False, "只检测当前启用的对接节点")) as request:
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(route, {"csrf": "wrong"}, headers)
+            self.assertEqual(403, error.exception.code)
+            request.assert_not_called()
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.request(route, {"csrf": csrf, "target": "127.0.0.1"}, headers)
+            self.assertEqual(409, error.exception.code)
+            request.assert_called_once_with("node:" + "a" * 32)
+
     def test_dashboard_online_total_is_global_while_rows_remain_filtered_and_sorted(self):
         headers, _csrf = self.authenticated_headers()
         self.db.create_proxy_user("alice", allow_udp_443=True)

@@ -513,9 +513,15 @@ def render_dashboard(
             budget_action = """<form class="legacy-cleanup-form" method="post" action="/usage-origins/legacy-unattributed/delete" data-confirm="只会删除这条未归属历史，不会删除用户流量或已归属节点统计。确定继续吗？"><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="confirm" value="DELETE_UNATTRIBUTED"><button class="compact-button danger" type="submit">删除历史</button></form>""".format(
                 csrf=csrf
             )
+        monitorable = origin["origin_id"] == local_origin_id or (
+            origin.get("kind") == "remote" and node_by_origin.get(origin["origin_id"], {}).get("policy_state") == "protocol_ready")
+        origin_key = html.escape(origin["origin_id"].replace(":", "-"), quote=True)
+        speed_widget = '<div class="machine-speed" title="主路由网卡速度，包含代理与系统流量；与月度计费流量口径不同。每 5 秒刷新，保留最近 5 分钟。"><div class="machine-speed-values"><span data-speed-rx>↓ 入站 —</span><span data-speed-tx>↑ 出站 —</span></div><svg data-speed-chart viewBox="0 0 240 42" role="img" aria-label="最近 5 分钟网卡入站与出站速度"><path class="speed-grid" d="M0 12H240M0 32H240"/><path data-speed-rx-line class="speed-rx-line"/><path data-speed-tx-line class="speed-tx-line"/></svg><small data-speed-time>网卡速度 · 等待采样</small></div>' if monitorable else ""
+        diagnostic_action = ('<button type="button" class="line-check-button" data-dialog-open="line-check-{origin_key}"><span data-line-status>线路待检测</span><span aria-hidden="true"> ›</span></button>'.format(origin_key=origin_key) if monitorable else "")
         machine_rows.append(
-            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong>{server_ip}<small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail}</small>{budget_action}</div></article>""".format(
+            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong>{server_ip}<small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div>{speed_widget}<span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><div class="machine-reset-check"><small class="muted">{budget_detail}</small>{diagnostic_action}</div>{budget_action}</div></article>""".format(
                 origin_id=html.escape(origin["origin_id"], quote=True),
+                speed_widget=speed_widget, diagnostic_action=diagnostic_action,
                 name=html.escape(str(origin.get("display_name") or "未命名节点")),
                 server_ip=('<span class="muted machine-ip"> · {}</span>'.format(html.escape(server_ip)) if server_ip else ""),
                 kind=kind_label,
@@ -531,6 +537,19 @@ def render_dashboard(
                 budget_action=budget_action,
             )
         )
+        if monitorable:
+            machine_budget_dialogs.append(
+                '<dialog id="line-check-{key}" class="migration-dialog line-check-dialog" data-line-dialog="{origin}" aria-labelledby="line-check-title-{key}">'
+                '<div class="dialog-shell"><div class="dialog-head"><div><h2 id="line-check-title-{key}">{name} · 线路检测</h2>'
+                '<p class="muted" data-check-time>尚未检测</p></div><button class="dialog-close" type="button" data-dialog-close>关闭</button></div>'
+                '<p class="notice" data-check-verdict>国内 UDP / Hysteria2 实际使用尚未验证。</p>'
+                '<div class="line-check-sections"><section><h3>国内能否到达节点</h3><p class="muted">Globalping 大陆运营商探针 · TCP 检测</p><div data-check-domestic>等待检测</div></section>'
+                '<section><h3>代理能否连接并出网</h3><p class="muted">面板服务器发起真实 Hysteria2 连接、校验证书指纹，并通过代理访问 HTTPS。</p><div data-check-proxy>等待检测</div><p data-check-dns></p></section></div>'
+                '<p class="muted">TCP 成功不等于 UDP 可用；境外或本机出网成功不证明国内用户可用。免费源不能运行 Hysteria2 客户端，国内 UDP 状态保留“未验证”。账号到期、配额和设备上限还会影响个别用户。端口跳跃为随机端口抽测，未覆盖整个范围。</p>'
+                '<form method="post" action="/usage-origins/{origin}/diagnostics" data-line-check-form><input type="hidden" name="csrf" value="{csrf}"><button type="submit">立即检测</button><span class="muted" data-check-action aria-live="polite">自动每 15 分钟检测；可手动重测。</span></form></div></dialog>'.format(
+                    key=html.escape(origin["origin_id"].replace(":", "-"), quote=True),
+                    origin=html.escape(origin["origin_id"], quote=True), csrf=csrf,
+                    name=html.escape(str(origin.get("display_name") or "未命名节点"))))
     machine_warning = (
         '<p class="notice machine-warning"><strong>设备统计暂不完整：</strong>过期节点的上次设备数仅供参考，不计入当前总数；流量仍按幂等批次继续结算。</p>'
         if machine_stats.get("has_stale_online")

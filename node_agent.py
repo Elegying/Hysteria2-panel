@@ -9,6 +9,7 @@ import ipaddress
 import json
 import os
 import pathlib
+from pathlib import Path
 import platform
 import re
 import secrets
@@ -29,7 +30,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.53"
+AGENT_VERSION = "0.39.54"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -92,6 +93,34 @@ HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
 )
+
+
+def read_network_sample(root=Path('/')):
+    """Read default-route NIC counters; no quota counters or clear-on-read stats."""
+    try:
+        interfaces = set()
+        for line in (root / 'proc/net/route').read_text().splitlines()[1:]:
+            fields = line.split()
+            if len(fields) >= 4 and fields[1] == '00000000' and int(fields[3], 16) & 1:
+                interfaces.add(fields[0])
+        ipv6 = root / 'proc/net/ipv6_route'
+        if ipv6.exists():
+            for line in ipv6.read_text().splitlines():
+                fields = line.split()
+                if len(fields) >= 10 and fields[0] == '0' * 32 and fields[1] == '00' and int(fields[8], 16) & 1:
+                    interfaces.add(fields[-1])
+        interfaces.discard('lo')
+        if not interfaces or any(not re.fullmatch(r'[A-Za-z0-9_.:-]{1,32}', name) for name in interfaces):
+            return None
+        counters = {'rxBytes': 0, 'txBytes': 0}
+        for name in interfaces:
+            for key, filename in (('rxBytes', 'rx_bytes'), ('txBytes', 'tx_bytes')):
+                counters[key] += int((root / 'sys/class/net' / name / 'statistics' / filename).read_text())
+        epoch = (root / 'proc/sys/kernel/random/boot_id').read_text().strip()
+        return dict(counters, epoch=epoch + ':' + ','.join(sorted(interfaces)),
+                    elapsedMs=int(float((root / 'proc/uptime').read_text().split()[0]) * 1000))
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 class RegistrationError(RuntimeError):
@@ -2196,6 +2225,7 @@ class NodeControlTransport:
         self._origin = None
         self._session = None
         self._expires_at = 0
+        self.network_sample_supported = False
         # CPython gh-116810 leaks native memory merely reading SSLSocket.session.
         # Conservatively skip it on older runtimes, including vendor backports.
         self._resume_tls = (
@@ -2233,6 +2263,7 @@ class NodeControlTransport:
                 connection.request("POST", url.path or "/", request.data, headers)
                 with connection.getresponse() as response:
                     status = response.status
+                    self.network_sample_supported = (getattr(response, "getheader", lambda _name: None)("X-Hy2-Network-Telemetry") == "1")
                     body = response.read(maximum + 1)
                 if len(body) > maximum:
                     raise ProtocolError("the panel returned an invalid node response")
@@ -2278,6 +2309,10 @@ class NodeProtocolClient:
         self.signer = signer
         self.clock = clock
         self.nonce_factory = nonce_factory or secrets.token_urlsafe
+
+    @property
+    def supports_network_sample(self):
+        return bool(self._control_transport and self._control_transport.network_sample_supported)
 
     def _post(self, purpose, fields):
         started = time.monotonic()
@@ -2415,7 +2450,7 @@ class NodeProtocolClient:
                 online_snapshot is not None
                 and (
                     not isinstance(online_snapshot, dict)
-                    or set(online_snapshot)
+                    or set(online_snapshot) - {"networkSample"}
                     != {
                         "snapshotId",
                         "sequence",
@@ -3461,6 +3496,9 @@ class NodeControlCycle:
                     "trafficAckedAt": self.state.traffic_acked_at(),
                     "online": self.stats_client.online(),
                 }
+                network_sample = (read_network_sample() if getattr(self.protocol_client, "supports_network_sample", False) else None)
+                if network_sample is not None:
+                    snapshot["networkSample"] = network_sample
                 encoded_size = len(
                     json.dumps(
                         {

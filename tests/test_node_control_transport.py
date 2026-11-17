@@ -48,6 +48,8 @@ class ControlTransportCase(unittest.TestCase):
                 self.send_response(status)
                 self.send_header("Content-Length", str(len(payload)))
                 self.send_header("Location", "/ok")
+                if self.path == "/telemetry":
+                    self.send_header("X-Hy2-Network-Telemetry", "1")
                 self.end_headers()
                 self.wfile.write(payload)
 
@@ -83,6 +85,13 @@ class ControlTransportCase(unittest.TestCase):
             data=b'{"signed":"example"}',
             headers={"Content-Type": "application/json"}, method="POST",
         )
+
+    def test_telemetry_capability_is_negotiated_and_cleared_on_older_panel(self):
+        self.assertFalse(self.transport.network_sample_supported)
+        self.transport.post(self.request("/telemetry"), 64, 2)
+        self.assertTrue(self.transport.network_sample_supported)
+        self.transport.post(self.request("/ok"), 64, 2)
+        self.assertFalse(self.transport.network_sample_supported)
 
     def test_resumes_verified_tls_over_closing_http_and_periodically_revalidates(self):
         self.transport._resume_tls = True
