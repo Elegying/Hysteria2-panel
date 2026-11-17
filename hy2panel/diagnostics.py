@@ -411,7 +411,13 @@ class LineMonitor:
             ip = node.get("observed_ip") or node.get("expected_ip")
             if not self._public(ip):
                 continue
-            identity = json.loads(node.get("identity_json") or "{}")
+            identity = (
+                self.app.database.node_diagnostic_identity(node["node_id"])
+                if node.get("tier") == "premium"
+                else {"pin": self.app.pin_sha256, "sni": self.app.public_host}
+            )
+            if not identity:
+                continue
             version = str(node.get("agent_version") or "").split(".")
             modern_hopping = (
                 len(version) == 3
@@ -422,7 +428,8 @@ class LineMonitor:
                 "ip": ip,
                 "scope": node["node_id"],
                 "host": node.get("subscription_host") or self.app.public_host,
-                "pin": identity.get("certificateDerSha256") or self.app.pin_sha256,
+                "pin": identity["pin"],
+                "sni": identity["sni"],
                 "port": int(node.get("listen_port") or 19999),
                 "hopping": bool(node.get("port_hopping")),
                 "hopStart": 2000 if modern_hopping else 20000,
@@ -499,7 +506,7 @@ class LineMonitor:
             # stays on this panel; public probe API receives only IP and TCP port.
             from .nodes import HysteriaCanaryRunner
 
-            runner = HysteriaCanaryRunner(target["host"])
+            runner = HysteriaCanaryRunner(target.get("sni") or target["host"])
             ports = list(
                 dict.fromkeys(
                     [443, target["port"]]

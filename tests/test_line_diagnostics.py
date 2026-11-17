@@ -209,6 +209,53 @@ class ProbeTests(unittest.TestCase):
 
 
 class SignedDiagnosticTests(DistributedControlCase):
+    def test_dedicated_identity_is_read_from_profile_without_mutation(self):
+        from hysteria2_panel import sqlite_connection
+
+        node_id = self.nodes[0]
+        with sqlite_connection(str(self.db_path)) as connection:
+            connection.execute(
+                "UPDATE nodes SET tier='premium', identity_json=NULL WHERE node_id=?",
+                (node_id,),
+            )
+            connection.execute(
+                "INSERT INTO premium_node_profiles(node_id,region,label,host,port,identity_json) VALUES (?,?,?,?,?,?)",
+                (
+                    node_id,
+                    "us",
+                    "dedicated",
+                    "dedicated.example.com",
+                    443,
+                    json.dumps(
+                        {
+                            "certificateDerSha256": "b" * 64,
+                            "certificatePem": "certificate",
+                            "privateKeyPem": "never-return-this",
+                        }
+                    ),
+                ),
+            )
+        with mock.patch.object(
+            self.db, "_certificate_server_name", return_value="cert.example.com"
+        ):
+            identity = self.db.node_diagnostic_identity(node_id)
+            self.assertEqual({"pin": "b" * 64, "sni": "cert.example.com"}, identity)
+            app = SimpleNamespace(
+                database=self.db,
+                usage_manager=SimpleNamespace(local_origin_id="local:test"),
+                system_metrics=SimpleNamespace(server_ips=lambda: ()),
+                pin_sha256="a" * 64,
+                public_host="normal.example.com",
+            )
+            monitor = LineMonitor(app)
+            with mock.patch.object(monitor, "_public", return_value=True):
+                targets = monitor.targets()
+            self.assertEqual("b" * 64, targets["node:" + node_id]["pin"])
+            self.assertEqual("cert.example.com", targets["node:" + node_id]["sni"])
+            self.assertEqual("a" * 64, targets["node:" + self.nodes[1]]["pin"])
+            self.assertEqual(20000, targets["node:" + self.nodes[1]]["hopStart"])
+        self.assertNotIn("privateKey", json.dumps(identity))
+
     def test_internal_auth_is_target_scoped_and_does_not_create_users(self):
         self.accept_empty_snapshots()
         token = self.db.diagnostic_grants.issue(self.nodes[0])

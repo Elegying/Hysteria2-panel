@@ -3835,6 +3835,18 @@ class Database:
             raise ValueError("节点证书缺少 DNS 名称")
         return names[0].lower()
 
+    def node_diagnostic_identity(self, node_id):
+        """Read the dedicated certificate without creating/rotating an identity."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT identity_json FROM premium_node_profiles WHERE node_id = ?", (node_id,)
+            ).fetchone()
+        if row is None or not row["identity_json"]:
+            return None
+        identity = json.loads(row["identity_json"])
+        return {"pin": identity["certificateDerSha256"],
+                "sni": self._certificate_server_name(identity["certificatePem"])}
+
     def premium_subscription_nodes(self):
         with self._connect() as connection:
             rows = connection.execute("""SELECT n.*, p.label AS line_label, p.host AS line_host,
