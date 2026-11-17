@@ -1322,6 +1322,7 @@ command() {{
 }}
 select_python() {{ [[ "$missing" != python || "$installed" == 1 ]]; }}
 install_system_dependencies() {{ installed=1; printf 'dependencies-installed\\n'; }}
+create_panel_workspace() {{ mktemp -d; }}
 mktemp() {{ printf '%s\\n' {shlex.quote(root)}; }}
 download_file() {{
   [[ "$installed" == 1 ]] || fail 'dependencies were not installed'

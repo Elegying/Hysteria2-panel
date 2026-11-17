@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.58"
+PANEL_VERSION="0.39.59"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -37,7 +37,7 @@ OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="63ff36fcbf3e3e9262657848c2295ebfd980a2b04d6243eabcd5e3d06e721762"
+HY2PANEL_VERSION_SHA256="ef452af8b61aada4bf314c6327bb1f0fe08f2c13558556379a81922ffd2eb807"
 HY2PANEL_BUDGETS_SHA256="b449af46564537e59185940739ff433ac154936b15aa99bb92d738af4886f459"
 HY2PANEL_WEB_ASSETS_SHA256="87df4f3f3ae093278baf0d411ff6cabf11fa3b90432a8f4827bda8321b85d540"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
@@ -46,14 +46,14 @@ HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
-HY2PANEL_NODES_SHA256="3bffd1d7885df115aefb2b7a6e8d152b195ed4a373fb5dd35d2bddc4f43585e4"
+HY2PANEL_NODES_SHA256="14ad65bdc815a7e09a07ecc8e4ccc2d9fae20d65e34b710c494bb4e279eb75da"
 HY2PANEL_DISTRIBUTED_SHA256="e3e556fdf8e64dafb585dc5510a63cd00540e65f969b755980a611197cb282c7"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
 HY2PANEL_DASHBOARD_SHA256="4b6354ff973fef47378935702492bfd75260031d9620fc66a46f7c1da26bed8c"
 HY2PANEL_DIAGNOSTICS_SHA256="c431e8d916833b93b54cfc30f80b94c64e9609acb6a1fce34de9a6968d8bd010"
 HY2PANEL_ADMIN_API_SHA256="e590d6714cd76ad511040d2008f48277812406a6151c8610782587e631de3dc4"
 HY2PANEL_MOBILE_API_SHA256="1e0a1f68c23324105e4f084b52ded3e3fb2fe9e6e7f172970b7a230563acb712"
-NODE_AGENT_SHA256="66a131518c5d4940d236570b15c41cc20c65a9c3c0e379f5e6a8056e25148886"
+NODE_AGENT_SHA256="3bfc829103a5f5e7a87ab0c32226ca7e5b52ed6ff0ed1f716ac988c2e623200c"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v2/hysteria-linux"
 HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"
@@ -1477,7 +1477,7 @@ rebind_node() {
   systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
     || fail "节点签名心跳 timer 未运行；未修改系统"
 
-  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  TMP_DIR="$(create_panel_workspace)"
   download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
   printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
     | sha256sum --check --status \
@@ -1555,7 +1555,7 @@ install_join_node() {
   fi
   ensure_node_dependencies
 
-  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  TMP_DIR="$(create_panel_workspace)"
   download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
   printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
     | sha256sum --check --status \
@@ -1749,7 +1749,7 @@ complete_node_onboarding() {
 }
 
 prepare_node_maintenance_agent() {
-  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  TMP_DIR="$(create_panel_workspace)"
   if ! stage_verified_installed_binary \
     "${NODE_AGENT_OPT_DIR}/node_agent.py" "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py"; then
     download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py" \
@@ -1980,7 +1980,7 @@ activate_node_agent() {
     || fail "节点心跳 timer 已存在；为避免覆盖未知配置，启用已停止"
   ensure_node_dependencies
 
-  TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
+  TMP_DIR="$(create_panel_workspace)"
   download_file "${NODE_AGENT_SOURCE_URL}" "${TMP_DIR}/node_agent.py"
   printf '%s  %s\n' "${NODE_AGENT_SHA256}" "${TMP_DIR}/node_agent.py" \
     | sha256sum --check --status \

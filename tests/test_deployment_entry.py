@@ -1,9 +1,11 @@
 import re
+import os
+import tempfile
 import subprocess
 import unittest
 from pathlib import Path
 
-from hy2panel.nodes import NodeEnrollmentService
+from hy2panel.nodes import NodeEnrollmentService, DataPlaneBootstrapService
 from hy2panel.version import PANEL_VERSION
 
 
@@ -58,3 +60,74 @@ class CompactEntryTests(unittest.TestCase):
         for version in (None, "invalid", "0.39.52"):
             self.assertEqual("20000-50000", node_hopping_ports(version))
         self.assertEqual("2000-50000", node_hopping_ports("0.39.53"))
+
+    def test_bootstrap_workspace_rejects_memory_only_and_symlink_staging(self):
+        script = (ROOT / 'bootstrap.sh').read_text()
+        function = script.split('bootstrap_workspace_directory() {', 1)[1].split('\n}\n', 1)[0]
+        for first, second, symlink, expected in (
+            ('ext2/ext3', 'tmpfs', False, 'first'),
+            ('tmpfs', 'ext2/ext3', False, 'second'),
+            ('ramfs', 'overlayfs', False, 'second'),
+            ('tmpfs', 'tmpfs', False, None),
+            ('tmpfs', 'ramfs', False, None),
+            ('tmpfs', 'ext2/ext3', True, None),
+        ):
+            with self.subTest(first=first, second=second, symlink=symlink):
+                with tempfile.TemporaryDirectory() as root:
+                    first_path, second_path = Path(root) / 'memory', Path(root) / 'disk'
+                    first_path.mkdir()
+                    if symlink:
+                        second_path.symlink_to(first_path, target_is_directory=True)
+                    else:
+                        second_path.mkdir()
+                    body = function.replace('/var/tmp', '@SECOND@').replace('/tmp', '@FIRST@').replace('@SECOND@', str(second_path)).replace('@FIRST@', str(first_path))
+                    code = 'bootstrap_workspace_directory() {' + body + '\n}\n' + """
+stat() { if [[ "$4" == "$FIRST_PATH" ]]; then printf '%s' "$FIRST"; else printf '%s' "$SECOND"; fi; }
+bootstrap_workspace_directory
+"""
+                    result = subprocess.run(['bash', '-c', code], capture_output=True, text=True,
+                        env=dict(os.environ, FIRST=first, SECOND=second, FIRST_PATH=str(first_path)))
+                    if expected is None:
+                        self.assertNotEqual(0, result.returncode)
+                        self.assertEqual('', result.stdout)
+                    else:
+                        self.assertEqual(0, result.returncode, result.stderr)
+                        self.assertEqual(str(first_path if expected == 'first' else second_path), result.stdout.strip())
+
+    def test_all_node_payload_staging_uses_checked_workspace(self):
+        source = (ROOT / 'install.sh').read_text()
+        for name in ('rebind_node', 'install_join_node', 'prepare_node_maintenance_agent', 'activate_node_agent'):
+            body = source.split(name + '() {', 1)[1].split('\n}\n', 1)[0]
+            self.assertIn('TMP_DIR="$(create_panel_workspace)"', body)
+        bootstrap = (ROOT / 'bootstrap.sh').read_text()
+        self.assertLess(bootstrap.index('command -v stat >/dev/null 2>&1\nbootstrap_workspace_directory'),
+                        bootstrap.index('join_parent="$(bootstrap_workspace_directory)"'))
+        self.assertLess(bootstrap.index('join_tmp='), bootstrap.index('curl -q'))
+
+    def test_generated_maintenance_commands_share_disk_staging_policy(self):
+        expected = (ROOT / 'bootstrap.sh').read_text().split('bootstrap_workspace_directory() {', 1)[1].split('\n}\n', 1)[0]
+        for cls, method in ((NodeEnrollmentService, '_verified_deployment_command'),
+                            (DataPlaneBootstrapService, '_deployment_command')):
+            service = cls.__new__(cls)
+            service.panel_url = 'https://panel.example.com'
+            service.panel_version = PANEL_VERSION
+            command = getattr(service, method)('x' * 40)
+            actual = command.split('bootstrap_workspace_directory() {', 1)[1].split('\n}\n', 1)[0]
+            self.assertEqual(expected, actual)
+            self.assertLess(command.index('workspace_parent='), command.index('curl -q'))
+            subprocess.run(['bash', '-n'], input=command, text=True, check=True)
+
+    def test_signature_retries_are_bounded_and_never_accept_failure(self):
+        source = (ROOT / 'bootstrap.sh').read_text()
+        verification = source[source.index('signature_verified=0'):source.index('\nbash -n ')]
+        for failures, expected_status, expected_calls in ((1, 0, 2), (9, 1, 3)):
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as root:
+                verifier = Path(root) / 'cosign'
+                verifier.write_text('#!/bin/bash\nn=$(cat "$COUNT" 2>/dev/null || echo 0)\nn=$((n+1))\necho "$n" > "$COUNT"\n[[ "$n" -gt "$FAILURES" ]]\n')
+                verifier.chmod(0o700)
+                result = subprocess.run(['bash', '-c', 'sleep() { :; }\n'+verification+'\necho accepted'],
+                    env=dict(os.environ, join_tmp=root, COUNT=root+'/count', FAILURES=str(failures)),
+                    capture_output=True, text=True)
+                self.assertEqual(expected_status, result.returncode)
+                self.assertEqual(expected_calls, int((Path(root)/'count').read_text()))
+                self.assertEqual(expected_status == 0, 'accepted' in result.stdout)

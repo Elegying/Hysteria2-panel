@@ -262,10 +262,12 @@ class HysteriaCanaryRunner:
             raise ValueError("canary server name is invalid")
         ports = [main_port, 443]
         if port_hopping:
-            ports.extend((20000, 20001 + secrets.randbelow(29999), 50000))
+            ports.extend((2000, 2001 + secrets.randbelow(47999), 50000))
         for port in ports:
             self._check_entrypoint(node_ip, port, token, pin_sha256, trace_url, server_name)
-            if port_hopping and port >= 20000:
+        if port_hopping:
+            # TCP diagnostics retain their separate 20000-50000 range.
+            for port in (20000, 20001 + secrets.randbelow(29999), 50000):
                 with socket.create_connection((node_ip, port), timeout=3):
                     pass
 
@@ -768,8 +770,6 @@ fi
 if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
   echo '完整面板服务器不能作为对接节点' >&2; exit 1
 fi
-join_tmp="$(mktemp -d -t hy2panel-node-join.XXXXXXXX)"
-trap 'rm -rf -- "$join_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in
   x86_64|amd64) cosign_asset=cosign-linux-amd64; cosign_sha={cosign_sha_amd64} ;;
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
@@ -778,6 +778,7 @@ esac
 bootstrap_dependencies=0
 command -v curl >/dev/null 2>&1 || bootstrap_dependencies=1
 command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
+command -v stat >/dev/null 2>&1 || bootstrap_dependencies=1
 if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
 if [ "$bootstrap_dependencies" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
@@ -786,17 +787,34 @@ if [ "$bootstrap_dependencies" -eq 1 ]; then
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y ca-certificates
     command -v curl >/dev/null 2>&1 || dnf install -y curl
-    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then dnf install -y coreutils; fi
   elif command -v yum >/dev/null 2>&1; then
     yum install -y ca-certificates
     command -v curl >/dev/null 2>&1 || yum install -y curl
-    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then yum install -y coreutils; fi
   else
     echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
   fi
 fi
 command -v curl >/dev/null 2>&1
 command -v sha256sum >/dev/null 2>&1
+command -v stat >/dev/null 2>&1
+bootstrap_workspace_directory() {{
+  local directory=/tmp filesystem
+  [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '安装暂存目录无效' >&2; return 1; }}
+  filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+  if [[ "${{filesystem}}" == tmpfs || "${{filesystem}}" == ramfs ]]; then
+    directory=/var/tmp
+    [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '需要真实的 /var/tmp 磁盘目录用于验签暂存' >&2; return 1; }}
+    filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+    [[ "${{filesystem}}" != tmpfs && "${{filesystem}}" != ramfs ]] || {{ echo '/tmp 和 /var/tmp 均为内存盘，请为 /var/tmp 提供磁盘空间' >&2; return 1; }}
+    echo '验签暂存：/tmp 是内存盘，改用 /var/tmp。' >&2
+  fi
+  printf '%s\\n' "${{directory}}"
+}}
+workspace_parent="$(bootstrap_workspace_directory)"
+join_tmp="$(TMPDIR="$workspace_parent" mktemp -d -t hy2panel-node-join.XXXXXXXX)"
+trap 'rm -rf -- "$join_tmp"' EXIT HUP INT TERM
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$join_tmp/cosign"
@@ -804,10 +822,16 @@ printf '%s  %s\\n' "$cosign_sha" "$join_tmp/cosign" | sha256sum --check --status
 chmod 0700 "$join_tmp/cosign"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {installer} -o "$join_tmp/install.sh"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {bundle} -o "$join_tmp/install.sh.sigstore.json"
-"$join_tmp/cosign" verify-blob "$join_tmp/install.sh" \
+signature_verified=0
+for signature_attempt in 1 2 3; do
+  if "$join_tmp/cosign" verify-blob "$join_tmp/install.sh" \
   --bundle "$join_tmp/install.sh.sigstore.json" \
   --certificate-identity {identity} \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com; then signature_verified=1; break; fi
+  if [[ "$signature_attempt" != 3 ]]; then sleep 3; fi
+done
+[[ "$signature_verified" == 1 ]] || {{ echo '签名验证失败，未执行安装器；请检查网络后重试' >&2; exit 1; }}
+
 bash -n "$join_tmp/install.sh"
 /bin/rm -f -- "$join_tmp/cosign" "$join_tmp/install.sh.sigstore.json"
 export HY2PANEL_PANEL_URL={panel_url}
@@ -1177,8 +1201,6 @@ fi
 if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
   echo '完整面板服务器不能作为对接节点' >&2; exit 1
 fi
-bootstrap_tmp="$(mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
-trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in
   x86_64|amd64) cosign_asset=cosign-linux-amd64; cosign_sha={cosign_sha_amd64} ;;
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
@@ -1187,6 +1209,7 @@ esac
 bootstrap_dependencies=0
 command -v curl >/dev/null 2>&1 || bootstrap_dependencies=1
 command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
+command -v stat >/dev/null 2>&1 || bootstrap_dependencies=1
 if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
 if [ "$bootstrap_dependencies" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
@@ -1195,17 +1218,34 @@ if [ "$bootstrap_dependencies" -eq 1 ]; then
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y ca-certificates
     command -v curl >/dev/null 2>&1 || dnf install -y curl
-    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then dnf install -y coreutils; fi
   elif command -v yum >/dev/null 2>&1; then
     yum install -y ca-certificates
     command -v curl >/dev/null 2>&1 || yum install -y curl
-    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then yum install -y coreutils; fi
   else
     echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
   fi
 fi
 command -v curl >/dev/null 2>&1
 command -v sha256sum >/dev/null 2>&1
+command -v stat >/dev/null 2>&1
+bootstrap_workspace_directory() {{
+  local directory=/tmp filesystem
+  [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '安装暂存目录无效' >&2; return 1; }}
+  filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+  if [[ "${{filesystem}}" == tmpfs || "${{filesystem}}" == ramfs ]]; then
+    directory=/var/tmp
+    [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '需要真实的 /var/tmp 磁盘目录用于验签暂存' >&2; return 1; }}
+    filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+    [[ "${{filesystem}}" != tmpfs && "${{filesystem}}" != ramfs ]] || {{ echo '/tmp 和 /var/tmp 均为内存盘，请为 /var/tmp 提供磁盘空间' >&2; return 1; }}
+    echo '验签暂存：/tmp 是内存盘，改用 /var/tmp。' >&2
+  fi
+  printf '%s\\n' "${{directory}}"
+}}
+workspace_parent="$(bootstrap_workspace_directory)"
+bootstrap_tmp="$(TMPDIR="$workspace_parent" mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
+trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$bootstrap_tmp/cosign"
@@ -1213,10 +1253,16 @@ printf '%s  %s\\n' "$cosign_sha" "$bootstrap_tmp/cosign" | sha256sum --check --s
 chmod 0700 "$bootstrap_tmp/cosign"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {installer} -o "$bootstrap_tmp/install.sh"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {bundle} -o "$bootstrap_tmp/install.sh.sigstore.json"
-"$bootstrap_tmp/cosign" verify-blob "$bootstrap_tmp/install.sh" \
+signature_verified=0
+for signature_attempt in 1 2 3; do
+  if "$bootstrap_tmp/cosign" verify-blob "$bootstrap_tmp/install.sh" \
   --bundle "$bootstrap_tmp/install.sh.sigstore.json" \
   --certificate-identity {identity} \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com; then signature_verified=1; break; fi
+  if [[ "$signature_attempt" != 3 ]]; then sleep 3; fi
+done
+[[ "$signature_verified" == 1 ]] || {{ echo '签名验证失败，未执行安装器；请检查网络后重试' >&2; exit 1; }}
+
 bash -n "$bootstrap_tmp/install.sh"
 export HY2PANEL_PANEL_URL={panel_url}
 export HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN={token}
