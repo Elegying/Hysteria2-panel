@@ -191,6 +191,7 @@ function selectConsoleView() {
     if (link.dataset.consoleNav === view) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
   });
 }
+if (document.querySelector('.console-sidebar')) {
 selectConsoleView();
 window.addEventListener('hashchange', selectConsoleView);
 window.addEventListener('popstate', selectConsoleView);
@@ -206,6 +207,7 @@ document.addEventListener('click', function(event) {
   }
   if (event.target.closest('[data-console-refresh]')) { event.preventDefault(); location.reload(); }
 });
+}
 function applyAggregateNetwork(payload) {
   const target = document.querySelector('[data-aggregate-rx]'); if (!target) return;
   const ids = Array.from(document.querySelectorAll('.machine-budget-row')).filter(function(card) { return card.querySelector('.machine-speed'); }).map(function(card) { return card.dataset.originId; });
