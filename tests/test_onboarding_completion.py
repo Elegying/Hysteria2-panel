@@ -63,7 +63,7 @@ class OnboardingCompletionTests(unittest.TestCase):
              mock.patch('hy2panel.nodes.socket.create_connection') as tcp:
             runner(node_ip='8.8.8.8', main_port=19999, token='a'*40,
                    pin_sha256='b'*64, port_hopping=True)
-            self.assertEqual([19999, 443, 20000, 35000, 50000],
+            self.assertEqual([19999, 443, 2000, 17000, 50000],
                              [c.args[1] for c in runner._check_entrypoint.call_args_list])
             self.assertEqual(3, tcp.call_count)
         runner._check_entrypoint.side_effect = [None, None, OSError('blocked')]
