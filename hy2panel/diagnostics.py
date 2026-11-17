@@ -516,7 +516,7 @@ class LineMonitor:
                             target.get("hopStart", 2000)
                             + secrets.randbelow(50001 - target.get("hopStart", 2000))
                         ]
-                        if target["hopping"]
+                        if target["hopping"] and target["scope"] != "local"
                         else []
                     )
                 )
@@ -548,6 +548,14 @@ class LineMonitor:
                 finally:
                     self.grants.revoke(token)
                 result["proxy"].append({"port": port, "state": state, "reason": reason})
+            if target["hopping"] and target["scope"] == "local":
+                # Locally generated packets do not traverse PREROUTING. A
+                # self-test cannot prove or disprove the inbound hop mapping.
+                result["proxy"].append({
+                    "port": "{}–50000".format(target.get("hopStart", 2000)),
+                    "state": "unknown",
+                    "reason": "端口跳跃需外部验证；本机自检不经过入站转发规则",
+                })
             for port in dict.fromkeys([443, target["port"]]):
                 try:
                     with socket.create_connection((target["ip"], port), timeout=3):
