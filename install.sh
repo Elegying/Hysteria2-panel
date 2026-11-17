@@ -5794,8 +5794,20 @@ def verified_port_hopping(entries):
             clean = dict(row)
             clean.pop("handle", None)
             (chains if kind == "chain" else rules).append(clean)
-    if chains != [{"family":"inet", "table":"hy2_port_hopping", "name":"prerouting", "type":"nat", "hook":"prerouting", "prio":-100, "policy":"accept"}] or len(rules) not in (1, 2):
+    if chains != [{"family":"inet", "table":"hy2_port_hopping", "name":"prerouting", "type":"nat", "hook":"prerouting", "prio":-100, "policy":"accept"}] or len(rules) not in (1, 2, 3):
         return False
+    for rule in rules:
+        expressions = []
+        for expression in rule.get("expr", []):
+            if "counter" in expression:
+                counts = expression["counter"]
+                if (set(expression) != {"counter"} or not isinstance(counts, dict)
+                        or set(counts) != {"packets", "bytes"}
+                        or any(type(v) is not int or v < 0 for v in counts.values())):
+                    return False
+            else:
+                expressions.append(expression)
+        rule["expr"] = expressions
     for target in {443, int(sys.argv[1]), int(sys.argv[2])}:
         expected = {"family":"inet", "table":"hy2_port_hopping", "chain":"prerouting", "expr":[
             {"match":{"op":"!=", "left":{"meta":{"key":"iifname"}}, "right":"lo"}},
@@ -5809,6 +5821,21 @@ def verified_port_hopping(entries):
             return chain_key
         expected["expr"][2]["match"]["right"]["range"] = [2000, 50000]
         if rules == [expected] or rules == [expected, tcp_expected]:
+            return chain_key
+        # Earlier deployments redirected the complete UDP range to the main
+        # listener while excluding that listener from the redirect itself.
+        ports = [{"range": [2000, 50000]}]
+        if 2000 <= target <= 50000:
+            ports = [({"range": [lo, hi]} if lo != hi else lo)
+                     for lo, hi in ((2000, target - 1), (target + 1, 50000)) if lo <= hi]
+        if target != 54443:
+            ports.append(54443)
+        compatible = []
+        for port in ports:
+            rule = json.loads(json.dumps(expected))
+            rule["expr"][2]["match"]["right"] = port
+            compatible.append(rule)
+        if rules == compatible:
             return chain_key
     return False
 
