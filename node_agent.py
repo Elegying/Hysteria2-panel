@@ -29,7 +29,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.52"
+AGENT_VERSION = "0.39.53"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -1217,14 +1217,14 @@ def _openssl_filter(arguments, value, executable="/usr/bin/openssl"):
 NODE_HOPPING_TABLE = "hy2_port_hopping"
 
 
-def node_hopping_rules():
+def node_hopping_rules(legacy=False):
     rules = []
     for protocol in ("udp", "tcp"):
         rules.append({"family": "inet", "table": NODE_HOPPING_TABLE,
             "chain": "prerouting", "expr": [
                 {"match": {"op": "!=", "left": {"meta": {"key": "iifname"}}, "right": "lo"}},
                 {"match": {"op": "==", "left": {"fib": {"result": "type", "flags": ["daddr"]}}, "right": "local"}},
-                {"match": {"op": "==", "left": {"payload": {"protocol": protocol, "field": "dport"}}, "right": {"range": [20000, 50000]}}},
+                {"match": {"op": "==", "left": {"payload": {"protocol": protocol, "field": "dport"}}, "right": {"range": [2000 if protocol == "udp" and not legacy else 20000, 50000]}}},
                 {"redirect": {"port": 443}}]})
     return rules
 
@@ -1250,9 +1250,9 @@ def node_hopping_present(runner=subprocess.run):
             raise ProtocolError("port hopping table has unmanaged objects")
     expected_chain = {"family": "inet", "table": NODE_HOPPING_TABLE,
         "name": "prerouting", "type": "nat", "hook": "prerouting", "prio": -100, "policy": "accept"}
-    if chains != [expected_chain] or rules != node_hopping_rules():
+    if chains != [expected_chain] or rules not in (node_hopping_rules(), node_hopping_rules(legacy=True)):
         raise ProtocolError("port hopping table is not owned by this node")
-    return True
+    return "legacy" if rules == node_hopping_rules(legacy=True) else True
 
 
 def configure_node_hopping(enabled, *, check_only=False, runner=subprocess.run,
@@ -1268,7 +1268,7 @@ def configure_node_hopping(enabled, *, check_only=False, runner=subprocess.run,
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         present = node_hopping_present(runner)
         if check_only:
-            if present != enabled:
+            if bool(present) != enabled:
                 raise ProtocolError("port hopping state does not match configuration")
             return
         if present == enabled:
@@ -1276,10 +1276,12 @@ def configure_node_hopping(enabled, *, check_only=False, runner=subprocess.run,
         if enabled:
             command = 'table inet hy2_port_hopping {\n chain prerouting {\n type nat hook prerouting priority dstnat; policy accept;\n'
             for protocol in ("udp", "tcp"):
-                command += ' iifname != "lo" fib daddr type local {} dport 20000-50000 redirect to :443;\n'.format(protocol)
+                command += ' iifname != "lo" fib daddr type local {} dport {}-50000 redirect to :443;\n'.format(protocol, 2000 if protocol == 'udp' else 20000)
             command += ' }\n}\n'
         else:
             command = 'delete table inet hy2_port_hopping\n'
+        if enabled and present == "legacy":
+            command = "delete table inet hy2_port_hopping\n" + command
         for arguments in (["-c", "-f", "-"], ["-f", "-"]):
             runner(["/usr/sbin/nft", *arguments], input=command, check=True,
                    capture_output=True, text=True, timeout=10)

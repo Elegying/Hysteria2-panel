@@ -1,6 +1,8 @@
 """Dashboard rendering isolated from the HTTP transport entrypoint."""
 
+import datetime
 import html
+import math
 import json
 import time
 import urllib.parse
@@ -51,15 +53,20 @@ def machine_forecasts(application, nodes, budgets=None, service_status=None, now
         tier = node_tiers.get(origin_id)
         average = averages.get(tier, {"daily_bytes": None, "sample_days": 0})
         count = counts.get(tier, 0)
+        reset_at = datetime.datetime.strptime(
+            budget["period_end"], "%Y-%m-%d"
+        ).replace(tzinfo=datetime.timezone.utc).timestamp()
+        live_budget = {name: budget[name] for name in (
+            "used_bytes", "limit_bytes", "percent", "status", "period_start", "period_end"
+        )}
+        live_budget["reset_days"] = max(0, math.ceil((reset_at - now) / 86400))
         result[origin_id] = {
             "text": budget_forecast(budget, average["daily_bytes"],
                                     count if origin_id in serving else 0, now),
             "basis": "按{}近 {} 个完整日均值、{} 台供流机器均分预测".format(
                 "专线" if tier == "premium" else "普通线路",
                 average["sample_days"], count),
-            "budget": {name: budget[name] for name in (
-                "used_bytes", "limit_bytes", "percent", "status", "period_start", "period_end"
-            )},
+            "budget": live_budget,
         }
     if cache_result:
         application._machine_forecast_cache = (key, result)
@@ -441,14 +448,6 @@ def render_dashboard(
             online_text = "—（上次 {}）".format(last_known) if last_known else "—"
         else:
             online_text = str(int(online_devices))
-        observed_at = origin.get("observed_at")
-        observed_text = (
-            time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime(int(observed_at))
-            )
-            if observed_at
-            else "尚未上报"
-        )
         kind_label = {
             "local": "面板节点",
             "remote": "远端数据节点",
@@ -502,10 +501,8 @@ def render_dashboard(
             budget_line += ' · <span data-machine-forecast>{}</span>'.format(
                 html.escape(forecast["text"])
             )
-            budget_detail = '<span data-machine-budget-period>本周期 {} 至 {} · 下次重置 {}</span>'.format(
-                budget["period_start"],
-                budget["period_end"],
-                budget["next_reset_date"],
+            budget_detail = '<span data-machine-budget-period>剩余 {} 天重置</span>'.format(
+                forecast["budget"]["reset_days"],
             )
             progress_value = max(0.0, min(100.0, float(budget["percent"])))
         else:
@@ -517,7 +514,7 @@ def render_dashboard(
                 csrf=csrf
             )
         machine_rows.append(
-            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong>{server_ip}<small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail} · 最后上报 <span data-live-machine-observed>{observed}</span></small>{budget_action}</div></article>""".format(
+            """<article class="machine-budget-row" data-origin-id="{origin_id}"><div class="machine-budget-head"><div><strong>{name}</strong>{server_ip}<small class="muted">{kind} · <span class="{status_class}" data-live-machine-state>{status}</span></small></div><span class="machine-online"><strong data-live-machine-online>{online}</strong> 台在线</span></div><progress max="100" value="{progress:.4f}" aria-label="{name} 流量预算使用比例"></progress><div class="machine-budget-usage"><strong class="{budget_class}">{budget_line}</strong><span class="muted">计费上传 {tx} · 计费下载 {rx}</span></div><div class="machine-budget-meta"><small class="muted">{budget_detail}</small>{budget_action}</div></article>""".format(
                 origin_id=html.escape(origin["origin_id"], quote=True),
                 name=html.escape(str(origin.get("display_name") or "未命名节点")),
                 server_ip=('<span class="muted machine-ip"> · {}</span>'.format(html.escape(server_ip)) if server_ip else ""),
@@ -531,7 +528,6 @@ def render_dashboard(
                 tx=_human_bytes(provider_traffic_bytes(origin.get("tx_bytes")) if budget is not None else int(origin.get("tx_bytes") or 0)),
                 rx=_human_bytes(provider_traffic_bytes(origin.get("rx_bytes")) if budget is not None else int(origin.get("rx_bytes") or 0)),
                 budget_detail=budget_detail,
-                observed=observed_text,
                 budget_action=budget_action,
             )
         )
@@ -541,7 +537,7 @@ def render_dashboard(
         else ""
     )
     machine_stats_section = "" if not machine_origins else (
-        """<section class="card machine-stats"><div class="section-head machine-section-head"><div><h2>节点统计与流量预算</h2><p class="muted">按面板节点与远程节点统计当前周期用量。</p></div><span class="machine-count">{count} 台机器</span></div>{warning}<div class="machine-budget-list">{rows}</div>{dialogs}</section>""".format(
+        """<section class="card machine-stats"><div class="section-head machine-section-head"><div><h2>节点统计与流量预算</h2></div><span class="machine-count">{count} 台机器</span></div>{warning}<div class="machine-budget-list">{rows}</div>{dialogs}</section>""".format(
             warning=machine_warning,
             count=sum(origin.get("kind") in {"local", "remote"} for origin in machine_origins),
             rows="".join(machine_rows),

@@ -404,6 +404,13 @@ class PortableBackupCompactionTests(unittest.TestCase):
         )
         env_file.chmod(0o600)
 
+        old_pin = BackupManager._certificate_pin(target_certificate.read_bytes())
+        target_database.set_subscription_defaults([
+            {"label": "Local", "host": "vpn.example.test", "port": 443,
+             "pin_sha256": old_pin, "enabled": True},
+            {"label": "External", "host": "other.example.test", "port": 443,
+             "pin_sha256": old_pin, "enabled": True},
+        ])
         target_manager.apply_archive(
             archive,
             env_file=env_file,
@@ -411,6 +418,11 @@ class PortableBackupCompactionTests(unittest.TestCase):
         )
 
         restored = Database(target_database.path, self.hmac_key)
+        defaults = restored.get_subscription_defaults()
+        self.assertEqual(BackupManager._certificate_pin(target_certificate.read_bytes()),
+                         defaults[0]["pin_sha256"])
+        self.assertNotEqual(old_pin, defaults[0]["pin_sha256"])
+        self.assertEqual(old_pin, defaults[1]["pin_sha256"])
         self.assertEqual(self.user["token"], restored.recover_proxy_token(self.user["id"]))
         self.assertIsNone(restored.authenticate_token(self.user["token"]))
         self.assertIsNone(restored.authenticate_token(old_user["token"]))

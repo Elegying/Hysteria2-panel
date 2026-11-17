@@ -88,7 +88,7 @@ create_panel_workspace
         self.assertNotIn('Illegal option', result.stderr)
 
     def test_documented_entrypoint_rejects_prerequisites_and_cleans_downloads(self):
-        command = (ROOT / 'README.md').read_text().split('```bash\n', 1)[1].split('```', 1)[0]
+        command = (ROOT / 'README.md').read_text().split('```bash\n')[2].split('```', 1)[0]
         for mode, expected, message in (
             ('no-bash', 1, '缺少 Bash'), ('no-systemd', 1, 'systemd'),
             ('dns', 6, 'DNS'), ('proxy', 5, 'DNS'), ('tls', 60, 'TLS'),

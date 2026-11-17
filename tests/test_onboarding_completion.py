@@ -87,7 +87,7 @@ class OnboardingCompletionTests(unittest.TestCase):
                 path = root / name
                 path.write_text('#!/bin/sh\n' + body + '\n')
                 path.chmod(0o755)
-            result = subprocess.run(['/bin/bash', '-c', service._deployment_command('a'*40).replace('/run/systemd/system', directory)],
+            result = subprocess.run(['/bin/bash', '-c', service._verified_deployment_command('a'*40).replace('/run/systemd/system', directory)],
                 env={**os.environ, 'PATH': directory, 'BIN': directory, 'AUDIT_LOG': str(log)},
                 capture_output=True, text=True)
             self.assertEqual(42, result.returncode, result.stderr)
@@ -126,7 +126,7 @@ esac''',
                 path.chmod(0o755)
             env = {**os.environ, 'PATH': directory+':/usr/bin:/bin',
                    'VERIFIED': str(root/'verified'), 'INSTALLED': str(root/'installed')}
-            command = service._deployment_command('a'*40).replace('/run/systemd/system', directory)
+            command = service._verified_deployment_command('a'*40).replace('/run/systemd/system', directory)
             result = subprocess.run(['/bin/bash', '-c', command], env=env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertTrue((root/'installed').exists())

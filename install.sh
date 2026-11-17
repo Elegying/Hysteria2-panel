@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.52"
+PANEL_VERSION="0.39.53"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -30,26 +30,26 @@ HY2PANEL_DOMAIN_USAGE_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hys
 HY2PANEL_DASHBOARD_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/dashboard.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="26dec69c49a41cd1d828bf3fafeb682a966ec0cd13d1cd3505c32c90928226dc"
+PANEL_SHA256="4147aacce9e37a39d5da1301851c0daa062d4fa3fabcad395cbe366bbedc9be8"
 OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="b221f33e29a9a7d3f345055a585f4759a99bf2de5487d843a1edea9e2c8881b8"
+HY2PANEL_VERSION_SHA256="23e4bad500fcdcb8a5184d9d273863bf714cd0b8576230143b1e8d933e58e4b7"
 HY2PANEL_BUDGETS_SHA256="de01f10ff0fcba54a602a675c01b4fc11f2b00803e421180f7e96bf27757730f"
-HY2PANEL_WEB_ASSETS_SHA256="c829a5506cf10e1a3aa76eb4a849b022f987489b37881a5014735dbcc4d9246c"
+HY2PANEL_WEB_ASSETS_SHA256="1c7db29e51f74750be97aad2c7e3f633e3edb2bc4a61dbeaf1c65a08fb33b5ac"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
-HY2PANEL_NODES_SHA256="6fb85b47f15dbabcc5a60d1576c5a02a0479b7e5fa8bbe4bad19cf071b91a07b"
+HY2PANEL_NODES_SHA256="3bffd1d7885df115aefb2b7a6e8d152b195ed4a373fb5dd35d2bddc4f43585e4"
 HY2PANEL_DISTRIBUTED_SHA256="63433d694dd2128b659c769681e0f541f1976ae8a8f6265fabc24e7a4b33a2e4"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="54ce3e60b2b578e97c81fd6991927d0179bcab47a47971f1b9740da773122b9e"
+HY2PANEL_DASHBOARD_SHA256="14e60eb9438056faad9ae2c761c3c24493a00eceb282d3ed990e220eaf0091db"
 HY2PANEL_MOBILE_API_SHA256="294fe3ac8ea19f87fca43c1b0689f4e9c8eab048528616ef46fec93a2ebb264a"
-NODE_AGENT_SHA256="d00727a8677cfe4bc81757ebace5ee0890dd479773e96c297c89fc937538341b"
+NODE_AGENT_SHA256="0b352243d6b275a7c4bfae22ac99695093631dce61b7b6185fa2f0c4d23332ed"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v2/hysteria-linux"
 HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"
@@ -1463,6 +1463,11 @@ rebind_node() {
     || fail "节点重绑定要求有效的 HTTPS 面板地址"
   [[ "${enrollment_token}" =~ ^[A-Za-z0-9_-]{32,128}$ ]] \
     || fail "缺少或无效的一次性节点重绑定凭据"
+  if [[ -n "${HY2PANEL_PANEL_URL:-}" ]]; then
+    local panel_hostname="${HY2PANEL_PANEL_URL#https://}"
+    panel_hostname="${panel_hostname%%[:/]*}"
+    preflight_public_hostname_separation "${panel_hostname}"
+  fi
   ensure_node_dependencies
   recover_interrupted_node_rebind
   systemctl is-active --quiet hysteria2-panel-node-heartbeat.timer \
@@ -1539,6 +1544,11 @@ install_join_node() {
     x86_64|amd64|aarch64|arm64) ;;
     *) fail "节点对接仅支持 Linux amd64 和 arm64" ;;
   esac
+  if [[ -n "${HY2PANEL_PANEL_URL:-}" ]]; then
+    local panel_hostname="${HY2PANEL_PANEL_URL#https://}"
+    panel_hostname="${panel_hostname%%[:/]*}"
+    preflight_public_hostname_separation "${panel_hostname}"
+  fi
   ensure_node_dependencies
 
   TMP_DIR="$(TMPDIR=/tmp mktemp -d -t hysteria2-panel.XXXXXXXX)"
@@ -1829,6 +1839,15 @@ uninstall_node() {
     || fail "无法只撤销本项目添加的防火墙规则；卸载将在 30 秒后重试"
   restore_data_plane_network_snapshot \
     || fail "无法恢复对接前的网络参数；卸载将在 30 秒后重试"
+  # Earlier shared-host deployments installed this exact supplemental unit.
+  # Remove its reference before the config directory is deleted.
+  local shared_dropin=/etc/systemd/system/hysteria2-panel-node-port-hopping.service.d/shared-host.conf
+  if [[ -f "${shared_dropin}" && ! -L "${shared_dropin}" ]] &&
+    [[ "$(stat -c '%u' "${shared_dropin}")" == 0 ]] &&
+    [[ "$(cat "${shared_dropin}")" == $'[Service]\nExecStartPost=/usr/sbin/nft -f /etc/hysteria2-panel-node/shared-host-hopping.nft\nExecStopPost=-/usr/sbin/nft delete table inet hy2_shared_host_hopping' ]]; then
+    rm -f -- "${shared_dropin}"
+    rmdir -- "${shared_dropin%/*}" 2>/dev/null || true
+  fi
   for path in "${DATA_PLANE_OWNED_UNITS[@]}" "${DATA_PLANE_OWNED_FILES[@]}"; do
     # ACK retries still need this secret to upload the already settled queue.
     [[ "${path}" != "${NODE_AGENT_CONFIG_DIR}/stats.env" ]] || continue
@@ -5775,8 +5794,20 @@ def verified_port_hopping(entries):
             clean = dict(row)
             clean.pop("handle", None)
             (chains if kind == "chain" else rules).append(clean)
-    if chains != [{"family":"inet", "table":"hy2_port_hopping", "name":"prerouting", "type":"nat", "hook":"prerouting", "prio":-100, "policy":"accept"}] or len(rules) not in (1, 2):
+    if chains != [{"family":"inet", "table":"hy2_port_hopping", "name":"prerouting", "type":"nat", "hook":"prerouting", "prio":-100, "policy":"accept"}] or len(rules) not in (1, 2, 3):
         return False
+    for rule in rules:
+        expressions = []
+        for expression in rule.get("expr", []):
+            if "counter" in expression:
+                counts = expression["counter"]
+                if (set(expression) != {"counter"} or not isinstance(counts, dict)
+                        or set(counts) != {"packets", "bytes"}
+                        or any(type(v) is not int or v < 0 for v in counts.values())):
+                    return False
+            else:
+                expressions.append(expression)
+        rule["expr"] = expressions
     for target in {443, int(sys.argv[1]), int(sys.argv[2])}:
         expected = {"family":"inet", "table":"hy2_port_hopping", "chain":"prerouting", "expr":[
             {"match":{"op":"!=", "left":{"meta":{"key":"iifname"}}, "right":"lo"}},
@@ -5788,7 +5819,63 @@ def verified_port_hopping(entries):
         tcp_expected["expr"][2]["match"]["left"]["payload"]["protocol"] = "tcp"
         if rules == [expected] or rules == [expected, tcp_expected]:
             return chain_key
+        expected["expr"][2]["match"]["right"]["range"] = [2000, 50000]
+        if rules == [expected] or rules == [expected, tcp_expected]:
+            return chain_key
+        # Earlier deployments redirected the complete UDP range to the main
+        # listener while excluding that listener from the redirect itself.
+        ports = [{"range": [2000, 50000]}]
+        if 2000 <= target <= 50000:
+            ports = [({"range": [lo, hi]} if lo != hi else lo)
+                     for lo, hi in ((2000, target - 1), (target + 1, 50000)) if lo <= hi]
+        if target != 54443:
+            ports.append(54443)
+        compatible = []
+        for port in ports:
+            rule = json.loads(json.dumps(expected))
+            rule["expr"][2]["match"]["right"] = port
+            compatible.append(rule)
+        if rules == compatible:
+            return chain_key
     return False
+
+
+def verified_shared_host_hopping(entries):
+    # Compatibility rules installed by the shared-host migration. Match the
+    # entire chain and every expression, including the local-destination guard.
+    table = "hy2_shared_host_hopping"
+    chains, rules = [], []
+    for entry in entries:
+        for kind, collection in (("chain", chains), ("rule", rules)):
+            row = entry.get(kind) if isinstance(entry, dict) else None
+            if not isinstance(row, dict) or row.get("family") != "inet" or row.get("table") != table:
+                continue
+            clean = dict(row)
+            clean.pop("handle", None)
+            collection.append(clean)
+    chain = {"family": "inet", "table": table, "name": "prerouting",
+             "type": "nat", "hook": "prerouting", "prio": -101, "policy": "accept"}
+    if chains != [chain] or len(rules) not in (2, 3):
+        return False
+    for index, (protocol, ports) in enumerate((("udp", {"range": [2000, 19998]}),
+                                             ("udp", 54443), ("tcp", 19990))):
+        if index >= len(rules):
+            break
+        expressions = rules[index].get("expr", [])
+        if len(expressions) != 5:
+            return False
+        counts = expressions[3].get("counter", {})
+        if set(counts) != {"packets", "bytes"} or any(type(v) is not int or v < 0 for v in counts.values()):
+            return False
+        expected = {"family": "inet", "table": table, "chain": "prerouting", "expr": [
+            {"match": {"op": "!=", "left": {"meta": {"key": "iifname"}}, "right": "lo"}},
+            {"match": {"op": "==", "left": {"fib": {"result": "type", "flags": ["daddr"]}}, "right": "local"}},
+            {"match": {"op": "==", "left": {"payload": {"protocol": protocol, "field": "dport"}}, "right": ports}},
+            {"counter": counts}, {"redirect": {"port": 19999}}]}
+        if rules[index] != expected:
+            return False
+    return ("inet", table, "prerouting")
+
 
 def verified_service_allowlist(entries, candidate):
     # Recognize a complete simple default-deny policy by structure, not its
@@ -5904,6 +5991,9 @@ if not isinstance(entries, list):
 host_guards = set()
 if verified_default_host_guard(entries):
     host_guards.add(("inet", "hy2_host_guard", "input"))
+shared_chain = verified_shared_host_hopping(entries)
+if shared_chain:
+    host_guards.add(shared_chain)
 hopping_chain = verified_port_hopping(entries)
 if hopping_chain:
     host_guards.add(hopping_chain)
@@ -8162,7 +8252,7 @@ EOF
 
 cat > /etc/systemd/system/hysteria2-panel-port-hopping.service <<EOF
 [Unit]
-Description=Hysteria 2 UDP port hopping (20000-50000)
+Description=Hysteria 2 UDP port hopping (2000-50000)
 After=network-online.target nftables.service hy2-host-guard.service
 Before=hysteria2-panel.service
 Wants=network-online.target

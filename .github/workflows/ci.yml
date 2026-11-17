@@ -58,7 +58,7 @@ jobs:
           test "${GITHUB_REF}" = "refs/tags/${GITHUB_REF_NAME}"
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -126,7 +126,7 @@ jobs:
           python3 tests/onboarding_e2e.py
 
   static-analysis:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -184,7 +184,7 @@ jobs:
               "https://raw.githubusercontent.com/"
               "Elegying/Hysteria2-panel/main/install.sh"
           )
-          quick_command = readme.split('```bash\n', 1)[1].split('```', 1)[0]
+          quick_command = readme.split('```bash\n')[2].split('```', 1)[0]
           if any(marker not in quick_command for marker in (
               versionless_url, 'command -v bash', '/run/systemd/system',
               'umask 077', 'trap', 'mktemp', 'DNS', 'bash "$i"',
@@ -282,7 +282,7 @@ jobs:
           flutter test --no-pub
 
   managed-firewall-integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -310,7 +310,7 @@ jobs:
           SH
 
   systemd-service-semantics:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -422,7 +422,7 @@ jobs:
             bash /workspace/tests/dependency_bootstrap.sh
 
   rhel-firewall-package-contract:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     container: rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6
     steps:

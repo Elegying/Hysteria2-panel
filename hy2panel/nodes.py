@@ -732,6 +732,18 @@ class NodeEnrollmentService:
     def _deployment_command(self, token, mode="join"):
         if mode not in {"join", "rebind"}:
             raise ValueError("enrollment mode must be join or rebind")
+        return (
+            "(export HY2PANEL_PANEL_URL={url} HY2PANEL_ENROLLMENT_TOKEN={token}; "
+            "umask 077; f=$(mktemp) || exit; trap 'rm -f \"$f\"' EXIT; "
+            "curl -fsSL --connect-timeout 10 --max-time 120 "
+            "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v{version}/bootstrap.sh "
+            "-o \"$f\" && bash \"$f\" --{mode}-node)"
+        ).format(url=_single_quote(self.panel_url), token=_single_quote(token),
+                 version=self.panel_version, mode=mode)
+
+    def _verified_deployment_command(self, token, mode="join"):
+        if mode not in {"join", "rebind"}:
+            raise ValueError("enrollment mode must be join or rebind")
         installer_mode = "--join-node" if mode == "join" else "--rebind-node"
         tag = "v{}".format(self.panel_version)
         repository = "https://github.com/Elegying/Hysteria2-panel"
@@ -955,7 +967,7 @@ class DataPlaneBootstrapService:
             isinstance(hysteria_port, bool)
             or not isinstance(hysteria_port, int)
             or not 1 <= hysteria_port <= 65535
-            or hysteria_port in {443, 19995, 19996, 19997}
+            or hysteria_port in {19995, 19996, 19997}
         ):
             raise ValueError("Hysteria main port is invalid")
         self.hysteria_port = hysteria_port
