@@ -6386,10 +6386,7 @@ class PanelHttpTests(unittest.TestCase):
         response = self.request("/", headers=headers)
         body = response.read().decode()
 
-        self.assertLess(
-            body.index('href="/">刷新</a>'),
-            body.index('data-dialog-open="node-onboarding-dialog"'),
-        )
+        self.assertIn('href="/#servers" data-console-refresh>刷新状态</a>', body)
         self.assertIn('data-dialog-open="node-onboarding-dialog"', body)
         self.assertIn('id="node-onboarding-dialog"', body)
         self.assertIn('data-node-enrollment-form', body)
@@ -7577,7 +7574,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual("Accept-Encoding", vary)
         self.assertEqual("no-store", cache_control)
         self.assertLess(len(compressed), len(identity) // 4)
-        self.assertIn("Hysteria 2 用户管理面板", gzip.decompress(compressed).decode())
+        self.assertIn("Hysteria2 · 深蓝全景台", gzip.decompress(compressed).decode())
 
     def test_gzip_quality_zero_is_respected(self):
         headers, _ = self.authenticated_headers()
@@ -7587,7 +7584,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
 
         self.assertIsNone(response.headers.get("Content-Encoding"))
-        self.assertIn("Hysteria 2 用户管理面板", body)
+        self.assertIn("Hysteria2 · 深蓝全景台", body)
 
     def test_login_page_exposes_svg_favicon(self):
         with self.request("/login") as response:
@@ -7632,7 +7629,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual(303, login.exception.code)
         cookie = login.exception.headers["Set-Cookie"].split(";", 1)[0]
         with self.request("/", headers={"Cookie": cookie}) as response:
-            self.assertIn("Hysteria 2 用户管理面板", response.read().decode())
+            self.assertIn("Hysteria2 · 深蓝全景台", response.read().decode())
             self.assertIsNone(response.headers.get("Server"))
 
     def test_fifth_bad_login_immediately_locks_source_and_returns_retry_after(self):
@@ -7767,14 +7764,14 @@ class PanelHttpTests(unittest.TestCase):
         for label in (
             "服务状态",
             "当前用户",
-            "不活跃用户",
+            "在线节点",
             "在线设备",
             "按 Hysteria 客户端实例统计",
-            "总上传",
-            "总下载",
+            "全网实时速率",
+            "累计流量",
             "服务控制",
             "系统资源",
-            "高流量用户",
+            "流量前五排行",
             "当前版本",
             "BBR 状态",
             "Hysteria BBR",
@@ -8085,7 +8082,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertLess(body.index(edit_button), body.index('/users/{}/rotate'.format(created["id"])))
         self.assertNotIn("更多操作", body)
         self.assertNotIn('class="action-menu"', body)
-        for label in ("启动", "重启代理服务", "停止", "刷新", "对接管理"):
+        for label in ("启动", "重启代理服务", "停止", "刷新状态", "对接管理"):
             self.assertIn(">{}<".format(label), body)
         self.assertIn('class="button-row service-actions"', body)
         self.assertIn('class="button-row version-actions"', body)
@@ -8426,7 +8423,7 @@ class PanelHttpTests(unittest.TestCase):
         self.assertNotIn('data-user-name="disabled-user"', body)
         self.assertIn("url.searchParams.delete('page');", body)
         self.assertIn("window.location.assign(url.pathname + url.search + '#users');", body)
-        self.assertNotIn("history.replaceState", body)
+        self.assertIn("location.pathname+location.search+'#'+view", body)
         self.assertIn("field.value = '';", body)
         self.assertNotIn("filterForm.reset();", body)
 
@@ -8841,8 +8838,27 @@ class PanelHttpTests(unittest.TestCase):
 
         self.assertEqual(5, body.count('class="rank-row"'))
         self.assertNotIn('<span class="rank-name">user0</span>', body)
-        self.assertIn('class="rank-main"><span class="rank-name">', body)
+        self.assertIn('class="rank-name">', body)
         self.assertIn('.dashboard-trio{align-items:stretch;', body)
+
+    def test_console_ranking_includes_both_tiers_despite_user_filters(self):
+        normal = self.db.create_proxy_user("normal")
+        premium = self.db.create_proxy_user("premium")
+        with self.db._connect() as connection:
+            connection.execute("UPDATE proxy_users SET user_type=1 WHERE id=?", (premium["id"],))
+        self.db.add_traffic({"normal": {"tx": 1, "rx": 2}, "premium": {"tx": 10, "rx": 20}})
+        headers, _ = self.authenticated_headers()
+        for query in ("/", "/?type=premium&q=missing"):
+            with self.request(query, headers=headers) as response:
+                body = response.read().decode()
+            rank = body.split('<div class="rank-list">')[1].split('</section>')[0]
+            self.assertLess(rank.index('>premium</span>'), rank.index('>normal</span>'))
+            self.assertIn('class="rank-type">专线', rank)
+            self.assertIn('class="rank-type">普通', rank)
+            self.assertNotIn('/users/', rank)
+            self.assertIn('id="users" class="card" data-console-views="users"', body)
+            self.assertIn('data-console-nav="servers"', body)
+        self.assertTrue(normal)
 
     def test_total_traffic_header_sorts_users_in_both_directions(self):
         for name, total in (("alpha", 20), ("beta", 60), ("gamma", 40)):
@@ -9306,7 +9322,7 @@ class PanelHttpTests(unittest.TestCase):
             body = response.read().decode()
         self.assertIn('action="/system/reboot"', body)
         self.assertIn("重启服务器", body)
-        self.assertIn("所有节点连接会暂时中断", body)
+        self.assertIn("短暂影响远端节点认证", body)
 
         with self.assertRaises(urllib.error.HTTPError) as missing_csrf:
             self.request("/system/reboot", {}, headers=headers)

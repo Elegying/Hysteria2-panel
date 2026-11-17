@@ -75,13 +75,24 @@ class Browser:
         tag = str(time.time_ns())
         self.evaluate('window.__auditDocument = '+json.dumps(tag))
         self.call('Page.navigate', {'url': url})
-        self.wait('window.__auditDocument !== '+json.dumps(tag)+' && location.href === '+json.dumps(url)+' && document.readyState === "complete"')
+        self.wait('window.__auditDocument !== '+json.dumps(tag)+' && location.href.split("#")[0] === '+json.dumps(url.split('#')[0])+' && document.readyState === "complete"')
 
     def click(self, selector, navigation=False):
+        # Controls now live in sidebar views. Navigate with a real sidebar click
+        # before exercising the same production action and its confirmation.
+        view = self.evaluate("""selector => {
+            const candidates = Array.from(document.querySelectorAll(selector));
+            if (candidates.some(e => e.getBoundingClientRect().height > 0)) return null;
+            const target = candidates.find(e => e.closest('[data-console-views]'));
+            return target ? target.closest('[data-console-views]').dataset.consoleViews.split(' ')[0] : null;
+        }""".replace('selector =>', '(selector =>') + ')(' + json.dumps(selector) + ')')
+        if view:
+            self.click('[data-console-nav="' + view + '"]')
+            self.wait('document.body.dataset.consoleView === ' + json.dumps(view))
         tag = str(time.time_ns())
         point = self.evaluate('''(async () => {
             window.__auditDocument = %s;
-            const e = document.querySelector(%s);
+            const e = Array.from(document.querySelectorAll(%s)).find(e => e.getBoundingClientRect().height > 0);
             if (!e) throw new Error('control is missing');
             if (e.disabled) throw new Error('control is disabled');
             let previous = null;
@@ -172,7 +183,46 @@ try:
     browser.click('.login-form button',navigation=True)
     browser.wait('document.querySelector("[data-subscription-defaults]")')
     browser.screenshot('dashboard-before.png')
-    passed('网页登录与控制台加载')
+    assert not browser.evaluate('document.querySelector("#users").getBoundingClientRect().height > 0')
+    assert browser.evaluate('document.body.dataset.consoleView') == 'overview'
+    passed('网页登录与总览加载；用户管理独立于总览')
+
+    browser.click('[data-console-nav="subscriptions"]')
+    browser.click('#subscriptions [data-external-open]')
+    browser.wait('document.querySelector("[data-ext-batch]")')
+    browser.value('[data-ext-batch]', 'invalid-link')
+    browser.click('[data-ext-import]')
+    browser.click('[data-ext-preview]')
+    browser.wait('document.querySelector("#external-nodes-dialog [data-dialog-status]")')
+    assert browser.evaluate('document.querySelector("[data-ext-publish]").disabled')
+    browser.click('#external-nodes-dialog [data-dialog-close]')
+    browser.click('[data-console-nav="settings"]')
+    browser.click('#settings a[href="#servers"]')
+    browser.wait('document.body.dataset.consoleView === "servers"')
+    browser.click('[data-console-nav="overview"]')
+    passed('六模块导航、外部订阅入口加载、无效链接预览阻止发布、设置页跳转')
+
+    aggregation = browser.evaluate("""(() => {
+      const card = document.querySelector('.machine-budget-row');
+      const clone = card.cloneNode(true); clone.dataset.originId = 'fixture:aggregate';
+      card.parentElement.appendChild(clone);
+      try {
+        const now = Math.floor(Date.now()/5000)*5;
+        const stream = n => ({fresh:true,observedAt:now,rx:n,tx:2*n,
+          points:[{at:now-30,rx:n,tx:2*n},{at:now,rx:n,tx:2*n}]});
+        const network = {[card.dataset.originId]:stream(1000000), 'fixture:aggregate':stream(2000000)};
+        applyAggregateNetwork({network});
+        const total = document.querySelector('[data-total-rx]').textContent;
+        const path = document.querySelector('[data-aggregate-rx]').getAttribute('d');
+        network['fixture:aggregate'].fresh = false;
+        applyAggregateNetwork({network});
+        const partial = document.querySelector('[data-total-rx]').textContent;
+        applyAggregateNetwork({network:{}});
+        return {total,partial,gaps:(path.match(/M/g)||[]).length,empty:document.querySelector('[data-aggregate-rx]').getAttribute('d')};
+      } finally {clone.remove();}
+    })()""")
+    assert aggregation == {'total':'24.00 Mbps','partial':'—','gaps':2,'empty':''}, aggregation
+    passed('全网速率准确求和、断档不连线、缺失不伪造零速')
 
     assert browser.evaluate('document.querySelector("[data-egress-form]") === null')
     passed('旧 FULL 开关已移除')
@@ -517,7 +567,7 @@ try:
     passed('节点IP、均分耗尽预测、删除后自动重算、重置前够用及窄屏布局')
 
     fixture.db.add_traffic({'web-alpha':{'tx':111,'rx':222},'web-beta':{'tx':333,'rx':444}})
-    browser.click('.service-actions a[href="/"]',navigation=True)
+    browser.click('.service-actions [data-console-refresh]',navigation=True)
     browser.click('a.sort-link[href*="sort=traffic"]',navigation=True)
     assert browser.evaluate('Array.from(document.querySelectorAll("[data-user-name]")).map(e=>e.dataset.userName)') == ['web-beta','web-alpha']
     browser.click('a.sort-link[href*="sort=traffic"]',navigation=True)
