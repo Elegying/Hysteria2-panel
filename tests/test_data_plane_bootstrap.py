@@ -136,6 +136,19 @@ class HysteriaCanaryRunnerTests(unittest.TestCase):
         self.assertTrue(all("socks5h://127.0.0.1:" in " ".join(c) for c in curl_calls))
         self.assertTrue(all(process.returncode == 0 for process in processes))
 
+    def test_hopping_canary_covers_current_lower_boundary_and_tcp(self):
+        runner = HysteriaCanaryRunner(server_name="vpn.example.test")
+        with mock.patch.object(runner, "_check_entrypoint") as probe, mock.patch(
+            "hy2panel.nodes.secrets.randbelow", return_value=99
+        ) as random_port, mock.patch("hy2panel.nodes.socket.create_connection") as tcp:
+            runner(node_ip="8.8.8.8", main_port=19999, token="T" * 40,
+                   pin_sha256="ab" * 32, port_hopping=True)
+        self.assertEqual([19999, 443, 2000, 2100, 50000],
+                         [call.args[1] for call in probe.call_args_list])
+        random_port.assert_called_once_with(47999)
+        self.assertEqual([2000, 2100, 50000],
+                         [call.args[0][1] for call in tcp.call_args_list])
+
     def test_rejects_non_public_target_and_wrong_egress(self):
         runner = HysteriaCanaryRunner(server_name="vpn.example.test")
         with self.assertRaises(ValueError):
