@@ -350,6 +350,7 @@ set -eu
 NODE_AGENT_OPT_DIR="$WORK/opt"
 NODE_AGENT_SOURCE_URL=https://example.invalid/fixed-release/node_agent.py
 mktemp() { mkdir -p "$WORK/stage"; echo "$WORK/stage"; }
+create_panel_workspace() { mktemp -d; }
 stat() { "$PYTHON_BIN" -c 'import os,sys; s=os.stat(sys.argv[1]); print("0:0:{:o}:{}".format(s.st_mode & 0o777,s.st_nlink))' "$3"; }
 install() {
   local -a args=()
@@ -461,6 +462,7 @@ print("0:0:{:o}".format(os.stat(sys.argv[1]).st_mode & 0o777))
 STAT
 }
 ensure_node_dependencies() { :; }
+create_panel_workspace() { mktemp -d; }
 sync() { :; }
 sha256sum() { cat >/dev/null; }
 sleep() { /bin/sleep 0.01; }
