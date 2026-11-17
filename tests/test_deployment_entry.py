@@ -52,3 +52,9 @@ class CompactEntryTests(unittest.TestCase):
         self.assertIn('shared-host.conf', body)
         self.assertLess(body.index('rm -f -- "${shared_dropin}"'),
                         body.rindex('for directory in "${uninstall_directories[@]}"'))
+
+    def test_older_agents_keep_their_deployed_hopping_range(self):
+        from hysteria2_panel import node_hopping_ports
+        for version in (None, "invalid", "0.39.52"):
+            self.assertEqual("20000-50000", node_hopping_ports(version))
+        self.assertEqual("2000-50000", node_hopping_ports("0.39.53"))

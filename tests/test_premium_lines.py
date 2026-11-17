@@ -363,7 +363,7 @@ class PremiumSubscriptionTests(unittest.TestCase):
         self.assertEqual(1, len(proxies))
         self.assertEqual('new.example.test', proxies[0]['server'])
         self.assertEqual(443, proxies[0]['port'])
-        self.assertEqual('2000-50000', proxies[0]['ports'])
+        self.assertEqual('20000-50000', proxies[0]['ports'])
 
     def test_live_online_totals_are_isolated_by_user_type(self):
         self.db.create_proxy_user("regular")

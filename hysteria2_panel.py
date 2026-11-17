@@ -3838,7 +3838,7 @@ class Database:
             result.append({"node_id": row["node_id"], "label": row["line_label"],
                 "host": row["line_host"], "port": row["line_port"],
                 "pin_sha256": identity["certificateDerSha256"], "sni": self._certificate_server_name(identity["certificatePem"]), "enabled": True,
-                **({"hop_ports": "2000-50000"} if row["port_hopping"] else {})})
+                **({"hop_ports": node_hopping_ports(row["agent_version"])} if row["port_hopping"] else {})})
             seen.add(row["region"])
         return result
 
@@ -9793,7 +9793,7 @@ class PanelHandler(JsonHandler):
                     nodes.append({"node_id": remote["node_id"], "label": remote["name"],
                         "host": remote["subscription_host"], "port": remote["subscription_port"],
                         "pin_sha256": self.app.pin_sha256, "enabled": True,
-                        **({"hop_ports": "2000-50000"} if remote["port_hopping"] else {})})
+                        **({"hop_ports": node_hopping_ports(remote["agent_version"])} if remote["port_hopping"] else {})})
             else:
                 # A standard account may never publish a premium registry node.
                 with self.app.database._connect() as connection:
@@ -12004,6 +12004,14 @@ def _valid_panel_public_host(hostname):
     )
 
 
+def node_hopping_ports(agent_version):
+    parts = str(agent_version or "").split(".")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        if tuple(map(int, parts)) >= (0, 39, 53):
+            return "2000-50000"
+    return "20000-50000"
+
+
 class PortHoppingController:
     """Fixed local UDP forwarding; browser input never becomes a firewall command."""
     UNIT = "hysteria2-panel-port-hopping.service"
@@ -12026,7 +12034,10 @@ class PortHoppingController:
                 active = self.runner(["/bin/systemctl", "is-active", "--quiet", self.UNIT],
                                      capture_output=True, timeout=5, check=False)
                 value["enabled"] = active.returncode == 0
-            return {"enabled": value["enabled"], "ports": self.PORTS, "target": value["target"]}
+            ports = value.get("ports", "20000-50000")
+            if ports not in {self.PORTS, "20000-50000"}:
+                raise ValueError("invalid hopping range")
+            return {"enabled": value["enabled"], "ports": ports, "target": value["target"]}
         except (OSError, ValueError, TypeError, subprocess.SubprocessError):
             return {"enabled": False, "ports": self.PORTS, "target": 443}
 
@@ -12072,7 +12083,7 @@ def apply_port_hopping(enabled):
         descriptor, temporary = tempfile.mkstemp(prefix=".hopping-", dir=parent)
         try:
             with os.fdopen(descriptor, "w") as output:
-                json.dump({"enabled": enabled, "target": target}, output)
+                json.dump({"enabled": enabled, "target": target, "ports": PortHoppingController.PORTS}, output)
                 output.flush()
                 os.fchmod(output.fileno(), 0o644)
                 os.fsync(output.fileno())

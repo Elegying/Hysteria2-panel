@@ -108,7 +108,7 @@ class EnrollmentHoppingTests(PremiumSubscriptionTests):
         with self.db._connect() as c:
             c.execute("UPDATE nodes SET status='pending_verification',verified_at=1,policy_state='protocol_ready',lifecycle_state='active',data_plane_state='dns_admitted' WHERE node_id=?", (node['node_id'],))
         line = self.db.premium_subscription_nodes()[0]
-        self.assertEqual('2000-50000', line['hop_ports'])
+        self.assertEqual('20000-50000', line['hop_ports'])
         self.assertEqual(443, line['port'])
         with self.db._connect() as c:
             c.execute("UPDATE nodes SET status='revoked' WHERE node_id=?", (node['node_id'],))

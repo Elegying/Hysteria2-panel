@@ -188,7 +188,7 @@ class HoppingFirewallTests(unittest.TestCase):
                  mock.patch.object(panel.subprocess, 'run', side_effect=run):
                 panel.apply_port_hopping(True)
             self.assertEqual(
-                {"enabled": True, "target": 443}, json.loads(state.read_text())
+                {"enabled": True, "target": 443, "ports": "2000-50000"}, json.loads(state.read_text())
             )
             script = calls[-1][1]["input"]
             self.assertIn("udp dport 2000-50000 redirect to :443", script)
