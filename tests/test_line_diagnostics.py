@@ -1,4 +1,6 @@
 import contextlib
+import gzip
+import io
 import json
 import tempfile
 import threading
@@ -142,6 +144,19 @@ class ProbeTests(unittest.TestCase):
 
         client.request = mock.Mock(side_effect=request)
         return client, document
+
+    def test_large_official_probe_inventory_has_a_separate_bounded_limit(self):
+        data = [{"location": {"country": "CN", "asn": 4134}, "extra": "x" * (1024 * 1024)}]
+        packed = gzip.compress(json.dumps(data).encode())
+        client = GlobalpingClient()
+        def response(*args, **kwargs):
+            stream = io.BytesIO(packed)
+            stream.headers = {"Content-Encoding": "gzip"}
+            return stream
+        client.opener = SimpleNamespace(open=response)
+        self.assertEqual(data, client.request("probes")[0])
+        with self.assertRaises(ProbeUnavailable):
+            client.request("measurements/example")
 
     def test_three_domestic_operators_with_raw_evidence(self):
         client, _ = self.client()

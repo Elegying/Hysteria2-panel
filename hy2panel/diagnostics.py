@@ -219,6 +219,7 @@ class GlobalpingClient:
         if etag:
             headers["If-None-Match"] = etag
         data = None
+        limit = 8 * 1024 * 1024 if path == "probes" else 1024 * 1024
         if body is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body).encode()
@@ -227,16 +228,16 @@ class GlobalpingClient:
                 urllib.request.Request(self.BASE + path, data=data, headers=headers),
                 timeout=12,
             ) as response:
-                raw = response.read(1024 * 1024 + 1)
-                if len(raw) > 1024 * 1024:
+                raw = response.read(limit + 1)
+                if len(raw) > limit:
                     raise ProbeUnavailable("检测服务响应过大")
                 if response.headers.get("Content-Encoding") == "gzip":
                     # Bound decompression as well as the compressed response.
                     import io
 
                     with gzip.GzipFile(fileobj=io.BytesIO(raw)) as handle:
-                        raw = handle.read(1024 * 1024 + 1)
-                    if len(raw) > 1024 * 1024:
+                        raw = handle.read(limit + 1)
+                    if len(raw) > limit:
                         raise ProbeUnavailable("检测服务响应过大")
                 return json.loads(raw), response.headers.get("ETag")
         except urllib.error.HTTPError as exc:
