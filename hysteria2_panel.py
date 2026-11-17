@@ -2254,6 +2254,19 @@ class BackupManager:
             self._copy_database(self.database.path, staged_database)
             incoming_database = payload_paths["data/panel.db"]
             self._stage_user_restore(incoming_database, staged_database, restored_hmac)
+            # Defaults belong to this host, but their local certificate pin must
+            # follow the identity restored in this same transaction.
+            staged = Database(staged_database, restored_hmac)
+            defaults = staged.get_subscription_defaults()
+            if defaults:
+                old_pin = self._certificate_pin(self.tls_cert.read_bytes())
+                for node in defaults:
+                    if (not node.get("node_id")
+                            and node["host"].lower() == self.public_host.lower()
+                            and node["port"] in {443, self.hysteria_port}
+                            and node["pin_sha256"] == old_pin):
+                        node["pin_sha256"] = manifest["certificate"]["pinSHA256"]
+                staged.set_subscription_defaults(defaults)
             self._validate_database_path(staged_database, restored_hmac)
             try:
                 self._replace_file(self.database.path, staged_database)
