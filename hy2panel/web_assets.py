@@ -136,9 +136,141 @@ label{font-size:13px}input,textarea,select{min-height:44px;padding:10px 12px;bor
 .machine-budget-head{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(145px,1fr) auto;gap:16px;align-items:center}.machine-budget-head>div:first-child{min-width:0}.machine-ip{overflow-wrap:anywhere}.machine-speed{min-width:0}.machine-speed-values{display:flex;justify-content:space-between;gap:8px;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}.machine-speed-values [data-speed-rx]{color:#58d6bd}.machine-speed-values [data-speed-tx]{color:#a6bbff}.machine-speed svg{display:block;width:100%;height:42px;overflow:visible}.machine-speed svg path{fill:none;vector-effect:non-scaling-stroke}.speed-grid{stroke:#283c53;stroke-width:.7}.speed-rx-line{stroke:#58d6bd;stroke-width:1.6}.speed-tx-line{stroke:#a6bbff;stroke-width:1.6}.machine-speed small{font-size:10px!important;color:#8fa1b7;text-align:right;line-height:1.2}.machine-speed[data-stale="true"] svg{opacity:.35}.machine-reset-check{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.line-check-button{font-size:12px;min-height:30px;padding:4px 9px;background:#16283d;border:1px solid #304760;color:#b7c8df;border-radius:8px}.line-check-button.ok{color:#58d6bd;border-color:#357c6b;background:#132d2c}.line-check-button.warning{color:#f1ce82}.line-check-button.bad{color:#ffacb5;border-color:#85404b;background:#351e2a}.line-check-dialog{width:min(740px,calc(100% - 24px));max-height:calc(100dvh - 32px)}.line-check-dialog .dialog-shell{overflow:auto}.line-check-dialog h3{font-size:15px;margin:0 0 8px}.line-check-dialog p{font-size:13px;line-height:1.7}.line-check-sections{display:grid;grid-template-columns:1fr 1fr;gap:20px}.line-check-sections section{min-width:0}.line-check-evidence{font-size:12px;line-height:1.8;margin:7px 0;overflow-wrap:anywhere}.line-check-dialog form{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.line-check-dialog [data-check-action]{font-size:12px}
 @media(max-width:1150px) and (min-width:961px){.machine-budget-head{grid-template-columns:minmax(0,1fr) auto}.machine-speed{grid-row:2;grid-column:1/-1}.machine-speed svg{height:36px}}
 @media(max-width:600px){.machine-budget-head{grid-template-columns:minmax(0,1fr) auto;gap:10px}.machine-speed{grid-row:2;grid-column:1/-1}.machine-speed svg{height:42px}.line-check-sections{grid-template-columns:1fr}.machine-reset-check{gap:4px}.line-check-button{font-size:11px}.line-check-dialog .dialog-shell{padding:18px}}
+/* Selected deep-blue console: scoped to the authenticated dashboard. */
+body:has(.console-sidebar){background:#081326;--surface:#0d1b30;--surface-2:#122239;--accent:#6456db;--line:#273954;--success:#39d6b5}
+body:has(.console-sidebar) main{width:auto;max-width:1800px;margin:0 24px 40px 230px}
+.console-sidebar{position:fixed;inset:0 auto 0 0;width:206px;padding:25px 14px;background:#0c1730;border-right:1px solid #293d60;display:flex;flex-direction:column;z-index:5}
+.console-brand{color:#f3f7ff;font-size:21px;font-weight:750;text-decoration:none;white-space:nowrap}.console-brand b{color:#60deed;font-size:30px;font-style:italic;margin-right:5px}.console-sidebar p{font-size:12px;color:#b6c4dc;margin:4px 0 32px 8px}.console-sidebar nav{display:grid;gap:9px}.console-sidebar nav a{display:block;border:1px solid transparent;border-radius:10px;padding:12px 20px;color:#cdd7ec;text-decoration:none;font-size:15px}.console-sidebar nav a:hover{background:#162640}.console-sidebar nav a[aria-current=page]{background:#292968;border-color:#47429a;color:white}.console-sidebar>small{margin-top:auto;padding:16px 8px;color:#8c9dbb;font-size:11px}
+body:has(.console-sidebar) .topbar{background:transparent;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:15px 0;margin:0;gap:14px;flex-wrap:wrap}body:has(.console-sidebar) .topbar h1{font-size:28px;margin:0}.topbar .pill{font-size:11px;border:0;background:transparent;min-height:30px;padding:3px}.topbar button{font-size:12px;padding:7px 10px}.topbar .topbar-action{display:none}
+[data-console-views]{display:none!important}body[data-console-view=overview] [data-console-views~=overview],body[data-console-view=nodes] [data-console-views~=nodes],body[data-console-view=users] [data-console-views~=users],body[data-console-view=subscriptions] [data-console-views~=subscriptions],body[data-console-view=servers] [data-console-views~=servers],body[data-console-view=settings] [data-console-views~=settings]{display:block!important}
+body[data-console-view=overview] .metrics{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr));gap:0;margin:12px 0 18px}.metrics .metric{border:0;border-radius:0;box-shadow:none;background:transparent;padding:8px 24px;position:relative}.metrics .metric+ .metric{border-left:1px solid #334a70}.metrics .metric>strong{font-size:27px;margin:0;white-space:nowrap}.metrics .metric small{font-size:10px}.rate-rx{color:#55e1db}.rate-tx{color:#b6a0ff}
+.aggregate-chart{padding:14px 18px!important}.aggregate-chart .section-head{border:0;padding:0;margin-bottom:12px;align-items:center}.aggregate-chart h2{font-size:18px}.aggregate-chart h2 small{font-size:13px;font-weight:400}.aggregate-chart .section-head>span{font-size:12px}.aggregate-plot{position:relative;padding-left:58px}.aggregate-plot>span{position:absolute;left:0;top:0;font-size:10px;color:var(--muted);max-width:55px}.aggregate-plot svg{width:100%;height:160px;display:block}.aggregate-plot path{fill:none;vector-effect:non-scaling-stroke}.aggregate-plot .speed-rx-line,.aggregate-plot .speed-tx-line{stroke-width:2}.aggregate-legend{display:flex;gap:18px;justify-content:flex-end;font-size:10px;color:var(--muted);margin-top:8px}.aggregate-legend>span:first-child{margin-right:auto}
+body:has(.console-sidebar) .card{border-radius:12px}.machine-stats{padding:0!important;background:transparent;border:0;box-shadow:none}.machine-stats .machine-section-head{border:0;padding:5px 0;margin:0 0 10px;align-items:center}.machine-section-head h2{font-size:19px}.machine-count{border:0}.machine-budget-list{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:12px!important}.machine-budget-row{background:var(--surface)!important;border-radius:12px!important;padding:14px!important;overflow:hidden}.machine-budget-head{grid-template-columns:minmax(0,1fr) auto;gap:8px!important}.machine-budget-head>div:first-child>strong{font-size:16px}.machine-budget-head>div:first-child>small{font-size:10px}.machine-ip{font-size:10px;display:block}.machine-online{font-size:11px!important}.machine-online strong{font-size:17px}.machine-speed{grid-column:1/-1;grid-row:2;width:100%;margin:6px 0}.machine-speed-values{font-size:12px}.machine-speed svg{height:46px}.machine-budget-usage>strong{font-size:12px!important}.machine-budget-usage>span{font-size:10px!important}.machine-budget-meta{gap:6px!important;margin-top:10px!important;align-items:flex-end!important}.machine-reset-check{gap:6px}.machine-reset-check small{font-size:10px!important}.machine-budget-meta>button{font-size:11px!important;padding:6px 9px!important;white-space:nowrap}.machine-budget-row progress{height:6px!important}.machine-budget-usage [data-machine-forecast]{font-size:10px;font-weight:400}.line-check-button{font-size:10px;min-height:26px;padding:3px 7px}
+.traffic-card{padding:14px!important}.traffic-card .section-head{border:0;margin:0 0 8px;padding:0}.traffic-card h2{font-size:19px}.traffic-card p{font-size:11px;margin:0}.rank-list{gap:0}.rank-row{grid-template-columns:60px minmax(100px,1fr) 65px 125px minmax(100px,2fr);border:0;border-bottom:1px solid #20334e;background:transparent;border-radius:0;padding:7px 10px;gap:12px;font-size:13px}.rank-header{background:#15243c;color:var(--muted);font-size:11px}.rank-number{background:#4b407b;border-radius:5px;width:32px;text-align:center;font-size:12px}.rank-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rank-type{color:#cab6f1;font-size:11px}.rank-traffic{white-space:nowrap}.rank-row progress{width:100%;height:7px;accent-color:#9270ec}.rank-row progress::-webkit-progress-value{background:#9270ec}
+body[data-console-view=servers] .dashboard-trio{display:grid!important;grid-template-columns:1.3fr 1fr;margin-top:20px}.server-scope,.server-maintenance{grid-column:1/-1}.server-scope{margin:0}.server-maintenance p{font-size:12px}.server-maintenance p:last-child{margin:16px 0 0}#users,#subscriptions,#settings{margin-top:20px}.console-sidebar~#nodes{scroll-margin-top:15px}
+@media(min-width:1800px){body:has(.console-sidebar) main{margin-left:250px}}
+@media(max-width:1180px){.machine-budget-list{grid-template-columns:repeat(2,minmax(0,1fr))!important}.metrics .metric{padding:8px 12px}.metrics .metric>strong{font-size:21px}.topbar .pill{display:none}body[data-console-view=servers] .dashboard-trio{grid-template-columns:1fr}.rank-row{grid-template-columns:40px minmax(70px,1fr) 48px 100px minmax(60px,1fr);gap:8px}}
+@media(max-width:760px){body:has(.console-sidebar) main{margin:0 12px 24px}.console-sidebar{position:static;width:auto;padding:12px 0;border:0;background:transparent}.console-brand{font-size:19px}.console-sidebar p,.console-sidebar>small{display:none}.console-sidebar nav{display:flex;gap:6px;overflow-x:auto;margin-top:10px;padding-bottom:4px}.console-sidebar nav a{padding:9px 12px;white-space:nowrap;font-size:12px}.console-sidebar~.topbar{padding:6px 0 12px}.topbar h1{font-size:24px!important}.metrics .metric{padding:6px 8px}.metrics .metric>strong{font-size:18px}.metrics .metric small{display:none}.metrics .metric>span{font-size:11px}.aggregate-chart .section-head{align-items:flex-start;flex-direction:column;gap:2px}.aggregate-plot svg{height:130px}.aggregate-legend{gap:9px}.machine-budget-list{grid-template-columns:1fr!important}.rank-row{grid-template-columns:30px minmax(55px,1fr) 40px 90px;gap:5px;padding:8px 4px}.rank-row>progress,.rank-header>span:last-child{display:none}.rank-row{font-size:11px}.traffic-card .section-head p{font-size:10px}.machine-section-head .button-row{gap:2px}.machine-section-head h2{font-size:16px}.machine-count{font-size:10px;padding:2px}body[data-console-view=overview] .metrics{grid-template-columns:repeat(3,minmax(0,1fr));row-gap:10px}.metrics .metric:nth-child(4){border-left:0}.aggregate-legend>span:last-child{max-width:120px;text-align:right}.server-scope{font-size:12px}}
+
+body:has(.console-sidebar) .topbar{min-height:60px;box-shadow:none}.topbar::after,body:has(.console-sidebar)::before,.metrics .metric::before{display:none}.metrics .metric{min-height:70px}.rank-row{min-height:32px}.topbar .pill{border:0;background:transparent}.topbar .pill:last-of-type{display:none}.console-sidebar nav a{display:flex;align-items:center;gap:14px}.console-sidebar nav svg{width:20px;height:20px;flex-shrink:0}.machine-speed svg{max-height:46px}body:has(.console-sidebar) button:not(.secondary):not(.danger):not(.warning):not(.success):not(.ghost):not(.line-check-button){background:#5e50cc}.aggregate-chart{background:#0d1b30}.machine-section-head h2{font-size:19px}.traffic-card{background:#0d1b30}.skip-link:not(:focus){clip-path:inset(100%)}
+
+body:has(.console-sidebar) .topbar{padding:8px 0}.metrics .metric>small:not(.metric-warning){display:none}.metrics .metric-warning{font-size:9px}.machine-speed small{display:none}.machine-speed svg{height:34px;max-height:34px}.machine-speed{margin:2px 0}.machine-budget-row{padding:12px!important}.machine-budget-head{gap:6px!important}.machine-budget-head>div:first-child>small{font-size:9px}.machine-budget-meta>button{min-height:30px}.aggregate-plot svg{height:150px}.console-sidebar{isolation:isolate}.console-brand{flex-shrink:0}.console-sidebar nav a{min-height:44px}
+
+@media(max-width:760px){.console-sidebar nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible;gap:4px}.console-sidebar nav a{padding:9px 6px;font-size:12px;gap:6px;justify-content:center}.console-sidebar nav svg{width:17px;height:17px}.console-sidebar~.topbar{align-items:center}.console-sidebar~.topbar h1{width:auto;order:0}.console-sidebar~.topbar .logout-form{flex:0 0 auto}.machine-budget-meta>button,.line-check-button{min-height:44px}.aggregate-chart .section-head{margin-bottom:8px}}
+
+/* Desktop rate charts follow the selected reference: labeled area plot and
+   compact per-node chart with rates in a separate right-hand column. */
+@media(min-width:761px){
+.aggregate-chart{padding:13px 20px 10px!important;position:relative}.aggregate-chart .section-head{margin-bottom:18px;align-items:center}.aggregate-chart h2{font-size:20px;margin:0}.aggregate-chart h2 small{font-size:14px}.aggregate-current{display:flex;align-items:center;gap:18px;font-size:12px}.aggregate-current>span+span{padding-left:18px;border-left:1px solid #344664}.aggregate-current strong{font-size:14px}.aggregate-plot{display:grid;grid-template-columns:68px minmax(0,1fr) 66px;gap:0;padding:0;margin:0 0 2px}.aggregate-y-axis{position:relative;height:140px}.aggregate-y-axis>span{position:absolute;right:10px;transform:translateY(-50%);font-size:11px;white-space:nowrap;color:#c6d1e5}.aggregate-canvas{min-width:0}.aggregate-canvas svg{height:140px;width:100%;overflow:visible;border:1px solid #263c59}.aggregate-canvas .speed-grid{stroke:#354968;stroke-dasharray:3 3;stroke-width:.7}.aggregate-canvas .speed-rx-line{stroke:#00ddc7;stroke-width:2.5}.aggregate-canvas .speed-tx-line{stroke:#b49bff;stroke-width:2.5}.aggregate-plot .aggregate-rx-area{fill:url(#aggregate-rx-fill);stroke:none}.aggregate-plot .aggregate-tx-area{fill:url(#aggregate-tx-fill);stroke:none}.aggregate-x-axis{position:relative;height:26px;margin-top:5px}.aggregate-x-axis>span{position:absolute;transform:translateX(-50%);color:#c6d1e5;font-size:11px}.aggregate-series-key{display:flex;flex-direction:column;gap:10px;padding:0 0 0 16px;font-size:12px}.aggregate-series-key>span{display:flex;align-items:center;gap:6px;white-space:nowrap}.aggregate-series-key>span::before{content:"";width:18px;height:3px;background:currentColor;border-radius:3px}.aggregate-state{display:block;text-align:right;font-size:10px;line-height:14px}.machine-speed{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);display:grid;gap:16px;align-items:center;margin:12px 0 8px}.machine-speed-values{grid-column:2;grid-row:1;display:flex;flex-direction:column;gap:3px;border-left:1px solid #314665;padding-left:16px;justify-content:center;font-size:15px;font-weight:700;line-height:1.4}.machine-speed svg{grid-column:1;grid-row:1;height:48px;max-height:48px;min-width:0;width:100%;overflow:hidden}.machine-speed svg .speed-grid{stroke:#283b55;stroke-dasharray:none}.machine-speed svg .speed-rx-area{fill:#00ddc7;fill-opacity:.08}.machine-speed svg .speed-tx-area{fill:#b49bff;fill-opacity:.1}.machine-speed svg .speed-rx-line{stroke:#00ddc7;stroke-width:2}.machine-speed svg .speed-tx-line{stroke:#b49bff;stroke-width:2}.machine-speed-values [data-speed-rx]{color:#00ddc7}.machine-speed-values [data-speed-tx]{color:#b49bff}
+}
+
+@media(min-width:761px){body[data-console-view=overview] .machine-forecast-detail,body[data-console-view=overview] .machine-budget-usage>span{display:none}.aggregate-chart .section-head{margin-bottom:14px}.aggregate-state{line-height:12px}.machine-section-head{margin-bottom:8px!important}.console-sidebar~#nodes .machine-stats{margin-bottom:14px}}
+
+@media(min-width:761px){.console-config-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.console-config-grid>.card{margin:0;display:flex;flex-direction:column;align-items:flex-start;padding:24px}.console-config-grid h2{font-size:21px;margin:8px 0 14px}.console-config-grid p{font-size:14px;line-height:1.8;margin:0 0 24px}.console-config-grid button,.console-config-grid .button{margin-top:auto;min-width:150px}.config-kicker{font-size:10px;font-weight:700;letter-spacing:.12em;color:#a59aff}.module-intro{margin:24px 0 20px;font-size:14px}.console-settings-list{width:100%;margin:0 0 24px}.console-settings-list>div{display:flex;gap:16px;justify-content:space-between;border-bottom:1px solid #233650;padding:14px 0;font-size:14px}.console-settings-list dt{color:var(--muted)}.console-settings-list dd{margin:0;text-align:right;overflow-wrap:anywhere}body[data-console-view=nodes] .machine-section-head h2,body[data-console-view=users] .user-group-heading>h2{display:none}body[data-console-view=nodes] .machine-section-head{justify-content:flex-end;margin-top:12px}.user-section-head{align-items:center}}
+
+@media(min-width:761px){.rank-row{font-size:14px}.rank-header{font-size:12px}.machine-budget-usage>strong{font-size:14px!important}.aggregate-y-axis>span,.aggregate-x-axis>span{font-size:12px}.aggregate-series-key{font-size:13px}}
+
 """
 
-PAGE_SCRIPT = """
+PAGE_SCRIPT = """// Hash navigation preserves existing links and form endpoints.
+function selectConsoleView() {
+  if (!document.querySelector('.console-sidebar')) return;
+  const titles = {overview:'总览',nodes:'节点管理',users:'用户管理',subscriptions:'订阅管理',servers:'服务器管理',settings:'设置'};
+  let view = location.hash.slice(1);
+  try {
+    const returned = sessionStorage.getItem('hy2-console-return');
+    sessionStorage.removeItem('hy2-console-return');
+    if (!view && returned && Object.prototype.hasOwnProperty.call(titles, returned)) {
+      view = returned; history.replaceState(null, '', location.pathname+location.search+'#'+view);
+    }
+  } catch (_) {}
+  if (!Object.prototype.hasOwnProperty.call(titles, view)) view = location.search ? 'users' : 'overview';
+  document.body.dataset.consoleView = view;
+  document.querySelector('[data-console-title]').textContent = titles[view];
+  document.querySelectorAll('[data-console-nav]').forEach(function(link) {
+    if (link.dataset.consoleNav === view) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
+  });
+}
+if (document.querySelector('.console-sidebar')) {
+selectConsoleView();
+window.addEventListener('hashchange', selectConsoleView);
+window.addEventListener('popstate', selectConsoleView);
+window.addEventListener('submit', function(event) {
+  if (!event.defaultPrevented && event.target.method === 'post' && event.target.action.indexOf('/logout') === -1) {
+    try { sessionStorage.setItem('hy2-console-return', document.body.dataset.consoleView || 'overview'); } catch (_) {}
+  }
+});
+document.addEventListener('click', function(event) {
+  const nav = event.target.closest('[data-console-nav]');
+  if (nav && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+    event.preventDefault(); history.pushState(null, '', '#'+nav.dataset.consoleNav); selectConsoleView(); window.scrollTo({top:0,behavior:'instant'});
+  }
+  if (event.target.closest('[data-console-refresh]')) { event.preventDefault(); location.reload(); }
+});
+}
+function applyAggregateNetwork(payload) {
+  const target = document.querySelector('[data-aggregate-rx]'); if (!target) return;
+  const ids = Array.from(document.querySelectorAll('.machine-budget-row')).filter(function(card) { return card.querySelector('.machine-speed'); }).map(function(card) { return card.dataset.originId; });
+  const streams = ids.map(function(id) { return payload.network[id]; });
+  const now = Date.now()/1000;
+  const valid = function(n) { return Number.isFinite(n) && n >= 0; };
+  const fresh = streams.filter(function(n) { return n && n.fresh && Number.isFinite(n.observedAt) && valid(n.rx) && valid(n.tx) && now-n.observedAt >= -5 && now-n.observedAt <= 20; });
+  const complete = streams.length > 0 && fresh.length === streams.length;
+  ['rx','tx'].forEach(function(dir) {
+    const rate = complete ? networkRate(fresh.reduce(function(sum,n) { return sum+n[dir]; },0)) : '—';
+    document.querySelector('[data-total-'+dir+']').textContent = rate;
+    document.querySelector('[data-chart-'+dir+']').textContent = rate;
+  });
+  document.querySelector('[data-aggregate-state]').textContent = complete ? '全部 '+streams.length+' 台 · 每 5 秒刷新' : '数据不完整 · '+fresh.length+'/'+streams.length+' 台可用';
+  // Only sum aligned samples from every participating node. Gaps stay gaps.
+  const series = [];
+  for (let at = Math.floor(now/5)*5-295; at <= now; at+=5) {
+    const samples = streams.map(function(n) { return n && Array.isArray(n.points) ? n.points.filter(function(p) { return p && p.at <= at && at-p.at < 10 && valid(p.rx) && valid(p.tx); }).sort(function(a,b) { return b.at-a.at; })[0] : null; });
+    series.push({at:at, rx:samples.length && samples.every(Boolean) ? samples.reduce(function(s,p){return s+p.rx;},0) : null, tx:samples.length && samples.every(Boolean) ? samples.reduce(function(s,p){return s+p.tx;},0) : null});
+  }
+  const maximum = Math.max(1,...series.flatMap(function(p){return [p.rx,p.tx].filter(valid);}));
+  const hasData = series.some(function(p) { return valid(p.rx); });
+  const unit = maximum*8 >= 1000000 ? 1000000 : 1000;
+  const displayMax = maximum*8/unit;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(displayMax/6)));
+  const step = [1,2,5,10].map(function(n) { return n*magnitude; }).find(function(n) { return n>=displayMax/6; });
+  const ceiling = Math.ceil(displayMax/step)*step;
+  const scale = ceiling*unit/8;
+  const axis = document.querySelector('[data-aggregate-axis]'); axis.replaceChildren();
+  let grid = '';
+  for (let value=0; value<=ceiling+step/2; value+=step) {
+    const position = 100-value/ceiling*100;
+    const tick = document.createElement('span'); tick.style.top=position+'%';
+    tick.textContent = (hasData ? Number(value.toPrecision(3)) : '—')+' '+(unit===1000000?'Mbps':'Kbps');
+    axis.appendChild(tick);
+    grid+='M0 '+(position*1.6).toFixed(2)+'H1000 ';
+  }
+  const times = document.querySelector('[data-aggregate-times]'); times.replaceChildren();
+  const minute = Math.floor(now/60)*60;
+  for (let at=minute-240; at<=now; at+=60) {
+    const x=(at-now+300)/300*100;
+    if (x<0 || x>100) continue;
+    const label=document.createElement('span');label.style.left=x+'%';
+    label.textContent=new Date(at*1000).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit',hour12:false});times.appendChild(label);
+    grid+='M'+(x*10).toFixed(2)+' 0V160 ';
+  }
+  document.querySelector('[data-aggregate-grid]').setAttribute('d',grid);
+  ['rx','tx'].forEach(function(dir) {
+    let path='', prior=false;
+    series.forEach(function(p) { if (!valid(p[dir])) {prior=false;return;} path+=(prior?'L':'M')+((p.at-now+300)/300*1000).toFixed(1)+' '+(160-p[dir]/scale*160).toFixed(1)+' ';prior=true; });
+    document.querySelector('[data-aggregate-'+dir+']').setAttribute('d',path);
+    document.querySelector('[data-aggregate-'+dir+'-area]').setAttribute('d',chartArea(path,160));
+  });
+}
+function chartArea(path, baseline) {
+  // Each continuous segment closes separately; never fill a telemetry gap.
+  return (path.match(/M[^M]+/g)||[]).map(function(segment) {
+    const numbers=segment.trim().split(/[ML ]+/).filter(Boolean).map(Number);
+    return segment+'L'+numbers[numbers.length-2]+' '+baseline+'L'+numbers[0]+' '+baseline+'Z';
+  }).join(' ');
+
+}
+
 let noticeTimer;
 function notify(message, isError) {
   const dialogs = Array.from(document.querySelectorAll('dialog[open]'));
@@ -795,7 +927,10 @@ if (credentialsDialog) credentialsDialog.addEventListener('close', function() {
   const refresh = credentialsDialog.dataset.refreshOnClose === '1';
   credentialsDialog.querySelector('#credentials-uri').value = '';
   clearCredentialsQr();
-  if (refresh) window.location.href = new URLSearchParams(window.location.search).get('type') === 'premium' ? '/?type=premium' : '/';
+  if (refresh) {
+    const target = new URLSearchParams(window.location.search).get('type') === 'premium' ? '/?type=premium#users' : '/#users';
+    if (location.href === new URL(target, location.origin).href) location.reload(); else location.assign(target);
+  }
 });
 const nodeOnboardingDialog = document.getElementById('node-onboarding-dialog');
 if (nodeOnboardingDialog) nodeOnboardingDialog.addEventListener('close', function() {
@@ -999,6 +1134,11 @@ function applyOnlineStatus(payload) {
       return [card.dataset.originId, card];
     })
   );
+  const actualMachines = payload.machines.filter(function(m) { return m.onlineState !== 'history' && m.onlineState !== 'revoked'; });
+  const nodeCount = document.querySelector('[data-console-node-count]');
+  if (nodeCount) nodeCount.textContent = actualMachines.filter(function(m) { return m.onlineState === 'fresh'; }).length + ' / ' + actualMachines.length;
+  const allOnline = document.querySelector('[data-console-online]');
+  if (allOnline) allOnline.textContent = actualMachines.reduce(function(sum,m) { return sum+(m.onlineDevices || 0); },0);
   payload.machines.forEach(function(machine) {
     const card = machines.get(machine.originId);
     if (!card) return;
@@ -1049,7 +1189,7 @@ async function refreshOnlineStatus() {
     Math.max(0, 2000 - (Date.now() - startedAt))
   );
 }
-if (document.querySelector('[data-live-online-total]')) {
+if (document.querySelector('[data-live-online-total], [data-console-online]')) {
   window.setTimeout(refreshOnlineStatus, 2000);
 }
 const subscriptionDialog = document.getElementById('subscription-dialog');
@@ -1353,6 +1493,7 @@ function networkRate(value) {
 }
 function applyLineMonitor(payload) {
   if (!payload || typeof payload.network !== 'object' || typeof payload.checks !== 'object') return;
+  applyAggregateNetwork(payload);
   document.querySelectorAll('.machine-budget-row[data-origin-id]').forEach(function(card) {
     const id = card.dataset.originId;
     const network = payload.network[id] || {fresh:false,points:[]};
@@ -1360,8 +1501,8 @@ function applyLineMonitor(payload) {
     const speed = card.querySelector('.machine-speed');
     if (speed) {
       speed.dataset.stale = String(!fresh);
-      speed.querySelector('[data-speed-rx]').textContent = '↓ 入站 ' + networkRate(fresh ? network.rx : null);
-      speed.querySelector('[data-speed-tx]').textContent = '↑ 出站 ' + networkRate(fresh ? network.tx : null);
+      speed.querySelector('[data-speed-rx]').textContent = '↓ ' + networkRate(fresh ? network.rx : null);
+      speed.querySelector('[data-speed-tx]').textContent = '↑ ' + networkRate(fresh ? network.tx : null);
       speed.querySelector('[data-speed-time]').textContent = fresh ? '最近 5 分钟 · ' + liveTime(network.observedAt, false) : '网卡速度 · 数据缺失';
       const now = Date.now() / 1000;
       const points = (Array.isArray(network.points) ? network.points : []).filter(function(p) {
@@ -1379,6 +1520,8 @@ function applyLineMonitor(payload) {
           previous = p.at;
         });
         speed.querySelector('[data-speed-' + direction + '-line]').setAttribute('d', path);
+        const area = speed.querySelector('[data-speed-' + direction + '-area]');
+        if (area) area.setAttribute('d',chartArea(path,42));
       });
       speed.querySelector('svg').setAttribute('aria-label', '最近 5 分钟网卡速度，入站 ' + networkRate(fresh ? network.rx : null) + '，出站 ' + networkRate(fresh ? network.tx : null));
     }
@@ -1432,6 +1575,7 @@ async function refreshLineMonitor() {
     if (!response.ok) throw new Error('unavailable');
     applyLineMonitor(await response.json());
   } catch (error) {
+    applyAggregateNetwork({network:{}});
     document.querySelectorAll('.machine-speed').forEach(function(speed) {
       speed.dataset.stale = 'true'; speed.querySelector('[data-speed-rx]').textContent = '↓ 入站 —'; speed.querySelector('[data-speed-tx]').textContent = '↑ 出站 —'; speed.querySelector('[data-speed-time]').textContent = '实时数据暂不可用';
     });

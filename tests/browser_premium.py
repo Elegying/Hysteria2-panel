@@ -200,7 +200,7 @@ try:
         starts_at=1900000000,
         expires_at=2000000000,
     )
-    browser.navigate(fixture.base_url + "/")
+    browser.navigate(fixture.base_url + "/?type=standard#users")
     assert (
         browser.evaluate(
             "document.querySelector('.user-group-tabs [aria-current=page]').textContent"
@@ -268,7 +268,7 @@ try:
     browser.value("#node-hopping", "1", "change")
     browser.screenshot("premium-node-enrollment.png")
     browser.click("#node-onboarding-dialog [data-dialog-close]")
-    browser.click('[data-external-open]')
+    browser.click('#users [data-external-open]')
     browser.wait("document.querySelector('[data-ext-batch]') !== null")
     browser.value('[data-ext-batch]', 'anytls://browser-fixture@upstream.example.test:443#Browser%20node')
     browser.click('[data-ext-import]')
