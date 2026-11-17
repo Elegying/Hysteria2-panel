@@ -1286,6 +1286,8 @@ preflight_panel_acme_dns
         start = source.index("install_join_node()")
         join = source[start:source.index("\n}\n", start) + 2]
         join = join.replace("[[ -d /run/systemd/system ]]", "true")
+        hostname_start = source.index("preflight_public_hostname_separation()")
+        hostname_helper = source[hostname_start:source.index("\n}\n", hostname_start) + 2]
         dependency_helpers = ""
         if "ensure_node_dependencies()" in source:
             start = source.index("ensure_node_dependencies()")
@@ -1295,6 +1297,7 @@ preflight_panel_acme_dns
                 script = f"""
 set -euo pipefail
 {dependency_helpers}
+{hostname_helper}
 {join}
 PANEL_VERSION=0.39.4
 PANEL_REF=v0.39.4
