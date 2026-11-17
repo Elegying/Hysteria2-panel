@@ -8594,6 +8594,9 @@ class PanelHttpTests(unittest.TestCase):
         mutation_status = []
 
         def stage_archive(_stream, _content_length):
+            # Match the real stager: consume the upload before returning. Leaving
+            # unread TCP data can reset the response when the handler closes.
+            self.assertEqual(b"placeholder", _stream.read(_content_length))
             stage_started.set()
             if not release_stage.wait(2):
                 raise RuntimeError("test did not release restore staging")
