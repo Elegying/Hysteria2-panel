@@ -11,7 +11,7 @@ class FakeHopping:
     fail = False
 
     def status(self):
-        return {"enabled": self.enabled, "ports": "20000-50000", "target": 443}
+        return {"enabled": self.enabled, "ports": "2000-50000", "target": 443}
 
     def set_enabled(self, enabled):
         if self.fail:
@@ -42,13 +42,13 @@ class HoppingTests(unittest.TestCase):
                 self.assertEqual(action == "enable", json.load(response)["enabled"])
             with self.request(path) as response:
                 uri = base64.b64decode(response.read()).decode()
-                self.assertIn(":20000-50000/" if action == "enable" else ":443/", uri)
+                self.assertIn(":2000-50000/" if action == "enable" else ":443/", uri)
                 self.assertIn(user["token"], uri)
             with self.request(path + "?format=clash") as response:
                 proxy = json.load(response)["proxies"][0]
                 self.assertEqual(action == "enable", "ports" in proxy)
                 if action == "enable":
-                    self.assertEqual("20000-50000", proxy["ports"])
+                    self.assertEqual("2000-50000", proxy["ports"])
                     self.assertEqual(30, proxy["hop-interval"])
             self.assertEqual(sub, self.db.ensure_subscription(user["id"]))
         with self.request("/", headers=headers) as response:
@@ -76,7 +76,7 @@ class HoppingTests(unittest.TestCase):
                  self.request(path, headers={'User-Agent': agent}) as response:
                 proxy = json.load(response)["proxies"][0]
                 self.assertEqual(443, proxy["port"])
-                self.assertEqual("20000-50000", proxy["ports"])
+                self.assertEqual("2000-50000", proxy["ports"])
                 self.assertEqual(30, proxy["hop-interval"])
                 self.assertEqual(user["token"], proxy["password"])
                 self.assertIn(
@@ -101,7 +101,7 @@ class HoppingTests(unittest.TestCase):
             self.assertIsNone(response.headers.get("Subscription-Userinfo"))
             self.assertIn("STATUS=剩余 247.00 / 250 GiB · 已用 3.00 GiB · 永久", text)
             self.assertIn(":443/", text)
-            self.assertIn("mport=20000-50000", text)
+            self.assertIn("mport=2000-50000", text)
             self.assertIn("keepalive=30", text)
 
     def test_hopping_only_applies_to_matching_local_endpoint(self):
@@ -183,7 +183,7 @@ class HoppingFirewallTests(unittest.TestCase):
             with mock.patch.object(panel.PortHoppingController, 'STATE', state), \
                  mock.patch.object(os, 'geteuid', return_value=0), \
                  mock.patch.object(Path, 'lstat', metadata), \
-                 mock.patch.object(panel.Settings, 'from_mapping', return_value=SimpleNamespace(hysteria_port=443)), \
+                 mock.patch.object(panel.Settings, 'from_mapping', return_value=SimpleNamespace(hysteria_port=443, panel_port=19999)), \
                  mock.patch.object(panel, 'exclusive_maintenance_lock', return_value=contextlib.nullcontext()), \
                  mock.patch.object(panel.subprocess, 'run', side_effect=run):
                 panel.apply_port_hopping(True)
@@ -191,7 +191,7 @@ class HoppingFirewallTests(unittest.TestCase):
                 {"enabled": True, "target": 443}, json.loads(state.read_text())
             )
             script = calls[-1][1]["input"]
-            self.assertIn("udp dport 20000-50000 redirect to :443", script)
+            self.assertIn("udp dport 2000-50000 redirect to :443", script)
             self.assertIn("tcp dport 20000-50000 redirect to :443", script)
             self.assertIn("fib daddr type local", script)
             self.assertNotIn("flush ruleset", script)

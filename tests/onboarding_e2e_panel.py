@@ -89,7 +89,9 @@ def main():
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(ROOT/'tls.crt', ROOT/'tls.key')
     server.tls_context = context
-    command = issued['deploymentCommand']
+    import re
+    token = re.search(r"HY2PANEL_ENROLLMENT_TOKEN='([^']+)'", issued['deploymentCommand'])[1]
+    command = app.node_enrollment_service._verified_deployment_command(token)
     command = command.replace('https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v'+PANEL_VERSION+'/install.sh', URL+'/assets/install.sh')
     command = command.replace('https://github.com/Elegying/Hysteria2-panel/releases/download/v'+PANEL_VERSION+'/install.sh.sigstore.json', URL+'/assets/install.sh.sigstore.json')
     command = command.replace('https://github.com/sigstore/cosign/releases/download/v3.1.3/$cosign_asset', URL+'/assets/cosign')

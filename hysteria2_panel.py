@@ -3838,7 +3838,7 @@ class Database:
             result.append({"node_id": row["node_id"], "label": row["line_label"],
                 "host": row["line_host"], "port": row["line_port"],
                 "pin_sha256": identity["certificateDerSha256"], "sni": self._certificate_server_name(identity["certificatePem"]), "enabled": True,
-                **({"hop_ports": "20000-50000"} if row["port_hopping"] else {})})
+                **({"hop_ports": "2000-50000"} if row["port_hopping"] else {})})
             seen.add(row["region"])
         return result
 
@@ -7563,13 +7563,13 @@ def build_connection_uri(host, port, auth, pin_sha256, label, hop_ports=None, sh
     parameters = {"insecure": "1", "pinSHA256": pin_sha256}
     if sni:
         parameters["sni"] = sni
-    if shadowrocket and hop_ports == PortHoppingController.PORTS:
+    if shadowrocket and hop_ports in {PortHoppingController.PORTS, "20000-50000"}:
         parameters.update(mport=hop_ports, keepalive="30")
     query = urllib.parse.urlencode(parameters)
     return "hysteria2://{}@{}:{}/?{}#{}".format(
         encoded_auth,
         bracketed_host,
-        hop_ports if hop_ports == PortHoppingController.PORTS and not shadowrocket else int(port),
+        hop_ports if hop_ports in {PortHoppingController.PORTS, "20000-50000"} and not shadowrocket else int(port),
         query,
         urllib.parse.quote(label, safe=""),
     )
@@ -9793,7 +9793,7 @@ class PanelHandler(JsonHandler):
                     nodes.append({"node_id": remote["node_id"], "label": remote["name"],
                         "host": remote["subscription_host"], "port": remote["subscription_port"],
                         "pin_sha256": self.app.pin_sha256, "enabled": True,
-                        **({"hop_ports": "20000-50000"} if remote["port_hopping"] else {})})
+                        **({"hop_ports": "2000-50000"} if remote["port_hopping"] else {})})
             else:
                 # A standard account may never publish a premium registry node.
                 with self.app.database._connect() as connection:
@@ -12008,7 +12008,7 @@ class PortHoppingController:
     """Fixed local UDP forwarding; browser input never becomes a firewall command."""
     UNIT = "hysteria2-panel-port-hopping.service"
     STATE = Path("/etc/hysteria2-panel/.port-hopping.json")
-    PORTS = "20000-50000"
+    PORTS = "2000-50000"
 
     def __init__(self, runner=subprocess.run, state_path=STATE):
         self.runner = runner
@@ -12050,7 +12050,7 @@ def apply_port_hopping(enabled):
         raise RuntimeError("unsafe configuration directory")
     env = Settings.from_mapping(os.environ)
     target = 443 if Path('/etc/hysteria2-panel/hysteria-443.yaml').is_file() else env.hysteria_port
-    if 20000 <= target <= 50000:
+    if 2000 <= target <= 50000:
         raise RuntimeError("跳跃范围不能包含服务监听端口")
     table = "hy2_port_hopping"
     with exclusive_maintenance_lock(blocking=True):
@@ -12061,7 +12061,10 @@ def apply_port_hopping(enabled):
             # TCP uses the existing compatibility probe; proxy traffic stays UDP.
             commands += "table inet " + table + " {\n chain prerouting {\n type nat hook prerouting priority dstnat; policy accept;\n"
             for protocol in ("udp", "tcp"):
-                commands += f' iifname != "lo" fib daddr type local {protocol} dport 20000-50000 redirect to :{target};\n'
+                ports = PortHoppingController.PORTS if protocol == "udp" else "20000-50000"
+                if protocol == "tcp" and 20000 <= env.panel_port <= 50000:
+                    continue
+                commands += f' iifname != "lo" fib daddr type local {protocol} dport {ports} redirect to :{target};\n'
             commands += " }\n}\n"
         if commands:
             subprocess.run(["/usr/sbin/nft", "-c", "-f", "-"], input=commands, text=True, check=True, capture_output=True)  # nosec B603 -- fixed executable and validated local numeric configuration.

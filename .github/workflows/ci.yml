@@ -184,7 +184,7 @@ jobs:
               "https://raw.githubusercontent.com/"
               "Elegying/Hysteria2-panel/main/install.sh"
           )
-          quick_command = readme.split('```bash\n', 1)[1].split('```', 1)[0]
+          quick_command = readme.split('```bash\n')[2].split('```', 1)[0]
           if any(marker not in quick_command for marker in (
               versionless_url, 'command -v bash', '/run/systemd/system',
               'umask 077', 'trap', 'mktemp', 'DNS', 'bash "$i"',

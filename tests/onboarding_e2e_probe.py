@@ -28,7 +28,7 @@ node = next(p for p in config['proxies'] if p['server'] == 'node.e2e.test')
 assert node['password'] == record['password']
 assert node['port'] == (443 if record['hopping'] else 19999)
 if record['hopping']:
-    assert node['ports'] == '20000-50000'
+    assert node['ports'] == '2000-50000'
 pin = node.get('fingerprint', node.get('pinSHA256'))
 runner = HysteriaCanaryRunner('node.e2e.test', hysteria_path='/fixture/assets/hysteria-linux-amd64')
 runner.TRACE_URLS = {4:'https://panel.e2e.test:19998/cdn-cgi/trace'}

@@ -89,7 +89,10 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
         self.assertEqual("pending_registration", node["status"])
         self.assertEqual("8.8.8.10", node["expected_ip"])
         self.assertEqual(self.now[0] + 600, issued["expiresAt"])
-        command = issued["deploymentCommand"]
+        short_command = issued["deploymentCommand"]
+        self.assertLess(len(short_command), 600)
+        self.assertIn("/bootstrap.sh", short_command)
+        command = self.service._verified_deployment_command(token_from_command(short_command), mode=issued["mode"])
         self.assertIn("v0.25.0", command)
         self.assertIn("install.sh.sigstore.json", command)
         self.assertIn("verify-blob", command)
@@ -112,7 +115,10 @@ class NodeEnrollmentDatabaseTests(unittest.TestCase):
 
     def test_existing_node_rebind_is_explicit_and_uses_the_same_signed_release(self):
         issued = self.create(mode="rebind")
-        command = issued["deploymentCommand"]
+        short_command = issued["deploymentCommand"]
+        self.assertLess(len(short_command), 600)
+        self.assertIn("/bootstrap.sh", short_command)
+        command = self.service._verified_deployment_command(token_from_command(short_command), mode=issued["mode"])
 
         self.assertEqual("REBIND_PENDING_REGISTRATION", issued["status"])
         self.assertEqual("rebind", issued["mode"])
