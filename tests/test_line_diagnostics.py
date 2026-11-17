@@ -186,6 +186,24 @@ class ProbeTests(unittest.TestCase):
             any(c.args[0] == "measurements" for c in client.request.call_args_list)
         )
 
+    def test_local_hopping_requires_external_evidence_instead_of_false_failure(self):
+        grants = DiagnosticGrants()
+        app = SimpleNamespace(database=SimpleNamespace(diagnostic_grants=grants))
+        client, _ = self.client()
+        monitor = LineMonitor(app, client)
+        target = dict(ip="8.8.8.8", scope="local", host="dns.google", pin="a" * 64,
+                      port=19999, hopping=True, hopStart=2000)
+        with contextlib.ExitStack() as stack:
+            runner = stack.enter_context(mock.patch("hy2panel.nodes.HysteriaCanaryRunner._check_entrypoint"))
+            stack.enter_context(mock.patch("socket.getaddrinfo", return_value=[]))
+            stack.enter_context(mock.patch("socket.create_connection"))
+            monitor._check("local:1", target)
+        self.assertEqual([443, 19999], [call.args[1] for call in runner.call_args_list])
+        checks = monitor.snapshot(["local:1"])["checks"]["local:1"]["proxy"]
+        self.assertEqual("unknown", checks[-1]["state"])
+        self.assertIn("外部验证", checks[-1]["reason"])
+        self.assertFalse(any(row["state"] == "fail" for row in checks))
+
     def test_monitor_never_retains_credentials_or_claims_domestic_udp_passed(self):
         grants = DiagnosticGrants()
         app = SimpleNamespace(database=SimpleNamespace(diagnostic_grants=grants))

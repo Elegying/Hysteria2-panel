@@ -1335,7 +1335,7 @@ function lineVerdict(check) {
   if (proxy.some(function(row) { return row.state === 'fail'; })) return {text:'代理实测异常', kind:'bad'};
   if (check.dns === 'fail') return {text:'域名未包含本节点', kind:'bad'};
   if (rows.some(function(row) { return row.state === 'fail'; })) return {
-    text:check.failureRounds >= 2 && (check.tcpReference || []).length === (check.expectedPorts || 2) && check.tcpReference.every(function(row) { return row.state === 'pass'; }) && proxy.length && proxy.every(function(row) { return row.state === 'pass'; }) ? '疑似国内路径受阻' : '国内 TCP 异常 · 待复测', kind:'bad'};
+    text:check.failureRounds >= 2 && (check.tcpReference || []).length === (check.expectedPorts || 2) && check.tcpReference.every(function(row) { return row.state === 'pass'; }) && proxy.length && proxy.some(function(row) { return row.state === 'pass'; }) && proxy.every(function(row) { return row.state === 'pass' || row.state === 'unknown'; }) ? '疑似国内路径受阻' : '国内 TCP 异常 · 待复测', kind:'bad'};
   if (rows.length === 3 * (check.expectedPorts || 2) && rows.every(function(row) { return row.state === 'pass'; }) && !check.domesticError) return {text:'TCP 可达 · 国内 UDP 未验证', kind:'warning'};
   return {text:'检测不完整 · 无法判定', kind:'warning'};
 }
@@ -1408,7 +1408,7 @@ function applyLineMonitor(payload) {
       line.textContent = '面板侧 TCP ' + row.port + ' 基准：' + (row.state === 'pass' ? '可达' : '失败，不能据此推断国内封锁'); proxy.appendChild(line);
     });
     (check.proxy || []).forEach(function(row) {
-      const line = document.createElement('p'); line.className = 'line-check-evidence ' + (row.state === 'pass' ? 'ok' : 'bad');
+      const line = document.createElement('p'); line.className = 'line-check-evidence ' + ({pass:'ok',fail:'bad',unknown:'muted'}[row.state] || 'muted');
       line.textContent = 'UDP ' + row.port + '：' + (row.state === 'pass' ? '代理认证与 HTTPS 出网成功' : (row.reason || '连接或出网失败')); proxy.appendChild(line);
     });
     dialog.querySelector('[data-check-dns]').textContent = '面板侧域名解析：' + ({pass:'包含当前节点 IP',fail:'未包含当前节点 IP',unknown:'未取得结果'}[check.dns] || '未验证');
