@@ -1,3 +1,4 @@
+import contextlib
 import json
 import tempfile
 import threading
@@ -189,17 +190,12 @@ class ProbeTests(unittest.TestCase):
             self.assertFalse(grants.allows("local", token))
             self.assertEqual("https://www.cloudflare.com/cdn-cgi/trace", trace)
 
-        with (
-            mock.patch(
-                "hy2panel.nodes.HysteriaCanaryRunner._check_entrypoint",
-                side_effect=check,
-            ),
-            mock.patch(
-                "socket.getaddrinfo",
-                return_value=[(None, None, None, None, ("8.8.8.8", 443))],
-            ),
-            mock.patch("socket.create_connection"),
-        ):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch(
+                "hy2panel.nodes.HysteriaCanaryRunner._check_entrypoint", side_effect=check))
+            stack.enter_context(mock.patch(
+                "socket.getaddrinfo", return_value=[(None, None, None, None, ("8.8.8.8", 443))]))
+            stack.enter_context(mock.patch("socket.create_connection"))
             monitor._check("node:1", target)
         result = monitor.snapshot(["node:1"])["checks"]["node:1"]
         self.assertEqual("unverified", result["domesticUdp"])
