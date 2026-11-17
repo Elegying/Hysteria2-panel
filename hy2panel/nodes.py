@@ -822,10 +822,16 @@ printf '%s  %s\\n' "$cosign_sha" "$join_tmp/cosign" | sha256sum --check --status
 chmod 0700 "$join_tmp/cosign"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {installer} -o "$join_tmp/install.sh"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {bundle} -o "$join_tmp/install.sh.sigstore.json"
-"$join_tmp/cosign" verify-blob "$join_tmp/install.sh" \
+signature_verified=0
+for signature_attempt in 1 2 3; do
+  if "$join_tmp/cosign" verify-blob "$join_tmp/install.sh" \
   --bundle "$join_tmp/install.sh.sigstore.json" \
   --certificate-identity {identity} \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com; then signature_verified=1; break; fi
+  if [[ "$signature_attempt" != 3 ]]; then sleep 3; fi
+done
+[[ "$signature_verified" == 1 ]] || {{ echo '签名验证失败，未执行安装器；请检查网络后重试' >&2; exit 1; }}
+
 bash -n "$join_tmp/install.sh"
 /bin/rm -f -- "$join_tmp/cosign" "$join_tmp/install.sh.sigstore.json"
 export HY2PANEL_PANEL_URL={panel_url}
@@ -1247,10 +1253,16 @@ printf '%s  %s\\n' "$cosign_sha" "$bootstrap_tmp/cosign" | sha256sum --check --s
 chmod 0700 "$bootstrap_tmp/cosign"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {installer} -o "$bootstrap_tmp/install.sh"
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 {bundle} -o "$bootstrap_tmp/install.sh.sigstore.json"
-"$bootstrap_tmp/cosign" verify-blob "$bootstrap_tmp/install.sh" \
+signature_verified=0
+for signature_attempt in 1 2 3; do
+  if "$bootstrap_tmp/cosign" verify-blob "$bootstrap_tmp/install.sh" \
   --bundle "$bootstrap_tmp/install.sh.sigstore.json" \
   --certificate-identity {identity} \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com; then signature_verified=1; break; fi
+  if [[ "$signature_attempt" != 3 ]]; then sleep 3; fi
+done
+[[ "$signature_verified" == 1 ]] || {{ echo '签名验证失败，未执行安装器；请检查网络后重试' >&2; exit 1; }}
+
 bash -n "$bootstrap_tmp/install.sh"
 export HY2PANEL_PANEL_URL={panel_url}
 export HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN={token}

@@ -116,3 +116,18 @@ bootstrap_workspace_directory
             self.assertEqual(expected, actual)
             self.assertLess(command.index('workspace_parent='), command.index('curl -q'))
             subprocess.run(['bash', '-n'], input=command, text=True, check=True)
+
+    def test_signature_retries_are_bounded_and_never_accept_failure(self):
+        source = (ROOT / 'bootstrap.sh').read_text()
+        verification = source[source.index('signature_verified=0'):source.index('\nbash -n ')]
+        for failures, expected_status, expected_calls in ((1, 0, 2), (9, 1, 3)):
+            with self.subTest(failures=failures), tempfile.TemporaryDirectory() as root:
+                verifier = Path(root) / 'cosign'
+                verifier.write_text('#!/bin/bash\nn=$(cat "$COUNT" 2>/dev/null || echo 0)\nn=$((n+1))\necho "$n" > "$COUNT"\n[[ "$n" -gt "$FAILURES" ]]\n')
+                verifier.chmod(0o700)
+                result = subprocess.run(['bash', '-c', 'sleep() { :; }\n'+verification+'\necho accepted'],
+                    env=dict(os.environ, join_tmp=root, COUNT=root+'/count', FAILURES=str(failures)),
+                    capture_output=True, text=True)
+                self.assertEqual(expected_status, result.returncode)
+                self.assertEqual(expected_calls, int((Path(root)/'count').read_text()))
+                self.assertEqual(expected_status == 0, 'accepted' in result.stdout)
