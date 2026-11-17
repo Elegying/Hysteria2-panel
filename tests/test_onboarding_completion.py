@@ -83,11 +83,12 @@ class OnboardingCompletionTests(unittest.TestCase):
                 'mktemp': 'exec /usr/bin/mktemp -d', 'rm': 'exec /bin/rm "$@"',
                 'apt-get': 'echo apt >> "$AUDIT_LOG"; if [ "$1" = install ]; then printf \'#!/bin/sh\\necho curl >> "$AUDIT_LOG"\\nexit 42\\n\' > "$BIN/curl"; /bin/chmod 755 "$BIN/curl"; fi',
                 'sha256sum': 'exit 0',
+                'stat': 'echo ext2/ext3',
             }.items():
                 path = root / name
                 path.write_text('#!/bin/sh\n' + body + '\n')
                 path.chmod(0o755)
-            result = subprocess.run(['/bin/bash', '-c', service._verified_deployment_command('a'*40).replace('/run/systemd/system', directory)],
+            result = subprocess.run(['/bin/bash', '-c', service._verified_deployment_command('a'*40).replace('/run/systemd/system', directory).replace('local directory=/tmp', 'local directory='+directory)],
                 env={**os.environ, 'PATH': directory, 'BIN': directory, 'AUDIT_LOG': str(log)},
                 capture_output=True, text=True)
             self.assertEqual(42, result.returncode, result.stderr)
@@ -104,6 +105,7 @@ class OnboardingCompletionTests(unittest.TestCase):
                 'id': 'echo 0',
                 'uname': 'if [ "$1" = -s ]; then echo Linux; else echo x86_64; fi',
                 'sha256sum': 'exit 0',
+                'stat': 'echo ext2/ext3',
                 'apt-get': 'exit 0',
                 'curl': '''for arg; do dest="$arg"; done
 case "$dest" in
@@ -126,7 +128,7 @@ esac''',
                 path.chmod(0o755)
             env = {**os.environ, 'PATH': directory+':/usr/bin:/bin',
                    'VERIFIED': str(root/'verified'), 'INSTALLED': str(root/'installed')}
-            command = service._verified_deployment_command('a'*40).replace('/run/systemd/system', directory)
+            command = service._verified_deployment_command('a'*40).replace('/run/systemd/system', directory).replace('local directory=/tmp', 'local directory='+directory)
             result = subprocess.run(['/bin/bash', '-c', command], env=env, capture_output=True, text=True)
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertTrue((root/'installed').exists())

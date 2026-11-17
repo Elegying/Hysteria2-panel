@@ -768,8 +768,6 @@ fi
 if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
   echo '完整面板服务器不能作为对接节点' >&2; exit 1
 fi
-join_tmp="$(mktemp -d -t hy2panel-node-join.XXXXXXXX)"
-trap 'rm -rf -- "$join_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in
   x86_64|amd64) cosign_asset=cosign-linux-amd64; cosign_sha={cosign_sha_amd64} ;;
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
@@ -778,6 +776,7 @@ esac
 bootstrap_dependencies=0
 command -v curl >/dev/null 2>&1 || bootstrap_dependencies=1
 command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
+command -v stat >/dev/null 2>&1 || bootstrap_dependencies=1
 if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
 if [ "$bootstrap_dependencies" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
@@ -786,17 +785,34 @@ if [ "$bootstrap_dependencies" -eq 1 ]; then
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y ca-certificates
     command -v curl >/dev/null 2>&1 || dnf install -y curl
-    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then dnf install -y coreutils; fi
   elif command -v yum >/dev/null 2>&1; then
     yum install -y ca-certificates
     command -v curl >/dev/null 2>&1 || yum install -y curl
-    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then yum install -y coreutils; fi
   else
     echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
   fi
 fi
 command -v curl >/dev/null 2>&1
 command -v sha256sum >/dev/null 2>&1
+command -v stat >/dev/null 2>&1
+bootstrap_workspace_directory() {{
+  local directory=/tmp filesystem
+  [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '安装暂存目录无效' >&2; return 1; }}
+  filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+  if [[ "${{filesystem}}" == tmpfs || "${{filesystem}}" == ramfs ]]; then
+    directory=/var/tmp
+    [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '需要真实的 /var/tmp 磁盘目录用于验签暂存' >&2; return 1; }}
+    filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+    [[ "${{filesystem}}" != tmpfs && "${{filesystem}}" != ramfs ]] || {{ echo '/tmp 和 /var/tmp 均为内存盘，请为 /var/tmp 提供磁盘空间' >&2; return 1; }}
+    echo '验签暂存：/tmp 是内存盘，改用 /var/tmp。' >&2
+  fi
+  printf '%s\\n' "${{directory}}"
+}}
+workspace_parent="$(bootstrap_workspace_directory)"
+join_tmp="$(TMPDIR="$workspace_parent" mktemp -d -t hy2panel-node-join.XXXXXXXX)"
+trap 'rm -rf -- "$join_tmp"' EXIT HUP INT TERM
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$join_tmp/cosign"
@@ -1177,8 +1193,6 @@ fi
 if [ -e /etc/hysteria2-panel/.managed-by-installer ]; then
   echo '完整面板服务器不能作为对接节点' >&2; exit 1
 fi
-bootstrap_tmp="$(mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
-trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
 case "$(uname -m)" in
   x86_64|amd64) cosign_asset=cosign-linux-amd64; cosign_sha={cosign_sha_amd64} ;;
   aarch64|arm64) cosign_asset=cosign-linux-arm64; cosign_sha={cosign_sha_arm64} ;;
@@ -1187,6 +1201,7 @@ esac
 bootstrap_dependencies=0
 command -v curl >/dev/null 2>&1 || bootstrap_dependencies=1
 command -v sha256sum >/dev/null 2>&1 || bootstrap_dependencies=1
+command -v stat >/dev/null 2>&1 || bootstrap_dependencies=1
 if [ ! -s /etc/ssl/certs/ca-certificates.crt ] && [ ! -s /etc/pki/tls/certs/ca-bundle.crt ]; then bootstrap_dependencies=1; fi
 if [ "$bootstrap_dependencies" -eq 1 ]; then
   if command -v apt-get >/dev/null 2>&1; then
@@ -1195,17 +1210,34 @@ if [ "$bootstrap_dependencies" -eq 1 ]; then
   elif command -v dnf >/dev/null 2>&1; then
     dnf install -y ca-certificates
     command -v curl >/dev/null 2>&1 || dnf install -y curl
-    command -v sha256sum >/dev/null 2>&1 || dnf install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then dnf install -y coreutils; fi
   elif command -v yum >/dev/null 2>&1; then
     yum install -y ca-certificates
     command -v curl >/dev/null 2>&1 || yum install -y curl
-    command -v sha256sum >/dev/null 2>&1 || yum install -y coreutils
+    if ! command -v sha256sum >/dev/null 2>&1 || ! command -v stat >/dev/null 2>&1; then yum install -y coreutils; fi
   else
     echo '请先安装 curl、ca-certificates 和 coreutils，然后重新运行对接代码' >&2; exit 1
   fi
 fi
 command -v curl >/dev/null 2>&1
 command -v sha256sum >/dev/null 2>&1
+command -v stat >/dev/null 2>&1
+bootstrap_workspace_directory() {{
+  local directory=/tmp filesystem
+  [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '安装暂存目录无效' >&2; return 1; }}
+  filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+  if [[ "${{filesystem}}" == tmpfs || "${{filesystem}}" == ramfs ]]; then
+    directory=/var/tmp
+    [[ -d "${{directory}}" && ! -L "${{directory}}" ]] || {{ echo '需要真实的 /var/tmp 磁盘目录用于验签暂存' >&2; return 1; }}
+    filesystem="$(stat -f -c %T "${{directory}}")" || return 1
+    [[ "${{filesystem}}" != tmpfs && "${{filesystem}}" != ramfs ]] || {{ echo '/tmp 和 /var/tmp 均为内存盘，请为 /var/tmp 提供磁盘空间' >&2; return 1; }}
+    echo '验签暂存：/tmp 是内存盘，改用 /var/tmp。' >&2
+  fi
+  printf '%s\\n' "${{directory}}"
+}}
+workspace_parent="$(bootstrap_workspace_directory)"
+bootstrap_tmp="$(TMPDIR="$workspace_parent" mktemp -d -t hy2panel-data-plane.XXXXXXXX)"
+trap 'rm -rf -- "$bootstrap_tmp"' EXIT HUP INT TERM
 curl -q -fL --retry 3 --connect-timeout 10 --max-time 300 \
   "https://github.com/sigstore/cosign/releases/download/v{cosign_version}/$cosign_asset" \
   -o "$bootstrap_tmp/cosign"

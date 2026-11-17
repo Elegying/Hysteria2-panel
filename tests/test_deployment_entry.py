@@ -5,7 +5,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from hy2panel.nodes import NodeEnrollmentService
+from hy2panel.nodes import NodeEnrollmentService, DataPlaneBootstrapService
 from hy2panel.version import PANEL_VERSION
 
 
@@ -103,3 +103,16 @@ bootstrap_workspace_directory
         self.assertLess(bootstrap.index('command -v stat >/dev/null 2>&1\nbootstrap_workspace_directory'),
                         bootstrap.index('join_parent="$(bootstrap_workspace_directory)"'))
         self.assertLess(bootstrap.index('join_tmp='), bootstrap.index('curl -q'))
+
+    def test_generated_maintenance_commands_share_disk_staging_policy(self):
+        expected = (ROOT / 'bootstrap.sh').read_text().split('bootstrap_workspace_directory() {', 1)[1].split('\n}\n', 1)[0]
+        for cls, method in ((NodeEnrollmentService, '_verified_deployment_command'),
+                            (DataPlaneBootstrapService, '_deployment_command')):
+            service = cls.__new__(cls)
+            service.panel_url = 'https://panel.example.com'
+            service.panel_version = PANEL_VERSION
+            command = getattr(service, method)('x' * 40)
+            actual = command.split('bootstrap_workspace_directory() {', 1)[1].split('\n}\n', 1)[0]
+            self.assertEqual(expected, actual)
+            self.assertLess(command.index('workspace_parent='), command.index('curl -q'))
+            subprocess.run(['bash', '-n'], input=command, text=True, check=True)
