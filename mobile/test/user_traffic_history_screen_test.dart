@@ -124,12 +124,6 @@ void main() {
         }
         await tester.ensureVisible(find.text('测试用户').first);
         await tester.pumpAndSettle();
-        await tester.tap(find.text('测试用户').first);
-        await tester.pumpAndSettle();
-        await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
-        await tester.pumpAndSettle();
-        await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
-        await tester.pumpAndSettle();
         await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
         await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('完整详情与其他操作').last);

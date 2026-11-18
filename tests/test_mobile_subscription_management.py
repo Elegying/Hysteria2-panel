@@ -46,6 +46,42 @@ class MobileSubscriptionManagementTests(unittest.TestCase):
         self.assertEqual('example.invalid', saved['host'])
         self.assertLessEqual(set(saved), {'label', 'host', 'port', 'pin_sha256', 'enabled', 'node_id'})
 
+    def test_reused_user_id_rejects_actions_for_previous_owner(self):
+        previous, _ = self.create(userType=0)
+        path = 'users/{}'.format(previous['id'])
+        _, old_subscription = self.request('GET', path + '/subscription')
+        self.request('DELETE', path, {'generation': previous['generation']})
+        self.request('POST', 'users', {'name': 'replacement', 'userType': 1})
+        _, response = self.request('GET', path + '/subscription')
+        current = response['data']
+        self.assertEqual('replacement', current['name'])
+        self.assertEqual(previous['generation'], current['generation'])
+        self.assertEqual(old_subscription['data']['subscriptionId'], current['subscriptionId'])
+        target = {'generation': current['generation'], 'expectedName': previous['name']}
+        for method, route, body in (
+            ('POST', path + '/share', target),
+            ('POST', path + '/disable', target),
+            ('POST', path + '/rotate-secret', target),
+            ('POST', path + '/reset-traffic', target),
+            ('POST', path + '/subscription-disable', dict(target, revision=current['revision'])),
+            ('PATCH', path, dict(target, deviceLimit=4, trafficLimitGb=10)),
+            ('DELETE', path, target),
+            ('POST', 'subscriptions/{}/nodes'.format(current['subscriptionId']),
+             {'expectedName': previous['name'], 'nodes': []}),
+            ('POST', 'subscriptions/{}/delete'.format(current['subscriptionId']),
+             {'expectedName': previous['name'], 'confirm': str(current['subscriptionId'])}),
+        ):
+            with self.subTest(method=method, route=route):
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    self.request(method, route, body)
+                self.assertEqual(409, error.exception.code)
+                error.exception.close()
+        _, response = self.request('GET', path + '/subscription')
+        self.assertEqual(current, response['data'])
+        status, result = self.request('POST', path + '/share', dict(target, expectedName='replacement'))
+        self.assertEqual(200, status)
+        self.assertEqual(current['url'], result['data']['uri'])
+
     def test_premium_defaults_and_rotation_preserve_subscription(self):
         user, url = self.create()
         self.assertEqual((1, 100, 250 * 1024**3, None),

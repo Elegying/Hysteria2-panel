@@ -8,6 +8,12 @@ import 'package:hysteria2_manager/screens/users_screen.dart';
 
 class DetailsController extends AppController {
   bool enabled = false;
+  int userType = 0;
+
+  void changeAccount() {
+    state = state.copyWith(contextRevision: state.contextRevision + 1);
+  }
+
   bool exists = true;
   int generation = 0;
   int reads = 0;
@@ -25,6 +31,7 @@ class DetailsController extends AppController {
             'id': 1,
             'name': 'details-user',
             'enabled': enabled,
+            'userType': userType,
             'generation': generation,
             'deviceLimit': 3,
             'trafficLimitBytes': 5 * 1073741824,
@@ -72,12 +79,6 @@ Future<void> openDetails(
     scrollable: find.byType(Scrollable).hitTestable().first,
   );
   await tester.ensureVisible(find.text('details-user').first);
-  await tester.pumpAndSettle();
-  await tester.tap(find.text('details-user').first);
-  await tester.pumpAndSettle();
-  await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
-  await tester.pumpAndSettle();
-  await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
   await tester.pumpAndSettle();
   await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
   await tester.pumpAndSettle();

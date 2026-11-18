@@ -9,10 +9,12 @@ class SubscriptionNodesScreen extends ConsumerStatefulWidget {
     super.key,
     this.external = false,
     this.userId,
+    this.userName,
     this.subscriptionId,
   });
   final bool external;
   final int? userId;
+  final String? userName;
   final int? subscriptionId;
   @override
   ConsumerState<SubscriptionNodesScreen> createState() => _EditorState();
@@ -21,6 +23,7 @@ class SubscriptionNodesScreen extends ConsumerStatefulWidget {
 class _EditorState extends ConsumerState<SubscriptionNodesScreen> {
   List<Map<String, dynamic>> _nodes = [];
   int _revision = 0;
+  late final int _accountRevision;
   bool _busy = true;
   bool _loaded = false;
   bool _editing = false;
@@ -33,6 +36,7 @@ class _EditorState extends ConsumerState<SubscriptionNodesScreen> {
   @override
   void initState() {
     super.initState();
+    _accountRevision = ref.read(appControllerProvider).contextRevision;
     _load();
   }
 
@@ -50,6 +54,11 @@ class _EditorState extends ConsumerState<SubscriptionNodesScreen> {
                 : '/api/v1/mobile/users/${widget.userId}/subscription',
           );
       if (!mounted) return;
+      if (widget.userName != null &&
+          ((data['name'] != null && data['name'] != widget.userName) ||
+              data['subscriptionId'] != widget.subscriptionId)) {
+        throw const ApiException('订阅归属已改变，请返回用户列表重新打开');
+      }
       setState(() {
         _nodes = (data['nodes'] as List? ?? []).map((n) {
           final row = Map<String, dynamic>.from(n as Map);
@@ -205,9 +214,16 @@ class _EditorState extends ConsumerState<SubscriptionNodesScreen> {
       _error = null;
     });
     try {
+      if (ref.read(appControllerProvider).contextRevision != _accountRevision) {
+        throw const ApiException('登录状态已改变，请重新打开订阅');
+      }
       await ref.read(appControllerProvider.notifier).postJson(
         '$_path${preview ? '/preview' : ''}',
-        {'nodes': _nodes, if (widget.external) 'revision': _revision},
+        {
+          'nodes': _nodes,
+          if (widget.external) 'revision': _revision,
+          if (widget.userName != null) 'expectedName': widget.userName,
+        },
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

@@ -343,15 +343,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                               (ThemeMode.light, '浅色', Icons.light_mode_rounded),
                               (ThemeMode.dark, '深色', Icons.dark_mode_rounded),
                             ])
-                              GlassControlSurface(
-                                child: ChoiceChip(
-                                  avatar: Icon(item.$3, size: 18),
-                                  label: Text(item.$2),
-                                  selected: settings.mode == item.$1,
-                                  showCheckmark: false,
-                                  onSelected: (_) =>
-                                      themeController.setMode(item.$1),
-                                ),
+                              ChoiceChip(
+                                avatar: Icon(item.$3, size: 18),
+                                label: Text(item.$2),
+                                selected: settings.mode == item.$1,
+                                showCheckmark: false,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.padded,
+                                onSelected: (_) =>
+                                    themeController.setMode(item.$1),
                               ),
                           ],
                         ),
@@ -372,35 +372,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                                       settings.seedValue == color.toARGB32(),
                                   label:
                                       '选择${const ['蓝色', '绿色', '紫色', '橙色', '粉色'][colors.indexOf(color)]}强调色',
-                                  child: InkWell(
-                                    onTap: () => themeController.setSeed(color),
-                                    borderRadius: BorderRadius.circular(999),
-                                    child: GlassSurface(
-                                      borderRadius: 999,
-                                      tintColor: color.withValues(alpha: .55),
-                                      child: Container(
-                                        width: 48,
-                                        height: 48,
-                                        decoration: BoxDecoration(
-                                          color: Colors.transparent,
-                                          shape: BoxShape.circle,
-                                          border: Border.all(
-                                            color:
-                                                settings.seedValue ==
-                                                    color.toARGB32()
-                                                ? Theme.of(context)
-                                                      .colorScheme
-                                                      .onSurface
-                                                : Colors.transparent,
-                                            width: 3,
-                                          ),
-                                        ),
+                                  child: Material(
+                                    color: color,
+                                    shape: CircleBorder(
+                                      side: BorderSide(
+                                        color:
+                                            settings.seedValue ==
+                                                color.toARGB32()
+                                            ? Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurface
+                                            : Colors.transparent,
+                                        width: 2,
+                                      ),
+                                    ),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: InkWell(
+                                      onTap: () =>
+                                          themeController.setSeed(color),
+                                      customBorder: const CircleBorder(),
+                                      child: SizedBox.square(
+                                        dimension: 48,
                                         child:
                                             settings.seedValue ==
                                                 color.toARGB32()
-                                            ? const Icon(
+                                            ? Icon(
                                                 Icons.check_rounded,
-                                                color: Colors.white,
+                                                color:
+                                                    ThemeData.estimateBrightnessForColor(
+                                                          color,
+                                                        ) ==
+                                                        Brightness.dark
+                                                    ? Colors.white
+                                                    : Colors.black,
                                               )
                                             : null,
                                       ),

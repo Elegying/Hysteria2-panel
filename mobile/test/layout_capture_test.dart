@@ -224,10 +224,6 @@ void main() {
           await tester.tap(find.text('示例用户 01').first);
           await tester.pumpAndSettle();
         }
-        if (i == 2) {
-          await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
-          await tester.pumpAndSettle();
-        }
         if (i == 3) {
           await tester.tap(find.text('更多⌄'));
           await tester.pumpAndSettle();
