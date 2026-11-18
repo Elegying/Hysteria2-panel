@@ -3228,6 +3228,14 @@ class Database:
         result.pop("last_used_at")
         return result
 
+    def signed_refresh_session_id(self, token):
+        if not isinstance(token, str):
+            return None
+        match = re.fullmatch(r"hy2r_([0-9a-f]{32})\.([0-9a-f]{48})\.[0-9a-f]{64}", token)
+        if match and hmac.compare_digest(token, self._signed_mobile_refresh(*match.groups())):
+            return match[1]
+        return None
+
     def rotate_mobile_session(
         self,
         refresh_token,
@@ -3249,11 +3257,9 @@ class Database:
                 (self._mobile_token_hash(refresh_token), now),
             ).fetchone()
             if not row:
-                match = re.fullmatch(r"hy2r_([0-9a-f]{32})\.([0-9a-f]{48})\.[0-9a-f]{64}", refresh_token)
-                if match and hmac.compare_digest(
-                    refresh_token, self._signed_mobile_refresh(*match.groups())
-                ):
-                    connection.execute("DELETE FROM mobile_sessions WHERE session_id = ?", (match[1],))
+                session_id = self.signed_refresh_session_id(refresh_token)
+                if session_id:
+                    connection.execute("DELETE FROM mobile_sessions WHERE session_id = ?", (session_id,))
                 return None
             new_refresh_token = self._signed_mobile_refresh(row["session_id"], secrets.token_hex(24))
             cursor = connection.execute(
@@ -6938,7 +6944,8 @@ class Database:
             )
             connection.execute(
                 """DELETE FROM node_commands
-                WHERE node_id = ? AND acked_at IS NULL AND kind != 'UNINSTALL_NODE'""",
+                WHERE node_id = ? AND acked_at IS NULL
+                    AND (kind != 'UNINSTALL_NODE' OR delivered_at IS NULL)""",
                 (node_id,),
             )
             connection.execute(
@@ -8580,7 +8587,7 @@ class PanelHandler(JsonHandler):
             return ""
         return token.strip()
 
-    def _mobile_response(self, status, data=None, error_code=None, message=None):
+    def _mobile_response(self, status, data=None, error_code=None, message=None, retry_after=None):
         self.send_json(
             status,
             {
@@ -8596,6 +8603,7 @@ class PanelHandler(JsonHandler):
                     else None
                 ),
             },
+            **({"headers": {"Retry-After": str(retry_after)}} if retry_after else {}),
         )
 
     def _mobile_read_json(self, maximum=16384):
@@ -8821,8 +8829,11 @@ class PanelHandler(JsonHandler):
         self._mobile_response(200, tokens)
 
     def _handle_mobile_refresh(self, payload):
-        if self.app.refresh_limiter.consume(LoginRateLimiter._address_key(self.client_address[0]), 60):
-            self._mobile_response(429, error_code="RATE_LIMITED", message="刷新过于频繁，请稍后重试")
+        session_id = self.app.database.signed_refresh_session_id(payload.get("refreshToken"))
+        key = ("session", session_id) if session_id else ("address", LoginRateLimiter._address_key(self.client_address[0]))
+        retry = self.app.refresh_limiter.consume(key, 60)
+        if retry:
+            self._mobile_response(429, error_code="RATE_LIMITED", message="刷新过于频繁，请稍后重试", retry_after=retry)
             return
         tokens = self.app.database.rotate_mobile_session(payload.get("refreshToken", ""))
         if not tokens:
@@ -9917,10 +9928,12 @@ class PanelHandler(JsonHandler):
         still flows through the central panel's per-user checks.
         """
         try:
-            if self.app.subscription_limiter.consume(LoginRateLimiter._address_key(self.client_address[0]), 120):
-                self._send_subscription_error(429, "订阅请求过于频繁，请稍后重试")
-                return
             subscription = self.app.database.get_subscription_by_token(token)
+            key = ("subscription", subscription["id"]) if subscription else ("address", LoginRateLimiter._address_key(self.client_address[0]))
+            retry = self.app.subscription_limiter.consume(key, 120)
+            if retry:
+                self._send_subscription_error(429, "订阅请求过于频繁，请稍后重试", retry_after=retry)
+                return
             if subscription is None:
                 self._send_subscription_error(404, "订阅不存在或已失效")
                 return
@@ -10094,9 +10107,11 @@ class PanelHandler(JsonHandler):
             LOGGER.exception("subscription endpoint failed")
             self._send_subscription_error(500, "订阅服务暂时不可用")
 
-    def _send_subscription_error(self, status, message):
+    def _send_subscription_error(self, status, message, retry_after=None):
         body = message.encode("utf-8")
         self.send_response(status)
+        if retry_after:
+            self.send_header("Retry-After", str(retry_after))
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

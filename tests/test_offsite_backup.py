@@ -11,6 +11,7 @@ from unittest import mock
 from pathlib import Path
 
 from offsite_backup import (
+    check_backup_encryption,
     encrypt_archive,
     HttpsWebDavClient,
     OffsiteBackupConfig,
@@ -68,6 +69,13 @@ class OffsiteBackupTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
+    def test_encryption_requires_explicit_plaintext_choice_and_working_age(self):
+        for config in ({}, {"allow_plaintext": 1}, {"age_recipient": None, "allow_plaintext": True}):
+            with self.assertRaises(ValueError):
+                check_backup_encryption(config)
+        with mock.patch("offsite_backup.shutil.which", return_value=None), self.assertRaises(FileNotFoundError):
+            check_backup_encryption({"age_recipient": "age1" + "a" * 58})
+
     @unittest.skipUnless(shutil.which("age") and shutil.which("age-keygen"), "requires age tools")
     def test_encrypted_upload_round_trip(self):
         key = self.root / "recovery.key"
@@ -89,6 +97,7 @@ class OffsiteBackupTests(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
+                    "allow_plaintext": True,
                     "endpoint": "https://backup.example.test/hy2panel/",
                     "username": "backup-user",
                     "password": "secret-value",
@@ -209,7 +218,9 @@ class OffsiteBackupTests(unittest.TestCase):
         class ChangedClient(FakeWebDavClient):
             def put(self, name, handle, size, sha256):
                 super().put(name, handle, size, sha256)
+                original = archive.stat()
                 archive.write_bytes(b"modified-backup")
+                os.utime(archive, ns=(original.st_atime_ns, original.st_mtime_ns))
 
         client = ChangedClient()
         with self.assertRaisesRegex(RuntimeError, "changed while uploading"):
@@ -306,6 +317,7 @@ class OffsiteBackupTests(unittest.TestCase):
         config_path.write_text(
             json.dumps(
                 {
+                    "allow_plaintext": True,
                     "endpoint": "https://backup.example.test/hy2panel/",
                     "username": "backup-user",
                     "password": "secret-value",
@@ -339,6 +351,7 @@ class OffsiteBackupTests(unittest.TestCase):
         config_path.write_text(
             json.dumps(
                 {
+                    "allow_plaintext": True,
                     "endpoint": "https://backup.example.test/hy2panel/",
                     "username": "backup-user",
                     "password": "secret-value",

@@ -16,6 +16,32 @@ def run_reproductions():
         start = source.index("\n" + name + "() {") + 1
         return source[start : source.index("\n}\n", start) + 3]
 
+    # Exercise verified staging while every external release download fails.
+    with tempfile.TemporaryDirectory() as directory:
+        root = pathlib.Path(directory)
+        for name in ("cache", "work"):
+            (root / name).mkdir()
+        import hashlib
+        assignments = []
+        for name in ("version", "operations"):
+            data = (ROOT / "hy2panel" / (name + ".py")).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            (root / "cache" / ("maintenance-" + digest + ".py")).write_bytes(data)
+            assignments.append("HY2PANEL_" + name.upper() + "_SHA256=" + digest)
+            assignments.append("HY2PANEL_" + name.upper() + "_SOURCE_URL=offline")
+        script = "\n".join(assignments + [
+            'set -eu', 'NODE_AGENT_OPT_DIR="$1/cache"', 'TMP_DIR="$1/work"',
+            'stat() { echo 0:0:644:1; }', 'download_file() { return 97; }',
+            'install() { if [[ "$1" == -o ]]; then cp "${@: -2:1}" "${@: -1}"; else command install "$@"; fi; }',
+            function("stage_verified_installed_binary"), function("prepare_node_maintenance_drain"),
+            'prepare_node_maintenance_drain',
+        ])
+        subprocess.run(["bash", "-c", script, "fixture", directory], check=True)
+        for entry in (root / "cache").iterdir():
+            entry.write_bytes(b"wrong digest")
+        result = subprocess.run(["bash", "-c", script, "fixture", directory], capture_output=True)
+        assert result.returncode != 0
+
     results = {}
     for scope in ("runtime", "permanent"):
         script = (

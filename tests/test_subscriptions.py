@@ -71,6 +71,20 @@ class SubscriptionTests(unittest.TestCase):
         token = self.db.ensure_subscription(user["id"])["token"]
         self.assertEqual(path, "/sub/" + token)
 
+    def test_rate_limit_reports_retry_and_isolates_subscribers_behind_nat(self):
+        _, path, _, _ = self.issue()
+        _, other, _, _ = self.issue("neighbor")
+        token = path.split("/")[-1]
+        key = ("subscription", self.db.get_subscription_by_token(token)["id"])
+        for _ in range(120):
+            self.application.subscription_limiter.consume(key, 120)
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.request(path)
+        self.assertEqual(429, rejected.exception.code)
+        self.assertGreater(int(rejected.exception.headers["Retry-After"]), 0)
+        with self.request(other) as response:
+            self.assertEqual(200, response.status)
+
     def test_exhausted_subscription_withholds_credentials(self):
         user, path, _, _ = self.issue()
         self.db.add_traffic({"subscriber": {"tx": 268435456000, "rx": 0}})

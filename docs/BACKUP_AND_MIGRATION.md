@@ -77,7 +77,7 @@ systemctl status hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-
 }
 ```
 
-在恢复机运行 `age-keygen -o recovery.key` 并离线保管私钥，只把公钥填入配置。在备份服务器安装 age。上传对象以 `.zip.age` 结尾，验证与保留策略针对密文。恢复时运行 `age -d -i recovery.key -o restore.zip backup.zip.age`，再执行现有 ZIP 恢复流程。旧配置缺少 `age_recipient` 时仍上传明文 ZIP。启用加密后应实际解密一次，确认离线私钥可用。
+在恢复机运行 `age-keygen -o recovery.key` 并离线保管私钥，只把公钥填入配置。在执行备份任务的面板主机安装 age，无需在 WebDAV 或 OSS 存储端安装。配置后先执行 `python3 /opt/hysteria2-panel/offsite_backup.py --check-encryption /etc/hysteria2-panel/offsite-backup.json`。上传对象以 `.zip.age` 结尾，验证与保留策略针对密文。恢复时运行 `age -d -i recovery.key -o restore.zip backup.zip.age`，再执行现有 ZIP 恢复流程。升级前请为旧任务补齐公钥；若确实需要继续上传明文，须显式设置 `"allow_plaintext": true`，任务会写入日志警告。缺少两者会阻止上传。启用加密后应实际解密一次，确认离线私钥可用。
 
 要求：
 

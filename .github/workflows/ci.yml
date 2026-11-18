@@ -74,6 +74,9 @@ jobs:
       - name: Measure Python coverage
         if: matrix.python-version == '3.12'
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y age
+          age --version && age-keygen --version
           python -m pip install coverage==7.6.12
           python -m coverage run --source=hysteria2_panel,hy2panel,node_agent,offsite_backup -m unittest discover -s tests -v
           python -m coverage report >> "$GITHUB_STEP_SUMMARY"

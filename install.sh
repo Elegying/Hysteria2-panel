@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ] || shopt -oq posix; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.64"
+PANEL_VERSION="0.39.65"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -32,12 +32,12 @@ HY2PANEL_DIAGNOSTICS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyst
 HY2PANEL_ADMIN_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/admin_api.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="e3790a139cc836466cb26c772bbad57049c9392b8a267f5c9825c00fb9a432c4"
-OFFSITE_BACKUP_SHA256="5de938974126092e54ec108e706a38257f6de34a1d684383bbdcb1718e404940"
+PANEL_SHA256="eadbe07789d038e703f7dd5c90b99c42ae600af6a18ac279b169012710ea0305"
+OFFSITE_BACKUP_SHA256="80262a6f57732cdb3e8565f2ede17d615c19c5e2ff3216842322d952057cafae"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="b8ca3c6f670e829d630bbe8ab5a9b0d758d6084619407f8f2ffbeddad4d37850"
+HY2PANEL_VERSION_SHA256="2a86fb0ddfa566fa59fdc1ea78bfcf546d4156bebe38b2af70a131f849412ae3"
 HY2PANEL_BUDGETS_SHA256="b449af46564537e59185940739ff433ac154936b15aa99bb92d738af4886f459"
 HY2PANEL_WEB_ASSETS_SHA256="704b5c68c50b3e3c3decb516e3c7aee9de4abd5bf0bd4779cd8ff80c6c3b0fdc"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
@@ -46,14 +46,14 @@ HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
-HY2PANEL_NODES_SHA256="c968141c07e6af4180f12478b6884e825f165f20ecdef066da4a16515a4ba085"
+HY2PANEL_NODES_SHA256="51ddd710ba03385fc4ab80583485e0a3ae072a620adfec446330e6796c7f419f"
 HY2PANEL_DISTRIBUTED_SHA256="820c19e111564492deb795ca416c67a0bf423fe413bb8115b3fa2216c82b9859"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="2054a74a2ed129ccd0cfc54f1b8520bed6fa38a6ce965689a08c0688b161a818"
+HY2PANEL_DASHBOARD_SHA256="99033a79cd5761843bdd05a4ef03e92866d28bb36000c7e1c23f61006199ece3"
 HY2PANEL_DIAGNOSTICS_SHA256="c431e8d916833b93b54cfc30f80b94c64e9609acb6a1fce34de9a6968d8bd010"
 HY2PANEL_ADMIN_API_SHA256="a87758032c40ff068d5bf56f372e2cc64d2d1c94ea0573ce0279a1535240ac8e"
 HY2PANEL_MOBILE_API_SHA256="d7ff806e983c294ce74dea951cc328d83e68f9c88f8406256ae0d6c5df02983c"
-NODE_AGENT_SHA256="9c542c4149549c6774660ea7bb9288d9379b436f085b8a2c4a439edd9868bcd9"
+NODE_AGENT_SHA256="df056171c7a286cbe4e242bb10ba99a75bca9cc1ee11d4a1214eb8ecbe46cdd4"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v2/hysteria-linux"
 HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"
@@ -1765,8 +1765,20 @@ prepare_node_maintenance_agent() {
 prepare_node_maintenance_drain() {
   install -d -m 0700 "${TMP_DIR}/hy2panel"
   : > "${TMP_DIR}/hy2panel/__init__.py"
-  download_file "${HY2PANEL_VERSION_SOURCE_URL}" "${TMP_DIR}/hy2panel/version.py"
-  download_file "${HY2PANEL_OPERATIONS_SOURCE_URL}" "${TMP_DIR}/hy2panel/operations.py"
+  local name digest source
+  for name in version operations; do
+    if [[ "${name}" == version ]]; then
+      digest="${HY2PANEL_VERSION_SHA256}"
+      source="${HY2PANEL_VERSION_SOURCE_URL}"
+    else
+      digest="${HY2PANEL_OPERATIONS_SHA256}"
+      source="${HY2PANEL_OPERATIONS_SOURCE_URL}"
+    fi
+    if ! stage_verified_installed_binary "${NODE_AGENT_OPT_DIR}/maintenance-${digest}.py" \
+      "${digest}" "${TMP_DIR}/hy2panel/${name}.py"; then
+      download_file "${source}" "${TMP_DIR}/hy2panel/${name}.py" || return 1
+    fi
+  done
   printf '%s  %s\n' \
     "${HY2PANEL_VERSION_SHA256}" "${TMP_DIR}/hy2panel/version.py" \
     "${HY2PANEL_OPERATIONS_SHA256}" "${TMP_DIR}/hy2panel/operations.py" \
@@ -3222,6 +3234,9 @@ activate_data_plane() {
   arm_data_plane_transaction \
     || fail "无法持久化数据面回滚事务；未修改系统"
   DATA_PLANE_MUTATED=1
+  # Content-addressed files remain compatible with the old worker on rollback.
+  durable_replace_file "${TMP_DIR}/hy2panel/version.py" "${NODE_AGENT_OPT_DIR}/maintenance-${HY2PANEL_VERSION_SHA256}.py" 0644
+  durable_replace_file "${TMP_DIR}/hy2panel/operations.py" "${NODE_AGENT_OPT_DIR}/maintenance-${HY2PANEL_OPERATIONS_SHA256}.py" 0644
   durable_replace_file "$0" "${NODE_ONBOARDING_INSTALLER}" 0700 \
     || fail "无法更新节点一键断连安装器；已安排恢复"
   optimize_data_plane_network_stack \
@@ -7580,6 +7595,22 @@ printf '%s  %s\n' "${PANEL_SHA256}" "${TMP_DIR}/hysteria2_panel.py" | sha256sum 
   || fail "面板源码 SHA-256 校验失败"
 printf '%s  %s\n' "${OFFSITE_BACKUP_SHA256}" "${TMP_DIR}/offsite_backup.py" | sha256sum --check --status \
   || fail "异地备份源码 SHA-256 校验失败"
+for backup_config in /etc/hysteria2-panel/{offsite,oss}-backup.json; do
+  [[ -e "${backup_config}" || -L "${backup_config}" ]] || continue
+  if "${PYTHON_BIN}" "${TMP_DIR}/offsite_backup.py" --check-encryption "${backup_config}"; then
+    continue
+  else
+    check_status=$?
+    (( check_status == 3 )) || fail "请确认异地备份加密配置后重试：${backup_config}"
+  fi
+  if command -v apt-get >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive retry_package_command apt-get install -y age
+  elif command -v dnf >/dev/null; then
+    retry_package_command dnf install -y age
+  fi
+  "${PYTHON_BIN}" "${TMP_DIR}/offsite_backup.py" --check-encryption "${backup_config}" \
+    || fail "备份公钥预检失败，请在面板主机安装 age 并核对公钥"
+done
 printf '%s  %s\n' "${QRCODEGEN_SHA256}" "${TMP_DIR}/qrcodegen.py" | sha256sum --check --status \
   || fail "二维码编码器 SHA-256 校验失败"
 printf '%s  %s\n' "${TCP_PROBE_SHA256}" "${TMP_DIR}/tcp_probe.py" | sha256sum --check --status \

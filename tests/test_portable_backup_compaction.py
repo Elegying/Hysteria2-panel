@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -683,12 +684,42 @@ class PortableBackupCompactionTests(unittest.TestCase):
         with self.assertRaisesRegex(BackupValidationError, "工作目录.*不安全"):
             unsafe_work.create_archive()
 
+    @unittest.skipUnless(shutil.which("age") and shutil.which("age-keygen"), "requires age tools")
+    def test_encrypted_offsite_round_trip_restores_original_user(self):
+        key = self.root / "recovery.key"
+        subprocess.run(["age-keygen", "-o", str(key)], check=True, capture_output=True)
+        recipient = subprocess.check_output(["age-keygen", "-y", str(key)], text=True).strip()
+        config = self.root / "offsite.json"
+        config.write_text(json.dumps({"endpoint": "https://backup.example.test/panel/",
+                                     "username": "fixture", "password": "fixture",
+                                     "age_recipient": recipient}))
+        config.chmod(0o600)
+        client = FakeWebDavClient()
+        runner = OffsiteBackupRunner(config, self.root / "status.json", self.manager.create_archive,
+                                     expected_uid=os.geteuid(), status_gid=os.getegid(),
+                                     client_factory=lambda _: client)
+        result = runner.run()
+        self.assertTrue(result["encrypted"])
+        recovered = self.root / "restore.zip"
+        with recovered.open("wb") as out:
+            subprocess.run(["age", "-d", "-i", str(key)], input=client.asserted_body,
+                           stdout=out, check=True)
+        self.database.set_proxy_user_enabled(self.user["id"], True)
+        env = self.root / "panel.env"
+        env.write_text("HY2PANEL_HMAC_KEY=" + self.hmac_key.hex() + "\n")
+        env.chmod(0o600)
+        self.manager.apply_archive(recovered, env, self.root / "rollback")
+        self.assertEqual(self.user["token"], self.database.recover_proxy_token(self.user["id"]))
+        with self.database._connect() as connection:
+            self.assertEqual(0, connection.execute("SELECT enabled FROM proxy_users WHERE name='alice'").fetchone()[0])
+
     def test_daily_offsite_upload_uses_the_verified_compact_archive(self):
         self._populate_node_runtime(2_000)
         config_path = self.root / "offsite.json"
         config_path.write_text(
             json.dumps(
                 {
+                    "allow_plaintext": True,
                     "endpoint": "https://backup.example.test/panel/",
                     "username": "fixture-user",
                     "password": "fixture-password",

@@ -15,7 +15,7 @@
 - `hy2-oss-retention.timer`：每天北京时间 09:45 检查过期对象，不生成新备份。
 - 首次上传并验证成功后才启用两个 timer，并停用原先未配置的 WebDAV 定时任务。
 
-在配置中设置 `age_recipient` 并安装 age 后，适配器上传客户端加密的 `.zip.age`。请同步升级面板的 offsite_backup.py。离线密钥生成和解密见 [备份与迁移](../../docs/BACKUP_AND_MIGRATION.md)。旧配置继续使用 ZIP。
+在配置中设置 `age_recipient` 并安装 age 后，适配器上传客户端加密的 `.zip.age`。请同步升级面板的 offsite_backup.py。离线密钥生成和解密见 [备份与迁移](../../docs/BACKUP_AND_MIGRATION.md)。升级前请补齐公钥或显式设置 `"allow_plaintext": true`。可在面板主机运行 `python3 /opt/hysteria2-panel/offsite_backup.py --check-encryption /etc/hysteria2-panel/oss-backup.json` 验证。
 
 ## 验证和保留
 

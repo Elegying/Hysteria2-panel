@@ -56,6 +56,21 @@ class MobileRevocationTests(unittest.TestCase):
         self.assertIsNone(self.db.get_mobile_session(rotated["accessToken"]))
         self.assertIsNone(self.db.rotate_mobile_session(rotated["refreshToken"]))
 
+    def test_refresh_limit_is_per_signed_session_and_returns_retry_header(self):
+        tokens = self.issue()
+        other = self.issue("other-device")
+        key = ("session", tokens["sessionId"])
+        for _ in range(60):
+            self.fixture.application.refresh_limiter.consume(key, 60)
+        with self.assertRaises(urllib.error.HTTPError) as rejected:
+            self.fixture.mobile_json_request("POST", "/api/v1/mobile/auth/refresh",
+                                             {"refreshToken": tokens["refreshToken"]})
+        self.assertEqual(429, rejected.exception.code)
+        self.assertGreater(int(rejected.exception.headers["Retry-After"]), 0)
+        status, _ = self.fixture.mobile_json_request("POST", "/api/v1/mobile/auth/refresh",
+                                                     {"refreshToken": other["refreshToken"]})
+        self.assertEqual(200, status)
+
     def test_reused_refresh_revokes_only_its_rotated_session(self):
         issued = self.issue()
         other = self.issue("other-device")

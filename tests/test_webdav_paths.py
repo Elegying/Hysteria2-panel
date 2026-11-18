@@ -91,6 +91,7 @@ class WebDavPathTests(unittest.TestCase):
     def _config(self, endpoint):
         path = self.root / "offsite.json"
         path.write_text(json.dumps({
+            "allow_plaintext": True,
             "endpoint": endpoint, "username": "fixture-user", "password": "fixture-password",
         }), encoding="utf-8")
         path.chmod(0o600)

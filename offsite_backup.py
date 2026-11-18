@@ -7,6 +7,8 @@ import hashlib
 import html
 import http.client
 import json
+import logging
+import sys
 import os
 import pathlib
 import re
@@ -27,6 +29,52 @@ TEMPORARY_REMOTE_NAME = re.compile(
     r"\.upload-([0-9]{8}T[0-9]{6}Z)-([0-9a-f]{32})"
 )
 MAX_ARCHIVE_BYTES = 131 * 1024 * 1024
+
+
+def read_backup_config(path, expected_uid=0):
+    path = pathlib.Path(path)
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != expected_uid
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_size <= 0
+        or metadata.st_size > 16 * 1024
+    ):
+        raise ValueError("offsite backup config is unsafe")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(str(path), flags)
+    try:
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise ValueError("offsite backup config changed while reading")
+        raw = os.read(descriptor, 16 * 1024 + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError("offsite backup config is invalid") from exc
+    if not isinstance(value, dict):
+        raise ValueError("offsite backup config is invalid")
+    return value
+
+
+def check_backup_encryption(config):
+    if "age_recipient" not in config and config.get("allow_plaintext") is True:
+        logging.getLogger(__name__).warning("备份配置已显式允许上传未加密的 ZIP")
+        return
+    recipient = config.get("age_recipient")
+    if (config.get("allow_plaintext", False) is not False or not isinstance(recipient, str)
+            or not re.fullmatch(r"age1[0-9a-z]{58}", recipient)):
+        raise ValueError("请配置 age_recipient，或显式选择 allow_plaintext: true")
+    executable = shutil.which("age")
+    if not executable:
+        raise FileNotFoundError("请在执行备份任务的面板主机安装 age")
+    subprocess.run([executable, "--encrypt", "--recipient", recipient],  # nosec B603
+                   input=b"", stdout=subprocess.DEVNULL, check=True, timeout=15)
 
 
 def encrypt_archive(archive, recipient, expected_uid=None):
@@ -97,32 +145,8 @@ class OffsiteBackupConfig:
 
     @classmethod
     def load(cls, path, expected_uid=0):
-        path = pathlib.Path(path)
-        metadata = path.lstat()
-        if (
-            stat.S_ISLNK(metadata.st_mode)
-            or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_nlink != 1
-            or metadata.st_uid != expected_uid
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-            or metadata.st_size <= 0
-            or metadata.st_size > 16 * 1024
-        ):
-            raise ValueError("offsite backup config is unsafe")
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(str(path), flags)
-        try:
-            opened = os.fstat(descriptor)
-            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
-                raise ValueError("offsite backup config changed while reading")
-            raw = os.read(descriptor, 16 * 1024 + 1)
-        finally:
-            os.close(descriptor)
-        try:
-            value = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
-            raise ValueError("offsite backup config is invalid") from exc
-        if not isinstance(value, dict) or set(value) - {"age_recipient"} != {
+        value = read_backup_config(path, expected_uid)
+        if not isinstance(value, dict) or set(value) - {"age_recipient", "allow_plaintext"} != {
             "endpoint",
             "username",
             "password",
@@ -140,8 +164,7 @@ class OffsiteBackupConfig:
             or not 1 <= len(password) <= 4096
         ):
             raise ValueError("offsite backup config is invalid")
-        if "age_recipient" in value and not isinstance(value["age_recipient"], str):
-            raise ValueError("invalid age recovery recipient")
+        check_backup_encryption(value)
         return cls(endpoint, username, password, value.get("age_recipient"))
 
 
@@ -417,6 +440,9 @@ class WebDavBackupStore:
                 if int(self.client.size(temporary)) != opened.st_size:
                     raise RuntimeError("uploaded WebDAV backup size does not match")
                 self.client.verify(temporary, opened.st_size, digest)
+                handle.seek(0)
+                if self._sha256(handle) != digest:
+                    raise RuntimeError("backup archive changed while uploading")
                 self.client.move(temporary, name)
             except Exception as upload_error:
                 try:
@@ -593,3 +619,13 @@ class OffsiteBackupRunner:
         )
         status["result"] = result
         return status
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3 or sys.argv[1] != "--check-encryption":
+        sys.exit("usage: offsite_backup.py --check-encryption CONFIG")
+    config = read_backup_config(sys.argv[2])
+    try:
+        check_backup_encryption(config)
+    except FileNotFoundError as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(3)
