@@ -71,7 +71,14 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Verify installer source manifest
         run: python ops/source_manifest.py
+      - name: Measure Python coverage
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m pip install coverage==7.6.12
+          python -m coverage run --source=hysteria2_panel,hy2panel,node_agent,offsite_backup -m unittest discover -s tests -v
+          python -m coverage report >> "$GITHUB_STEP_SUMMARY"
       - name: Run unit and integration tests
+        if: matrix.python-version != '3.12'
         run: python -m unittest discover -s tests -v
       - name: Reject leaked SQLite connections on modern Python
         if: matrix.python-version == '3.13' || matrix.python-version == '3.14'
@@ -182,16 +189,16 @@ jobs:
               )
           if 'PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"' not in installer:
               raise SystemExit("installer no longer defaults PANEL_REF to its version tag")
-          versionless_url = (
-              "https://raw.githubusercontent.com/"
-              "Elegying/Hysteria2-panel/main/install.sh"
-          )
+          import hashlib
+          bootstrap_hash = hashlib.sha256(pathlib.Path("bootstrap.sh").read_bytes()).hexdigest()
+          bootstrap_url = ("https://raw.githubusercontent.com/Elegying/Hysteria2-panel/"
+                           "v" + version_match.group(1) + "/bootstrap.sh")
           quick_command = readme.split('```bash\n')[2].split('```', 1)[0]
           if any(marker not in quick_command for marker in (
-              versionless_url, 'command -v bash', '/run/systemd/system',
+              bootstrap_url, bootstrap_hash, 'sha256sum -c', 'command -v bash', '/run/systemd/system',
               'umask 077', 'trap', 'mktemp', 'DNS', 'bash "$i"',
           )):
-              raise SystemExit("README checked main installer is incomplete")
+              raise SystemExit("README pinned bootstrap is incomplete")
           if "首次信任入口" not in readme or "GitHub HTTPS" not in readme:
               raise SystemExit("README must explain the one-line installer trust boundary")
           required_bootstrap_markers = (

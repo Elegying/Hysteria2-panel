@@ -4,11 +4,14 @@ import io
 import json
 import os
 import tempfile
+import shutil
+import subprocess
 import unittest
 from unittest import mock
 from pathlib import Path
 
 from offsite_backup import (
+    encrypt_archive,
     HttpsWebDavClient,
     OffsiteBackupConfig,
     OffsiteBackupRunner,
@@ -64,6 +67,22 @@ class OffsiteBackupTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    @unittest.skipUnless(shutil.which("age") and shutil.which("age-keygen"), "requires age tools")
+    def test_encrypted_upload_round_trip(self):
+        key = self.root / "recovery.key"
+        subprocess.run(["age-keygen", "-o", str(key)], check=True, capture_output=True)
+        recipient = subprocess.check_output(["age-keygen", "-y", str(key)], text=True).strip()
+        archive = self.root / "backup.zip"
+        archive.write_bytes(os.urandom(100000))
+        archive.chmod(0o600)
+        encrypted = encrypt_archive(archive, recipient)
+        client = FakeWebDavClient()
+        result = WebDavBackupStore(client).upload(encrypted)
+        self.assertTrue(result["name"].endswith(".zip.age"))
+        restored = subprocess.check_output(["age", "-d", "-i", str(key)],
+                                           input=client.bodies[result["name"]])
+        self.assertEqual(archive.read_bytes(), restored)
 
     def test_config_requires_root_only_https_without_url_credentials(self):
         path = self.root / "offsite.json"

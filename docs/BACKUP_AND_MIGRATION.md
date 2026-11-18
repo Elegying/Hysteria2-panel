@@ -72,9 +72,12 @@ systemctl status hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-
 {
   "endpoint": "https://backup.example.com/hysteria2-panel/",
   "username": "专用备份账号",
+  "age_recipient": "替换为离线生成的 age1 公钥",
   "password": "专用备份密码"
 }
 ```
+
+在恢复机运行 `age-keygen -o recovery.key` 并离线保管私钥，只把公钥填入配置。在备份服务器安装 age。上传对象以 `.zip.age` 结尾，验证与保留策略针对密文。恢复时运行 `age -d -i recovery.key -o restore.zip backup.zip.age`，再执行现有 ZIP 恢复流程。旧配置缺少 `age_recipient` 时仍上传明文 ZIP。启用加密后应实际解密一次，确认离线私钥可用。
 
 要求：
 
@@ -124,3 +127,9 @@ systemctl status hysteria2-panel-offsite-backup.service hysteria2-panel-offsite-
 处理方式：由管理员执行 `hostnamectl set-hostname hy2-panel-internal`；如使用 cloud-init，在 `/etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg` 设置 `preserve_hostname: true`，避免重启时还原旧主机名。清理 DNS 缓存后重试，并在重启后复核 `hostname`。若 `/etc/hosts` 手工将面板域名指向内网地址，也需修正该本机覆盖。
 
 不要修改公网 DNS 名称、订阅 URL、端口、证书或用户密钥来绕过检查。用户备份不迁移操作系统主机名及 cloud-init 设置；新服务器需要独立检查。防护仅检查本机主机名冲突，不替代公网 DNS、代理链路和第三方客户端实际验收。
+
+## 控制面整机丢失后的恢复
+
+便携 ZIP 可以恢复用户与原订阅身份。若要求保留控制面机器身份、节点配对和相关配置，另设加密的整机备份。创建恢复点时需覆盖系统配置、面板与节点数据所在的全部持久卷，并记录所用镜像和软件版本。多卷主机应在同一一致性组内快照，或在维护窗口停止写入后制作冷备。SQLite 使用 WAL，仅复制活动数据库主文件可能遗漏已提交事务。将恢复密钥和恢复点索引保存在独立位置。
+
+演练先在隔离网络启动副本，核验数据库完整性、管理员登录、证书指纹、用户额度和各配对状态。切换前先隔离旧控制面，确保只有一个实例签发授权、确认流量及下发命令。逐个核对远端积压批次、快照时间和待执行命令；快照之后已处理的命令或流量需要对账。再切 DNS，测试实际 QUIC 连接、配额和禁用行为。记录最近可恢复的已提交时间与恢复可用时间，分别作为本次演练的 RPO 和 RTO。只拿到便携包时走用户迁移和重新对接流程。

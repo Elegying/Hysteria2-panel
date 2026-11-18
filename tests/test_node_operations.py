@@ -557,6 +557,8 @@ class NodeLifecycleTests(NodeOperationsCase):
             )
         )
 
+        self.assertEqual("not_issued", self.db.get_node_for_heartbeat(self.node_id)["data_plane_state"])
+
     def test_uninstall_executor_defers_ack_to_the_root_worker(self):
         stop = mock.Mock()
         flush = mock.Mock()

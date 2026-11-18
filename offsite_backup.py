@@ -13,13 +13,15 @@ import re
 import secrets
 import ssl
 import stat
+import shutil
+import subprocess  # nosec B404 -- age receives fixed arguments and validated input.
 import tempfile
 import time
 import urllib.parse
 
 
 REMOTE_NAME = re.compile(
-    r"hysteria2-panel-offsite-([0-9]{8}T[0-9]{6}Z)-([0-9a-f]{8})\.zip"
+    r"hysteria2-panel-offsite-([0-9]{8}T[0-9]{6}Z)-([0-9a-f]{8})\.zip(?:\.age)?"
 )
 TEMPORARY_REMOTE_NAME = re.compile(
     r"\.upload-([0-9]{8}T[0-9]{6}Z)-([0-9a-f]{32})"
@@ -27,11 +29,36 @@ TEMPORARY_REMOTE_NAME = re.compile(
 MAX_ARCHIVE_BYTES = 131 * 1024 * 1024
 
 
+def encrypt_archive(archive, recipient, expected_uid=None):
+    """Return a private age envelope alongside the validated migration ZIP."""
+    if not isinstance(recipient, str) or not re.fullmatch(r"age1[0-9a-z]{58}", recipient):
+        raise ValueError("invalid age recovery recipient")
+    executable = shutil.which("age")
+    if not executable:
+        raise RuntimeError("age executable required for encrypted backups")
+    with tempfile.NamedTemporaryFile(dir=pathlib.Path(archive).parent, suffix=".zip.age",
+                                     delete=False) as output:
+        path = pathlib.Path(output.name)
+        try:
+            uid = os.geteuid() if expected_uid is None else expected_uid
+            source, opened = WebDavBackupStore._open_archive(archive, uid)
+            with source:
+                subprocess.run([executable, "--encrypt", "--recipient", recipient],  # nosec B603
+                               stdin=source, stdout=output, check=True, timeout=300)
+                if WebDavBackupStore._file_signature(os.fstat(source.fileno())) != WebDavBackupStore._file_signature(opened):
+                    raise RuntimeError("backup archive changed during encryption")
+        except BaseException:
+            path.unlink()
+            raise
+    return path
+
+
 class OffsiteBackupConfig:
-    def __init__(self, endpoint, username, password):
+    def __init__(self, endpoint, username, password, age_recipient=None):
         self.endpoint = self._normalize_endpoint(endpoint)
         self.username = username
         self.password = password
+        self.age_recipient = age_recipient
 
     @staticmethod
     def _normalize_endpoint(endpoint):
@@ -95,7 +122,7 @@ class OffsiteBackupConfig:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
             raise ValueError("offsite backup config is invalid") from exc
-        if not isinstance(value, dict) or set(value) != {
+        if not isinstance(value, dict) or set(value) - {"age_recipient"} != {
             "endpoint",
             "username",
             "password",
@@ -113,7 +140,9 @@ class OffsiteBackupConfig:
             or not 1 <= len(password) <= 4096
         ):
             raise ValueError("offsite backup config is invalid")
-        return cls(endpoint, username, password)
+        if "age_recipient" in value and not isinstance(value["age_recipient"], str):
+            raise ValueError("invalid age recovery recipient")
+        return cls(endpoint, username, password, value.get("age_recipient"))
 
 
 class HttpsWebDavClient:
@@ -313,6 +342,8 @@ class WebDavBackupStore:
     def _open_archive(path, expected_uid):
         path = pathlib.Path(path)
         metadata = path.lstat()
+        # age adds an envelope header and one authentication tag per chunk.
+        maximum = MAX_ARCHIVE_BYTES + (1024 * 1024 if path.name.endswith(".zip.age") else 0)
         if (
             stat.S_ISLNK(metadata.st_mode)
             or not stat.S_ISREG(metadata.st_mode)
@@ -320,7 +351,7 @@ class WebDavBackupStore:
             or metadata.st_uid != expected_uid
             or stat.S_IMODE(metadata.st_mode) != 0o600
             or metadata.st_size <= 0
-            or metadata.st_size > MAX_ARCHIVE_BYTES
+            or metadata.st_size > maximum
         ):
             raise ValueError("backup archive is unsafe")
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
@@ -376,6 +407,8 @@ class WebDavBackupStore:
             ):
                 raise RuntimeError("backup archive changed while hashing")
             name = "hysteria2-panel-offsite-{}-{}.zip".format(stamp, digest[:8])
+            if str(archive_path).endswith(".zip.age"):
+                name += ".age"
             handle.seek(0)
             try:
                 self.client.put(temporary, handle, opened.st_size, digest)
@@ -444,7 +477,7 @@ class OffsiteBackupRunner:
         self.client_factory = client_factory
         self.clock = clock or (lambda: datetime.datetime.now(datetime.timezone.utc))
 
-    def _write_status(self, state, last_success_at=None, error_code=None):
+    def _write_status(self, state, last_success_at=None, error_code=None, encrypted=None):
         now = self.clock().astimezone(datetime.timezone.utc)
         value = {
             "state": state,
@@ -452,6 +485,8 @@ class OffsiteBackupRunner:
             "lastSuccessAt": last_success_at,
             "errorCode": error_code,
         }
+        if encrypted is not None:
+            value["encrypted"] = encrypted
         self.status_path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         descriptor, temporary = tempfile.mkstemp(
             prefix=".offsite-status-", dir=str(self.status_path.parent)
@@ -521,14 +556,17 @@ class OffsiteBackupRunner:
                 "not_configured", last_success_at=previous_last_success_at
             )
         archive = None
+        encrypted = None
         try:
             config = OffsiteBackupConfig.load(
                 self.config_path, expected_uid=self.expected_uid
             )
             archive = self.archive_factory()
             store = WebDavBackupStore(self.client_factory(config), retention_days=30)
+            if config.age_recipient is not None:
+                encrypted = encrypt_archive(archive, config.age_recipient, self.expected_uid)
             result = store.upload(
-                archive, now=self.clock(), expected_uid=self.expected_uid
+                encrypted or archive, now=self.clock(), expected_uid=self.expected_uid
             )
         except Exception:
             self._write_status(
@@ -538,6 +576,8 @@ class OffsiteBackupRunner:
             )
             raise
         finally:
+            if encrypted is not None:
+                encrypted.unlink()
             if archive is not None:
                 try:
                     pathlib.Path(archive).unlink()
@@ -545,6 +585,7 @@ class OffsiteBackupRunner:
                     pass
         status = self._write_status(
             "success",
+            encrypted=encrypted is not None,
             last_success_at=self.clock()
             .astimezone(datetime.timezone.utc)
             .isoformat()

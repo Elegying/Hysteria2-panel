@@ -26,6 +26,10 @@ class CompactEntryTests(unittest.TestCase):
         service = NodeEnrollmentService(None, 'https://panel.example.com:19999', PANEL_VERSION)
         command = service._deployment_command('x' * 40)
         self.assertLess(len(command), 600)
+        import hashlib
+        digest = hashlib.sha256((ROOT / 'bootstrap.sh').read_bytes()).hexdigest()
+        self.assertIn(digest, command)
+        self.assertLess(command.index('sha256sum -c'), command.index('bash "$f"'))
         command = command.replace('curl -fsSL', 'false')
         result = subprocess.run(['bash', '-c', command], capture_output=True, text=True)
         self.assertNotEqual(0, result.returncode)

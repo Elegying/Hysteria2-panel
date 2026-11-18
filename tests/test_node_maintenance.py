@@ -432,6 +432,7 @@ PANEL_VERSION=0.39.16
 PANEL_REF=v0.39.16
 WATCH_UPGRADE=0
 UNINSTALL_NODE=0
+NODE_UNINSTALL_SERVICE="$WORK/systemd/uninstall.service"
 JOIN_NODE=1
 REBIND_NODE=0
 COMPLETE_NODE_ONBOARDING=0
@@ -547,6 +548,7 @@ for _ in range(1000):
                 "install_join_node", "wait_for_node_onboarding", "acquire_maintenance_lock"
             ))
             functions = functions.replace("/run/systemd/system", "${WORK}/systemd")
+            functions = functions.replace('/bin/bash "$0"', '"$BASH" "$0"')
             script = root / "driver.sh"
             script.write_text(header + functions + dispatch)
             environment = {**os.environ, "WORK": directory, "TEST_PYTHON": sys.executable, "TEST_FLOCK": flock}

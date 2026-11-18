@@ -56,6 +56,14 @@ class MobileRevocationTests(unittest.TestCase):
         self.assertIsNone(self.db.get_mobile_session(rotated["accessToken"]))
         self.assertIsNone(self.db.rotate_mobile_session(rotated["refreshToken"]))
 
+    def test_reused_refresh_revokes_only_its_rotated_session(self):
+        issued = self.issue()
+        other = self.issue("other-device")
+        rotated = self.db.rotate_mobile_session(issued["refreshToken"])
+        self.assertIsNone(self.db.rotate_mobile_session(issued["refreshToken"]))
+        self.assertIsNone(self.db.get_mobile_session(rotated["accessToken"]))
+        self.assertIsNotNone(self.db.get_mobile_session(other["accessToken"]))
+
     def test_old_revocation_cannot_cancel_a_new_login_or_another_device(self):
         old = self.issue()
         replacement = self.issue()

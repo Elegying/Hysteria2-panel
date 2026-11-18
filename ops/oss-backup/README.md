@@ -15,6 +15,8 @@
 - `hy2-oss-retention.timer`：每天北京时间 09:45 检查过期对象，不生成新备份。
 - 首次上传并验证成功后才启用两个 timer，并停用原先未配置的 WebDAV 定时任务。
 
+在配置中设置 `age_recipient` 并安装 age 后，适配器上传客户端加密的 `.zip.age`。请同步升级面板的 offsite_backup.py。离线密钥生成和解密见 [备份与迁移](../../docs/BACKUP_AND_MIGRATION.md)。旧配置继续使用 ZIP。
+
 ## 验证和保留
 
 依赖清单中的 certifi 已固定为 `2026.10.19`，修复 [GHSA-6q48-6c7w-9gw2](https://github.com/advisories/GHSA-6q48-6c7w-9gw2) 涉及的 CA 信任链问题。现有部署需要在本工具实际使用的 Python 虚拟环境中重新安装 `requirements.txt`；仅升级面板不会更新独立 OSS 适配器环境。更新后运行该环境的 `python -m pip check` 并确认 `certifi.__version__`，再按现有流程验证备份。

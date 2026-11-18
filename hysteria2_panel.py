@@ -111,6 +111,7 @@ from hy2panel.operations import (
     SystemMetrics,
     UpdateController,
     UpgradeIngressDrain,
+    _fsync_directory,
 )
 from hy2panel.release import UpdateChecker, UpdateInstaller
 from hy2panel.systemd import SystemdNotifier
@@ -250,16 +251,6 @@ class TrafficSyncError(RuntimeError):
 
 class BackupValidationError(ValueError):
     """Raised when a backup cannot be restored safely."""
-
-
-def _fsync_directory(path):
-    descriptor = os.open(
-        str(Path(path)), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    )
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _fsync_file(path):
@@ -3155,6 +3146,11 @@ class Database:
             raise ValueError("设备名称无效")
         return device_id, device_name.strip()
 
+    def _signed_mobile_refresh(self, session_id, nonce):
+        message = ("mobile-refresh:" + session_id + ":" + nonce).encode("ascii")
+        signature = hmac.new(self.hmac_key, message, hashlib.sha256).hexdigest()
+        return "hy2r_{}.{}.{}".format(session_id, nonce, signature)
+
     def create_mobile_session(
         self,
         admin_id,
@@ -3168,8 +3164,8 @@ class Database:
         refresh_ttl_seconds = max(3600, min(int(refresh_ttl_seconds), 90 * 86400))
         now = int(time.time())
         access_token = "hy2a_" + secrets.token_urlsafe(32)
-        refresh_token = "hy2r_" + secrets.token_urlsafe(48)
         session_id = uuid.uuid4().hex
+        refresh_token = self._signed_mobile_refresh(session_id, secrets.token_hex(24))
         with self._connect() as connection:
             connection.execute("DELETE FROM mobile_sessions WHERE refresh_expires_at <= ?", (now,))
             connection.execute(
@@ -3244,7 +3240,6 @@ class Database:
         refresh_ttl_seconds = max(3600, min(int(refresh_ttl_seconds), 90 * 86400))
         now = int(time.time())
         new_access_token = "hy2a_" + secrets.token_urlsafe(32)
-        new_refresh_token = "hy2r_" + secrets.token_urlsafe(48)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -3254,7 +3249,13 @@ class Database:
                 (self._mobile_token_hash(refresh_token), now),
             ).fetchone()
             if not row:
+                match = re.fullmatch(r"hy2r_([0-9a-f]{32})\.([0-9a-f]{48})\.[0-9a-f]{64}", refresh_token)
+                if match and hmac.compare_digest(
+                    refresh_token, self._signed_mobile_refresh(*match.groups())
+                ):
+                    connection.execute("DELETE FROM mobile_sessions WHERE session_id = ?", (match[1],))
                 return None
+            new_refresh_token = self._signed_mobile_refresh(row["session_id"], secrets.token_hex(24))
             cursor = connection.execute(
                 """UPDATE mobile_sessions SET access_token_hash = ?,
                     refresh_token_hash = ?, access_expires_at = ?,
@@ -7350,7 +7351,8 @@ class Database:
                                 policy_state = 'standby', lifecycle_state = 'archived',
                                 lifecycle_changed_at = ?, data_plane_state = 'not_issued',
                                 dns_admitted_at = NULL, dns_admitted_by = NULL
-                            WHERE node_id = ? AND lifecycle_state = 'disconnecting'""",
+                            WHERE node_id = ? AND (lifecycle_state = 'disconnecting'
+                                OR (lifecycle_state = 'archived' AND status = 'revoked'))""",
                             (int(accepted_at), node_id),
                         )
                         connection.execute(
@@ -7389,7 +7391,8 @@ class Database:
             return [
                 dict(row)
                 for row in connection.execute(
-                    """SELECT n.*, e.enrollment_id, e.expires_at,
+                    """SELECT n.*, MIN(s.accepted_at, s.observed_at, s.traffic_acked_at) AS snapshot_fresh_at,
+                        e.enrollment_id, e.expires_at,
                         e.consumed_at, e.revoked_at,
                         (SELECT COUNT(*) FROM node_commands AS c
                             WHERE c.node_id = n.node_id AND c.acked_at IS NULL
@@ -7407,6 +7410,7 @@ class Database:
                             ORDER BY g.created_at DESC, g.grant_id DESC LIMIT 1
                         ) AS active_automatic_canary
                     FROM nodes AS n
+                    LEFT JOIN node_online_snapshots AS s ON s.node_id = n.node_id
                     LEFT JOIN node_enrollments AS e ON e.enrollment_id = (
                         SELECT enrollment_id FROM node_enrollments
                         WHERE node_id = n.node_id
@@ -8181,6 +8185,8 @@ class PanelApplication:
         self.port_hopping_controller = PortHoppingController()
         self.secure_cookies = bool(secure_cookies)
         self.rate_limiter = rate_limiter or LoginRateLimiter()
+        self.subscription_limiter = UserUsageRateLimiter()
+        self.refresh_limiter = UserUsageRateLimiter()
         self.user_usage_limiter = UserUsageRateLimiter()
         self.user_usage_slots = threading.BoundedSemaphore(4)
         self.user_usage_http_slots = threading.BoundedSemaphore(8)
@@ -8815,6 +8821,9 @@ class PanelHandler(JsonHandler):
         self._mobile_response(200, tokens)
 
     def _handle_mobile_refresh(self, payload):
+        if self.app.refresh_limiter.consume(LoginRateLimiter._address_key(self.client_address[0]), 60):
+            self._mobile_response(429, error_code="RATE_LIMITED", message="刷新过于频繁，请稍后重试")
+            return
         tokens = self.app.database.rotate_mobile_session(payload.get("refreshToken", ""))
         if not tokens:
             self._mobile_response(
@@ -9908,6 +9917,9 @@ class PanelHandler(JsonHandler):
         still flows through the central panel's per-user checks.
         """
         try:
+            if self.app.subscription_limiter.consume(LoginRateLimiter._address_key(self.client_address[0]), 120):
+                self._send_subscription_error(429, "订阅请求过于频繁，请稍后重试")
+                return
             subscription = self.app.database.get_subscription_by_token(token)
             if subscription is None:
                 self._send_subscription_error(404, "订阅不存在或已失效")
@@ -9922,6 +9934,9 @@ class PanelHandler(JsonHandler):
                 time.time()
             ) >= int(subscription["expires_at"]):
                 self._send_subscription_error(410, "订阅已到期")
+                return
+            if subscription["tx_bytes"] + subscription["rx_bytes"] >= subscription["traffic_limit_bytes"]:
+                self._send_subscription_error(403, "账号流量已用完")
                 return
             nodes = self.app.database.list_subscription_nodes(
                 subscription["id"]

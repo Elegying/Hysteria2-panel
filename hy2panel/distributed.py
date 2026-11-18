@@ -10,7 +10,7 @@ import secrets
 import threading
 import time
 
-from .nodes import OpenSSLSignatureVerifier
+from .nodes import MAX_STATE_AGE_SECONDS, OpenSSLSignatureVerifier
 from .domain_usage import validate_domain_records
 from .diagnostics import valid_network_sample
 from .diagnostics import valid_resources
@@ -61,7 +61,6 @@ MAX_TRAFFIC_BATCHES_PER_CYCLE = 8
 MAX_CLOCK_SKEW_SECONDS = 120
 # One 8-second protocol request, the bounded 30-second retry backoff and the
 # maximum 5-second control-loop interval must fit before new auth fails closed.
-MAX_STATE_AGE_SECONDS = 43
 MAX_TRAFFIC_BATCH_AGE_SECONDS = 7 * 86400
 MAX_USERS_PER_PAYLOAD = 1000
 # Online state is a complete snapshot, unlike splittable traffic batches.

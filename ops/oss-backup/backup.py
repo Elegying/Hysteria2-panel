@@ -22,7 +22,7 @@ UTC = dt.timezone.utc
 CONFIG = Path('/etc/hysteria2-panel/oss-backup.json')
 WORK = Path('/var/backups/hysteria2-panel/oss-staging')
 STATUS = Path('/var/lib/hysteria2-panel/oss-backup-status.json')
-PATTERN = re.compile(r'hy2-backup-(\d{8}T\d{6}Z)-[0-9a-f]{16}\.zip')
+PATTERN = re.compile(r'hy2-backup-(\d{8}T\d{6}Z)-[0-9a-f]{16}\.zip(?:\.age)?')
 PREFIXES = {'私家车备份/', '私家车专线备份/'}
 
 
@@ -184,6 +184,7 @@ def run(prune_only=False):
     import alibabacloud_oss_v2 as sdk
     now = dt.datetime.now(UTC)
     previous = json.loads(STATUS.read_text()) if STATUS.exists() else {}
+    encrypted = None
     archive = None
     try:
         c = config_load()
@@ -202,12 +203,18 @@ def run(prune_only=False):
             print(json.dumps({'retention': 'success', 'deleted': deleted}))
             return
         archive, users = create_archive()
-        digest, size = digest_file(archive), archive.stat().st_size
+        if "age_recipient" in c:
+            from offsite_backup import encrypt_archive
+            encrypted = encrypt_archive(archive, c["age_recipient"])
+        payload = encrypted or archive
+        digest, size = digest_file(payload), payload.stat().st_size
         key = c['prefix'] + 'hy2-backup-' + now.strftime('%Y%m%dT%H%M%SZ') + '-' + digest[:16] + '.zip'
+        if encrypted:
+            key += ".age"
         client.put_object_from_file(sdk.PutObjectRequest(
             bucket=c['bucket'], key=key, acl='private', storage_class='Standard',
             server_side_encryption='AES256', forbid_overwrite=True,
-            cache_control='no-store', metadata={'sha256': digest}), str(archive))
+            cache_control='no-store', metadata={'sha256': digest}), str(payload))
         verify_download(client, sdk, c, key, digest, size)
         assert_not_public(c, key)
         result = dict(state='success', checkedAt=now.isoformat(), lastSuccessAt=now.isoformat(),
@@ -226,6 +233,8 @@ def run(prune_only=False):
                           'errorType': type(exc).__name__}), file=sys.stderr)
         raise SystemExit(1) from None
     finally:
+        if encrypted is not None:
+            encrypted.unlink(missing_ok=True)
         if archive is not None:
             archive.unlink(missing_ok=True)
 
