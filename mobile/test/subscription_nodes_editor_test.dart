@@ -38,6 +38,28 @@ class EditorController extends DesignFixtureController {
 
 void main() {
   testWidgets(
+    'node editor rejects missing TLS fingerprint before saving draft',
+    (tester) async {
+      final controller = EditorController();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((_) => controller)],
+          child: const MaterialApp(home: SubscriptionNodesScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('编辑').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('保存草稿'));
+      await tester.pumpAndSettle();
+      expect(find.text('请输入 64 位证书指纹（可含冒号）'), findsOneWidget);
+      expect(controller.writes, isEmpty);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+    },
+  );
+
+  testWidgets(
     'external editor preserves opaque credentials and revision after conflict',
     (tester) async {
       final controller = EditorController();

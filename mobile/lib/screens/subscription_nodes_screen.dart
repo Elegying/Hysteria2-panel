@@ -145,6 +145,11 @@ class _EditorState extends ConsumerState<SubscriptionNodesScreen> {
                       decoration: const InputDecoration(
                         labelText: '证书 SHA-256',
                       ),
+                      validator: (v) =>
+                          RegExp(r'^[0-9a-fA-F]{64}$')
+                              .hasMatch((v ?? '').trim().replaceAll(':', ''))
+                          ? null
+                          : '请输入 64 位证书指纹（可含冒号）',
                     ),
                   ],
                 ],

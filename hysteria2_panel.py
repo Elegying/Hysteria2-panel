@@ -8865,7 +8865,9 @@ class PanelHandler(JsonHandler):
         if sub is not None:
             token = self.app.database.recover_subscription_token(sub["id"])
             nodes = self.app.database.list_subscription_nodes(sub["id"])
-            result.update({"enabled": bool(sub["enabled"]),
+            result.update({"subscriptionId": sub["id"],
+                           "nodes": [{k: n[k] for k in ("label", "host", "port", "pin_sha256", "enabled", "node_id") if k in n} for n in nodes],
+                           "enabled": bool(sub["enabled"]),
                            "url": self._subscription_url(token) if token else None,
                            "usesDefaults": not nodes,
                            "premiumReadyCount": len(self.app.database.premium_subscription_nodes())

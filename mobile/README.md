@@ -63,6 +63,6 @@ flutter build apk --release --target-platform android-arm64
 
 同步普通/专线用户、固定订阅和有效期管理，以及带类型的节点对接与端口跳跃。正式签名及应用 ID 不变，构建号升级为 36。
 
-## Android 独立发布
+## v0.5.6 正式发布
 
-Android 可使用 `android-vX.Y.Z` 独立标签发布正式签名 APK，资产仍必须命名为 `Hysteria2-Manager-vX.Y.Z.apk`，并提供 SHA-256。独立 Android Release 不设置为仓库 Latest，以免影响面板安装器读取最新服务端版本；App 按发布列表中的 APK 版本发现更新。发布前验证源代码已合并、CI、包名、签名、构建号和 arm64 ABI。
+与面板 v0.39.60 配套发布，服务端补齐单用户订阅编辑需要的节点明细和订阅 ID。沿用仓库现有的标签校验、固定 Android 签名、CI 与安装器签名发布流程；APK 资产为 `Hysteria2-Manager-v0.5.6.apk`。

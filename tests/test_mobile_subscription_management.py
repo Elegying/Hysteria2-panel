@@ -27,6 +27,25 @@ class MobileSubscriptionManagementTests(unittest.TestCase):
         user = next(x for x in users['data']['items'] if x['name'] == 'premium-test')
         return user, result['data']['uri']
 
+    def test_subscription_editor_receives_identity_and_safe_node_fields(self):
+        user, _ = self.create(userType=0)
+        path = 'users/{}/subscription'.format(user['id'])
+        _, result = self.request('GET', path)
+        subscription_id = result['data']['subscriptionId']
+        self.assertIsInstance(subscription_id, int)
+        self.assertEqual([], result['data']['nodes'])
+        node = {'label': 'example', 'host': 'example.invalid', 'port': 443,
+                'pin_sha256': 'a' * 64, 'enabled': True}
+        status, _ = self.request('POST', 'subscriptions/{}/nodes'.format(subscription_id),
+                                 {'nodes': [node]})
+        self.assertEqual(200, status)
+        _, result = self.request('GET', path)
+        self.assertEqual(subscription_id, result['data']['subscriptionId'])
+        self.assertFalse(result['data']['usesDefaults'])
+        saved = result['data']['nodes'][0]
+        self.assertEqual('example.invalid', saved['host'])
+        self.assertLessEqual(set(saved), {'label', 'host', 'port', 'pin_sha256', 'enabled', 'node_id'})
+
     def test_premium_defaults_and_rotation_preserve_subscription(self):
         user, url = self.create()
         self.assertEqual((1, 100, 250 * 1024**3, None),
