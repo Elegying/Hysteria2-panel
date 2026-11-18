@@ -27,7 +27,7 @@
 | 多节点管理 | 用短时签名命令接入节点，统一鉴权、统计和控制，不复制用户数据库 |
 | 分机器统计 | 用户总流量按实际用量；每台服务器的统计和预算按上传、下载之和计一次 |
 | 一键断连 | 在线节点自动卸载全部对接功能；管理员随时可单方面删除中央对接关系 |
-| 双 UDP 入口 | 提供主端口和按账号授权的 UDP `443`，两者共用账号与流量额度 |
+| 双 UDP 入口 | 提供主端口和 UDP `443`，两者共用账号与流量额度 |
 | 备份迁移 | 只导出用户、用户流量和连接身份；保留目标机器配置，支持 WebDAV 异地备份 |
 | 可信更新 | 固定正式版本，使用 SHA-256、GitHub Actions OIDC 和 Sigstore 验证发布身份 |
 
@@ -51,7 +51,7 @@
 以 root 执行以下短命令，入口脚本会下载固定版本安装器并验证签名。
 
 ```bash
-(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.63/bootstrap.sh -o "$f" && bash "$f")
+(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.64/bootstrap.sh -o "$f" && echo "c17d1c04fe4d6a975df4fc7f6c7a55319d1ace276807e51620b6eb7994bcaa6f  $f" | sha256sum -c - && bash "$f")
 ```
 
 <details>
@@ -65,15 +65,16 @@
   umask 077
   i=$(mktemp) || exit 1
   trap 'rm -f "$i"' EXIT
-  curl -q -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/Elegying/Hysteria2-panel/main/install.sh -o "$i" || {
+  curl -q -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.64/bootstrap.sh -o "$i" || {
     rc=$?
     case "$rc" in
       5|6) echo 'DNS 解析失败：检查 /etc/resolv.conf、系统 DNS 服务及代理配置；不会自动修改 DNS。' >&2 ;;
       60) echo 'TLS 证书校验失败：检查系统时间和 CA 证书；不要使用 -k 跳过校验。' >&2 ;;
-      *) echo "安装脚本下载失败（curl $rc）：检查网络和 GitHub 可达性，修复后重试。" >&2 ;;
+      *) echo "安装脚本下载失败（curl ${rc}）：检查网络和 GitHub 可达性，修复后重试。" >&2 ;;
     esac
     exit "$rc"
   }
+  echo "c17d1c04fe4d6a975df4fc7f6c7a55319d1ace276807e51620b6eb7994bcaa6f  $i" | sha256sum -c - || exit 1
   bash "$i"
 )
 ```
@@ -98,7 +99,7 @@ Debian 11 归档修复仅匹配普通 `.list` 文件中的已知官方旧安全�
 
 脚本启动仍需 Bash、systemd、基础维护锁工具，以及下载命令使用的 curl；缺少这些启动前提、系统密钥损坏、DNS/云安全组错误或未知服务冲突时会明确失败，不关闭校验、不强停其他服务，也不自动跨版本升级系统。
 
-> 整块命令可一次复制执行；启动检查采用 POSIX shell 语法，即使没有 Bash 也能给出明确提示。它把 GitHub HTTPS 与受保护的 `main/install.sh` 作为首次信任入口，适合跟随项目当前稳定主线。安装脚本会先以 `0600` 权限保存为普通临时文件，退出时自动删除。请不要改成 `bash <(curl …)` 或 `curl … | bash`，安装器会在修改系统前拒绝这两种输入方式。
+> 整块命令可一次复制执行；启动检查采用 POSIX shell 语法，即使没有 Bash 也能给出明确提示。首次信任入口是已核实来源的命令及其中的 SHA-256。脚本通过 GitHub HTTPS 下载。核对 bootstrap.sh 后，再由引导程序验证对应版本安装器的签名。安装脚本会先以 `0600` 权限保存为普通临时文件，退出时自动删除。请不要改成 `bash <(curl …)` 或 `curl … | bash`，安装器会在修改系统前拒绝这两种输入方式。
 
 </details>
 
@@ -109,18 +110,18 @@ Debian 11 归档修复仅匹配普通 `.list` 文件中的已知官方旧安全�
 1. 使用安装结果中给出的 HTTPS 地址登录；误用同端口 HTTP 的浏览器导航会跳转至 HTTPS 登录页，API 客户端仍须直接使用 HTTPS；
 2. 检查“服务控制”中的 Hysteria 状态；
 3. 创建测试用户并复制连接 URI；
-4. 用真实客户端验证主 UDP 端口；如为该用户开启 UDP `443`，再单独验证 `443`；
+4. 用真实客户端验证主 UDP 端口；如服务器启用了 UDP `443` 入口，再单独验证 `443`；
 5. 下载一次用户备份并离线保存。
 
 完整步骤见[安装与升级](docs/INSTALLATION.md)，常用面板操作见[使用指南](docs/USER_GUIDE.md)。
 
 ## 更严格的固定版本验签安装
 
-生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.63`；安装其他版本时，请同时修改 `version`：
+生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.64`；安装其他版本时，请同时修改 `version`：
 
 ```bash
 set -euo pipefail
-version=0.39.63
+version=0.39.64
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in
@@ -164,7 +165,7 @@ flowchart LR
 ```
 
 - 客户端直接连接选定节点，中央面板不转发用户数据；
-- 节点在新连接认证时，向中央面板核对账号状态、流量、客户端实例数和 UDP `443` 权限；
+- 节点在新连接认证时，向中央面板核对账号状态、流量和客户端实例数；
 - 各节点持续提交在线快照和可重放的流量批次，面板按用户统一汇总；
 - 中央状态无法确认时，新认证会安全拒绝；面板短暂重启不会主动切断数据节点上已有的连接。
 
@@ -180,7 +181,7 @@ flowchart LR
 | 用途 | 默认监听 |
 |---|---|
 | Hysteria 2 主入口 | 公网 UDP `19999` |
-| 账号专属入口 | 公网 UDP `443`，按账号开启 |
+| 第二入口 | 公网 UDP `443`，与主入口使用相同的账号限制 |
 | TCP 兼容探测 | 公网 TCP `19999` 和 `443` |
 | 管理面板 | 公网 HTTPS TCP `19998` |
 | Let’s Encrypt HTTP-01 | 公网 TCP `80`，仅签发或续期时使用 |

@@ -468,7 +468,7 @@ assert_reopenable_installer_entrypoint
         self.assertIn("bash -n", source)
         self.assertLess(source.index(quick_command), source.index("verify-blob"))
         self.assertLess(source.index("verify-blob"), source.index("sudo bash"))
-        self.assertIn("README checked main installer is incomplete", workflow)
+        self.assertIn("README pinned bootstrap is incomplete", workflow)
         self.assertNotIn(
             "README must not execute an unsigned main-branch installer", workflow
         )
@@ -4813,7 +4813,7 @@ printf 'attempts=%s\n' "$(cat "$WORK/attempts")"
             "MIN_QUIC_UDP_BUFFER",
             "net.core.default_qdisc=fq",
             "net.ipv4.tcp_congestion_control=bbr",
-            "# Managed by Hysteria2-panel data node",
+            "render_node_sysctl_config",
         ):
             self.assertIn(contract, optimizer)
         self.assertIn("MIN_QUIC_UDP_BUFFER=16777216", self.source)
@@ -4885,6 +4885,11 @@ fi
 write_data_plane_network_snapshot
 optimize_data_plane_network_stack
 printf 'optimized:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$mock_cc" "$(test -f "$NODE_SYSCTL_FILE" && echo present)"
+mock_rmem=33554432
+echo '# admin amendment' >> "$NODE_SYSCTL_FILE"
+restore_data_plane_network_snapshot uninstall
+[[ "$mock_rmem" == 33554432 && "$mock_cc" == cubic ]]
+grep -q 'admin amendment' "$NODE_SYSCTL_FILE"
 restore_data_plane_network_snapshot
 printf 'restored:%s:%s:%s:%s:%s\n' "$mock_rmem" "$mock_wmem" "$mock_qdisc" "$mock_cc" "$(test ! -e "$NODE_SYSCTL_FILE" && echo absent)"
 """

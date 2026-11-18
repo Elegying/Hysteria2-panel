@@ -39,6 +39,7 @@ HEARTBEAT_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 HEARTBEAT_PREFIX = b"hy2panel-node-heartbeat-v1\n"
 HEARTBEAT_CLOCK_SKEW_SECONDS = 120
 HEARTBEAT_INTERVAL_SECONDS = 60
+MAX_STATE_AGE_SECONDS = 43
 NODE_HEARTBEAT_FRESHNESS_SECONDS = 150
 DATA_PLANE_PURPOSES = {"claim", "bootstrap", "ack"}
 DATA_PLANE_COMMON_FIELDS = {"nodeId", "sentAt", "nonce", "signature"}
@@ -739,7 +740,7 @@ class NodeEnrollmentService:
             "umask 077; f=$(mktemp) || exit; trap 'rm -f \"$f\"' EXIT; "
             "curl -fsSL --connect-timeout 10 --max-time 120 "
             "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v{version}/bootstrap.sh "
-            "-o \"$f\" && bash \"$f\" --{mode}-node)"
+            "-o \"$f\" && echo \"c17d1c04fe4d6a975df4fc7f6c7a55319d1ace276807e51620b6eb7994bcaa6f  $f\" | sha256sum -c - && bash \"$f\" --{mode}-node)"
         ).format(url=_single_quote(self.panel_url), token=_single_quote(token),
                  version=self.panel_version, mode=mode)
 
@@ -1449,7 +1450,6 @@ unset HY2PANEL_DATA_PLANE_BOOTSTRAP_TOKEN
                 self._reject()
             # The control loop starts alongside the proxy. Let its first signed
             # snapshot/accounting upload arrive before atomically publishing.
-            from .distributed import MAX_STATE_AGE_SECONDS
             deadline = time.monotonic() + 30
             while True:
                 current = self.database.get_node_for_heartbeat(node["node_id"])

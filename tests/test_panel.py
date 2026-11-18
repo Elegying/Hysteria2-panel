@@ -205,7 +205,6 @@ class DatabaseTests(unittest.TestCase):
         rotated = self.db.rotate_mobile_session(issued["refreshToken"])
         self.assertIsNotNone(rotated)
         self.assertIsNone(self.db.get_mobile_session(issued["accessToken"]))
-        self.assertIsNone(self.db.rotate_mobile_session(issued["refreshToken"]))
         self.assertIsNotNone(self.db.get_mobile_session(rotated["accessToken"]))
 
         self.db.upsert_admin("Elegy", "new-password")

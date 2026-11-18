@@ -6,6 +6,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 
+from .nodes import MAX_STATE_AGE_SECONDS
 from .budgets import machine_forecasts, provider_traffic_bytes
 
 
@@ -635,10 +636,14 @@ def render_dashboard(
             else "ok"
         )
     node_rows = []
+    pending_cleanup = []
     current_time = int(time.time())
     for node in nodes:
         status = node["status"]
         if status == "revoked":
+            if (node.get("lifecycle_state") == "archived" and node.get("verified_at")
+                    and node.get("data_plane_state") in {"data_plane_installed", "direct_canary_passed", "dns_admitted"}):
+                pending_cleanup.append("<li>{}</li>".format(html.escape(node["name"])))
             continue
         lifecycle_state = node.get("lifecycle_state") or "active"
         expired = bool(
@@ -677,6 +682,12 @@ def render_dashboard(
         else:
             status_label, status_class = "已注册，等待身份确认", "warning"
         details = [node.get("observed_ip") or node.get("expected_ip") or "公网 IP 未知"]
+        if (verified and status == "pending_verification"
+                and node.get("policy_state") == "protocol_ready"
+                and lifecycle_state in {"active", "draining", "stopping", "disconnecting"}
+                and (node.get("snapshot_fresh_at") or 0) < current_time - MAX_STATE_AGE_SECONDS):
+            tier = "专线" if node.get("tier") == "premium" else "普通"
+            details.append("在线快照或流量确认已过期，正在阻止{}节点的新认证".format(tier))
         if node.get("last_heartbeat_at"):
             details.append(
                 "最后心跳：{}".format(
@@ -761,6 +772,12 @@ def render_dashboard(
             )
         )
     node_rows_html = "".join(node_rows) or '<p class="muted">尚未创建对接节点。</p>'
+    if pending_cleanup:
+        node_rows_html += (
+            "<details><summary>已撤权，远端清理待核实（{}）</summary>"
+            "<p>请撤出旧 DNS 记录，并在服务器核实节点服务、凭据和防火墙规则的清理情况。</p>"
+            "<ul>{}</ul></details>".format(len(pending_cleanup), "".join(pending_cleanup))
+        )
     onboarding_disabled = (
         ""
         if self.app.secure_cookies and self.app.node_enrollment_service is not None
@@ -781,6 +798,10 @@ def render_dashboard(
                 offsite_backup_label = "最近备份成功"
                 offsite_backup_class = "ok"
                 offsite_backup_detail = "每天一次，远端精确保留 30 天"
+                if offsite_status.get("encrypted") is True:
+                    offsite_backup_detail += "；归档已使用 age 加密"
+                elif offsite_status.get("encrypted") is False:
+                    offsite_backup_detail += "；本次上传明文 ZIP，可配置 age_recipient 启用加密"
             elif state == "failed":
                 offsite_backup_label = "最近备份失败"
                 offsite_backup_class = "bad"

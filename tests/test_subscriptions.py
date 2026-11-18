@@ -71,6 +71,14 @@ class SubscriptionTests(unittest.TestCase):
         token = self.db.ensure_subscription(user["id"])["token"]
         self.assertEqual(path, "/sub/" + token)
 
+    def test_exhausted_subscription_withholds_credentials(self):
+        user, path, _, _ = self.issue()
+        self.db.add_traffic({"subscriber": {"tx": 268435456000, "rx": 0}})
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            self.request(path)
+        self.assertEqual(403, error.exception.code)
+        self.assertNotIn(user["token"].encode(), error.exception.read())
+
     def test_rotation_retains_subscription_but_changes_proxy_auth(self):
         user, path, _, _ = self.issue()
         rotated = self.db.rotate_proxy_token(user["id"])
@@ -96,11 +104,11 @@ class SubscriptionTests(unittest.TestCase):
         with self.request(path, headers={"User-Agent": "clash.meta"}) as response:
             self.assertNotIn("ssrvpn-account-usage", json.load(response)["proxies"][0])
 
-    def test_formats_and_exhausted_usage(self):
+    def test_formats_and_nearly_exhausted_usage(self):
         user, path, _, _ = self.issue()
         with self.db._connect() as connection:
             connection.execute(
-                "UPDATE proxy_users SET tx_bytes=traffic_limit_bytes, expires_at=? WHERE id=?",
+                "UPDATE proxy_users SET tx_bytes=traffic_limit_bytes-1, expires_at=? WHERE id=?",
                 (int(time.time()) + 3600, user["id"]),
             )
         with self.request(path, headers={"User-Agent": "clash.meta"}) as response:
@@ -109,7 +117,7 @@ class SubscriptionTests(unittest.TestCase):
             self.assertEqual(user["token"], payload["proxies"][0]["password"])
             self.assertIn("expire=", response.headers["Subscription-Userinfo"])
             self.assertIn(
-                "upload=268435456000", response.headers["Subscription-Userinfo"]
+                "upload=268435455999", response.headers["Subscription-Userinfo"]
             )
         with self.request(path + "?format=raw") as response:
             self.assertTrue(response.read().startswith(b"hysteria2://"))

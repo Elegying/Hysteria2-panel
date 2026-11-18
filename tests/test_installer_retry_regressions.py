@@ -2,6 +2,8 @@
 
 import pathlib
 import subprocess
+import shlex
+import sys
 import tempfile
 import unittest
 
@@ -82,7 +84,7 @@ def run_reproductions():
     select_python() { return 0; }
     prepare_node_maintenance_agent() { return 0; }
     prepare_node_maintenance_drain() { fail "stopped cores must not fetch drain modules"; }
-    initialize_data_plane_owned_paths() { DATA_PLANE_OWNED_FILES=("${NODE_AGENT_CONFIG_DIR}/stats.env" "${NODE_AGENT_CONFIG_DIR}/bootstrap.json"); DATA_PLANE_OWNED_UNITS=(); }
+    initialize_data_plane_owned_paths() { DATA_PLANE_OWNED_FILES=("${NODE_AGENT_CONFIG_DIR}/stats.env" "${NODE_AGENT_CONFIG_DIR}/bootstrap.json"); DATA_PLANE_OWNED_UNITS=("$NODE_AGENT_OPT_DIR/test-absent-unit"); }
     stat() { printf '0:0:700\\n'; }
     sha256sum() { return 0; }
     sync() { return 0; }
@@ -93,6 +95,10 @@ def run_reproductions():
     restore_data_plane_network_snapshot() { return 0; }
     fail() { printf '%s\\n' "$*" >&2; exit 1; }
     """
+        if sys.platform == "darwin":
+            # The fixture uses a single temporary filesystem; BSD rm lacks
+            # GNU rm's mount-boundary option.
+            preamble += 'rm() { local args=(); for arg in "$@"; do [[ "$arg" == --one-file-system ]] || args+=("$arg"); done; command rm "${args[@]}"; }\n'
         body = (
             preamble
             + "\n"
@@ -130,11 +136,22 @@ def run_reproductions():
         assert outputs[1]["command_present"]
         runner.write_text(runner_probe + "exit 0\n")
         confirmed = subprocess.run(
-            ["bash", "-c", body, "isolated-installer", str(root)],
-            capture_output=True,
-            text=True,
+            ["bash", "-c", body.replace('rm -rf --one-file-system -- "${directory}"',
+                                        'false'), "isolated-installer", str(root)],
+            capture_output=True, text=True,
         )
-        assert confirmed.returncode == 0, confirmed.stderr
+        assert confirmed.returncode != 0
+        unit = root / "units/uninstall.service"
+        assert (root / "units/multi-user.target.wants/uninstall.service").resolve() == unit.resolve()
+        actions = [shlex.split(line[10:]) for line in unit.read_text().splitlines()
+                   if line.startswith("ExecStart=")]
+        for action in actions:
+            if action[0] == "/bin/rm":
+                assert all(str(root) in path for path in action[action.index("--") + 1:])
+                if sys.platform == "darwin" and "--one-file-system" in action:
+                    action.remove("--one-file-system")
+                subprocess.run(action, check=True)
+        assert not unit.exists()
         assert not (root / "config").exists() and not (root / "state").exists()
         results["uninstall_ack_failure_retry"] = outputs
     return results

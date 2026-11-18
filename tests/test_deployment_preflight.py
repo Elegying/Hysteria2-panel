@@ -2,6 +2,8 @@
 
 import os
 from pathlib import Path
+import sys
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -92,7 +94,7 @@ create_panel_workspace
         for mode, expected, message in (
             ('no-bash', 1, '缺少 Bash'), ('no-systemd', 1, 'systemd'),
             ('dns', 6, 'DNS'), ('proxy', 5, 'DNS'), ('tls', 60, 'TLS'),
-            ('timeout', 28, '网络'), ('success', 23, ''),
+            ('timeout', 28, '网络'), ('corrupt', 1, ''), ('success', 23, ''),
         ):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -102,10 +104,13 @@ create_panel_workspace
                 scripts = {
                     'mktemp': '#!/bin/sh\nexec /usr/bin/mktemp "' + directory + '/installer.XXXXXX"\n',
                     'rm': '#!/bin/sh\nexec /bin/rm "$@"\n',
-                    'bash': '#!/bin/sh\n[ "$(/usr/bin/stat -c %a "$1")" = 600 ] || exit 98\nexit 23\n',
+                    'bash': f'#!{sys.executable}\nimport os, stat, sys\nsys.exit(23 if stat.S_IMODE(os.stat(sys.argv[1]).st_mode) == 0o600 else 98)\n',
                     'curl': '#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\nprintf partial > "$2"\nexit '
                             + str({'dns': 6, 'proxy': 5, 'tls': 60, 'timeout': 28}.get(mode, 0)) + '\n',
                 }
+                if mode == 'success':
+                    scripts['curl'] = '#!/bin/sh\nwhile [ "$1" != -o ]; do shift; done\n/bin/cp "$BOOTSTRAP" "$2"\n'
+                (root / 'sha256sum').symlink_to(shutil.which('sha256sum'))
                 for name, contents in scripts.items():
                     if name == 'bash' and mode == 'no-bash':
                         continue
@@ -114,7 +119,7 @@ create_panel_workspace
                     path.chmod(0o700)
                 result = subprocess.run(
                     ['/bin/sh', '-c', command.replace('/run/systemd/system', str(systemd))],
-                    env=dict(os.environ, PATH=directory), capture_output=True, text=True,
+                    env=dict(os.environ, PATH=directory, BOOTSTRAP=str(ROOT / "bootstrap.sh")), capture_output=True, text=True,
                 )
                 self.assertEqual(expected, result.returncode, result.stderr)
                 self.assertIn(message, result.stderr)
@@ -143,6 +148,7 @@ test "$rc" = "$STATUS" && test "$attempts" = 1 && test ! -e "$DEST"
             with self.subTest(proxy=bool(proxy)):
                 script = function('preflight_download_dns') + '''
 fail() { printf '%s\\n' "$*" >&2; exit 97; }
+getent() { return 1; }
 timeout() { [[ "$*" == "15 getent ahosts raw.githubusercontent.com" ]] || exit 98; return 124; }
 PANEL_SOURCE_URL=https://raw.githubusercontent.com/example/repo/v1/app.py
 preflight_download_dns

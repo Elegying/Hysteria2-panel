@@ -2,13 +2,13 @@
 # Deliberately omit errtrace (-E): the root EXIT finalizer owns exactly one
 # rollback for failures in functions, subshells, substitutions and pipelines.
 # Inheriting ERR into child contexts can run stateful rollback diagnostics twice.
-if [ -z "${BASH_VERSION:-}" ]; then
+if [ -z "${BASH_VERSION:-}" ] || shopt -oq posix; then
   printf '%s\n' '错误：安装器需要 Bash，请使用 bash install.sh；Alpine/OpenRC 不受支持，请使用带 systemd 的 Debian/Ubuntu/Rocky Linux。' >&2
   exit 1
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.63"
+PANEL_VERSION="0.39.64"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -32,12 +32,12 @@ HY2PANEL_DIAGNOSTICS_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hyst
 HY2PANEL_ADMIN_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/admin_api.py"
 HY2PANEL_MOBILE_API_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hy2panel/mobile_api.py"
 NODE_AGENT_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/node_agent.py"
-PANEL_SHA256="50453a8cd2bf0212f30a5d883a172e8f604ffd13947315c2d2aa6cf3797aa320"
-OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2b7cee61"
+PANEL_SHA256="e3790a139cc836466cb26c772bbad57049c9392b8a267f5c9825c00fb9a432c4"
+OFFSITE_BACKUP_SHA256="5de938974126092e54ec108e706a38257f6de34a1d684383bbdcb1718e404940"
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="d45943e4a719eb51da1223b4d3af8a2990195be546ffa7aca87878d44f8dc03e"
+HY2PANEL_VERSION_SHA256="b8ca3c6f670e829d630bbe8ab5a9b0d758d6084619407f8f2ffbeddad4d37850"
 HY2PANEL_BUDGETS_SHA256="b449af46564537e59185940739ff433ac154936b15aa99bb92d738af4886f459"
 HY2PANEL_WEB_ASSETS_SHA256="704b5c68c50b3e3c3decb516e3c7aee9de4abd5bf0bd4779cd8ff80c6c3b0fdc"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
@@ -46,14 +46,14 @@ HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc
 HY2PANEL_CERTIFICATE_SHA256="018c9be7f68565766f0aee23e3f59ac20029a8c659bae625f061781ab516d5b9"
 HY2PANEL_SYSTEMD_SHA256="7ef9075c04f71441f7b9c86fbdcded9f889d9edc10ef907fc1c85ab1144f4bf6"
 HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f311bd836e2ec"
-HY2PANEL_NODES_SHA256="14ad65bdc815a7e09a07ecc8e4ccc2d9fae20d65e34b710c494bb4e279eb75da"
-HY2PANEL_DISTRIBUTED_SHA256="e3e556fdf8e64dafb585dc5510a63cd00540e65f969b755980a611197cb282c7"
+HY2PANEL_NODES_SHA256="c968141c07e6af4180f12478b6884e825f165f20ecdef066da4a16515a4ba085"
+HY2PANEL_DISTRIBUTED_SHA256="820c19e111564492deb795ca416c67a0bf423fe413bb8115b3fa2216c82b9859"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="79ea3f0f50227fdd7451983ddf5c6830850eeaf6bdef25088ddd36f45aca524c"
+HY2PANEL_DASHBOARD_SHA256="2054a74a2ed129ccd0cfc54f1b8520bed6fa38a6ce965689a08c0688b161a818"
 HY2PANEL_DIAGNOSTICS_SHA256="c431e8d916833b93b54cfc30f80b94c64e9609acb6a1fce34de9a6968d8bd010"
 HY2PANEL_ADMIN_API_SHA256="a87758032c40ff068d5bf56f372e2cc64d2d1c94ea0573ce0279a1535240ac8e"
 HY2PANEL_MOBILE_API_SHA256="d7ff806e983c294ce74dea951cc328d83e68f9c88f8406256ae0d6c5df02983c"
-NODE_AGENT_SHA256="d4c46c40451424c40089192f935d1f913e58552bd1bd3cf3cccd7f12342bd39a"
+NODE_AGENT_SHA256="9c542c4149549c6774660ea7bb9288d9379b436f085b8a2c4a439edd9868bcd9"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v2/hysteria-linux"
 HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"
@@ -1775,7 +1775,7 @@ prepare_node_maintenance_drain() {
 
 uninstall_node() {
   local backup command_name directory path unit
-  local -a uninstall_commands=(cat chmod curl find install mktemp rm sha256sum sort stat sync systemctl sysctl)
+  local -a uninstall_commands=(cat chmod cmp curl find install mktemp rm sha256sum sort stat sync systemctl sysctl)
   local -a uninstall_directories=(
     "${NODE_AGENT_STATE_DIR}"
     "${NODE_AGENT_CONFIG_DIR}"
@@ -1859,7 +1859,7 @@ uninstall_node() {
     hysteria2-panel-node-onboarding.service >/dev/null 2>&1 || true
   rollback_data_plane_firewall \
     || fail "无法只撤销本项目添加的防火墙规则；卸载将在 30 秒后重试"
-  restore_data_plane_network_snapshot \
+  restore_data_plane_network_snapshot uninstall \
     || fail "无法恢复对接前的网络参数；卸载将在 30 秒后重试"
   # Earlier shared-host deployments installed this exact supplemental unit.
   # Remove its reference before the config directory is deleted.
@@ -1878,19 +1878,51 @@ uninstall_node() {
   done
   sync -f /etc/systemd/system /etc/sysctl.d "${NODE_AGENT_CONFIG_DIR}"
 
+  # A reboot after the remote commit must still start the original worker
+  # if its standalone finalizer has not reached disk yet.
+  mkdir -p -- "${NODE_UNINSTALL_SERVICE%/*}/multi-user.target.wants"
+  ln -sfn "../${NODE_UNINSTALL_SERVICE##*/}" "${NODE_UNINSTALL_SERVICE%/*}/multi-user.target.wants/${NODE_UNINSTALL_SERVICE##*/}"
+  sync -f "${NODE_UNINSTALL_SERVICE}"
+
   "${PYTHON_BIN}" "${NODE_AGENT_OPT_DIR}/node_agent.py" ack-command \
     --private-key "${NODE_AGENT_CONFIG_DIR}/node.key" \
     --state-file "${NODE_AGENT_CONFIG_DIR}/registration.json" \
     --command-file "${NODE_UNINSTALL_COMMAND}" \
     || fail "中央面板尚未确认节点卸载；本机业务已停止，将在 30 秒后重试签名回执"
 
+  # Persist a standalone finalizer before removing its original executable or
+  # identity. A failed removal can then retry without another signed receipt.
+  local finalizer
+  finalizer="$(mktemp "${NODE_UNINSTALL_SERVICE}.XXXXXX")" || return 1
+  cat > "${finalizer}" <<EOF
+[Unit]
+Description=Finish acknowledged Hysteria2-panel node removal
+ConditionPathExists=!${MANAGED_MARKER}
+
+[Service]
+Type=oneshot
+ExecStart=/bin/rm -f -- ${NODE_AGENT_HEARTBEAT_SERVICE} ${NODE_AGENT_HEARTBEAT_TIMER} ${NODE_ONBOARDING_SERVICE} ${NODE_ONBOARDING_TIMER}
+ExecStart=/bin/rm -rf --one-file-system -- ${NODE_AGENT_STATE_DIR} ${NODE_AGENT_CONFIG_DIR} ${NODE_DATA_PLANE_BACKUP_ROOT} ${NODE_AGENT_OPT_DIR}
+ExecStart=/bin/sync
+ExecStart=/bin/rm -f -- ${NODE_UNINSTALL_SERVICE%/*}/multi-user.target.wants/${NODE_UNINSTALL_SERVICE##*/} ${NODE_UNINSTALL_SERVICE}
+ExecStart=/bin/systemctl daemon-reload
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${finalizer}"
+  mv -f -- "${finalizer}" "${NODE_UNINSTALL_SERVICE}"
+  sync -f "${NODE_UNINSTALL_SERVICE}"
+  systemctl daemon-reload
   rm -f -- "${NODE_AGENT_HEARTBEAT_SERVICE}" "${NODE_AGENT_HEARTBEAT_TIMER}" \
-    "${NODE_ONBOARDING_SERVICE}" "${NODE_ONBOARDING_TIMER}" \
-    "${NODE_UNINSTALL_SERVICE}"
+    "${NODE_ONBOARDING_SERVICE}" "${NODE_ONBOARDING_TIMER}"
   for directory in "${uninstall_directories[@]}"; do
-    rm -r -- "${directory}" \
-      || fail "中央已确认断连，但本机残留目录删除失败：${directory}"
+    rm -rf --one-file-system -- "${directory}" || return 1
   done
+  sync -f /etc /opt /var/lib /var/backups
+  rm -f -- "${NODE_UNINSTALL_SERVICE%/*}/multi-user.target.wants/${NODE_UNINSTALL_SERVICE##*/}" "${NODE_UNINSTALL_SERVICE}"
   systemctl daemon-reload
   systemctl reset-failed >/dev/null 2>&1 || true
   sync -f /etc/systemd/system /etc /opt /var/lib /var/backups
@@ -2173,10 +2205,40 @@ restore_data_plane_network_snapshot() {
     || return 1
   [[ "${sysctl_presence}" == "present" || "${sysctl_presence}" == "absent" ]] \
     || return 1
-  sysctl -w "net.core.rmem_max=${rmem}" >/dev/null || return 1
-  sysctl -w "net.core.wmem_max=${wmem}" >/dev/null || return 1
-  sysctl -w "net.core.default_qdisc=${qdisc}" >/dev/null || return 1
-  sysctl -w "net.ipv4.tcp_congestion_control=${cc}" >/dev/null || return 1
+  local key original applied current
+  for key in net.core.rmem_max net.core.wmem_max net.core.default_qdisc net.ipv4.tcp_congestion_control; do
+    case "${key}" in
+      net.core.rmem_max) original="${rmem}" ;;
+      net.core.wmem_max) original="${wmem}" ;;
+      net.core.default_qdisc) original="${qdisc}" ;;
+      net.ipv4.tcp_congestion_control) original="${cc}" ;;
+    esac
+    if [[ "${1:-}" == uninstall ]]; then
+      case "${key}" in
+        net.core.rmem_max|net.core.wmem_max)
+          applied="${MIN_QUIC_UDP_BUFFER}"
+          (( original <= applied )) || applied="${original}" ;;
+        net.core.default_qdisc) applied=fq ;;
+        net.ipv4.tcp_congestion_control) applied=bbr ;;
+      esac
+      current="$(sysctl -n "${key}")" || return 1
+      if [[ "${current}" != "${applied}" ]]; then
+        echo "保留当前内核参数 ${key}=${current}" >&2
+        continue
+      fi
+    fi
+    sysctl -w "${key}=${original}" >/dev/null || return 1
+  done
+  if [[ "${1:-}" == uninstall ]]; then
+    local installed_rmem="${rmem}" installed_wmem="${wmem}"
+    (( installed_rmem >= MIN_QUIC_UDP_BUFFER )) || installed_rmem="${MIN_QUIC_UDP_BUFFER}"
+    (( installed_wmem >= MIN_QUIC_UDP_BUFFER )) || installed_wmem="${MIN_QUIC_UDP_BUFFER}"
+    if [[ -L "${NODE_SYSCTL_FILE}" || ! -f "${NODE_SYSCTL_FILE}" ]] ||
+      ! cmp -s -- "${NODE_SYSCTL_FILE}" <(render_node_sysctl_config "${installed_rmem}" "${installed_wmem}"); then
+      echo "保留对接后已变更的内核配置路径：${NODE_SYSCTL_FILE}" >&2
+      return 0
+    fi
+  fi
   if [[ "${sysctl_presence}" == "present" ]]; then
     [[ -f "${DATA_PLANE_BACKUP_DIR}/node-sysctl.conf" \
       && ! -L "${DATA_PLANE_BACKUP_DIR}/node-sysctl.conf" ]] || return 1
@@ -2187,6 +2249,19 @@ restore_data_plane_network_snapshot() {
     rm -f -- "${NODE_SYSCTL_FILE}" || return 1
   fi
   sync -f /etc/sysctl.d || return 1
+}
+
+render_node_sysctl_config() {
+  local target_rmem="$1" target_wmem="$2"
+  cat <<EOF
+# Managed by Hysteria2-panel data node
+# Hysteria recommends 16 MiB UDP buffers for high-bandwidth QUIC transfers.
+net.core.rmem_max=${target_rmem}
+net.core.wmem_max=${target_wmem}
+# TCP BBR benefits the data node's TCP egress to web and video origins.
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
 }
 
 optimize_data_plane_network_stack() {
@@ -2214,15 +2289,7 @@ optimize_data_plane_network_stack() {
   [[ "$(sysctl -n net.core.default_qdisc)" == "fq" ]] || return 1
   [[ "$(sysctl -n net.ipv4.tcp_congestion_control)" == "bbr" ]] || return 1
   sysctl_stage="${TMP_DIR}/99-hysteria2-panel-node.conf"
-  cat > "${sysctl_stage}" <<EOF
-# Managed by Hysteria2-panel data node
-# Hysteria recommends 16 MiB UDP buffers for high-bandwidth QUIC transfers.
-net.core.rmem_max=${target_rmem}
-net.core.wmem_max=${target_wmem}
-# TCP BBR benefits the data node's TCP egress to web and video origins.
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-EOF
+  render_node_sysctl_config "${target_rmem}" "${target_wmem}" > "${sysctl_stage}"
   install -o root -g root -m 0644 "${sysctl_stage}" "${NODE_SYSCTL_FILE}" \
     || return 1
   sync -f "${NODE_SYSCTL_FILE}" /etc/sysctl.d || return 1
@@ -7033,6 +7100,11 @@ for command_name in awk flock id install mkdir mktemp mv rm rmdir stat sync syst
     || fail "缺少基础维护锁命令 ${command_name}；未修改系统，请先安装 util-linux 和 coreutils"
 done
 acquire_maintenance_lock
+
+if (( UNINSTALL_NODE == 0 )) && [[ -f "${NODE_UNINSTALL_SERVICE}" ]] &&
+  grep -Fxq 'Description=Finish acknowledged Hysteria2-panel node removal' "${NODE_UNINSTALL_SERVICE}"; then
+  fail "上次节点卸载仍在清理，请先检查 hysteria2-panel-node-uninstall.service 后重试"
+fi
 
 if (( UNINSTALL_NODE == 1 )); then
   INSTALL_COMMITTED=1
