@@ -19,6 +19,7 @@ import urllib.parse
 from pathlib import Path
 
 
+BOOTSTRAP_SHA256 = "7f68c1e145e49af9c2b9837fa61c9ded25eb40944676a937e7737aca33137a79"
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -740,9 +741,9 @@ class NodeEnrollmentService:
             "umask 077; f=$(mktemp) || exit; trap 'rm -f \"$f\"' EXIT; "
             "curl -fsSL --connect-timeout 10 --max-time 120 "
             "https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v{version}/bootstrap.sh "
-            "-o \"$f\" && echo \"c17d1c04fe4d6a975df4fc7f6c7a55319d1ace276807e51620b6eb7994bcaa6f  $f\" | sha256sum -c - && bash \"$f\" --{mode}-node)"
+            "-o \"$f\" && echo \"{digest}  $f\" | sha256sum -c - && bash \"$f\" --{mode}-node)"
         ).format(url=_single_quote(self.panel_url), token=_single_quote(token),
-                 version=self.panel_version, mode=mode)
+                 version=self.panel_version, mode=mode, digest=BOOTSTRAP_SHA256)
 
     def _verified_deployment_command(self, token, mode="join"):
         if mode not in {"join", "rebind"}:

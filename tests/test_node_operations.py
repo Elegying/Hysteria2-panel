@@ -537,10 +537,20 @@ class NodeLifecycleTests(NodeOperationsCase):
         self.assertEqual("revoked", retained["status"])
         self.assertEqual("archived", retained["lifecycle_state"])
 
+    def test_delete_pairing_discards_an_undelivered_uninstall(self):
+        command = self.db.request_node_disconnect(self.node_id, "admin", self.now)
+        self.db.delete_node_pairing(self.node_id, "admin", self.now)
+        with self.db._connect() as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM node_commands WHERE command_id=?", (command["commandId"],)
+            ).fetchone())
+
     def test_delete_pairing_keeps_a_delivered_uninstall_ack_recoverable(self):
         command = self.db.request_node_disconnect(
             self.node_id, "admin", changed_at=self.now
         )
+        received = self.db.poll_node_commands(self.node_id, "d" * 64, self.now)
+        self.assertEqual([command["commandId"]], [entry["commandId"] for entry in received])
         self.assertTrue(
             self.db.delete_node_pairing(
                 self.node_id, "admin", changed_at=self.now

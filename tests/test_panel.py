@@ -6746,6 +6746,8 @@ class PanelHttpTests(unittest.TestCase):
         )
         remote = next(item for item in pending["data"]["items"] if item["kind"] == "remote")
         self.assertTrue(remote["canDeletePairing"])
+        delivered = self.db.poll_node_commands(issued["nodeId"], "8" * 64, int(time.time()) + 1)
+        self.assertEqual([stopped["data"]["commandId"]], [item["commandId"] for item in delivered])
         status, deleted = self.mobile_json_request(
             "POST", "/api/v1/mobile/nodes/{}/delete".format(issued["nodeId"]),
             {}, access_token=access_token,

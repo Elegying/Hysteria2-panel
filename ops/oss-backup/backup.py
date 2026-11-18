@@ -202,9 +202,11 @@ def run(prune_only=False):
             write_status(previous)
             print(json.dumps({'retention': 'success', 'deleted': deleted}))
             return
+        sys.path.insert(0, '/opt/hysteria2-panel')
+        from offsite_backup import check_backup_encryption, encrypt_archive
+        check_backup_encryption(c)
         archive, users = create_archive()
         if "age_recipient" in c:
-            from offsite_backup import encrypt_archive
             encrypted = encrypt_archive(archive, c["age_recipient"])
         payload = encrypted or archive
         digest, size = digest_file(payload), payload.stat().st_size

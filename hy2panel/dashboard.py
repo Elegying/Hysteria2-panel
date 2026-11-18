@@ -642,7 +642,8 @@ def render_dashboard(
         status = node["status"]
         if status == "revoked":
             if (node.get("lifecycle_state") == "archived" and node.get("verified_at")
-                    and node.get("data_plane_state") in {"data_plane_installed", "direct_canary_passed", "dns_admitted"}):
+                    and (node.get("data_plane_installed_at") or node.get("direct_canary_passed_at")
+                         or node.get("data_plane_state") in {"data_plane_installed", "direct_canary_passed", "dns_admitted"})):
                 pending_cleanup.append("<li>{}</li>".format(html.escape(node["name"])))
             continue
         lifecycle_state = node.get("lifecycle_state") or "active"
@@ -775,7 +776,7 @@ def render_dashboard(
     if pending_cleanup:
         node_rows_html += (
             "<details><summary>已撤权，远端清理待核实（{}）</summary>"
-            "<p>请撤出旧 DNS 记录，并在服务器核实节点服务、凭据和防火墙规则的清理情况。</p>"
+            "<p>请撤出该服务器的 DNS 记录。在节点执行 <code>systemctl list-unit-files 'hysteria2-panel-node-*'</code> 和 <code>journalctl -u hysteria2-panel-node-uninstall.service</code>，核实 /etc/hysteria2-panel-node、/opt/hysteria2-panel-node、状态及备份目录。中央回执只确认业务停止，最终文件清理由本机核实。</p>"
             "<ul>{}</ul></details>".format(len(pending_cleanup), "".join(pending_cleanup))
         )
     onboarding_disabled = (
@@ -960,7 +961,7 @@ unicode: "eb20"
 <dialog id="migration-dialog" class="migration-dialog" aria-labelledby="migration-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="migration-title">备份与恢复</h2><p class="muted">保存用户与订阅数据，用于恢复或迁移面板。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭数据迁移弹窗">关闭</button></div>
 <div class="backup-summary"><strong>恢复前请确认</strong><span>恢复会替换用户和订阅数据，并短暂重启服务。管理员账号保留，完成后需重新登录。</span></div>
 <div class="migration-grid"><article class="detail backup-action-card"><span class="backup-kicker">备份</span><h3>下载备份</h3><p class="muted">导出经过完整性校验的 ZIP，建议在重要操作前保存一份。</p><div class="backup-content-note">包含用户、流量与额度、固定订阅身份，以及本机节点证书和端口跳跃设置。<br>不包含远端节点配置。</div><form method="post" action="/backup"><input type="hidden" name="csrf" value="{csrf}"><button type="submit">下载备份 ZIP</button></form></article>
-<article class="detail backup-action-card"><span class="backup-kicker">恢复</span><h3>从备份恢复</h3><p class="muted">选择本面板导出的 ZIP 文件，确认后开始恢复。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><button class="warning" type="submit">上传并恢复</button><p class="muted" data-restore-status role="status"></p></form></article></div>
+<article class="detail backup-action-card"><span class="backup-kicker">恢复</span><h3>从备份恢复</h3><p class="muted">选择已解密的 ZIP。若文件以 .zip.age 结尾，请先在恢复机执行 <code>age -d -i recovery.key -o restore.zip backup.zip.age</code>，再上传 restore.zip。</p><form data-restore-form data-csrf="{csrf}"><label for="restore-file">备份文件</label><input id="restore-file" type="file" accept=".zip,application/zip" required><button class="warning" type="submit">上传并恢复</button><p class="muted" data-restore-status role="status"></p></form></article></div>
 <details class="backup-help"><summary>备份范围与迁移说明</summary><div class="migration-guide"><section><h3>恢复范围</h3><p>恢复用户、开通与到期时间、累计流量、额度、设备限制及订阅身份，同时恢复本机节点证书、私钥和签名密钥。保留目标管理员和机器计费记录；备份含敏感凭据，请离线妥善保存。</p></section><section><h3>迁移到新服务器</h3><ol><li>保持原订阅域名、本机代理地址、HTTPS 和 UDP 端口一致。</li><li>恢复备份，重新对接远端节点，验证原订阅链接与连接。</li><li>确认正常后切换 DNS，等待旧连接退出后再停用旧机；避免两套面板同时处理认证统计。</li></ol><p>本机连接身份保持一致时，普通用户无需刷新即可重连本机；远端节点重新对接后需刷新原订阅。仅支持当前格式 3 备份，旧格式请先更新原面板并重新备份。</p></section></div></details>
 <div class="offsite-backup-row"><div><strong>每日异地备份</strong><span class="{offsite_backup_class}">{offsite_backup_label}</span></div><details class="advanced-help"><summary>配置说明</summary><p class="muted">{offsite_backup_detail}。凭据仅存于服务器 <code>/etc/hysteria2-panel/offsite-backup.json</code>（root:root 0600），不会写入网页或备份。</p></details></div></div></dialog>
 <dialog id="traffic-history-dialog" class="migration-dialog" aria-labelledby="traffic-history-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="traffic-history-title">用户流量</h2><p class="muted">本月记录 · 北京时间 · 每月 1 日清理。日占比按本月记录，小时占比按当天记录。</p></div><button class="dialog-close" type="button" data-dialog-close aria-label="关闭流量详情">关闭</button></div><p class="muted">仅展示功能启用后采集的数据，无记录日期不代表历史用量为零。按采样时刻归入时段。</p><div data-traffic-history-content aria-live="polite"></div></div></dialog>

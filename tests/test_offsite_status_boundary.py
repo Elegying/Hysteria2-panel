@@ -33,6 +33,7 @@ class OffsiteStatusBoundaryTests(unittest.TestCase):
 
     def test_invalid_previous_state_does_not_block_backup_or_failure_status(self):
         self.config.write_text(json.dumps({
+            "allow_plaintext": True,
             "endpoint": "https://backup.example.test/hy2panel/",
             "username": "backup-user", "password": "fixture-password",
         }), encoding="utf-8")
