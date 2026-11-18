@@ -5,24 +5,26 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
   final dark = brightness == Brightness.dark;
   final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: brightness)
       .copyWith(
-        surface: dark ? const Color(0xFF0B111D) : const Color(0xFFF1F4F8),
-        surfaceContainerLow: dark ? const Color(0xFF192330) : Colors.white,
+        primary: seed,
+        secondary: const Color(0xFFBC9BEF),
+        surface: dark ? const Color(0xFF071426) : const Color(0xFFF1F4F8),
+        surfaceContainerLow: dark ? const Color(0xFF081D30) : Colors.white,
         surfaceContainerHighest: dark
             ? const Color(0xFF2C2C2E)
             : const Color(0xFFE5E5EA),
         onSurface: dark ? const Color(0xFFF5F5F7) : const Color(0xFF1C1C1E),
         onSurfaceVariant: dark
-            ? const Color(0xFFB8B8C0)
+            ? const Color(0xFFBCCDE1)
             : const Color(0xFF63636B),
         outlineVariant: dark
-            ? const Color(0xFF38383A)
+            ? const Color(0xFF2D506A)
             : const Color(0xFFE0E0E5),
       );
   final base = ThemeData(useMaterial3: true, colorScheme: scheme);
   final text = base.textTheme;
-  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(18));
+  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(8));
   final fieldBorder = OutlineInputBorder(
-    borderRadius: BorderRadius.circular(12),
+    borderRadius: BorderRadius.circular(8),
     borderSide: BorderSide.none,
   );
   return base.copyWith(
@@ -85,9 +87,10 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: scheme.primary.withValues(alpha: .16),
+        backgroundColor: scheme.surfaceContainerLow,
         foregroundColor: scheme.onSurface,
-        minimumSize: const Size(48, 44),
+        minimumSize: const Size(40, 32),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         shape: shape,
         textStyle: text.labelLarge?.copyWith(
           fontSize: 14,
@@ -97,18 +100,57 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        backgroundColor: scheme.primary.withValues(alpha: .16),
+        backgroundColor: scheme.surfaceContainerLow,
         foregroundColor: scheme.onSurface,
-        minimumSize: const Size(48, 44),
+        minimumSize: const Size(40, 32),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         shape: shape,
-        side: BorderSide.none,
+        side: BorderSide(color: scheme.outlineVariant),
       ),
     ),
     textButtonTheme: TextButtonThemeData(
-      style: TextButton.styleFrom(minimumSize: const Size(48, 48)),
+      style: TextButton.styleFrom(
+        minimumSize: const Size(40, 32),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
     ),
     iconButtonTheme: IconButtonThemeData(
       style: IconButton.styleFrom(minimumSize: const Size(48, 48)),
+    ),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: ButtonStyle(
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? const Color(0xFF6240B8)
+              : Colors.transparent,
+        ),
+        foregroundColor: WidgetStatePropertyAll(scheme.onSurface),
+        side: WidgetStatePropertyAll(BorderSide(color: scheme.outlineVariant)),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+        visualDensity: VisualDensity.compact,
+      ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      height: 64,
+      indicatorColor: Colors.transparent,
+      iconTheme: WidgetStateProperty.resolveWith(
+        (states) => IconThemeData(
+          size: 26,
+          color: states.contains(WidgetState.selected)
+              ? scheme.primary
+              : scheme.onSurfaceVariant,
+        ),
+      ),
+      labelTextStyle: WidgetStateProperty.resolveWith(
+        (states) => TextStyle(
+          fontSize: 12,
+          color: states.contains(WidgetState.selected)
+              ? scheme.primary
+              : scheme.onSurfaceVariant,
+        ),
+      ),
     ),
     dividerTheme: DividerThemeData(
       color: scheme.outlineVariant,
@@ -134,14 +176,19 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
       surfaceTintColor: Colors.transparent,
     ),
     popupMenuTheme: PopupMenuThemeData(
+      elevation: 0,
+      shadowColor: Colors.transparent,
       color: scheme.surfaceContainerLow,
       surfaceTintColor: Colors.transparent,
-      shape: shape,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
     ),
     chipTheme: base.chipTheme.copyWith(
       backgroundColor: Colors.transparent,
       selectedColor: scheme.primary.withValues(alpha: .25),
-      side: BorderSide.none,
+      side: BorderSide(color: scheme.outlineVariant),
       shape: shape,
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
     ),

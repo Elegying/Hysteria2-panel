@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/core/app_controller.dart';
 import 'package:hysteria2_manager/screens/domain_usage_screen.dart';
-import 'package:hysteria2_manager/screens/home_screen.dart';
+import 'package:hysteria2_manager/screens/settings_screen.dart';
 import 'package:hysteria2_manager/screens/nodes_screen.dart';
 import 'package:hysteria2_manager/screens/users_screen.dart';
 
@@ -76,6 +76,10 @@ void main() {
     await display(tester, DeepReviewController(), const NodesScreen());
     await tester.tap(find.text('边缘节点').first);
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('节点详情与对接管理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('节点详情与对接管理'));
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('复制节点 ID'));
     await tester.pumpAndSettle();
     expect(find.text('节点 ID 已复制').hitTestable(), findsOneWidget);
@@ -101,6 +105,10 @@ void main() {
     );
     await display(tester, DeepReviewController(), const NodesScreen());
     await tester.tap(find.text('边缘节点').first);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('节点详情与对接管理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('节点详情与对接管理'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('复制节点 ID'));
     await tester.pumpAndSettle();
@@ -149,10 +157,8 @@ void main() {
       tester,
     ) async {
       final c = DeepReviewController();
-      await display(tester, c, const HomeScreen());
-      final trigger = action == '停止'
-          ? find.text(action)
-          : find.byTooltip(action);
+      await display(tester, c, const SettingsScreen());
+      final trigger = find.text(action == '停止' ? '停止服务' : '重启主机');
       await tester.scrollUntilVisible(
         trigger,
         250,
@@ -193,6 +199,14 @@ void main() {
     );
     await tester.tap(find.text('示例用户 1'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('完整详情与其他操作').last);
+    await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(OutlinedButton, '分享'));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
@@ -230,7 +244,7 @@ void main() {
     );
     final c = DeepReviewController();
     await display(tester, c, const UsersScreen());
-    await tester.tap(find.text('新增用户'));
+    await tester.tap(find.text('新建用户'));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byWidgetPredicate(

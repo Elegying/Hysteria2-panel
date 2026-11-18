@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/app.dart';
 import 'package:hysteria2_manager/core/app_controller.dart';
-import 'package:hysteria2_manager/screens/home_screen.dart';
 import 'package:hysteria2_manager/screens/settings_screen.dart';
 import 'package:hysteria2_manager/screens/users_screen.dart';
 import 'package:hysteria2_manager/screens/home_shell.dart';
@@ -66,13 +65,13 @@ void main() {
         find
             .descendant(
               of: find.byType(AppBottomDock),
-              matching: find.text('用户'),
+              matching: find.text('用户管理'),
             )
             .hitTestable()
             .first,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('新增用户'));
+      await tester.tap(find.text('新建用户'));
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsOneWidget);
       controller.refreshAccess();
@@ -106,7 +105,7 @@ void main() {
                           ? const SettingsScreen()
                           : action == '禁用'
                           ? const UsersScreen()
-                          : const HomeScreen())
+                          : const SettingsScreen())
                     : const Scaffold(body: Text('登录页'));
               },
             ),
@@ -123,11 +122,23 @@ void main() {
         await tester.ensureVisible(find.text('示例用户 1'));
         await tester.tap(find.text('示例用户 1'));
         await tester.pumpAndSettle();
+        await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('完整详情与其他操作').last);
+        await tester.pumpAndSettle();
         await tester.tap(find.widgetWithText(OutlinedButton, '禁用'));
       } else {
-        final trigger = action == '重启服务器'
-            ? find.byTooltip(action)
-            : find.text(action);
+        final trigger = find.text(
+          action == '重启服务器'
+              ? '重启主机'
+              : action == '停止'
+              ? '停止服务'
+              : action,
+        );
         await tester.scrollUntilVisible(
           trigger,
           250,
@@ -146,7 +157,7 @@ void main() {
           of: find.byType(Dialog),
           matching: find.widgetWithText(
             FilledButton,
-            action == '禁用' ? '确认' : action,
+            action == '退出登录' ? action : '确认',
           ),
         ),
       );

@@ -113,7 +113,7 @@ void main() {
     }
 
     await tab('用户');
-    await tester.tap(find.text('新增用户'));
+    await tester.tap(find.text('新建用户'));
     await capture('05-create-user');
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();

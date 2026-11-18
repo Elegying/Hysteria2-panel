@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/app_controller.dart';
+import '../core/glass.dart';
 import 'login_screen.dart';
 
 /// One management account; both user tiers are managed inside this panel.
@@ -44,7 +45,7 @@ class PanelSwitcher extends ConsumerWidget {
     final name = ref.read(appControllerProvider).panels[index].name;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (context) => GlassDialog(
         title: Text('删除$name的登录信息？'),
         content: const Text('删除本机保存的地址、账号、密码并退出此面板。不会删除服务器上的用户、节点或设置。'),
         actions: [
@@ -69,9 +70,8 @@ class PanelSwitcher extends ConsumerWidget {
 
   Future<void> _menu(BuildContext context, WidgetRef ref, int index) async {
     final panel = ref.read(appControllerProvider).panels[index];
-    final action = await showModalBottomSheet<String>(
+    final action = await showGlassModalBottomSheet<String>(
       context: context,
-      showDragHandle: true,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -164,7 +164,7 @@ class _PanelNameDialogState extends State<_PanelNameDialog> {
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
+  Widget build(BuildContext context) => GlassDialog(
     title: const Text('重命名面板'),
     content: TextField(
       controller: _input,

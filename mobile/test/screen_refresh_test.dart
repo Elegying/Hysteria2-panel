@@ -14,6 +14,9 @@ class PendingRefreshController extends AppController {
 
   @override
   Future<Map<String, dynamic>> getJson(String path) {
+    if (path.contains('/line-monitor')) {
+      return Future.value({'network': <String, dynamic>{}});
+    }
     final request = Completer<Map<String, dynamic>>();
     requests.add(request);
     return request.future;
@@ -128,7 +131,12 @@ void main() {
     };
     controller.requests.single.complete(data('预计5月28日用尽 · 到重置日还缺 4 G', 2));
     await tester.pumpAndSettle();
-    expect(find.textContaining('主节点 · 2001:db8::1234'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('2001:db8::1234'),
+      180,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('2001:db8::1234'), findsOneWidget);
     expect(find.textContaining('预计5月28日'), findsOneWidget);
     expect(find.textContaining('还缺 4 G'), findsOneWidget);
     refreshPage(tester);
@@ -256,12 +264,14 @@ void main() {
       final controller = await mountPage(tester, entry.value);
       controller.requests.single.complete(snapshot('cached-snapshot'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('刷新'));
+      refreshPage(tester);
+      await tester.pump();
       controller.requests.last.completeError(const ApiException('网络暂时不可用'));
       await tester.pumpAndSettle();
       expect(find.textContaining('cached-snapshot'), findsWidgets);
       expect(find.textContaining('数据刷新失败：网络暂时不可用'), findsOneWidget);
-      await tester.tap(find.byTooltip('刷新'));
+      refreshPage(tester);
+      await tester.pump();
       controller.requests.last.complete(snapshot('recovered-snapshot'));
       await tester.pumpAndSettle();
       expect(find.textContaining('recovered-snapshot'), findsWidgets);
@@ -283,12 +293,25 @@ void main() {
       snapshot('rate-node', observedAt: 10, totalBytes: 100),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.byTooltip('刷新'));
+    refreshPage(tester);
+    await tester.pump();
     controller.requests.last.complete(
       snapshot('rate-node', observedAt: 25, totalBytes: 300),
     );
     await tester.pumpAndSettle();
-    expect(find.text('20 B/s'), findsOneWidget);
+    await tester.tap(find.text('rate-node').first);
+    await tester.pumpAndSettle();
+    // The measured rate is exposed in node details after expansion.
+    await tester.ensureVisible(find.text('节点详情与对接管理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('节点详情与对接管理'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.textContaining('20 B/s'),
+      150,
+      scrollable: find.byType(Scrollable).last,
+    );
+    expect(find.textContaining('20 B/s'), findsWidgets);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
   });

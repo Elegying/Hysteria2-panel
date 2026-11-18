@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:liquid_glass_widgets/liquid_glass_widgets.dart' as liquid;
 
 import 'h2_glass_capture.dart';
-import 'h2_drifting_background.dart';
 
 double appDockExtent(BuildContext context) =>
     84 + (MediaQuery.textScalerOf(context).scale(12) - 12).clamp(0, 100) * 2;
@@ -39,7 +38,6 @@ class LiquidBackdrop extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    final shade = dark ? const Color(0x4005111F) : const Color(0xDDF0F5FA);
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: (dark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark)
           .copyWith(
@@ -52,23 +50,10 @@ class LiquidBackdrop extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               Positioned.fill(
-                child: IgnorePointer(
-                  child: H2DriftingBackground(
-                    captureBackground: true,
-                    child: SizedBox.expand(
-                      child: Image.asset(
-                        'assets/liquid-tech-background.png',
-                        fit: BoxFit.cover,
-                        filterQuality: FilterQuality.medium,
-                        color: shade,
-                        colorBlendMode: BlendMode.srcATop,
-                        frameBuilder: (_, image, frame, synchronous) =>
-                            frame != null || synchronous
-                            ? image
-                            : ColoredBox(color: shade, child: image),
-                      ),
-                    ),
-                  ),
+                child: ColoredBox(
+                  color: dark
+                      ? const Color(0xFF071426)
+                      : const Color(0xFFF1F4F8),
                 ),
               ),
               child,
@@ -144,7 +129,7 @@ class GlassSliverList extends StatelessWidget {
 class GlassSurface extends StatelessWidget {
   const GlassSurface({
     required this.child,
-    this.borderRadius = 20,
+    this.borderRadius = 9,
     this.blurSigma = 8,
     this.margin,
     this.grouped = false,
@@ -164,7 +149,7 @@ class GlassSurface extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final opaque = MediaQuery.highContrastOf(context);
-    final floating = blurSigma > 0;
+    final floating = !dark && blurSigma > 0;
     final radius = BorderRadius.circular(borderRadius);
     if (floating && !opaque) {
       final shape = liquid.LiquidRoundedSuperellipse(
@@ -225,8 +210,8 @@ class GlassSurface extends StatelessWidget {
         border: Border.all(
           color: opaque
               ? scheme.outline
-              : scheme.outlineVariant.withValues(alpha: .45),
-          width: opaque ? 1.5 : .5,
+              : scheme.outlineVariant.withValues(alpha: .85),
+          width: opaque ? 1.5 : .8,
         ),
       ),
       child: ClipRRect(
@@ -292,45 +277,59 @@ class GlassDialog extends StatelessWidget {
   final List<Widget> actions;
 
   @override
-  Widget build(BuildContext context) => Dialog(
-    backgroundColor: Colors.transparent,
-    elevation: 0,
-    shadowColor: Colors.transparent,
-    child: GlassSurface(
-      borderRadius: 24,
-      blurSigma: 24,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 560),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (title != null)
-                DefaultTextStyle.merge(
-                  style: Theme.of(context).textTheme.titleLarge
-                      ?.copyWith(fontWeight: FontWeight.w800),
-                  child: title!,
-                ),
-              if (title != null && content != null) const SizedBox(height: 16),
-              if (content != null)
-                Flexible(
-                  fit: FlexFit.loose,
-                  child: DefaultTextStyle.merge(
-                    style: Theme.of(context).textTheme.bodyMedium,
-                    child: content!,
+  Widget build(BuildContext context) => Theme(
+    data: Theme.of(context).copyWith(
+      inputDecorationTheme: Theme.of(context).inputDecorationTheme.copyWith(
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(
+            color: Theme.of(context).colorScheme.outlineVariant,
+          ),
+        ),
+      ),
+    ),
+    child: Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      shadowColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      child: GlassSurface(
+        borderRadius: 24,
+        blurSigma: 24,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(22, 22, 22, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (title != null)
+                  DefaultTextStyle.merge(
+                    style: Theme.of(context).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
+                    child: title!,
                   ),
-                ),
-              if (actions.isNotEmpty) const SizedBox(height: 18),
-              if (actions.isNotEmpty)
-                Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: actions,
-                ),
-            ],
+                if (title != null && content != null)
+                  const SizedBox(height: 16),
+                if (content != null)
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: DefaultTextStyle.merge(
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      child: SingleChildScrollView(child: content!),
+                    ),
+                  ),
+                if (actions.isNotEmpty) const SizedBox(height: 18),
+                if (actions.isNotEmpty)
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: actions,
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -483,4 +482,107 @@ class GlassDropdownField<T> extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Equal-width controls that collapse to one column for large text.
+class ActionGrid extends StatelessWidget {
+  const ActionGrid({required this.children, super.key});
+  final List<Widget> children;
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final largeText = MediaQuery.textScalerOf(context).scale(14) > 20;
+      final columns = largeText || constraints.maxWidth < 240 ? 1 : 2;
+      final width = (constraints.maxWidth - 10 * (columns - 1)) / columns;
+      return Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          for (var i = 0; i < children.length; i++)
+            SizedBox(
+              width:
+                  columns == 2 &&
+                      children.length.isOdd &&
+                      i == children.length - 1
+                  ? constraints.maxWidth
+                  : width,
+              child: children[i],
+            ),
+        ],
+      );
+    },
+  );
+}
+
+/// Shared header measured from the selected 1200 × 2608 reference screens.
+class PanelHeading extends StatelessWidget {
+  const PanelHeading(
+    this.title, {
+    super.key,
+    this.trailing,
+    this.subtitle = 'Hysteria2 Panel',
+  });
+  final String title;
+  final String subtitle;
+  final Widget? trailing;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(8, 4, 8, 10),
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final heading = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.headlineMedium),
+            const SizedBox(height: 3),
+            Text(
+              subtitle,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        );
+        if (trailing != null &&
+            (constraints.maxWidth < 320 ||
+                MediaQuery.textScalerOf(context).scale(14) > 16)) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              heading,
+              const SizedBox(height: 8),
+              Align(alignment: Alignment.centerRight, child: trailing),
+            ],
+          );
+        }
+        return Row(
+          children: [
+            Expanded(child: heading),
+            ?trailing,
+          ],
+        );
+      },
+    ),
+  );
+}
+
+class PanelSection extends StatelessWidget {
+  const PanelSection(this.title, {required this.child, super.key});
+  final String title;
+  final Widget child;
+  @override
+  Widget build(BuildContext context) => GlassCard(
+    child: Padding(
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title, style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 12),
+          child,
+        ],
+      ),
+    ),
+  );
 }

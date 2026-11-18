@@ -178,38 +178,16 @@ void main() {
     expect(label.bottom, lessThanOrEqualTo(surface.bottom));
   });
 
-  testWidgets('background drifts and pauses when the application is hidden', (
+  testWidgets('flat backdrop stays stable across lifecycle changes', (
     tester,
   ) async {
-    binding.platformDispatcher.accessibilityFeaturesTestValue =
-        const FakeAccessibilityFeatures(disableAnimations: false);
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pumpWidget(
       const MaterialApp(home: LiquidBackdrop(child: SizedBox.expand())),
     );
-    await tester.pump(const Duration(seconds: 1));
-    final wallpaperTranslation = find.descendant(
-      of: find.byType(H2DriftingBackground),
-      matching: find.byType(FractionalTranslation),
-    );
-    final first = tester
-        .widget<FractionalTranslation>(wallpaperTranslation)
-        .translation;
-    await tester.pump(const Duration(seconds: 8));
-    expect(
-      tester.widget<FractionalTranslation>(wallpaperTranslation).translation,
-      isNot(first),
-    );
+    expect(find.byType(H2DriftingBackground), findsNothing);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-    await tester.pump();
-    final paused = tester
-        .widget<FractionalTranslation>(wallpaperTranslation)
-        .translation;
     await tester.pump(const Duration(seconds: 8));
-    expect(
-      tester.widget<FractionalTranslation>(wallpaperTranslation).translation,
-      paused,
-    );
+    expect(tester.takeException(), isNull);
     tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
     await tester.pumpWidget(const SizedBox.shrink());
   });

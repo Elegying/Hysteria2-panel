@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/core/app_controller.dart';
 import 'package:hysteria2_manager/screens/users_screen.dart';
-import 'package:hysteria2_manager/screens/home_screen.dart';
+import 'package:hysteria2_manager/screens/nodes_screen.dart';
 
 class UserFormController extends AppController {
   bool supportsTrafficEdit = true;
@@ -66,6 +66,14 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('form-test-user').first);
       await tester.pumpAndSettle();
+      await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('完整详情与其他操作').last);
+      await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(OutlinedButton, '流量'));
       await tester.pumpAndSettle();
       expect(find.text('当前面板不支持设置已用流量，请先升级面板'), findsOneWidget);
@@ -89,7 +97,7 @@ void main() {
                 theme: ThemeData.dark(useMaterial3: true),
                 home: Scaffold(
                   body: kind == 'enroll'
-                      ? const HomeScreen()
+                      ? const NodesScreen()
                       : const UsersScreen(),
                 ),
               ),
@@ -99,6 +107,16 @@ void main() {
           if (kind == 'edit' || kind == 'traffic') {
             await tester.tap(find.text('form-test-user').first);
             await tester.pumpAndSettle();
+            await tester.ensureVisible(
+              find.widgetWithText(OutlinedButton, '更多'),
+            );
+            await tester.pumpAndSettle();
+            await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
+            await tester.pumpAndSettle();
+            await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
+            await tester.pumpAndSettle();
+            await tester.tap(find.byTooltip('完整详情与其他操作').last);
+            await tester.pumpAndSettle();
             expect(find.widgetWithText(OutlinedButton, '扫码'), findsOneWidget);
             final edit = find.widgetWithText(
               OutlinedButton,
@@ -107,7 +125,7 @@ void main() {
             await tester.ensureVisible(edit);
             await tester.tap(edit);
           } else {
-            final open = find.text(kind == 'enroll' ? '一键对接' : '新增用户');
+            final open = find.text(kind == 'enroll' ? '节点对接' : '新建用户');
             if (kind == 'enroll') {
               await tester.scrollUntilVisible(
                 open,
@@ -191,7 +209,7 @@ void main() {
           expect(find.text('迟到的失败'), findsNothing);
           expect(find.byType(Dialog), findsNothing);
           expect(
-            find.byType(kind == 'enroll' ? HomeScreen : UsersScreen),
+            find.byType(kind == 'enroll' ? NodesScreen : UsersScreen),
             findsOneWidget,
           );
           if (kind == 'edit') {
@@ -227,7 +245,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('新增用户'));
+    await tester.tap(find.text('新建用户'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('到期时间'));
     await tester.pumpAndSettle();
@@ -259,11 +277,19 @@ void main() {
         if (editing) {
           await tester.tap(find.text('form-test-user').first);
           await tester.pumpAndSettle();
+          await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
+          await tester.pumpAndSettle();
+          await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
+          await tester.pumpAndSettle();
+          await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
+          await tester.pumpAndSettle();
+          await tester.tap(find.byTooltip('完整详情与其他操作').last);
+          await tester.pumpAndSettle();
           final edit = find.widgetWithText(OutlinedButton, '编辑');
           await tester.ensureVisible(edit);
           await tester.tap(edit);
         } else {
-          await tester.tap(find.text('新增用户'));
+          await tester.tap(find.text('新建用户'));
         }
         await tester.pumpAndSettle();
         Finder field(String label) => find.byWidgetPredicate(

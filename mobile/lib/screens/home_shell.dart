@@ -1,50 +1,52 @@
 import 'package:flutter/material.dart';
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart' as liquid;
 
-import '../core/glass.dart';
 import 'home_screen.dart';
 import 'nodes_screen.dart';
 import 'settings_screen.dart';
 import 'users_screen.dart';
+import 'subscriptions_screen.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
-
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
-
   static const _pages = [
     HomeScreen(),
-    UsersScreen(),
     NodesScreen(),
+    UsersScreen(),
+    SubscriptionsScreen(),
     SettingsScreen(),
   ];
-
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: liquid.GlassScaffold(
-        backgroundColor: Colors.transparent,
-        contentAwareBrightness: true,
-        bottomBarHeight: appDockExtent(context),
-        body: IndexedStack(
-          index: _index,
-          children: [
-            for (var i = 0; i < _pages.length; i++)
-              TickerMode(enabled: _index == i, child: _pages[i]),
-          ],
-        ),
-        bottomBar: AppBottomDock(
-          selectedIndex: _index,
-          onSelected: (value) => setState(() => _index = value),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Scaffold(
+    body: Stack(
+      fit: StackFit.expand,
+      children: [
+        for (var i = 0; i < _pages.length; i++)
+          Offstage(
+            offstage: _index != i,
+            child: ExcludeSemantics(
+              excluding: _index != i,
+              child: AnimatedOpacity(
+                opacity: _index == i ? 1 : 0,
+                duration: MediaQuery.disableAnimationsOf(context)
+                    ? Duration.zero
+                    : const Duration(milliseconds: 180),
+                child: TickerMode(enabled: _index == i, child: _pages[i]),
+              ),
+            ),
+          ),
+      ],
+    ),
+    bottomNavigationBar: AppBottomDock(
+      selectedIndex: _index,
+      onSelected: (value) => setState(() => _index = value),
+    ),
+  );
 }
 
 class AppBottomDock extends StatelessWidget {
@@ -53,67 +55,29 @@ class AppBottomDock extends StatelessWidget {
     required this.onSelected,
     super.key,
   });
-
   final int selectedIndex;
   final ValueChanged<int> onSelected;
-
-  static const _items = [
-    (
-      label: '首页',
-      icon: Icons.dashboard_outlined,
-      selected: Icons.dashboard_rounded,
-    ),
-    (
-      label: '用户',
-      icon: Icons.people_outline_rounded,
-      selected: Icons.people_rounded,
-    ),
-    (label: '节点', icon: Icons.dns_outlined, selected: Icons.dns_rounded),
-    (
-      label: '设置',
-      icon: Icons.settings_outlined,
-      selected: Icons.settings_rounded,
-    ),
-  ];
-
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return liquid.GlassTabBar.bottom(
-      selectedIndex: selectedIndex,
-      onTabSelected: onSelected,
-      quality: liquid.GlassQuality.premium,
-      backgroundQuality: liquid.GlassQuality.premium,
-      adaptiveBrightness: true,
-      settings: liquid.LiquidGlassSettings(
-        glassColor: Theme.of(context).brightness == Brightness.dark
-            ? const Color(0x241B304A)
-            : const Color(0x60FFFFFF),
-        thickness: 28,
-        blur: 6,
-        chromaticAberration: .025,
-        refractiveIndex: 1.3,
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      border: Border(
+        top: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
       ),
-      horizontalPadding: 12,
-      verticalPadding: 6,
-      barHeight: appDockExtent(context) - 24,
-      selectedIconColor: scheme.primary,
-      selectedLabelColor: scheme.primary,
-      unselectedIconColor: scheme.onSurfaceVariant,
-      unselectedLabelColor: scheme.onSurfaceVariant,
-      indicatorPinchStrength: .5,
-      magnification: 1.18,
-      tabs: [
-        for (var index = 0; index < _items.length; index++)
-          liquid.GlassTab(
-            label: _items[index].label,
-            icon: Icon(
-              selectedIndex == index
-                  ? _items[index].selected
-                  : _items[index].icon,
-            ),
-          ),
+    ),
+    child: NavigationBar(
+      selectedIndex: selectedIndex,
+      onDestinationSelected: onSelected,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      destinations: const [
+        NavigationDestination(icon: Icon(Icons.home_outlined), label: '总览'),
+        NavigationDestination(icon: Icon(Icons.dns_outlined), label: '节点管理'),
+        NavigationDestination(icon: Icon(Icons.people_outline), label: '用户管理'),
+        NavigationDestination(
+          icon: Icon(Icons.article_outlined),
+          label: '订阅管理',
+        ),
+        NavigationDestination(icon: Icon(Icons.settings_outlined), label: '设置'),
       ],
-    );
-  }
+    ),
+  );
 }

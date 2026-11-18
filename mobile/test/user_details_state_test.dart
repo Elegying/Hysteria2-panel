@@ -71,7 +71,17 @@ Future<void> openDetails(
     150,
     scrollable: find.byType(Scrollable).hitTestable().first,
   );
+  await tester.ensureVisible(find.text('details-user').first);
+  await tester.pumpAndSettle();
   await tester.tap(find.text('details-user').first);
+  await tester.pumpAndSettle();
+  await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
+  await tester.pumpAndSettle();
+  await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
+  await tester.pumpAndSettle();
+  await tester.tap(find.byTooltip('完整详情与其他操作').last);
   await tester.pumpAndSettle();
 }
 
@@ -150,7 +160,7 @@ void main() {
       controller.exists = false;
       await refresh(tester);
       expect(find.text('此用户已从面板删除。'), findsOneWidget);
-      expect(find.byType(OutlinedButton), findsNothing);
+      expect(find.byType(OutlinedButton).hitTestable(), findsNothing);
       await tester.tap(find.text('关闭详情'));
       await tester.pumpAndSettle();
       expect(find.text('此用户已从面板删除。'), findsNothing);

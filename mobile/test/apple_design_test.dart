@@ -58,7 +58,7 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        for (final label in ['首页', '用户', '节点', '设置']) {
+        for (final label in ['总览', '节点管理', '用户管理', '订阅管理', '设置']) {
           await tester.tap(
             find
                 .descendant(
@@ -70,26 +70,11 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(tester.takeException(), isNull, reason: label);
-          // Titles and actions must share one compact toolbar, with no expanded blank header.
-          final header = tester.widget<SliverAppBar>(find.byType(SliverAppBar));
-          expect(
-            find.descendant(
-              of: find.byType(SliverAppBar),
-              matching: find.text(label),
-            ),
-            findsOneWidget,
-          );
-          expect(header.expandedHeight, isNull);
-          expect(
-            header.toolbarHeight,
-            lessThanOrEqualTo(label == '首页' ? 80 : 64),
-          );
-          if (label == '首页') {
-            expect(find.byTooltip('刷新'), findsNothing);
-            expect(find.byType(PopupMenuButton<String>), findsNothing);
-            expect(find.text('面板1'), findsNothing);
-            expect(find.text('面板2'), findsNothing);
+          if (label == '订阅管理') {
+            expect(find.text('订阅管理'), findsWidgets);
+            continue;
           }
+          expect(find.byType(PanelHeading), findsOneWidget);
           final scrollable = find.byType(Scrollable).first;
           for (var i = 0; i < 4; i++) {
             await tester.drag(scrollable, const Offset(0, -350));

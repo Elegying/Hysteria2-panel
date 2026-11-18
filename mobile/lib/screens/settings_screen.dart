@@ -1,4 +1,5 @@
 import 'panel_switcher.dart';
+import 'admin_controls.dart';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -50,6 +51,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
   }
 
   Future<void> _checkUpdate() async {
+    if (_checking) return;
     setState(() => _checking = true);
     try {
       final packageInfo = _packageInfo ?? await PackageInfo.fromPlatform();
@@ -104,7 +106,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
           builder: (context) => GlassDialog(
             title: const Text('发现新版本'),
             content: Text(
-              '当前版本 v$current，可更新到 v${latest!.version}。下载后请直接覆盖安装，固定签名会保留应用数据。',
+              packageInfo.packageName.endsWith('.preview')
+                  ? '当前为测试版 v$current，发现正式版 v${latest!.version}。正式版使用独立包名，需另行安装并登录，不会覆盖本测试版。'
+                  : '当前版本 v$current，可更新到 v${latest!.version}。下载后安装更新。',
             ),
             actions: [
               GlassControlSurface(
@@ -116,9 +120,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
               GlassControlSurface(
                 child: FilledButton.icon(
                   onPressed: () async {
-                    final url = Uri.parse(latest!.url);
-                    await launchUrl(url, mode: LaunchMode.externalApplication);
-                    if (context.mounted) Navigator.pop(context);
+                    try {
+                      final url = Uri.parse(latest!.url);
+                      if (url.scheme != 'https' ||
+                          url.host != 'github.com' ||
+                          !await launchUrl(
+                            url,
+                            mode: LaunchMode.externalApplication,
+                          )) {
+                        throw const FormatException('download unavailable');
+                      }
+                      if (context.mounted) Navigator.pop(context);
+                    } catch (_) {
+                      if (context.mounted) {
+                        await showGlassError(context, '无法打开下载链接，请稍后重试');
+                      }
+                    }
                   },
                   icon: const Icon(Icons.download_rounded),
                   label: const Text('下载 APK'),
@@ -213,15 +230,18 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
     return SafeArea(
       child: CustomScrollView(
         slivers: [
-          const SliverAppBar(
-            toolbarHeight: 56,
-            pinned: false,
-            title: Text('设置'),
+          const SliverToBoxAdapter(
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 10),
+              child: PanelHeading('设置'),
+            ),
           ),
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
             sliver: SliverList.list(
               children: [
+                const AdminControls(),
+                const SizedBox(height: 12),
                 GlassCard(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
@@ -292,6 +312,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                   ),
                 ),
                 const SizedBox(height: 8),
+
                 GlassCard(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
@@ -409,7 +430,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
                     ),
                   ),
                 ),
-                SizedBox(height: appDockExtent(context)),
+                const SizedBox(height: 16),
               ],
             ),
           ),

@@ -131,15 +131,20 @@ void main() {
       await mount(tester, c);
       expect(find.text('面板1'), findsNothing);
       expect(find.text('面板2'), findsNothing);
-      await tab(tester, '用户');
+      await tab(tester, '用户管理');
       expect(find.text('普通用户'), findsOneWidget);
       expect(find.text('专线用户'), findsOneWidget);
       await tester.tap(find.text('专线用户'));
       await tester.pumpAndSettle();
       expect(c.state.activePanel, 0);
-      await tab(tester, '节点');
+      await tab(tester, '节点管理');
       expect(find.text('面板1-主节点'), findsWidgets);
       await tab(tester, '设置');
+      await tester.scrollUntilVisible(
+        find.text('管理员1'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('管理员1'), findsOneWidget);
       expect(find.text('https://panel1.example.test:19998'), findsOneWidget);
       expect(tester.takeException(), isNull);
@@ -194,6 +199,12 @@ void main() {
       final c = TwoPanels();
       await mount(tester, c, width: 320, scale: 2);
       await tab(tester, '设置');
+      await tester.scrollUntilVisible(
+        find.text('管理员1'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
       await tester.tap(find.text('管理员1'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('重命名'));

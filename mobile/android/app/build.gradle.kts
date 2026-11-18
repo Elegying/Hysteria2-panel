@@ -20,7 +20,7 @@ android {
 
     defaultConfig {
         applicationId = if (previewBuild) "vip.ssrvpn.hysteria2manager.preview" else "vip.ssrvpn.hysteria2manager"
-        manifestPlaceholders["appLabel"] = if (previewBuild) "H2 液态玻璃预览" else "Hysteria2管理"
+        manifestPlaceholders["appLabel"] = if (previewBuild) "Hysteria2管理·测试" else "Hysteria2管理"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -68,8 +68,11 @@ android {
             if (!previewBuild) applicationIdSuffix = ".preview"
         }
         release {
-            signingConfig = signingConfigs.findByName("release")
-                ?: error("缺少 android/signing.properties，不能生成正式签名 APK")
+            // Optimized preview keeps the debug certificate/application ID, so
+            // existing desktop test builds can be upgraded without losing data.
+            signingConfig = if (previewBuild) signingConfigs.getByName("debug")
+                else signingConfigs.findByName("release")
+                    ?: error("缺少 android/signing.properties，不能生成正式签名 APK")
             isMinifyEnabled = true
             isShrinkResources = true
         }
