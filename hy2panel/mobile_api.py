@@ -549,6 +549,7 @@ def capabilities_payload(panel_version):
         "features": [
             "stable-user-subscriptions",
             "mobile-subscription-management",
+            "mobile-user-identity-guard",
             "user-tiers-and-validity",
             "typed-node-enrollment-hopping",
             "overview",

@@ -51,7 +51,7 @@
 以 root 执行以下短命令，入口脚本会下载固定版本安装器并验证签名。
 
 ```bash
-(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.60/bootstrap.sh -o "$f" && bash "$f")
+(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.61/bootstrap.sh -o "$f" && bash "$f")
 ```
 
 <details>
@@ -116,11 +116,11 @@ Debian 11 归档修复仅匹配普通 `.list` 文件中的已知官方旧安全�
 
 ## 更严格的固定版本验签安装
 
-生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.60`；安装其他版本时，请同时修改 `version`：
+生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.61`；安装其他版本时，请同时修改 `version`：
 
 ```bash
 set -euo pipefail
-version=0.39.60
+version=0.39.61
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in

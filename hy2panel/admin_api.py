@@ -150,7 +150,8 @@ class AdminApi:
 
     def _write(self, route, parameters, payload):
         if route in {'set-subscription-defaults', 'subscription-nodes'}:
-            fields(payload, ('nodes',), ('nodes',))
+            allowed = ('nodes', 'expectedName') if route == 'subscription-nodes' else ('nodes',)
+            fields(payload, allowed, ('nodes',))
             if not isinstance(payload['nodes'], list):
                 raise AdminApiError(400, 'NODES_INVALID', '节点必须是列表')
             for node in payload['nodes']:
@@ -167,19 +168,25 @@ class AdminApi:
                 self.db.set_subscription_defaults(nodes)
             else:
                 subscription_id = int(parameters[0])
-                if self.db.get_subscription(subscription_id=subscription_id) is None:
+                subscription = self.db.get_subscription(subscription_id=subscription_id)
+                if subscription is None:
                     raise AdminApiError(404, 'SUBSCRIPTION_NOT_FOUND', '订阅不存在')
+                if 'expectedName' in payload and subscription['user_name'] != payload['expectedName']:
+                    raise AdminApiError(409, 'USER_CHANGED', '用户已发生变化，请重新打开订阅')
                 self.db.set_subscription_nodes(subscription_id, nodes)
             self.record('subscription_nodes_updated', parameters[0] if parameters else 'defaults')
             return 200, {'saved': True}
         if route in {'set-external-nodes', 'preview-external-nodes'}:
             return self.external_nodes(route, payload)
         if route == 'subscription-action':
-            fields(payload, ('confirm',), ('confirm',))
+            fields(payload, ('confirm', 'expectedName'), ('confirm',))
             confirmation(payload, parameters[0])
             subscription_id, action = int(parameters[0]), parameters[1]
-            if self.db.get_subscription(subscription_id=subscription_id) is None:
+            subscription = self.db.get_subscription(subscription_id=subscription_id)
+            if subscription is None:
                 raise AdminApiError(404, 'SUBSCRIPTION_NOT_FOUND', '订阅不存在')
+            if 'expectedName' in payload and subscription['user_name'] != payload['expectedName']:
+                raise AdminApiError(409, 'USER_CHANGED', '用户已发生变化，请重新打开订阅')
             if action == 'delete':
                 self.db.delete_subscription(subscription_id)
             elif action == 'regenerate':

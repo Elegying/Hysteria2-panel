@@ -52,8 +52,8 @@ void main() {
       PackageInfo.setMockInitialValues(
         appName: 'Panel',
         packageName: 'test',
-        version: '0.5.6',
-        buildNumber: '42',
+        version: '0.5.7',
+        buildNumber: '43',
         buildSignature: '',
       );
       if (const bool.fromEnvironment('CAPTURE_UI')) {
@@ -138,8 +138,6 @@ void main() {
       await page('用户管理');
       await tester.tap(find.text('示例用户 01').first);
       await settle();
-      await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
-      await settle();
       await capture('06-user-expanded');
       await tester.tap(find.text('新建用户').first);
       await settle();
@@ -178,6 +176,20 @@ void main() {
         scrollable: find.byType(Scrollable).first,
       );
       await settle();
+      final modes = ['跟随系统', '浅色', '深色']
+          .map(
+            (label) => tester.getRect(find.widgetWithText(ChoiceChip, label)),
+          )
+          .toList();
+      final swatches = ['蓝色', '绿色', '紫色', '橙色', '粉色']
+          .map((label) => tester.getRect(find.bySemanticsLabel('选择$label强调色')))
+          .toList();
+      final controls = [...modes, ...swatches];
+      for (var i = 0; i < controls.length; i++) {
+        for (var j = i + 1; j < controls.length; j++) {
+          expect(controls[i].overlaps(controls[j]), isFalse);
+        }
+      }
       await capture('13-app-settings');
       await tester.tap(find.text('预览管理员').first);
       await settle();

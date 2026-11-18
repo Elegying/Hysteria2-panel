@@ -50,6 +50,9 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
         throw const ApiException('当前面板尚不支持 App 订阅管理，请先升级面板');
       }
       final data = await controller.getJson('$_path/subscription');
+      if (data['name'] != null && data['name'] != widget.name) {
+        throw const ApiException('用户已发生变化，请重新打开订阅');
+      }
       if (mounted) setState(() => _data = data);
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
@@ -63,6 +66,7 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
     // Reserve the operation before opening confirmation; rapid taps cannot stack it.
     setState(() => _busy = true);
     final snapshot = Map<String, dynamic>.from(_data!);
+    final accountRevision = ref.read(appControllerProvider).contextRevision;
     try {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -82,10 +86,14 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
         ),
       );
       if (!mounted || confirmed != true) return;
+      if (ref.read(appControllerProvider).contextRevision != accountRevision) {
+        throw const ApiException('登录状态已改变，请重新打开用户');
+      }
       final result = await ref.read(appControllerProvider.notifier).postJson(
         '$_path/subscription-$action',
         {
           'generation': snapshot['generation'],
+          'expectedName': widget.name,
           'revision': snapshot['revision'],
         },
       );
@@ -161,6 +169,7 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
                               MaterialPageRoute<void>(
                                 builder: (_) => SubscriptionNodesScreen(
                                   userId: widget.userId,
+                                  userName: widget.name,
                                   subscriptionId: data['subscriptionId'],
                                 ),
                               ),
@@ -301,6 +310,7 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
                           MaterialPageRoute<void>(
                             builder: (_) => SubscriptionNodesScreen(
                               userId: widget.userId,
+                              userName: widget.name,
                               subscriptionId: data['subscriptionId'],
                             ),
                           ),

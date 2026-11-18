@@ -64,12 +64,6 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('form-test-user').first);
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
-      await tester.pumpAndSettle();
       await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('完整详情与其他操作').last);
@@ -105,14 +99,6 @@ void main() {
           );
           await tester.pumpAndSettle();
           if (kind == 'edit' || kind == 'traffic') {
-            await tester.tap(find.text('form-test-user').first);
-            await tester.pumpAndSettle();
-            await tester.ensureVisible(
-              find.widgetWithText(OutlinedButton, '更多'),
-            );
-            await tester.pumpAndSettle();
-            await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
-            await tester.pumpAndSettle();
             await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
             await tester.pumpAndSettle();
             await tester.tap(find.byTooltip('完整详情与其他操作').last);
@@ -185,6 +171,7 @@ void main() {
             expect(controller.requests.single, {
               'generation': 0,
               'usedTrafficGiB': '1.25',
+              'expectedName': 'form-test-user',
             });
           }
           controller.pendingRequest!.completeError(
@@ -275,12 +262,6 @@ void main() {
         );
         await tester.pumpAndSettle();
         if (editing) {
-          await tester.tap(find.text('form-test-user').first);
-          await tester.pumpAndSettle();
-          await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
-          await tester.pumpAndSettle();
-          await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
-          await tester.pumpAndSettle();
           await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
           await tester.pumpAndSettle();
           await tester.tap(find.byTooltip('完整详情与其他操作').last);

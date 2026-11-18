@@ -77,6 +77,7 @@ void main() {
         'path': '/api/v1/mobile/users/7/subscription-disable',
         'generation': 4,
         'revision': 'revision-4',
+        'expectedName': '专线001',
       });
       expect(find.text('订阅已停用'), findsOneWidget);
       expect(
