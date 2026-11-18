@@ -6369,6 +6369,7 @@ class PanelHttpTests(unittest.TestCase):
 
     def test_dashboard_places_node_onboarding_after_refresh_and_renders_safe_statuses(self):
         service = self.application.node_enrollment_service
+        service.create("未执行命令", "8.8.4.21", 10, "Elegy")
         pending = service.create("待注册 <节点>", "8.8.4.20", 10, "Elegy")
         token = self.enrollment_token(pending["deploymentCommand"])
         service.register(
@@ -6395,7 +6396,8 @@ class PanelHttpTests(unittest.TestCase):
         self.assertIn('data-node-enrollment-form', body)
         self.assertIn('name="mode"', body)
         self.assertNotIn('value="rebind"', body)
-        self.assertIn("正在对接", body)
+        self.assertIn("等待执行对接命令", body)
+        self.assertIn("身份已确认，等待部署", body)
         self.assertIn("待注册 &lt;节点&gt;", body)
         self.assertNotIn("待注册 <节点>", body)
         self.assertIn("域名准备", body)
@@ -7195,7 +7197,7 @@ class PanelHttpTests(unittest.TestCase):
         self.application.node_heartbeat_service.accept(heartbeat, "127.0.0.1")
         headers, csrf = self.authenticated_headers()
         dashboard = self.request("/", headers=headers).read().decode()
-        self.assertIn("正在对接", dashboard)
+        self.assertIn("身份已确认，等待部署", dashboard)
         self.assertNotIn("旧节点手动启用", dashboard)
         self.assertNotIn(
             "/nodes/{}/protocol/enable".format(issued["nodeId"]), dashboard

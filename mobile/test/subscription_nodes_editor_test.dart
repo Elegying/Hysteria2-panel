@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/core/app_controller.dart';
 import 'package:hysteria2_manager/screens/subscription_nodes_screen.dart';
+import 'package:hysteria2_manager/screens/subscription_screen.dart';
 
 import 'support/design_fixture.dart';
 
@@ -36,7 +37,55 @@ class EditorController extends DesignFixtureController {
   }
 }
 
+class LegacySubscriptionController extends DesignFixtureController {
+  @override
+  Future<Map<String, dynamic>> getJson(String path) async {
+    if (path.endsWith('/capabilities')) {
+      return {
+        'features': ['mobile-subscription-management'],
+      };
+    }
+    return {
+      'exists': true,
+      'enabled': true,
+      'userType': 0,
+      'usesDefaults': false,
+      'url': 'https://example.invalid/sub',
+    };
+  }
+}
+
 void main() {
+  for (final embedded in [false, true]) {
+    testWidgets(
+      'legacy panel explains unavailable node editor (embedded: $embedded)',
+      (tester) async {
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              appControllerProvider.overrideWith(
+                (_) => LegacySubscriptionController(),
+              ),
+            ],
+            child: MaterialApp(
+              home: Scaffold(
+                body: SubscriptionScreen(
+                  userId: 1,
+                  name: 'test',
+                  embedded: embedded,
+                ),
+              ),
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('编辑节点需升级面板接口'), findsOneWidget);
+        expect(find.text('独立节点配置'), findsOneWidget);
+        expect(find.textContaining('已选 0 个节点'), findsNothing);
+      },
+    );
+  }
+
   testWidgets(
     'node editor rejects missing TLS fingerprint before saving draft',
     (tester) async {

@@ -1969,8 +1969,8 @@ class NodeAgentProtocolTests(unittest.TestCase):
 
         cycle.run_once()
 
-        self.assertIn(("stop",), calls)
-        self.assertIn(("queue", command["commandId"]), calls)
+        self.assertEqual([("queue", command["commandId"])], calls)
+        self.assertFalse(state.data_plane_stopped())
         self.assertFalse(state.command_completed(command["commandId"]))
         self.assertEqual([], [call for call in calls if call[0] == "ack"])
 

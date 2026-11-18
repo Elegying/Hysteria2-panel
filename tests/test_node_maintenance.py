@@ -102,40 +102,37 @@ class NodeTrafficMaintenanceTests(unittest.TestCase):
                 expected = 17 if partial else 51
                 self.assertEqual(expected, sum(row["traffic"].get("alice", {}).get("tx", 0) for row in spool.pending()))
 
-    def test_stop_commands_quiesce_and_ack_before_destroying_stats(self):
-        for kind in ("STOP_DATA_PLANE", "UNINSTALL_NODE"):
-            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                spool = node_agent.DurableTrafficSpool(root / "spool")
-                state = node_agent.ProtocolState(root / "state" / "protocol.json")
-                stats = mock.Mock(spec=node_agent.LocalStatsClient)
-                stats.dump_streams.return_value = []
-                stats.online.side_effect = [{"alice": 1}, {}, {}, {}]
-                stats.collect_and_clear.side_effect = [
-                    {"alice": {"tx": 99, "rx": 3}}, {}, {}, {}, {},
-                ]
-                protocol = mock.Mock()
-                protocol.send_traffic.side_effect = lambda batch: {"batchId": batch["batchId"], "committed": True}
-                cycle = node_agent.NodeControlCycle(protocol, stats, spool, state)
-                stopped = []
+    def test_stop_command_quiesces_and_acks_before_destroying_stats(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spool = node_agent.DurableTrafficSpool(root / "spool")
+            state = node_agent.ProtocolState(root / "state" / "protocol.json")
+            stats = mock.Mock(spec=node_agent.LocalStatsClient)
+            stats.dump_streams.return_value = []
+            stats.online.side_effect = [{"alice": 1}, {}, {}, {}]
+            stats.collect_and_clear.side_effect = [
+                {"alice": {"tx": 99, "rx": 3}}, {}, {}, {}, {},
+            ]
+            protocol = mock.Mock()
+            protocol.send_traffic.side_effect = lambda batch: {"batchId": batch["batchId"], "committed": True}
+            cycle = node_agent.NodeControlCycle(protocol, stats, spool, state)
+            stopped = []
 
-                def stop():
-                    self.assertEqual([], spool.pending())
-                    self.assertFalse(state.data_plane_stopped())
-                    self.assertEqual(5, stats.collect_and_clear.call_count)
-                    stopped.append(True)
+            def stop():
+                self.assertEqual([], spool.pending())
+                self.assertFalse(state.data_plane_stopped())
+                self.assertEqual(5, stats.collect_and_clear.call_count)
+                stopped.append(True)
 
-                queued = []
-                result = node_agent.execute_control_command(
-                    {"commandId": "c" * 32, "kind": kind, "payload": {}}, stats,
-                    flush_traffic=cycle.flush_traffic,
-                    quiesce_traffic=lambda: cycle.quiesce_traffic(sleeper=lambda _: None),
-                    protocol_state=state, stop_data_plane=stop, queue_uninstall=queued.append,
-                )
-                self.assertEqual([True], stopped)
-                self.assertTrue(state.data_plane_stopped())
-                self.assertEqual(["c" * 32] if kind == "UNINSTALL_NODE" else [], queued)
-                self.assertEqual("deferred-ack" if kind == "UNINSTALL_NODE" else None, result)
+            result = node_agent.execute_control_command(
+                {"commandId": "c" * 32, "kind": "STOP_DATA_PLANE", "payload": {}}, stats,
+                flush_traffic=cycle.flush_traffic,
+                quiesce_traffic=lambda: cycle.quiesce_traffic(sleeper=lambda _: None),
+                protocol_state=state, stop_data_plane=stop,
+            )
+            self.assertEqual([True], stopped)
+            self.assertTrue(state.data_plane_stopped())
+            self.assertIsNone(result)
 
     def test_idle_multiple_sessions_cannot_be_mistaken_for_drained_traffic(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -287,7 +284,11 @@ elif args[0] == "is-active":
 else:
     raise SystemExit(1)
 ''')
-                helper = backup / "maintenance-node-agent.py"
+                staging = root / "staging"
+                (staging / "hy2panel").mkdir(parents=True)
+                (staging / "hy2panel" / "operations.py").touch()
+                (root / "config" / "bootstrap.json").write_text('{"mainPort":31999}')
+                helper = staging / "node_agent.py"
                 helper.write_text('''import json, os, pathlib, sys
 root = pathlib.Path(os.environ["WORK"])
 states = json.loads((root / "states.json").read_text())
@@ -297,6 +298,8 @@ assert states["hysteria2-panel-node-hysteria-main.service"] == "active"
 assert states["hysteria2-panel-node-hysteria-udp443.service"] == "active"
 assert sys.argv[1] == "quiesce-traffic"
 assert "http://127.0.0.1:19997" in sys.argv and "http://127.0.0.1:19995" in sys.argv
+assert [sys.argv[i + 1] for i, value in enumerate(sys.argv) if value == "--drain-udp-port"] == ["31999", "443"]
+assert "--require-ack" in sys.argv
 assert os.environ["HY2PANEL_STATS_SECRET"] == "synthetic-stats-secret"
 events = json.loads((root / "events.json").read_text())
 events.append("quiesce-traffic")
@@ -304,7 +307,8 @@ events.append("quiesce-traffic")
 raise SystemExit(int(os.environ["FAIL_COLLECTION"]))
 ''')
                 functions = "\n".join(installer_function(name) for name in (
-                    "stop_loaded_units", "settle_existing_node_traffic", "quiesce_existing_data_plane", "stop_existing_data_plane"
+                    "read_data_plane_main_port", "stop_loaded_units", "settle_existing_node_traffic",
+                    "quiesce_existing_data_plane", "stop_existing_data_plane"
                 ))
                 setup = r'''
 set -eu
@@ -316,7 +320,7 @@ TMP_DIR="$WORK/staging"
 require_node_agent_file() { test -f "$1" && test ! -L "$1"; }
 systemctl() { "$PYTHON_BIN" "$WORK/systemctl.py" "$@"; }
 '''
-                result = subprocess.run(["bash"], input=setup + functions + "\nstop_existing_data_plane\n", text=True,
+                result = subprocess.run(["bash"], input=setup + functions + "\nstop_existing_data_plane require-ack\n", text=True,
                     env={**os.environ, "WORK": directory, "PYTHON_BIN": sys.executable, "FAIL_COLLECTION": str(int(fail_collection))},
                     capture_output=True, check=False)
                 self.assertEqual(int(fail_collection), result.returncode, result.stderr)

@@ -668,8 +668,14 @@ def render_dashboard(
             )
         elif expired:
             status_label, status_class = "对接代码已过期", "bad"
+        elif status == "pending_registration":
+            status_label, status_class = "等待执行对接命令", "warning"
+        elif node.get("data_plane_state") == "data_plane_installed":
+            status_label, status_class = "服务已部署，等待连通验证", "warning"
+        elif verified:
+            status_label, status_class = "身份已确认，等待部署", "warning"
         else:
-            status_label, status_class = "正在对接", "warning"
+            status_label, status_class = "已注册，等待身份确认", "warning"
         details = [node.get("observed_ip") or node.get("expected_ip") or "公网 IP 未知"]
         if node.get("last_heartbeat_at"):
             details.append(
@@ -926,7 +932,7 @@ unicode: "eb20"
 <p class="notice onboarding-dns"><strong>域名准备</strong> 使用域名时，请先将 A / AAAA 记录解析到目标 IP。DNS 由你维护，面板不会自动修改。</p>
 <form class="node-enrollment-grid" method="post" action="/node-enrollments" data-node-enrollment-form><input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="mode" value="join"><input type="hidden" name="ttl_minutes" value="10"><div><label for="node-tier">节点类型</label><select id="node-tier" name="tier"><option value="standard">普通节点</option><option value="premium">专线节点</option></select></div><div><label for="node-region">地区</label><select id="node-region" name="region"><option value="">请选择</option><option value="hk">香港</option><option value="us">美国</option><option value="jp">日本</option><option value="sg">新加坡</option></select></div><div><label for="node-name">节点名称</label><input id="node-name" name="name" required maxlength="64" placeholder="例如：香港分流-02"></div><div><label for="node-expected-ip">目标服务器公网 IP</label><input id="node-expected-ip" name="expected_ip" inputmode="text" required placeholder="服务器公网 IPv4 或 IPv6"></div><div><label for="node-host">订阅节点地址</label><input id="node-host" name="subscription_host" placeholder="例如 node.example.com"></div><div><label for="node-hopping">端口跳跃</label><select id="node-hopping" name="port_hopping"><option value="1">开启</option><option value="0">关闭</option></select><small class="muted">端口自动配置，无需填写</small></div><button type="submit"{onboarding_disabled}>生成对接命令</button></form>
 <section class="enrollment-result" data-node-enrollment-result hidden><label for="node-deployment-code">在目标服务器粘贴运行</label><textarea id="node-deployment-code" rows="12" readonly spellcheck="false"></textarea><p class="muted" data-node-enrollment-expiry role="status"></p></section>
-<div class="node-list-head"><h3>已对接服务器</h3><span class="muted">卸载完成后自动移出列表；刷新可查看新注册节点</span></div><div class="node-list">{node_rows}</div></div></dialog>
+<div class="node-list-head"><h3>服务器对接进度</h3><span class="muted">执行命令后刷新页面查看状态；收到卸载回执后移出列表。</span></div><div class="node-list">{node_rows}</div></div></dialog>
 <dialog id="external-nodes-dialog" class="migration-dialog node-management-dialog" aria-labelledby="external-nodes-title"><div class="dialog-shell"><div class="dialog-head"><div><h2 id="external-nodes-title">外部 AnyTLS 节点</h2><p class="muted">追加到有效专线用户的原订阅，自建节点保持不变。普通用户不可获取。</p></div><button type="button" class="dialog-close" data-dialog-close aria-label="关闭外部节点管理">关闭</button></div>
 <div class="notice management-notice"><strong>仅向专线用户分发</strong><p>外部流量不计入面板统计。停用或到期后无法刷新订阅，已保存的上游凭据不会自动失效。</p></div>
 <div data-external-content>正在加载…</div></div></dialog>

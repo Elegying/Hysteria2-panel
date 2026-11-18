@@ -1585,7 +1585,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
             ),
             timeout=2,
         ).read().decode("utf-8")
-        self.assertIn("正在对接", dashboard)
+        self.assertIn("身份已确认，等待部署", dashboard)
         self.assertNotIn(
             "/nodes/{}/data-plane/bootstrap".format(self.node_id), dashboard
         )
@@ -1597,7 +1597,7 @@ class DataPlaneBootstrapHttpTests(unittest.TestCase):
 
         body = urllib.request.urlopen(request, timeout=2).read().decode("utf-8")
 
-        self.assertIn("一键对接", body)
+        self.assertIn("生成对接命令", body)
         self.assertIn("一键断连", body)
         self.assertIn("删除对接", body)
         self.assertNotIn('/nodes/{}/disconnect'.format(self.node_id), body)
