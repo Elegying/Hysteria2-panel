@@ -12,7 +12,7 @@ class MobileUiContractTests(unittest.TestCase):
     # tests in mobile/test/home_shell_test.dart, not source spelling.
 
     def test_primary_headers_scroll_without_an_opaque_mask(self) -> None:
-        source = "\n".join(path.read_text() for path in SCREENS.glob("*_screen.dart"))
+        source = "\n".join(path.read_text() for path in SCREENS.glob("*.dart"))
         self.assertNotIn("pinned: true", source)
         for name in ('home', 'nodes', 'users', 'subscriptions', 'settings'):
             page = (SCREENS / (name + '_screen.dart')).read_text()
@@ -22,7 +22,7 @@ class MobileUiContractTests(unittest.TestCase):
         self.assertIn("backgroundColor: Colors.transparent", app)
 
     def test_dialogs_sheets_and_dropdowns_use_shared_glass_styling(self) -> None:
-        source = "\n".join(path.read_text() for path in SCREENS.glob("*_screen.dart"))
+        source = "\n".join(path.read_text() for path in SCREENS.glob("*.dart"))
         self.assertNotIn("AlertDialog(", source)
         self.assertNotIn("showModalBottomSheet", source)
         self.assertGreaterEqual(source.count("GlassDialog("), 10)

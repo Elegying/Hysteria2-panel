@@ -13,6 +13,19 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'layout_capture_test.dart' show CaptureController;
 
 class AuditController extends CaptureController {
+  AuditController() {
+    state = state.copyWith(
+      panels: [
+        PanelAccount(
+          name: '管理面板',
+          baseUrl: state.session!.baseUrl,
+          username: state.session!.username,
+          session: state.session,
+        ),
+        emptyPanels[1],
+      ],
+    );
+  }
   final writes = <String>[];
   @override
   Future<Map<String, dynamic>> postJson(
@@ -166,6 +179,19 @@ void main() {
       );
       await settle();
       await capture('13-app-settings');
+      await tester.tap(find.text('预览管理员').first);
+      await settle();
+      await capture('15-account-sheet');
+      await tester.tap(find.text('重命名'));
+      await settle();
+      await keyboard('16-rename-keyboard');
+      await tester.tap(find.text('预览管理员').first);
+      await settle();
+      await tester.tap(find.text('删除登录记忆'));
+      await settle();
+      await capture('17-account-delete-confirmation');
+      await tester.tap(find.text('取消').last);
+      await settle();
       expect(
         controller.writes,
         isEmpty,
