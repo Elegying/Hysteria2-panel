@@ -131,6 +131,11 @@ void main() {
       await tester.tap(find.text('新建用户').first);
       await settle();
       await keyboard('07-user-keyboard');
+      await tester.tap(find.text('批量操作').first);
+      await settle();
+      await capture('14-batch-confirmation');
+      await tester.tap(find.text('取消').last);
+      await settle();
       await page('订阅管理');
       await tester.tap(find.text('示例用户 01').first);
       await settle();

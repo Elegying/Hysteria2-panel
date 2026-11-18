@@ -50,7 +50,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     try {
       final confirmed = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
+        builder: (context) => GlassDialog(
           title: const Text('批量流量清零'),
           content: Text('将所有${type == 1 ? '专线' : '普通'}用户的当前流量清零，确认继续？'),
           actions: [
