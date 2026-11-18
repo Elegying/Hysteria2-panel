@@ -81,12 +81,13 @@ def run_reproductions():
     require_node_agent_file() { [[ -f "$1" ]] || fail "required file missing"; }
     select_python() { return 0; }
     prepare_node_maintenance_agent() { return 0; }
+    prepare_node_maintenance_drain() { fail "stopped cores must not fetch drain modules"; }
     initialize_data_plane_owned_paths() { DATA_PLANE_OWNED_FILES=("${NODE_AGENT_CONFIG_DIR}/stats.env" "${NODE_AGENT_CONFIG_DIR}/bootstrap.json"); DATA_PLANE_OWNED_UNITS=(); }
     stat() { printf '0:0:700\\n'; }
     sha256sum() { return 0; }
     sync() { return 0; }
     sysctl() { return 0; }
-    systemctl() { if [[ "$1" == show ]]; then printf 'inactive\\n'; fi; return 0; }
+    systemctl() { if [[ "$1" == is-active ]]; then return 3; fi; if [[ "$1" == show ]]; then printf 'inactive\\n'; fi; return 0; }
     stop_loaded_units() { return 0; }
     rollback_data_plane_firewall() { return 0; }
     restore_data_plane_network_snapshot() { return 0; }
