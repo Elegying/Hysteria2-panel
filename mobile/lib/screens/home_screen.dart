@@ -1,12 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
 import '../core/glass.dart';
+import 'network_monitor.dart';
+import 'node_telemetry_card.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -22,8 +23,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _loading = true;
   bool _refreshing = false;
   int _loadGeneration = 0;
-  bool _acting = false;
-  bool _enrollmentOpen = false;
   Timer? _timer;
 
   @override
@@ -94,324 +93,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
   }
 
-  Future<void> _serviceAction(String action, String label) async {
-    if (action != 'start') {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (context) => GlassDialog(
-          title: Text('确认$label服务'),
-          content: Text(
-            action == 'stop'
-                ? '停止后，当前所有 Hysteria 连接都会中断。确认停止服务吗？'
-                : '重启期间现有连接会短暂中断，流量会先完成结算。确认继续吗？',
-          ),
-          actions: [
-            GlassControlSurface(
-              child: TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('取消'),
-              ),
-            ),
-            GlassControlSurface(
-              child: FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: Text(label),
-              ),
-            ),
-          ],
-        ),
-      );
-      if (confirmed != true || !mounted) return;
-    }
-    setState(() => _acting = true);
-    try {
-      await ref
-          .read(appControllerProvider.notifier)
-          .postJson('/api/v1/mobile/service/$action');
-      await _load(silent: true);
-      if (mounted) _message('$label操作已完成');
-    } on ApiException catch (error) {
-      if (mounted) _message(error.message, error: true);
-    } finally {
-      if (mounted) setState(() => _acting = false);
-    }
-  }
-
-  Future<void> _rebootServer() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => GlassDialog(
-        title: const Text('确认重启服务器'),
-        content: const Text('重启后面板和所有连接会暂时中断，通常需要 30 至 90 秒恢复。确认继续吗？'),
-        actions: [
-          GlassControlSurface(
-            child: TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('取消'),
-            ),
-          ),
-          GlassControlSurface(
-            child: FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('重启服务器'),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
-    setState(() => _acting = true);
-    try {
-      await ref
-          .read(appControllerProvider.notifier)
-          .postJson('/api/v1/mobile/system/reboot');
-      if (mounted) _message('服务器重启任务已受理');
-    } on ApiException catch (error) {
-      if (mounted) _message(error.message, error: true);
-    } finally {
-      if (mounted) setState(() => _acting = false);
-    }
-  }
-
-  void _message(String value, {bool error = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(value),
-        backgroundColor: error ? Theme.of(context).colorScheme.error : null,
-      ),
-    );
-  }
-
-  Future<void> _showEnrollment() async {
-    if (_enrollmentOpen) return;
-    _enrollmentOpen = true;
-    try {
-      await _showEnrollmentDialog();
-    } finally {
-      _enrollmentOpen = false;
-    }
-  }
-
-  Future<void> _showEnrollmentDialog() async {
-    try {
-      final capabilities = await ref
-          .read(appControllerProvider.notifier)
-          .getJson('/api/v1/mobile/capabilities');
-      if (!mounted) return;
-      if (!(capabilities['features'] as List? ?? []).contains(
-        'typed-node-enrollment-hopping',
-      )) {
-        await showGlassError(context, '请先升级面板移动接口，以支持节点类型和端口跳跃对接');
-        return;
-      }
-    } on ApiException catch (error) {
-      if (mounted) await showGlassError(context, error.message);
-      return;
-    }
-    if (!mounted) return;
-    final name = TextEditingController();
-    final expectedIp = TextEditingController();
-    final host = TextEditingController();
-    var tier = 'standard';
-    var region = 'hk';
-    var hopping = true;
-    var submitting = false;
-    String? formError;
-    final result = await showGlassFormDialog<Map<String, dynamic>>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => GlassDialog(
-          title: const Text('对接新节点'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('生成前请先自行把需要的域名解析到目标服务器公网 IP。面板不会查询、修改或等待 DNS。'),
-                const SizedBox(height: 16),
-                GlassControlSurface(
-                  child: TextField(
-                    controller: name,
-                    decoration: const InputDecoration(labelText: '节点名称'),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                GlassControlSurface(
-                  child: TextField(
-                    controller: expectedIp,
-                    decoration: const InputDecoration(labelText: '目标服务器公网 IP'),
-                  ),
-                ),
-                GlassDropdownField<String>(
-                  initialValue: tier,
-                  decoration: const InputDecoration(labelText: '节点类型'),
-                  items: const [
-                    DropdownMenuItem(value: 'standard', child: Text('普通节点')),
-                    DropdownMenuItem(value: 'premium', child: Text('专线节点')),
-                  ],
-                  onChanged: (v) => setDialogState(() => tier = v!),
-                ),
-                GlassDropdownField<String>(
-                  initialValue: region,
-                  decoration: const InputDecoration(labelText: '地区'),
-                  items: const [
-                    DropdownMenuItem(value: 'hk', child: Text('香港')),
-                    DropdownMenuItem(value: 'us', child: Text('美国')),
-                    DropdownMenuItem(value: 'jp', child: Text('日本')),
-                    DropdownMenuItem(value: 'sg', child: Text('新加坡')),
-                  ],
-                  onChanged: (v) => setDialogState(() => region = v!),
-                ),
-                TextField(
-                  controller: host,
-                  decoration: const InputDecoration(
-                    labelText: '订阅节点地址',
-                    hintText: '例如 node.example.com',
-                  ),
-                ),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('端口跳跃'),
-                  subtitle: const Text('端口由面板统一配置，无需手动填写'),
-                  value: hopping,
-                  onChanged: (v) => setDialogState(() => hopping = v),
-                ),
-                if (formError != null)
-                  Text(
-                    formError!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          actions: [
-            GlassControlSurface(
-              child: TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text('取消'),
-              ),
-            ),
-            GlassControlSurface(
-              child: FilledButton(
-                onPressed: submitting
-                    ? null
-                    : () async {
-                        if (submitting) return;
-                        if (name.text.trim().isEmpty ||
-                            expectedIp.text.trim().isEmpty ||
-                            host.text.trim().isEmpty) {
-                          setDialogState(
-                            () => formError = '请填写节点名称、订阅地址和目标服务器公网 IP',
-                          );
-                          return;
-                        }
-                        setDialogState(() {
-                          submitting = true;
-                          formError = null;
-                        });
-                        try {
-                          final data = await ref
-                              .read(appControllerProvider.notifier)
-                              .postJson('/api/v1/mobile/node-enrollments', {
-                                'name': name.text.trim(),
-                                'expectedIp': expectedIp.text.trim(),
-                                'tier': tier,
-                                'region': region,
-                                'subscriptionHost': host.text.trim(),
-                                'portHopping': hopping,
-                                'ttlMinutes': 10,
-                                'mode': 'join',
-                              });
-                          if (dialogContext.mounted &&
-                              ModalRoute.of(dialogContext)?.isCurrent == true) {
-                            Navigator.pop(dialogContext, data);
-                          }
-                        } on ApiException catch (error) {
-                          if (dialogContext.mounted &&
-                              ModalRoute.of(dialogContext)?.isCurrent == true) {
-                            setDialogState(() {
-                              submitting = false;
-                              formError = error.message;
-                            });
-                          }
-                        }
-                      },
-                child: Text(submitting ? '生成中…' : '一键对接'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-    name.dispose();
-    expectedIp.dispose();
-    host.dispose();
-    if (result == null || !mounted) return;
-    final command = result['deploymentCommand']?.toString() ?? '';
-    var copied = false;
-    try {
-      await Clipboard.setData(ClipboardData(text: command));
-      copied = true;
-    } on PlatformException {
-      // The enrollment has already been created. Always expose its result.
-    }
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setResultState) => GlassDialog(
-          title: const Text('部署代码已生成'),
-          content: SizedBox(
-            width: 620,
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text(
-                    copied
-                        ? '代码已复制。请在目标服务器以 root 粘贴运行；短时授权只能使用一次。'
-                        : '自动复制失败。请手动选择下方代码，或重试复制；短时授权只能使用一次。',
-                  ),
-                  const SizedBox(height: 12),
-                  SelectableText(
-                    command,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            GlassControlSurface(
-              child: TextButton(
-                onPressed: () async {
-                  var succeeded = false;
-                  try {
-                    await Clipboard.setData(ClipboardData(text: command));
-                    succeeded = true;
-                  } on PlatformException {
-                    // Keep the selectable command available for manual copying.
-                  }
-                  if (context.mounted) setResultState(() => copied = succeeded);
-                },
-                child: Text(copied ? '再次复制' : '重试复制'),
-              ),
-            ),
-            GlassControlSurface(
-              child: TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('关闭'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -419,123 +100,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     return SafeArea(
       child: RefreshIndicator(
         onRefresh: _load,
-        child: CustomScrollView(
+        child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            SliverAppBar(
-              pinned: false,
-              toolbarHeight: 56,
-              title: const Text('首页'),
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+          children: [
+            PanelHeading(
+              '总览',
+              subtitle: data?['panelName']?.toString() ?? 'Hysteria2 Panel',
             ),
             if (_loading && data == null)
-              const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_error != null && data == null)
-              SliverFillRemaining(
-                child: _LoadError(message: _error!, onRetry: _load),
-              )
-            else if (data != null)
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                sliver: SliverList.list(
-                  children: [
-                    if (_error != null) ...[
-                      RefreshWarning(message: '数据刷新失败：$_error'),
-                      const SizedBox(height: 12),
-                    ],
-                    _StatusHeader(data: data),
-                    const SizedBox(height: 8),
-                    _SummaryGrid(data: data),
-                    const SizedBox(height: 8),
-                    _BudgetsCard(data: data),
-                    const SizedBox(height: 8),
-                    _SectionCard(
-                      title: '服务控制',
-                      subtitle: '管理本机服务，或连接新的服务器',
-                      child: _ServiceButtons(
-                        disabled: _acting,
-                        onStart: () => _serviceAction('start', '启动'),
-                        onRestart: () => _serviceAction('restart', '重启'),
-                        onStop: () => _serviceAction('stop', '停止'),
-                        onEnroll: _showEnrollment,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    _ResourcesCard(
-                      data: data,
-                      disabled: _acting,
-                      onReboot: _rebootServer,
-                    ),
-                    SizedBox(height: appDockExtent(context)),
-                  ],
+              const Center(child: CircularProgressIndicator()),
+            if (_error != null) RefreshWarning(message: _error!),
+            if (data != null) ...[
+              _SummaryGrid(data: data),
+              const SizedBox(height: 12),
+              const NetworkMonitor(),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.only(left: 6, bottom: 8),
+                child: Text(
+                  '节点状态',
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _StatusHeader extends StatelessWidget {
-  const _StatusHeader({required this.data});
-  final Map<String, dynamic> data;
-
-  @override
-  Widget build(BuildContext context) {
-    final active = data['serviceStatus'] == 'active';
-    final nodes = Map<String, dynamic>.from(data['nodes'] as Map? ?? {});
-    final online = (nodes['online'] as num?) ?? 0;
-    final total = (nodes['total'] as num?) ?? 0;
-    return GlassCard(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  active ? Icons.check_circle : Icons.error_outline,
-                  color: active
-                      ? Colors.green
-                      : Theme.of(context).colorScheme.error,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    serviceLabel(data['serviceStatus']),
-                    style: Theme.of(context).textTheme.titleMedium,
+              for (final item
+                  in (data['trafficBudgets'] as List? ?? []).whereType<Map>())
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: NodeTelemetryCard(
+                    item: Map<String, dynamic>.from(item),
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              data['panelName']?.toString() ?? 'Hysteria 2',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 12,
-              runSpacing: 4,
-              children: [
-                Text(
-                  '面板 v${data['panelVersion'] ?? '-'}',
-                  style: Theme.of(context).textTheme.bodySmall,
+              if ((data['trafficBudgets'] as List? ?? []).isEmpty)
+                const GlassCard(
+                  child: Padding(
+                    padding: EdgeInsets.all(20),
+                    child: Text('暂无节点流量数据'),
+                  ),
                 ),
-                Text(
-                  '节点 $online / $total 在线',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                Text(
-                  '最近刷新 ${formatTimestamp(data['refreshedAt'])}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ],
-            ),
+            ],
           ],
         ),
       ),
@@ -546,391 +149,51 @@ class _StatusHeader extends StatelessWidget {
 class _SummaryGrid extends StatelessWidget {
   const _SummaryGrid({required this.data});
   final Map<String, dynamic> data;
-
   @override
   Widget build(BuildContext context) {
-    final users = Map<String, dynamic>.from(data['users'] as Map? ?? {});
-    final nodes = Map<String, dynamic>.from(data['nodes'] as Map? ?? {});
-    final traffic = Map<String, dynamic>.from(data['traffic'] as Map? ?? {});
-    final trafficByTier = Map<String, dynamic>.from(
-      data['trafficByTier'] as Map? ?? {},
-    );
-    final cards = [
-      ('当前用户', '${users['total'] ?? 0}', Icons.people_rounded),
-      ('在线设备', '${users['onlineDevices'] ?? 0}', Icons.devices_rounded),
-      (
-        '在线节点',
-        '${nodes['online'] ?? 0} / ${nodes['total'] ?? 0}',
-        Icons.dns_rounded,
-      ),
-      if (trafficByTier.isNotEmpty) ...[
-        (
-          '普通用户流量',
-          formatBytes((trafficByTier['standard'] as Map?)?['totalBytes']),
-          Icons.swap_vert_circle_rounded,
-        ),
-        (
-          '专线用户流量',
-          formatBytes((trafficByTier['premium'] as Map?)?['totalBytes']),
-          Icons.swap_vert_circle_rounded,
-        ),
-      ] else
-        (
-          '总流量',
-          formatBytes(traffic['totalBytes']),
-          Icons.swap_vert_circle_rounded,
-        ),
+    final users = data['users'] as Map? ?? {};
+    final nodes = data['nodes'] as Map? ?? {};
+    final traffic = data['traffic'] as Map? ?? {};
+    final entries = [
+      ('在线节点', '${nodes['online'] ?? 0}/${nodes['total'] ?? 0}'),
+      ('在线设备', '${users['onlineDevices'] ?? 0}'),
+      ('总上传流量', formatPanelBytes(traffic['txBytes'])),
+      ('总下载流量', formatPanelBytes(traffic['rxBytes'])),
     ];
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisExtent:
-            82 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
-      ),
-      itemCount: cards.length,
-      itemBuilder: (context, index) {
-        final item = cards[index];
-        return GlassCard(
-          child: Padding(
-            padding: const EdgeInsets.all(10),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      item.$3,
-                      size: 19,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        item.$1,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                  ],
-                ),
-                const Spacer(),
-                Text(
-                  item.$2,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 23,
-                    letterSpacing: -.6,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-class _SectionCard extends StatelessWidget {
-  const _SectionCard({
-    required this.title,
-    required this.subtitle,
-    required this.child,
-    this.action,
-  });
-  final String title;
-  final String subtitle;
-  final Widget child;
-  final Widget? action;
-
-  @override
-  Widget build(BuildContext context) => GlassCard(
-    child: Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: LayoutBuilder(
+        builder: (context, box) {
+          final columns = MediaQuery.textScalerOf(context).scale(14) > 21
+              ? 1
+              : 2;
+          return Wrap(
+            spacing: 12,
+            runSpacing: 6,
             children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: Theme.of(
-                    context,
-                  ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-                ),
-              ),
-              if (action != null) ...[const SizedBox(width: 10), action!],
-            ],
-          ),
-          const SizedBox(height: 3),
-          Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 16),
-          child,
-        ],
-      ),
-    ),
-  );
-}
-
-class _ServiceButtons extends StatelessWidget {
-  const _ServiceButtons({
-    required this.disabled,
-    required this.onStart,
-    required this.onRestart,
-    required this.onStop,
-    required this.onEnroll,
-  });
-  final bool disabled;
-  final VoidCallback onStart;
-  final VoidCallback onRestart;
-  final VoidCallback onStop;
-  final VoidCallback onEnroll;
-
-  @override
-  Widget build(BuildContext context) {
-    final actions = [
-      ('启动', Icons.play_arrow_rounded, onStart, Colors.green),
-      ('重启', Icons.restart_alt_rounded, onRestart, Colors.orange),
-      ('停止', Icons.stop_rounded, onStop, Colors.red),
-      (
-        '一键对接',
-        Icons.add_link_rounded,
-        onEnroll,
-        Theme.of(context).colorScheme.secondary,
-      ),
-    ];
-    return LayoutBuilder(
-      builder: (context, constraints) => Wrap(
-        spacing: 9,
-        runSpacing: 9,
-        children: actions
-            .map(
-              (item) => SizedBox(
-                width: (constraints.maxWidth - 9) / 2,
-                child: GlassControlSurface(
-                  child: FilledButton.tonalIcon(
-                    onPressed: disabled ? null : item.$3,
-                    icon: Icon(item.$2, color: item.$4),
-                    label: Text(item.$1),
-                  ),
-                ),
-              ),
-            )
-            .toList(),
-      ),
-    );
-  }
-}
-
-class _BudgetsCard extends StatelessWidget {
-  const _BudgetsCard({required this.data});
-  final Map<String, dynamic> data;
-
-  @override
-  Widget build(BuildContext context) {
-    final raw = data['trafficBudgets'] as List? ?? const [];
-    return _SectionCard(
-      title: '流量预算',
-      subtitle: '按面板节点与远程节点统计当前周期用量',
-      child: raw.isEmpty
-          ? const Text('暂无节点流量数据')
-          : Column(
-              children: raw.map((value) {
-                final item = Map<String, dynamic>.from(value as Map);
-                final budget = item['budget'] is Map
-                    ? Map<String, dynamic>.from(item['budget'] as Map)
-                    : null;
-                final percent = (budget?['percent'] as num?)?.toDouble() ?? 0;
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              for (final e in entries)
+                SizedBox(
+                  width: (box.maxWidth - (columns - 1) * 12) / columns,
+                  child: Row(
                     children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              [
-                                item['name']?.toString() ?? '未知节点',
-                                if ((item['serverIp']?.toString() ?? '')
-                                    .isNotEmpty)
-                                  item['serverIp'].toString(),
-                              ].join(' · '),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
+                      Text(e.$1, style: const TextStyle(fontSize: 12)),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          e.$2,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
                           ),
-                          Text('${item['onlineDevices'] ?? '—'} 台在线'),
-                        ],
-                      ),
-                      const SizedBox(height: 7),
-                      LinearProgressIndicator(
-                        value: (percent / 100).clamp(0, 1),
-                        color: percent >= 95
-                            ? Theme.of(context).colorScheme.error
-                            : percent >= 80
-                            ? const Color(0xFFB66A16)
-                            : Theme.of(context).colorScheme.primary,
-                        semanticsLabel:
-                            '${item['name']} 流量用量${budget == null ? '，未设置预算' : ''}',
-                      ),
-                      const SizedBox(height: 5),
-                      Text(
-                        budget == null
-                            ? '未设置预算 · 已用 ${formatBytes((item['txBytes'] as num? ?? 0) + (item['rxBytes'] as num? ?? 0))}'
-                            : '${formatBytes(budget['usedBytes'])} / ${formatBytes(budget['limitBytes'])} · ${percent.toStringAsFixed(1)}%',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          color: Theme.of(context).brightness == Brightness.dark
-                              ? const Color(0xFF56D29F)
-                              : const Color(0xFF16764E),
                         ),
                       ),
-                      if ((budget?['forecastText']?.toString() ?? '')
-                          .isNotEmpty)
-                        Text(
-                          budget!['forecastText'].toString(),
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      if ((budget?['nextResetDate']?.toString() ?? '')
-                          .isNotEmpty)
-                        Text(
-                          '下次重置 ${budget!['nextResetDate']}',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
                     ],
                   ),
-                );
-              }).toList(),
-            ),
-    );
-  }
-}
-
-class _ResourcesCard extends StatelessWidget {
-  const _ResourcesCard({
-    required this.data,
-    required this.disabled,
-    required this.onReboot,
-  });
-  final Map<String, dynamic> data;
-  final bool disabled;
-  final VoidCallback onReboot;
-
-  @override
-  Widget build(BuildContext context) {
-    final resources = Map<String, dynamic>.from(
-      data['resources'] as Map? ?? {},
-    );
-    final rows = [
-      (
-        'CPU 使用率',
-        resources['cpuPercent'] == null ? '不可用' : '${resources['cpuPercent']}%',
-      ),
-      (
-        '内存占用',
-        resources['memoryPercent'] == null
-            ? '不可用'
-            : '${resources['memoryPercent']}%',
-      ),
-      (
-        '磁盘占用',
-        resources['diskPercent'] == null
-            ? '不可用'
-            : '${resources['diskPercent']}%',
-      ),
-      ('运行时间', resources['uptime']?.toString() ?? '不可用'),
-      ('拥塞控制', resources['tcpCongestionControl']?.toString() ?? '不可用'),
-      ('默认队列', resources['defaultQdisc']?.toString() ?? '不可用'),
-    ];
-    return _SectionCard(
-      title: '系统资源',
-      subtitle: '服务器实时负载与网络优化状态',
-      action: GlassControlSurface(
-        child: IconButton(
-          color: Colors.orange,
-          onPressed: disabled ? null : onReboot,
-          tooltip: '重启服务器',
-          icon: const Icon(Icons.restart_alt_rounded),
-        ),
-      ),
-      child: GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 2,
-          mainAxisExtent:
-              92 + (MediaQuery.textScalerOf(context).scale(16) - 16) * 4,
-          crossAxisSpacing: 9,
-          mainAxisSpacing: 9,
-        ),
-        itemCount: rows.length,
-        itemBuilder: (context, index) => GlassSurface(
-          borderRadius: 12,
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  rows[index].$1,
-                  style: Theme.of(context).textTheme.bodySmall,
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  rows[index].$2,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ],
-            ),
-          ),
-        ),
+            ],
+          );
+        },
       ),
     );
   }
-}
-
-class _LoadError extends StatelessWidget {
-  const _LoadError({required this.message, required this.onRetry});
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.cloud_off_rounded,
-            size: 48,
-            color: Theme.of(context).colorScheme.error,
-          ),
-          const SizedBox(height: 12),
-          Text(message, textAlign: TextAlign.center),
-          const SizedBox(height: 16),
-          GlassControlSurface(
-            child: FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh_rounded),
-              label: const Text('重试'),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
 }

@@ -36,7 +36,7 @@ class MobileApiContractTests(unittest.TestCase):
             ),
             ("/api/v1/mobile/nodes", "/api/v1/mobile/nodes"),
             ("/api/v1/mobile/node-enrollments", "/api/v1/mobile/node-enrollments"),
-            ("/api/v1/mobile/service/$action", "service/(start|restart|stop)"),
+            ("service/restart", "service/(start|restart|stop)"),
             ("/api/v1/mobile/system/reboot", "/api/v1/mobile/system/reboot"),
             (
                 "/api/v1/mobile/nodes/local/${enabled ? 'enable' : 'disable'}",
@@ -54,7 +54,7 @@ class MobileApiContractTests(unittest.TestCase):
         )
         for app_marker, server_marker in routes:
             with self.subTest(route=app_marker):
-                self.assertIn(app_marker, APP_SOURCES)
+                self.assertTrue(app_marker in APP_SOURCES, f"Missing app route: {app_marker}")
                 self.assertIn(server_marker, SERVER_SOURCE)
 
     def test_dynamic_app_actions_are_all_in_the_server_allowlists(self):
@@ -70,7 +70,7 @@ class MobileApiContractTests(unittest.TestCase):
             self.assertIn(action, APP_SOURCES)
             self.assertIn(action, SERVER_SOURCE)
         for action in ("start", "restart", "stop"):
-            self.assertIn("'{}'".format(action), APP_SOURCES)
+            self.assertTrue(f"service/{action}" in APP_SOURCES, f"Missing service action: {action}")
             self.assertIn(action, SERVER_SOURCE)
 
     def test_external_update_check_uses_only_the_public_github_https_api(self):

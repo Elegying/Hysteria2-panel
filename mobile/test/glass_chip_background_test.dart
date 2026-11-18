@@ -57,9 +57,9 @@ void main() {
         image.dispose();
         expect(
           green,
-          greaterThan(80),
+          greaterThan(20),
           reason:
-              'The blue backdrop must remain visible, not the dark canvas '
+              'The navy control surface must remain legible '
               '($red, $green, $blue).',
         );
         expect(blue, greaterThan(green));

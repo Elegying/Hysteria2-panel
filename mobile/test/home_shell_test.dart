@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:liquid_glass_widgets/liquid_glass_widgets.dart' as liquid;
 import 'package:hysteria2_manager/screens/home_shell.dart';
 
 void main() {
@@ -27,22 +26,21 @@ void main() {
       ),
     );
 
-    expect(find.byType(NavigationBar), findsNothing);
-    expect(find.byType(liquid.GlassTabBar), findsOneWidget);
-    for (final label in ['首页', '用户', '节点', '设置']) {
+    expect(find.byType(NavigationBar), findsOneWidget);
+    for (final label in ['总览', '节点管理', '用户管理', '订阅管理', '设置']) {
       expect(find.text(label), findsWidgets);
     }
 
-    final dock = tester.getRect(find.byType(liquid.GlassTabBar));
+    final dock = tester.getRect(find.byType(NavigationBar));
     expect(dock.height, greaterThanOrEqualTo(66));
     expect(
       tester.getBottomLeft(find.byKey(const Key('page-body'))).dy,
       lessThanOrEqualTo(tester.getTopLeft(find.byType(AppBottomDock)).dy),
     );
 
-    await tester.tap(find.text('节点').hitTestable().first);
+    await tester.tap(find.text('节点管理').hitTestable().first);
     await tester.pumpAndSettle();
-    expect(selectedIndex, 2);
+    expect(selectedIndex, 1);
   });
 
   for (final reduced in [false, true]) {
@@ -63,23 +61,15 @@ void main() {
           ),
         ),
       );
-      await tester.tap(find.text('节点').hitTestable().first);
+      await tester.tap(find.text('节点管理').hitTestable().first);
       await tester.pump(const Duration(milliseconds: 40));
-      expect(selected, 2);
-      await tester.tap(find.text('用户').hitTestable().first);
-      await tester.pumpAndSettle();
       expect(selected, 1);
+      await tester.tap(find.text('用户管理').hitTestable().first);
+      await tester.pumpAndSettle();
+      expect(selected, 2);
       expect(
-        tester
-            .widget<liquid.GlassTabBar>(find.byType(liquid.GlassTabBar))
-            .selectedIndex,
-        1,
-      );
-      expect(
-        tester
-            .widget<liquid.GlassTabBar>(find.byType(liquid.GlassTabBar))
-            .quality,
-        liquid.GlassQuality.premium,
+        tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+        2,
       );
       expect(tester.takeException(), isNull);
     });

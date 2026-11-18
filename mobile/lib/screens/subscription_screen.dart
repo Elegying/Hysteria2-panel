@@ -5,13 +5,18 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/app_controller.dart';
 import '../core/glass.dart';
 import '../core/user_validity.dart';
+import 'subscription_nodes_screen.dart';
 
 class SubscriptionScreen extends ConsumerStatefulWidget {
   const SubscriptionScreen({
     required this.userId,
     required this.name,
     super.key,
+    this.embedded = false,
+    this.onDelete,
   });
+  final bool embedded;
+  final VoidCallback? onDelete;
   final int userId;
   final String name;
   @override
@@ -116,6 +121,110 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
   Widget build(BuildContext context) {
     final data = _data;
     final disabled = _busy || _error != null;
+    if (widget.embedded) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_busy) const LinearProgressIndicator(),
+          if (_error != null) ...[
+            RefreshWarning(message: _error!),
+            TextButton(
+              onPressed: _busy ? null : _load,
+              child: const Text('重试'),
+            ),
+          ],
+          if (data != null && data['exists'] == true) ...[
+            const Divider(height: 8, indent: 0, endIndent: 0),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    data['userType'] == 1
+                        ? '专线节点 · 已就绪 ${data['premiumReadyCount'] ?? 0} / 4 地区'
+                        : data['usesDefaults'] == true
+                        ? '跟随默认节点'
+                        : data['nodes'] is List
+                        ? '已选 ${(data['nodes'] as List).length} 个节点'
+                        : '独立节点配置',
+                  ),
+                ),
+                if (data['subscriptionId'] is! int && data['userType'] != 1)
+                  const Flexible(
+                    child: Text('编辑节点需升级面板接口', style: TextStyle(fontSize: 11)),
+                  ),
+                if (data['subscriptionId'] is int && data['userType'] != 1)
+                  OutlinedButton(
+                    onPressed: disabled
+                        ? null
+                        : () async {
+                            await Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => SubscriptionNodesScreen(
+                                  userId: widget.userId,
+                                  subscriptionId: data['subscriptionId'],
+                                ),
+                              ),
+                            );
+                            if (mounted) _load();
+                          },
+                    child: const Text('编辑节点'),
+                  ),
+              ],
+            ),
+            const Divider(height: 8, indent: 0, endIndent: 0),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                OutlinedButton(
+                  onPressed: disabled || data['url'] is! String
+                      ? null
+                      : () => _copy(data['url']),
+                  child: const Text('复制链接'),
+                ),
+                OutlinedButton(
+                  onPressed: disabled
+                      ? null
+                      : () => _act(
+                          data['enabled'] == true ? 'disable' : 'enable',
+                          data['enabled'] == true ? '停用订阅' : '启用订阅',
+                          '只控制订阅下载，不改变链接或账号状态。',
+                        ),
+                  child: Text(data['enabled'] == true ? '停用' : '启用'),
+                ),
+                PopupMenuButton<String>(
+                  position: PopupMenuPosition.under,
+                  enabled: !disabled,
+                  onSelected: (v) {
+                    if (v == 'delete') {
+                      widget.onDelete?.call();
+                    } else {
+                      _act('regenerate', '重置订阅链接？', '原链接和密码立即失效，并断开旧连接，确认继续？');
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    const PopupMenuItem(value: 'reset', child: Text('重置')),
+                    if (widget.onDelete != null)
+                      const PopupMenuItem(value: 'delete', child: Text('删除')),
+                  ],
+                  child: const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: Text('更多⌄'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (data != null && data['exists'] != true)
+            TextButton(
+              onPressed: disabled
+                  ? null
+                  : () => _act('create', '创建订阅', '为此用户创建固定订阅链接'),
+              child: const Text('创建订阅'),
+            ),
+        ],
+      );
+    }
     return Scaffold(
       appBar: AppBar(
         title: const Text('订阅管理'),
@@ -183,6 +292,23 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
                 ),
               ),
             ),
+            if (data['subscriptionId'] is int && data['userType'] != 1)
+              OutlinedButton(
+                onPressed: disabled
+                    ? null
+                    : () async {
+                        await Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => SubscriptionNodesScreen(
+                              userId: widget.userId,
+                              subscriptionId: data['subscriptionId'],
+                            ),
+                          ),
+                        );
+                        if (mounted) _load();
+                      },
+                child: const Text('编辑订阅节点'),
+              ),
             const SizedBox(height: 12),
             OutlinedButton(
               onPressed: disabled

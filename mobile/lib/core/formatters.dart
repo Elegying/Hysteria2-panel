@@ -12,9 +12,8 @@ String formatBytes(Object? raw) {
 
 String formatTimestamp(Object? raw) {
   if (raw is! num || raw <= 0) return '尚未上报';
-  final value = DateTime.fromMillisecondsSinceEpoch(
-    raw.toInt() * 1000,
-  ).toLocal();
+  final value = DateTime.fromMillisecondsSinceEpoch(raw.toInt() * 1000)
+      .toLocal();
   String two(int number) => number.toString().padLeft(2, '0');
   return '${value.month}-${two(value.day)} ${two(value.hour)}:${two(value.minute)}:${two(value.second)}';
 }
@@ -49,4 +48,12 @@ String nodeStatusLabel(Object? status) {
     'failed': '运行异常',
   };
   return labels[status?.toString()] ?? '状态未知';
+}
+
+/// Dashboard reference keeps a decimal even for totals above 100 GiB.
+String formatPanelBytes(Object? raw) {
+  if (raw is! num || raw < 1073741824) return formatBytes(raw);
+  final unit = raw >= 1099511627776 ? 'TiB' : 'GiB';
+  final divisor = unit == 'TiB' ? 1099511627776 : 1073741824;
+  return '${(raw / divisor).toStringAsFixed(1)} $unit';
 }

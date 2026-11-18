@@ -6,8 +6,8 @@ import 'app_controller.dart';
 
 class ThemeSettings {
   const ThemeSettings({
-    this.mode = ThemeMode.system,
-    this.seedValue = 0xFF5F91F7,
+    this.mode = ThemeMode.dark,
+    this.seedValue = 0xFF00D9D0,
   });
 
   final ThemeMode mode;
@@ -41,7 +41,7 @@ class ThemeController extends StateNotifier<ThemeSettings> {
 
   Future<void> load() async {
     final preferences = await SharedPreferences.getInstance();
-    final modeName = preferences.getString(_modeKey) ?? 'system';
+    final modeName = preferences.getString(_modeKey) ?? 'dark';
     final mode = ThemeMode.values.firstWhere(
       (value) => value.name == modeName,
       orElse: () => ThemeMode.system,
@@ -49,7 +49,7 @@ class ThemeController extends StateNotifier<ThemeSettings> {
     if (!mounted) return;
     state = ThemeSettings(
       mode: mode,
-      seedValue: preferences.getInt(_seedKey) ?? 0xFF5F91F7,
+      seedValue: preferences.getInt(_seedKey) ?? 0xFF00D9D0,
     );
   }
 

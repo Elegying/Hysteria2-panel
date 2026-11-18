@@ -7,6 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/app_controller.dart';
 import '../core/formatters.dart';
 import '../core/glass.dart';
+import 'admin_controls.dart';
+import 'node_enrollment.dart';
+import 'node_telemetry_card.dart';
 
 class NodesScreen extends ConsumerStatefulWidget {
   const NodesScreen({super.key});
@@ -18,10 +21,12 @@ class NodesScreen extends ConsumerStatefulWidget {
 class _NodesScreenState extends ConsumerState<NodesScreen>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   List<Map<String, dynamic>> _nodes = [];
-  Map<String, dynamic> _summary = {};
-  final Map<String, int> _trafficTotals = {};
+  final Set<String> _expanded = {};
   final Map<String, double> _trafficRates = {};
+  final Map<String, int> _trafficTotals = {};
   int? _trafficObservedAt;
+  List<Map<String, dynamic>> _budgets = [];
+  bool _enrolling = false;
   bool _loading = true;
   bool _refreshing = false;
   int _loadGeneration = 0;
@@ -78,24 +83,19 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       final elapsed = _trafficObservedAt == null
           ? 0
           : observedAt - _trafficObservedAt!;
-      final nextRates = <String, double>{};
       for (final node in items) {
         final id = node['nodeId'].toString();
         final total = (node['totalBytes'] as num? ?? 0).toInt();
         final previous = _trafficTotals[id];
-        nextRates[id] = previous == null || elapsed <= 0 || total < previous
+        _trafficRates[id] = previous == null || elapsed <= 0 || total < previous
             ? 0
             : (total - previous) / elapsed;
         _trafficTotals[id] = total;
       }
+      _trafficObservedAt = observedAt;
       if (mounted && generation == _loadGeneration) {
         setState(() {
-          _summary = data;
           _nodes = items;
-          _trafficRates
-            ..clear()
-            ..addAll(nextRates);
-          _trafficObservedAt = observedAt;
           _loading = false;
           _error = null;
         });
@@ -156,7 +156,10 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             .postJson(
               '/api/v1/mobile/nodes/local/${enabled ? 'enable' : 'disable'}',
             );
-        if (detailContext.mounted) Navigator.pop(detailContext);
+        if (detailContext.mounted &&
+            ModalRoute.of(detailContext) is PopupRoute) {
+          Navigator.pop(detailContext);
+        }
         await _load(silent: true);
         if (mounted) {
           ScaffoldMessenger.of(context)
@@ -215,7 +218,10 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
         await ref
             .read(appControllerProvider.notifier)
             .postJson('/api/v1/mobile/nodes/${node['nodeId']}/$action');
-        if (detailContext.mounted) Navigator.pop(detailContext);
+        if (detailContext.mounted &&
+            ModalRoute.of(detailContext) is PopupRoute) {
+          Navigator.pop(detailContext);
+        }
         await _load(silent: true);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -312,7 +318,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                 controller: controller,
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
                 children: [
-                  if (_error != null) RefreshWarning(message: _error!),
+                  if (_error != null) RefreshWarning(message: '数据刷新失败：$_error'),
                   if (busy)
                     const Padding(
                       padding: EdgeInsets.only(bottom: 12),
@@ -451,6 +457,11 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                     _dataPlaneHelp(node['dataPlaneState']?.toString()),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
+                  if (!isLocal)
+                    AdminControls(
+                      nodeId: node['nodeId'].toString(),
+                      nodeProfile: node,
+                    ),
                 ],
               ),
             ),
@@ -479,265 +490,283 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
-    final counts = Map<String, dynamic>.from(
-      _summary['statusCounts'] as Map? ?? {},
-    );
-    return SafeArea(
-      child: RefreshIndicator(
-        onRefresh: _load,
-        child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            SliverAppBar(
-              toolbarHeight: 56,
-              pinned: false,
-              title: const Text('节点'),
-              actions: [
-                GlassControlSurface(
-                  child: IconButton(
-                    onPressed: _load,
-                    icon: const Icon(Icons.refresh_rounded),
-                    tooltip: '刷新',
-                  ),
-                ),
-              ],
+  Future<void> _loadBudgets() async {
+    try {
+      final data = await ref
+          .read(appControllerProvider.notifier)
+          .getJson('/api/v1/mobile/overview');
+      if (mounted) {
+        setState(
+          () => _budgets = (data['trafficBudgets'] as List? ?? [])
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList(),
+        );
+      }
+    } catch (_) {
+      /* Node controls stay available when overview is unavailable. */
+    }
+  }
+
+  Future<void> _enroll() async {
+    if (_enrolling) return;
+    _enrolling = true;
+    try {
+      await showNodeEnrollment(context, ref);
+    } finally {
+      _enrolling = false;
+    }
+    if (mounted) _load(silent: true);
+  }
+
+  Future<void> _codes() async {
+    await showGlassModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(16),
+          children: [
+            Text('对接码管理', style: Theme.of(ctx).textTheme.titleLarge),
+            const SizedBox(height: 8),
+            const Text('新建对接码后，在目标服务器执行部署命令。已有节点可查看详情、重新对接或撤销授权。'),
+            const SizedBox(height: 12),
+            OutlinedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _enroll();
+              },
+              child: const Text('生成对接码'),
             ),
-            if (_error != null && _nodes.isNotEmpty)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                  child: RefreshWarning(message: '数据刷新失败：$_error'),
-                ),
+            for (final node in _nodes)
+              ListTile(
+                title: Text(node['name'].toString()),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showNode(node);
+                },
               ),
-            if (_loading && _nodes.isEmpty)
-              const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator()),
-              )
-            else if (_error != null && _nodes.isEmpty)
-              SliverFillRemaining(
-                child: Center(
-                  child: GlassControlSurface(
-                    child: FilledButton.icon(
-                      onPressed: _load,
-                      icon: const Icon(Icons.refresh_rounded),
-                      label: Text(_error!),
-                    ),
-                  ),
-                ),
-              )
-            else ...[
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
-                  child: GlassCard(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          _Count(
-                            label: '全部',
-                            value: '${_summary['total'] ?? 0}',
-                          ),
-                          _Count(
-                            label: '在线',
-                            value: '${_summary['online'] ?? 0}',
-                            color: Colors.green,
-                          ),
-                          _Count(
-                            label: '离线',
-                            value: '${counts['offline'] ?? 0}',
-                            color: Colors.orange,
-                          ),
-                          _Count(
-                            label: '待处理',
-                            value:
-                                '${(counts['pending_registration'] ?? 0) + (counts['pending_verification'] ?? 0)}',
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              if (_nodes.isEmpty)
-                const SliverFillRemaining(
-                  child: Center(child: Text('暂无节点，请从首页点击“对接”添加节点')),
-                )
-              else
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  sliver: GlassSliverList(
-                    itemCount: _nodes.length,
-                    spacing: 12,
-                    itemBuilder: (context, index) {
-                      final node = _nodes[index];
-                      return GlassCard(
-                        child: InkWell(
-                          onTap: () => _showNode(node),
-                          borderRadius: BorderRadius.circular(18),
-                          child: Padding(
-                            padding: const EdgeInsets.all(12),
-                            child: Row(
-                              children: [
-                                CircleAvatar(
-                                  radius: 24,
-                                  backgroundColor: Theme.of(context)
-                                      .colorScheme
-                                      .primary
-                                      .withValues(alpha: .09),
-                                  child: Icon(
-                                    node['status'] == 'online'
-                                        ? Icons.dns_rounded
-                                        : Icons.dns_outlined,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        node['name'].toString(),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      _StatusPill(
-                                        status: node['status'].toString(),
-                                      ),
-                                      const SizedBox(height: 5),
-                                      Text(
-                                        node['observedIp']
-                                                    ?.toString()
-                                                    .isNotEmpty ==
-                                                true
-                                            ? node['observedIp'].toString()
-                                            : node['expectedIp'].toString(),
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall,
-                                      ),
-                                      Text(
-                                        '${node['tier'] == 'premium' ? '专线' : '普通'} · ${node['onlineDevices'] ?? '—'} 台在线 · 心跳 ${formatTimestamp(node['lastHeartbeatAt'])}',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodySmall,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const Icon(Icons.chevron_right_rounded),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-              if (_nodes.isNotEmpty)
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 28),
-                    child: _RealtimeTrafficCard(
-                      nodes: _nodes,
-                      rates: _trafficRates,
-                    ),
-                  ),
-                ),
-              SliverToBoxAdapter(
-                child: SizedBox(height: appDockExtent(context)),
-              ),
-            ],
           ],
         ),
       ),
     );
   }
-}
-
-class _RealtimeTrafficCard extends StatelessWidget {
-  const _RealtimeTrafficCard({required this.nodes, required this.rates});
-  final List<Map<String, dynamic>> nodes;
-  final Map<String, double> rates;
 
   @override
-  Widget build(BuildContext context) => GlassCard(
-    child: Padding(
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '服务器节点实时流量',
-            style: Theme.of(context).textTheme.titleMedium
-                ?.copyWith(fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 3),
-          Text('每 5 秒采样一次节点累计流量', style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 12),
-          ...nodes.map(
-            (node) => Padding(
-              padding: const EdgeInsets.symmetric(vertical: 6),
+  Widget build(BuildContext context) {
+    super.build(context);
+    return SafeArea(
+      child: RefreshIndicator(
+        onRefresh: _load,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 20),
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            const PanelHeading('节点管理'),
+            Row(
+              children: [
+                Expanded(
+                  child: _entry('节点对接', '添加或连接远端节点', Icons.link, _enroll),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _entry('对接码管理', '查看、生成与管理', Icons.qr_code, _codes),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                Text('节点列表', style: Theme.of(context).textTheme.titleLarge),
+                Text(
+                  '共 ${_nodes.length} 个节点',
+                  style: const TextStyle(fontSize: 11),
+                ),
+                OutlinedButton(
+                  onPressed: _enroll,
+                  style: OutlinedButton.styleFrom(
+                    backgroundColor: const Color(0xFF6240B8),
+                  ),
+                  child: const Text('＋ 添加节点'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (_loading && _nodes.isEmpty) const LinearProgressIndicator(),
+            if (_error != null) RefreshWarning(message: '数据刷新失败：$_error'),
+            for (final node in _nodes)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _nodeCard(node),
+              ),
+            if (!_loading && _nodes.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Text('暂无节点，请点击添加节点'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _entry(
+    String title,
+    String subtitle,
+    IconData icon,
+    VoidCallback action,
+  ) => GlassCard(
+    child: InkWell(
+      onTap: action,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          children: [
+            Icon(icon, color: Theme.of(context).colorScheme.primary, size: 24),
+            const SizedBox(width: 8),
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    node['name'].toString(),
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                    title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
                   ),
-                  const SizedBox(height: 4),
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 4,
-                    children: [
-                      Text(
-                        '${formatBytes(rates[node['nodeId']] ?? 0)}/s',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: Theme.of(context).colorScheme.primary,
+                  const SizedBox(height: 3),
+                  Text(subtitle, style: const TextStyle(fontSize: 10)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+  Widget _nodeCard(Map<String, dynamic> node) {
+    final id = node['nodeId'].toString();
+    final expanded = _expanded.contains(id);
+    final matches = _budgets.where(
+      (b) =>
+          b['originId'] == node['originId'] ||
+          (id != 'local' && b['originId'] == 'node:$id') ||
+          (id == 'local' && b['kind'] == 'local'),
+    );
+    final item = matches.isNotEmpty
+        ? matches.first
+        : <String, dynamic>{
+            ...node,
+            'originId': node['originId'] ?? (id == 'local' ? '' : 'node:$id'),
+          };
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(() {
+              if (expanded) {
+                _expanded.remove(id);
+              } else {
+                _expanded.add(id);
+                _loadBudgets();
+              }
+            }),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          node['name'].toString(),
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
-                      Text(
-                        '累计 ${formatBytes(node['totalBytes'])}',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
+                        const SizedBox(height: 4),
+                        Text(
+                          '${id == 'local' ? '面板节点' : '远端数据节点'} · ${nodeStatusLabel(node['status'])}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: node['status'] == 'online'
+                                ? const Color(0xFF00E1DF)
+                                : const Color(0xFFBC9BEF),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    '${node['onlineDevices'] ?? '—'} 台设备',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 20,
                   ),
                 ],
               ),
             ),
           ),
+          AnimatedSize(
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 200),
+            child: !expanded
+                ? const SizedBox(width: double.infinity)
+                : Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        NodeTelemetryCard(
+                          item: item,
+                          embedded: true,
+                          showBudget: false,
+                        ),
+                        const SizedBox(height: 10),
+                        AdminControls(
+                          nodeId: id,
+                          nodeProfile: node,
+                          compact: true,
+                          originId: item['originId']?.toString(),
+                          budgetData: item['budget'] is Map
+                              ? Map<String, dynamic>.from(item['budget'])
+                              : null,
+                          onDisconnect: node['canDisconnect'] == true
+                              ? () =>
+                                    _pairingAction(node, 'disconnect', context)
+                              : null,
+                          budget: NodeTelemetryCard(
+                            item: item,
+                            embedded: true,
+                            showTelemetry: false,
+                            showActions: false,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        OutlinedButton(
+                          onPressed: () => _showNode(node),
+                          child: const Text('节点详情与对接管理'),
+                        ),
+                      ],
+                    ),
+                  ),
+          ),
         ],
       ),
-    ),
-  );
-}
-
-class _Count extends StatelessWidget {
-  const _Count({required this.label, required this.value, this.color});
-  final String label;
-  final String value;
-  final Color? color;
-  @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Text(
-        value,
-        style: Theme.of(context).textTheme.titleLarge
-            ?.copyWith(fontWeight: FontWeight.w700, color: color),
-      ),
-      Text(label, style: Theme.of(context).textTheme.bodySmall),
-    ],
-  );
+    );
+  }
 }
 
 class _StatusPill extends StatelessWidget {

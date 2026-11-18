@@ -844,6 +844,76 @@ class AppController extends StateNotifier<AppState> {
     super.dispose();
   }
 
+  Future<File> downloadBackup() async {
+    final session = state.session;
+    final dio = _dio;
+    final generation = _sessionGeneration;
+    if (session == null || dio == null) throw const ApiException('请重新登录');
+    final directory = await Directory.systemTemp.createTemp('hy2-backup-');
+    final file = File('${directory.path}/panel-backup.zip');
+    try {
+      final response = await dio.post<ResponseBody>(
+        '/api/v1/mobile/backup',
+        options: Options(
+          responseType: ResponseType.stream,
+          receiveTimeout: const Duration(minutes: 5),
+          headers: {'Authorization': 'Bearer ${session.accessToken}'},
+        ),
+      );
+      if (!_isCurrent(generation)) throw const ApiException('登录状态已改变');
+      if (response.statusCode != 200 ||
+          !(response.headers.value('content-type') ?? '').contains(
+            'application/zip',
+          )) {
+        throw const ApiException('备份下载失败，请重新登录后重试');
+      }
+      final sink = file.openWrite();
+      try {
+        var bytes = 0;
+        await for (final chunk in response.data!.stream) {
+          bytes += chunk.length;
+          if (bytes > 131 * 1024 * 1024) {
+            throw const ApiException('备份超过 131 MiB 限制');
+          }
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+      }
+      if (!_isCurrent(generation)) throw const ApiException('登录状态已改变');
+      return file;
+    } catch (_) {
+      await directory.delete(recursive: true);
+      rethrow;
+    }
+  }
+
+  Future<Map<String, dynamic>> restoreBackup(File file) async {
+    final session = state.session;
+    final dio = _dio;
+    final generation = _sessionGeneration;
+    if (session == null || dio == null) throw const ApiException('请重新登录');
+    final length = await file.length();
+    if (length <= 0 || length > 131 * 1024 * 1024) {
+      throw const ApiException('请选择不超过 131 MiB 的有效备份');
+    }
+    final response = await dio.post(
+      '/api/v1/mobile/restore',
+      data: file.openRead(),
+      options: Options(
+        receiveTimeout: const Duration(minutes: 15),
+        contentType: 'application/zip',
+        headers: {
+          'Authorization': 'Bearer ${session.accessToken}',
+          'Content-Length': length,
+          'X-HY2Panel-Confirm': 'RESTORE',
+        },
+      ),
+    );
+    if (!_isCurrent(generation)) throw const ApiException('登录状态已改变');
+    return _unwrap(response);
+  }
+
   Future<Map<String, dynamic>> getJson(String path) => _request('GET', path);
 
   Future<Map<String, dynamic>> postJson(

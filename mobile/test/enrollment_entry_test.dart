@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/core/app_controller.dart';
-import 'package:hysteria2_manager/screens/home_screen.dart';
+import 'package:hysteria2_manager/screens/nodes_screen.dart';
 
 import 'support/design_fixture.dart';
 
@@ -29,18 +29,18 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [appControllerProvider.overrideWith((ref) => controller)],
-          child: const MaterialApp(home: HomeScreen()),
+          child: const MaterialApp(home: NodesScreen()),
         ),
       );
       await tester.pumpAndSettle();
       await tester.scrollUntilVisible(
-        find.text('一键对接'),
+        find.text('节点对接'),
         250,
         scrollable: find.byType(Scrollable).first,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('一键对接'));
-      await tester.tap(find.text('一键对接'));
+      await tester.tap(find.text('节点对接'));
+      await tester.tap(find.text('节点对接'));
       expect(controller.reads, 1);
       controller.pending.complete({
         'features': ['typed-node-enrollment-hopping'],
@@ -50,7 +50,7 @@ void main() {
       await tester.tap(find.widgetWithText(TextButton, '取消'));
       await tester.pumpAndSettle();
       controller.pending = Completer();
-      await tester.tap(find.text('一键对接'));
+      await tester.tap(find.text('节点对接'));
       expect(controller.reads, 2);
       controller.pending.complete({'features': []});
       await tester.pumpAndSettle();

@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hysteria2_manager/core/app_controller.dart';
-import 'package:hysteria2_manager/screens/home_screen.dart';
 import 'package:hysteria2_manager/screens/nodes_screen.dart';
 import 'package:hysteria2_manager/screens/users_screen.dart';
 
@@ -106,6 +105,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('form-test-user').first);
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.widgetWithText(OutlinedButton, '更多'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(OutlinedButton, '更多'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byTooltip('完整详情与其他操作').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('完整详情与其他操作').last);
+    await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(OutlinedButton, '禁用'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '确认'));
@@ -139,16 +146,16 @@ void main() {
         null,
       ),
     );
-    await showScreen(tester, c, const HomeScreen());
+    await showScreen(tester, c, const NodesScreen());
     await tester.scrollUntilVisible(
-      find.text('一键对接'),
+      find.text('节点对接'),
       250,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('一键对接'));
+    await tester.ensureVisible(find.text('节点对接'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('一键对接'));
+    await tester.tap(find.text('节点对接'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).at(0), '审查节点');
     await tester.enterText(find.byType(TextField).at(1), '8.8.8.8');
@@ -170,6 +177,10 @@ void main() {
     final c = AuditController()..pending = Completer<Map<String, dynamic>>();
     await showScreen(tester, c, const NodesScreen());
     await tester.tap(find.text('审查节点').first);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('节点详情与对接管理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('节点详情与对接管理'));
     await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '一键断连').first);
     await tester.pumpAndSettle();
@@ -201,6 +212,10 @@ void main() {
     final c = AuditController();
     await showScreen(tester, c, const NodesScreen());
     await tester.tap(find.text('审查节点').first);
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('节点详情与对接管理'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('节点详情与对接管理'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('在线设备'),
