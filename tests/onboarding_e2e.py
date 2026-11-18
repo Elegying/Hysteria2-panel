@@ -63,8 +63,10 @@ def main():
         root = Path(directory)
         assets = root/'assets'
         assets.mkdir()
-        for name in ('node_agent.py', 'tcp_probe.py'):
-            shutil.copy2(ROOT/name, assets/name)
+        for name in ('node_agent.py', 'tcp_probe.py', 'hy2panel/version.py', 'hy2panel/operations.py'):
+            destination = assets / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / name, destination)
         download('https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64',
                  assets/'cosign', NodeEnrollmentService.COSIGN_SHA_AMD64)
         download('https://github.com/apernet/hysteria/releases/download/app/v2.12.1/hysteria-linux-amd64',

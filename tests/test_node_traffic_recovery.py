@@ -150,6 +150,22 @@ class TrafficRecoveryTests(unittest.TestCase):
         self.assertEqual([100, 100, 5], [len(call.args[0]) for call in calls])
         self.assertEqual(sorted(users), [name for call in calls for name in call.args[0]])
 
+    def test_maintenance_only_isolates_ingress_after_sessions_fail_to_drain(self):
+        for error in (node_agent.SessionsNotDrainedError("idle"), OSError("stats failed")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(node_agent.os, "geteuid", return_value=0), \
+                    mock.patch.object(self.cycle, "quiesce_traffic", side_effect=[error, None]) as drain, \
+                    mock.patch("hy2panel.operations.UpgradeIngressDrain") as guard:
+                if isinstance(error, OSError):
+                    with self.assertRaises(OSError):
+                        self.cycle.quiesce_for_maintenance([443, 31999])
+                    guard.assert_not_called()
+                else:
+                    self.cycle.quiesce_for_maintenance([443, 31999])
+                    guard.assert_called_once_with([443, 31999])
+                    guard.return_value.__exit__.assert_called_once()
+                    self.assertEqual([mock.call(), mock.call(attempts=60)], drain.call_args_list)
+
     def test_spool_rejects_conflicting_content_for_retried_id(self):
         prepared = self.spool.prepare_collections([{"alice": {"tx": 1, "rx": 2}}], 100)
         self.spool.persist_collections(prepared)

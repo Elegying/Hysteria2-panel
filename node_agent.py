@@ -30,7 +30,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-AGENT_VERSION = "0.39.62"
+AGENT_VERSION = "0.39.63"
 MAX_RESPONSE_BYTES = 8192
 CONTROL_REQUEST_TIMEOUT_SECONDS = 10
 NODE_PROTOCOL_REQUEST_TIMEOUT_SECONDS = 8
@@ -3090,21 +3090,11 @@ def execute_control_command(
         protocol_state.set_data_plane_stopped(False)
         return
     if kind == "UNINSTALL_NODE" and payload == {}:
-        if (
-            protocol_state is None
-            or flush_traffic is None
-            or stop_data_plane is None
-            or queue_uninstall is None
-        ):
+        if queue_uninstall is None:
             raise ProtocolError("node uninstall callbacks are unavailable")
-        if not protocol_state.data_plane_stopped():
-            if quiesce_traffic is not None:
-                quiesce_traffic()
-            flush_traffic()
-            stop_data_plane()
-            protocol_state.set_data_plane_stopped(True)
-        else:
-            stop_data_plane()
+        # The root worker owns the maintenance lock, stops admission and the
+        # collector, drains counters, and acknowledges after local cleanup.
+        # Draining here would block that worker while admission is still live.
         queue_uninstall(command["commandId"])
         return "deferred-ack"
     raise ProtocolError("node command is invalid")
@@ -3529,6 +3519,20 @@ class NodeControlCycle:
         self._collect_to_spool()
         return self._upload_pending()
 
+    def quiesce_for_maintenance(self, ports):
+        try:
+            self.quiesce_traffic()
+        except SessionsNotDrainedError:
+            if not ports or os.geteuid() != 0:
+                raise
+            # The installer stages these checksum-verified modules alongside
+            # the maintenance agent and stops admission before invoking it.
+            from hy2panel.operations import UpgradeIngressDrain
+
+            print("空闲连接尚未退出，临时暂停节点 UDP 入口后继续结算", file=sys.stderr)
+            with UpgradeIngressDrain(ports):
+                self.quiesce_traffic(attempts=60)
+
     def refresh_snapshot(self):
         if self.traffic_collector is not None and self.traffic_collector.document["pending"]:
             raise ProtocolError("traffic collection has not been persisted")
@@ -3918,6 +3922,7 @@ def _parser():
         command.add_argument("--stats-url", required=True, action="append")
         command.add_argument("--metrics-file")
         if name == "quiesce-traffic":
+            command.add_argument("--drain-udp-port", type=int, action="append", default=[])
             command.add_argument("--require-ack", action="store_true")
             command.add_argument("--upload-only", action="store_true")
             command.add_argument("--legacy-traffic", action="store_true")
@@ -4126,7 +4131,7 @@ def main(arguments=None):
             cycle = _make_control_cycle(options)
             if options.command == "quiesce-traffic":
                 if not options.upload_only:
-                    cycle.quiesce_traffic()
+                    cycle.quiesce_for_maintenance(options.drain_udp_port)
                 if options.require_ack:
                     cycle._upload_pending()
                 print("节点在途流量已静默结算并持久化；未确认批次由控制循环继续重放")
@@ -4146,7 +4151,7 @@ def main(arguments=None):
                 metrics = NodeRuntimeMetrics(options.metrics_file, spool=cycle.spool)
             run_control_loop(cycle, stopped, metrics=metrics)
             return 0
-        except (HeartbeatError, OSError, ProtocolError, ValueError) as exc:
+        except (HeartbeatError, OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
             print("错误：{}".format(exc), file=sys.stderr)
             return 1
     try:

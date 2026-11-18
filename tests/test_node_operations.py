@@ -560,6 +560,7 @@ class NodeLifecycleTests(NodeOperationsCase):
     def test_uninstall_executor_defers_ack_to_the_root_worker(self):
         stop = mock.Mock()
         flush = mock.Mock()
+        drain = mock.Mock(side_effect=node_agent.SessionsNotDrainedError("idle sessions"))
         queue_uninstall = mock.Mock()
         state = mock.Mock()
         state.data_plane_stopped.return_value = False
@@ -576,12 +577,14 @@ class NodeLifecycleTests(NodeOperationsCase):
             protocol_state=state,
             stop_data_plane=stop,
             queue_uninstall=queue_uninstall,
+            quiesce_traffic=drain,
         )
 
         self.assertEqual("deferred-ack", result)
-        flush.assert_called_once_with()
-        state.set_data_plane_stopped.assert_called_once_with(True)
-        stop.assert_called_once_with()
+        drain.assert_not_called()
+        flush.assert_not_called()
+        state.set_data_plane_stopped.assert_not_called()
+        stop.assert_not_called()
         queue_uninstall.assert_called_once_with(command["commandId"])
 
     def test_stop_ack_and_resume_ack_advance_lifecycle_without_deleting_identity(self):

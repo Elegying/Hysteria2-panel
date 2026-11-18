@@ -8,7 +8,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 set -euo pipefail
 
-PANEL_VERSION="0.39.62"
+PANEL_VERSION="0.39.63"
 PANEL_REF="${PANEL_REF:-v${PANEL_VERSION}}"
 PANEL_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/hysteria2_panel.py"
 OFFSITE_BACKUP_SOURCE_URL="https://raw.githubusercontent.com/Elegying/Hysteria2-panel/${PANEL_REF}/offsite_backup.py"
@@ -37,9 +37,9 @@ OFFSITE_BACKUP_SHA256="e65735e9ce74ff895eb080101a5e9c1dbcfccc311da4e5472897b30e2
 QRCODEGEN_SHA256="c204a41677d7e3bbf1834699ced21c7dae7f3fe9b02787cca67388ffd6010b0a"
 TCP_PROBE_SHA256="b63da9cc1e58ae3459e188a507d9e71bd205b5f3320448bc319d1f80a21885a2"
 HY2PANEL_INIT_SHA256="b525d019edcaa9d90a3b4599650a64d8fb9fde2222f7c2707151318de515b79d"
-HY2PANEL_VERSION_SHA256="555f51f5f75e2e8070cb32cdcc5cb303b3c2dd9b65c89c876a3ae7fa04352f99"
+HY2PANEL_VERSION_SHA256="d45943e4a719eb51da1223b4d3af8a2990195be546ffa7aca87878d44f8dc03e"
 HY2PANEL_BUDGETS_SHA256="b449af46564537e59185940739ff433ac154936b15aa99bb92d738af4886f459"
-HY2PANEL_WEB_ASSETS_SHA256="87df4f3f3ae093278baf0d411ff6cabf11fa3b90432a8f4827bda8321b85d540"
+HY2PANEL_WEB_ASSETS_SHA256="704b5c68c50b3e3c3decb516e3c7aee9de4abd5bf0bd4779cd8ff80c6c3b0fdc"
 HY2PANEL_OPERATIONS_SHA256="fd5be4d9ab1213817476189f6f7a20f98678ed15ad8f3cb694249fafc2a4b64a"
 HY2PANEL_RELEASE_SHA256="84eedfc2be2082b7afaf0299459db04170b5c3f5049e903745f07beb2834498f"
 HY2PANEL_HEALTH_SHA256="08f83a4271a2de28172fddfde018c267135ff27c7bf6d802081aa0fc9388ced6"
@@ -49,11 +49,11 @@ HY2PANEL_ACCOUNTING_SHA256="6f6223bfbc83a09f6553e6eb1159ab3a56710804dca448455b8f
 HY2PANEL_NODES_SHA256="14ad65bdc815a7e09a07ecc8e4ccc2d9fae20d65e34b710c494bb4e279eb75da"
 HY2PANEL_DISTRIBUTED_SHA256="e3e556fdf8e64dafb585dc5510a63cd00540e65f969b755980a611197cb282c7"
 HY2PANEL_DOMAIN_USAGE_SHA256="11a88974c62a159d4a24ad2cf8ca7503b90109ff0becf662639773b59bb58794"
-HY2PANEL_DASHBOARD_SHA256="4b6354ff973fef47378935702492bfd75260031d9620fc66a46f7c1da26bed8c"
+HY2PANEL_DASHBOARD_SHA256="79ea3f0f50227fdd7451983ddf5c6830850eeaf6bdef25088ddd36f45aca524c"
 HY2PANEL_DIAGNOSTICS_SHA256="c431e8d916833b93b54cfc30f80b94c64e9609acb6a1fce34de9a6968d8bd010"
 HY2PANEL_ADMIN_API_SHA256="a87758032c40ff068d5bf56f372e2cc64d2d1c94ea0573ce0279a1535240ac8e"
 HY2PANEL_MOBILE_API_SHA256="d7ff806e983c294ce74dea951cc328d83e68f9c88f8406256ae0d6c5df02983c"
-NODE_AGENT_SHA256="bdda2ea417eefd253beffba3e75348bc756239ba34e0131072e80589330da013"
+NODE_AGENT_SHA256="d4c46c40451424c40089192f935d1f913e58552bd1bd3cf3cccd7f12342bd39a"
 HYSTERIA_VERSION="2.12.1"
 HYSTERIA_DATA_PLANE_URL="https://github.com/Elegying/Hysteria2-panel/releases/download/core-egress-v2/hysteria-linux"
 HYSTERIA_SHA_AMD64="c0f4a109bd0c3f4655bfcc9ccc1101bc719dcc28060156102b2d8b5f495ff43d"
@@ -1762,6 +1762,17 @@ prepare_node_maintenance_agent() {
   chmod 0755 "${TMP_DIR}/node_agent.py"
 }
 
+prepare_node_maintenance_drain() {
+  install -d -m 0700 "${TMP_DIR}/hy2panel"
+  : > "${TMP_DIR}/hy2panel/__init__.py"
+  download_file "${HY2PANEL_VERSION_SOURCE_URL}" "${TMP_DIR}/hy2panel/version.py"
+  download_file "${HY2PANEL_OPERATIONS_SOURCE_URL}" "${TMP_DIR}/hy2panel/operations.py"
+  printf '%s  %s\n' \
+    "${HY2PANEL_VERSION_SHA256}" "${TMP_DIR}/hy2panel/version.py" \
+    "${HY2PANEL_OPERATIONS_SHA256}" "${TMP_DIR}/hy2panel/operations.py" \
+    | sha256sum --check --status || fail "节点维护模块 SHA-256 校验失败"
+}
+
 uninstall_node() {
   local backup command_name directory path unit
   local -a uninstall_commands=(cat chmod curl find install mktemp rm sha256sum sort stat sync systemctl sysctl)
@@ -1825,6 +1836,13 @@ uninstall_node() {
   [[ -n "${DATA_PLANE_BACKUP_DIR}" ]] \
     || fail "找不到完整的首次部署网络快照；为避免破坏服务器网络参数，拒绝卸载"
 
+  for unit in hysteria2-panel-node-hysteria-main.service hysteria2-panel-node-hysteria-udp443.service; do
+    # After core shutdown, an ACK retry must not depend on the release host.
+    if systemctl is-active --quiet "${unit}"; then
+      prepare_node_maintenance_drain
+      break
+    fi
+  done
   stop_existing_data_plane require-ack \
     || fail "节点最终流量尚未安全结算；保留服务、身份与统计队列并稍后重试"
   systemctl disable --now \
@@ -2802,8 +2820,12 @@ rollback_new_data_plane_firewall_rules() {
 }
 
 settle_existing_node_traffic() {
-  local active_state helper mode="${1:-preserve}" unit port accounting_mode mode_status
+  local active_state helper mode="${1:-preserve}" unit port ingress accounting_mode mode_status
+  local allow_drain=0
   local -a stats_options=()
+  if [[ -f "${TMP_DIR}/node_agent.py" && -f "${TMP_DIR}/hy2panel/operations.py" ]]; then
+    allow_drain=1
+  fi
   # With authentication and the periodic collector stopped, only this process
   # can clear the counters. Existing QUIC sessions are kicked by the helper.
   stop_loaded_units hysteria2-panel-node-auth.service \
@@ -2814,8 +2836,18 @@ settle_existing_node_traffic() {
     case "${active_state}" in
       active)
         port=19997
-        [[ "${unit}" != udp443 ]] || port=19995
+        if [[ "${unit}" == udp443 ]]; then
+          port=19995
+          ingress=443
+        elif (( allow_drain )); then
+          require_node_agent_file "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" 600
+          ingress="$(read_data_plane_main_port "${NODE_AGENT_CONFIG_DIR}/bootstrap.json" legacy-19999)" \
+            || return 1
+        fi
         stats_options+=(--stats-url "http://127.0.0.1:${port}")
+        if (( allow_drain )); then
+          stats_options+=(--drain-udp-port "${ingress}")
+        fi
         ;;
       inactive|failed) ;;
       *) return 1 ;;
@@ -3062,6 +3094,7 @@ activate_data_plane() {
   systemctl start hysteria2-panel-node-heartbeat.service \
     || fail "节点签名心跳未被中央面板接受；未修改系统"
   prepare_node_maintenance_agent
+  prepare_node_maintenance_drain
   recover_interrupted_data_plane
   assert_data_plane_network_stack_claimable
   inspect_existing_data_plane

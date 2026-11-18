@@ -7,6 +7,8 @@ import '../core/glass.dart';
 import '../core/user_validity.dart';
 import 'subscription_nodes_screen.dart';
 
+const _nodeEditorUpgradeMessage = '编辑节点需升级面板接口';
+
 class SubscriptionScreen extends ConsumerStatefulWidget {
   const SubscriptionScreen({
     required this.userId,
@@ -157,9 +159,7 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
                   ),
                 ),
                 if (data['subscriptionId'] is! int && data['userType'] != 1)
-                  const Flexible(
-                    child: Text('编辑节点需升级面板接口', style: TextStyle(fontSize: 11)),
-                  ),
+                  const Flexible(child: Text(_nodeEditorUpgradeMessage)),
                 if (data['subscriptionId'] is int && data['userType'] != 1)
                   OutlinedButton(
                     onPressed: disabled
@@ -319,6 +319,8 @@ class _SubscriptionScreenState extends ConsumerState<SubscriptionScreen> {
                       },
                 child: const Text('编辑订阅节点'),
               ),
+            if (data['subscriptionId'] is! int && data['userType'] != 1)
+              const Text(_nodeEditorUpgradeMessage),
             const SizedBox(height: 12),
             OutlinedButton(
               onPressed: disabled

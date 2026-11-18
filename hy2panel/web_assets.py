@@ -279,22 +279,29 @@ function applyAggregateNetwork(payload) {
   }
   const maximum = Math.max(1,...series.flatMap(function(p){return [p.rx,p.tx].filter(valid);}));
   const hasData = series.some(function(p) { return valid(p.rx); });
+  const axis = document.querySelector('[data-aggregate-axis]');
+  const times = document.querySelector('[data-aggregate-times]');
+  axis.replaceChildren();
+  times.replaceChildren();
+  if (!hasData) {
+    document.querySelectorAll('[data-aggregate-rx],[data-aggregate-tx],[data-aggregate-rx-area],[data-aggregate-tx-area],[data-aggregate-grid]').forEach(p=>p.setAttribute('d',''));
+    document.querySelector('[data-aggregate-state]').textContent += ' · 当前范围暂无速率样本';
+    return;
+  }
   const unit = maximum*8 >= 1000000 ? 1000000 : 1000;
   const displayMax = maximum*8/unit;
   const magnitude = Math.pow(10, Math.floor(Math.log10(displayMax/6)));
   const step = [1,2,5,10].map(function(n) { return n*magnitude; }).find(function(n) { return n>=displayMax/6; });
   const ceiling = Math.ceil(displayMax/step)*step;
   const scale = ceiling*unit/8;
-  const axis = document.querySelector('[data-aggregate-axis]'); axis.replaceChildren();
   let grid = '';
   for (let value=0; value<=ceiling+step/2; value+=step) {
     const position = 100-value/ceiling*100;
     const tick = document.createElement('span'); tick.style.top=position+'%';
-    tick.textContent = (hasData ? Number(value.toPrecision(3)) : '—')+' '+(unit===1000000?'Mbps':'Kbps');
+    tick.textContent = Number(value.toPrecision(3))+' '+(unit===1000000?'Mbps':'Kbps');
     axis.appendChild(tick);
     grid+='M0 '+(position*1.6).toFixed(2)+'H1000 ';
   }
-  const times = document.querySelector('[data-aggregate-times]'); times.replaceChildren();
   const tickStep = daily ? (span>43200?14400:span>10800?3600:span>1800?1800:300) : 60;
   const firstTick = daily ? start : Math.ceil(start/60)*60;
   for (let at=firstTick; at<=end; at+=tickStep) {
@@ -945,7 +952,7 @@ document.addEventListener('submit', async function(event) {
     notify(error.message || '生成部署代码失败，请重试', true);
   } finally {
     button.disabled = false;
-    button.textContent = '一键对接';
+    button.textContent = '生成对接命令';
   }
 });
 document.addEventListener('submit', async function(event) {
