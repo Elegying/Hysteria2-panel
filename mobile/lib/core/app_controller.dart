@@ -938,10 +938,46 @@ class AppController extends StateNotifier<AppState> {
     bool retryAfterRefresh = true,
   }) async {
     if (state.working) throw const ApiException('正在更新面板，请稍后重试');
+    final generation = _sessionGeneration;
+    if (state.session == null || _dio == null) {
+      throw const ApiException('请重新登录');
+    }
+    if (data?.containsKey('expectedName') == true ||
+        (method == 'GET' &&
+            RegExp(r'^/api/v1/mobile/users/\d+/subscription$')
+                .hasMatch(path))) {
+      final caps = await getJson('/api/v1/mobile/capabilities');
+      if (!_isCurrent(generation)) {
+        throw const ApiException('登录状态已改变，请重新打开用户');
+      }
+      if (!(caps['features'] as List? ?? const []).contains(
+        'mobile-user-identity-guard',
+      )) {
+        throw const ApiException('请先升级面板，以安全操作指定用户');
+      }
+    }
+    return _requestWithSession(
+      method,
+      path,
+      data,
+      retryAfterRefresh,
+      generation,
+    );
+  }
+
+  Future<Map<String, dynamic>> _requestWithSession(
+    String method,
+    String path,
+    Map<String, dynamic>? data,
+    bool retryAfterRefresh,
+    int generation,
+  ) async {
+    if (state.working) throw const ApiException('正在更新面板，请稍后重试');
     final session = state.session;
     final dio = _dio;
-    final generation = _sessionGeneration;
-    if (session == null || dio == null) throw const ApiException('请重新登录');
+    if (!_isCurrent(generation) || session == null || dio == null) {
+      throw const ApiException('登录状态已改变，请重试');
+    }
     try {
       final response = await dio.request(
         path,
@@ -968,11 +1004,12 @@ class AppController extends StateNotifier<AppState> {
         if (state.session?.accessToken != session.accessToken ||
             await _refreshTokens()) {
           if (!_isCurrent(generation)) throw const ApiException('登录状态已改变，请重试');
-          return await _request(
+          return await _requestWithSession(
             method,
             path,
-            data: data,
-            retryAfterRefresh: false,
+            data,
+            false,
+            generation,
           );
         }
       }

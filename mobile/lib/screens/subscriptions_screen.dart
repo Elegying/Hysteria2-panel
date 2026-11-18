@@ -51,6 +51,7 @@ class _SubscriptionsState extends ConsumerState<SubscriptionsScreen> {
 
   Future<void> _delete(Map<String, dynamic> item) async {
     if (_loading) return;
+    final accountRevision = ref.read(appControllerProvider).contextRevision;
     setState(() => _loading = true);
     try {
       final approved = await showDialog<bool>(
@@ -71,9 +72,12 @@ class _SubscriptionsState extends ConsumerState<SubscriptionsScreen> {
         ),
       );
       if (!mounted || approved != true) return;
+      if (ref.read(appControllerProvider).contextRevision != accountRevision) {
+        throw const ApiException('登录状态已改变，请重新打开订阅');
+      }
       await ref.read(appControllerProvider.notifier).postJson(
         '/api/v1/mobile/subscriptions/${item['id']}/delete',
-        {'confirm': item['id'].toString()},
+        {'confirm': item['id'].toString(), 'expectedName': item['user_name']},
       );
       if (mounted) setState(() => _items.remove(item));
     } catch (e) {
@@ -207,6 +211,11 @@ class _SubscriptionsState extends ConsumerState<SubscriptionsScreen> {
                     for (final item in items)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
+                        key: ValueKey((
+                          item['id'],
+                          item['user_id'],
+                          item['user_name'],
+                        )),
                         child: _card(item),
                       ),
                   ],

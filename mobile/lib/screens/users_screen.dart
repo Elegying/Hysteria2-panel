@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
@@ -38,8 +39,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   int _userType = 0;
   bool _showSearch = false;
   bool _showFilters = false;
-  final Set<int> _expandedUsers = {};
-  final Set<int> _moreUsers = {};
+  final Set<(int, String)> _expandedUsers = {};
   List<Map<String, dynamic>> get _tierUsers =>
       _users.where((u) => (u['userType'] ?? 0) == _userType).toList();
   bool _resettingGroup = false;
@@ -359,7 +359,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         valueListenable: _detailsRevision,
         builder: (context, revision, child) {
           final matches = _users.where(
-            (item) => item['id'] == selectedUser['id'],
+            (item) =>
+                item['id'] == selectedUser['id'] &&
+                item['name'] == selectedUser['name'],
           );
           if (matches.isEmpty) {
             return SafeArea(
@@ -563,17 +565,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         label: '订阅管理',
                         onTap: busy
                             ? null
-                            : () async {
-                                await Navigator.of(sheetContext).push<void>(
-                                  MaterialPageRoute(
-                                    builder: (_) => SubscriptionScreen(
-                                      userId: user['id'] as int,
-                                      name: user['name'].toString(),
-                                    ),
-                                  ),
-                                );
-                                if (mounted) await _load(silent: true);
-                              },
+                            : () => _openSubscription(sheetContext, user),
                       ),
                       _ActionChipButton(
                         icon: Icons.delete_outline_rounded,
@@ -634,13 +626,39 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     return mounted && context.mounted && confirmed == true;
   }
 
+  Future<void> _openSubscription(
+    BuildContext context,
+    Map<String, dynamic> user,
+  ) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => SubscriptionScreen(
+          userId: user['id'] as int,
+          name: user['name'].toString(),
+        ),
+      ),
+    );
+    if (mounted) await _load(silent: true);
+  }
+
+  void _checkAccount(int revision) {
+    if (!mounted ||
+        ref.read(appControllerProvider).contextRevision != revision) {
+      throw const ApiException('登录状态已改变，请重新打开用户');
+    }
+  }
+
   Future<void> _userAction(
     BuildContext sheetContext,
     Map<String, dynamic> user,
     String action,
   ) async {
     final userId = user['id'];
-    final generation = user['generation'];
+    final accountRevision = ref.read(appControllerProvider).contextRevision;
+    final target = {
+      'generation': user['generation'],
+      'expectedName': user['name'],
+    };
     if (action == 'delete') {
       final confirmed = await _confirm(
         sheetContext,
@@ -653,35 +671,34 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       final confirmed = await _confirm(
         sheetContext,
         '修改认证密钥',
-        '改密后旧密码立即失效。订阅链接保持不变，用户刷新订阅即可获取新密码。',
+        '用户：${user['name']}。改密后旧密码立即失效。订阅链接保持不变，用户刷新订阅即可获取新密码。',
       );
       if (!confirmed) return;
     } else if (action == 'reset-traffic') {
       final confirmed = await _confirm(
         sheetContext,
         '重置用户流量',
-        '将该用户的上传和下载统计归零，确认继续吗？',
+        '将 ${user['name']} 的上传和下载统计归零，确认继续吗？',
       );
       if (!confirmed) return;
     } else if (action == 'disable') {
       final confirmed = await _confirm(
         sheetContext,
         '禁用用户',
-        '禁用后该用户的当前连接会被断开。',
+        '禁用后将断开 ${user['name']} 的当前连接。',
       );
       if (!confirmed) return;
     }
     try {
+      _checkAccount(accountRevision);
       final controller = ref.read(appControllerProvider.notifier);
       if (action == 'delete') {
-        await controller.deleteJson('/api/v1/mobile/users/$userId', {
-          'generation': generation,
-        });
+        await controller.deleteJson('/api/v1/mobile/users/$userId', target);
       } else {
-        final endpoint = action == 'qr' ? 'share' : action;
+        final endpoint = action == 'qr' || action == 'copy' ? 'share' : action;
         final data = await controller.postJson(
           '/api/v1/mobile/users/$userId/$endpoint',
-          {'generation': generation},
+          target,
         );
         if (action == 'share') {
           final uri = data['uri']?.toString() ?? '';
@@ -692,15 +709,27 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               subject: '${user['name']} 的 Hysteria2 连接',
             );
           }
-        } else if (action == 'qr') {
-          if (sheetContext.mounted) await _showQr(sheetContext, data);
+        } else if (action == 'qr' || action == 'copy') {
+          if (!sheetContext.mounted) return;
+          final uri = data['uri']?.toString() ?? '';
+          if (uri.isEmpty) throw const ApiException('面板未返回订阅链接');
+          if (action == 'qr') {
+            await _showQr(sheetContext, data);
+          } else {
+            try {
+              await Clipboard.setData(ClipboardData(text: uri));
+              if (mounted && sheetContext.mounted) _message('订阅链接已复制');
+            } on PlatformException {
+              throw const ApiException('无法复制订阅链接，请稍后重试');
+            }
+          }
         } else if (action == 'rotate-secret') {
           if (sheetContext.mounted) {
             await _showCredentials(data, title: '认证密钥已更新');
           }
         }
       }
-      if (action != 'share' && action != 'qr') {
+      if (action != 'share' && action != 'qr' && action != 'copy') {
         if (sheetContext.mounted &&
             ModalRoute.of(sheetContext) is PopupRoute &&
             ModalRoute.of(sheetContext)?.isCurrent == true) {
@@ -722,6 +751,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     BuildContext sheetContext,
     Map<String, dynamic> user,
   ) async {
+    final accountRevision = ref.read(appControllerProvider).contextRevision;
     try {
       final capabilities = await ref
           .read(appControllerProvider.notifier)
@@ -808,10 +838,12 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                           formError = null;
                         });
                         try {
+                          _checkAccount(accountRevision);
                           await ref
                               .read(appControllerProvider.notifier)
                               .patchJson('/api/v1/mobile/users/${user['id']}', {
                                 'generation': user['generation'],
+                                'expectedName': user['name'],
                                 'usedTrafficGiB': value,
                               });
                           if (dialogContext.mounted &&
@@ -851,6 +883,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     BuildContext sheetContext,
     Map<String, dynamic> user,
   ) async {
+    final accountRevision = ref.read(appControllerProvider).contextRevision;
     final devices = TextEditingController(text: '${user['deviceLimit']}');
     final gib = ((user['trafficLimitBytes'] as num? ?? 0) / 1073741824).round();
     final traffic = TextEditingController(text: '$gib');
@@ -928,10 +961,12 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         if (formError != null) return;
                         setDialogState(() => submitting = true);
                         try {
+                          _checkAccount(accountRevision);
                           await ref
                               .read(appControllerProvider.notifier)
                               .patchJson('/api/v1/mobile/users/${user['id']}', {
                                 'generation': user['generation'],
+                                'expectedName': user['name'],
                                 'deviceLimit': deviceValue,
                                 'trafficLimitGb': trafficValue,
                                 'startsAt': startsAt,
@@ -1208,6 +1243,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
               ),
             for (final user in filtered)
               Padding(
+                key: ValueKey((user['id'], user['name'])),
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _userCard(user),
               ),
@@ -1219,7 +1255,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
 
   Widget _userCard(Map<String, dynamic> user) {
     final id = user['id'] as int;
-    final expanded = _expandedUsers.contains(id);
+    final identity = (id, user['name'] as String);
+    final expanded = _expandedUsers.contains(identity);
     final enabled = user['enabled'] == true;
     final color = enabled ? const Color(0xFF00E1DF) : const Color(0xFFBC9BEF);
     final percent = (user['trafficPercent'] as num? ?? 0).toDouble();
@@ -1230,9 +1267,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
           InkWell(
             onTap: () => setState(() {
               if (expanded) {
-                _expandedUsers.remove(id);
+                _expandedUsers.remove(identity);
               } else {
-                _expandedUsers.add(id);
+                _expandedUsers.add(identity);
               }
             }),
             child: Padding(
@@ -1322,103 +1359,84 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                           minHeight: 7,
                         ),
                         const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: [
-                            OutlinedButton(
-                              onPressed: () => _runUserOperation(
-                                user,
-                                () => _editUser(context, user),
-                              ),
-                              child: const Text('编辑用户'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () => Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => UserTrafficHistoryScreen(
-                                    userId: id,
-                                    userName: user['name'].toString(),
-                                  ),
-                                ),
-                              ),
-                              child: const Text('用量详情'),
-                            ),
-                            OutlinedButton(
-                              onPressed: () => setState(() {
-                                if (_moreUsers.contains(id)) {
-                                  _moreUsers.remove(id);
-                                } else {
-                                  _moreUsers.add(id);
-                                }
-                              }),
-                              child: const Text('更多'),
-                            ),
-                          ],
-                        ),
-                        if (_moreUsers.contains(id)) ...[
-                          const SizedBox(height: 6),
-                          GlassCard(
-                            child: Column(
+                        ValueListenableBuilder<int>(
+                          valueListenable: _detailsRevision,
+                          builder: (_, _, _) {
+                            final busy = _userActions.contains(id);
+                            return ActionGrid(
                               children: [
-                                ListTile(
-                                  dense: true,
-                                  minTileHeight: 24,
-                                  visualDensity: VisualDensity.compact,
-                                  minVerticalPadding: 0,
-                                  leading: Icon(
-                                    enabled ? Icons.pause : Icons.play_arrow,
+                                for (final (label, action) in [
+                                  ('复制订阅', 'copy'),
+                                  ('二维码', 'qr'),
+                                  (
+                                    enabled ? '禁用' : '启用',
+                                    enabled ? 'disable' : 'enable',
                                   ),
-                                  title: Text(enabled ? '停用' : '启用'),
-                                  onTap: () => _runUserOperation(
-                                    user,
-                                    () => _userAction(
-                                      context,
-                                      user,
-                                      enabled ? 'disable' : 'enable',
+                                  ('编辑', 'edit'),
+                                  ('改密', 'rotate-secret'),
+                                  ('重置', 'reset-traffic'),
+                                  ('删除', 'delete'),
+                                  ('订阅管理', 'subscription'),
+                                ])
+                                  OutlinedButton(
+                                    key: ValueKey(('user-action', id, action)),
+                                    style: switch (action) {
+                                      'copy' => OutlinedButton.styleFrom(
+                                        backgroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .primaryContainer,
+                                        foregroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .onPrimaryContainer,
+                                      ),
+                                      'delete' => OutlinedButton.styleFrom(
+                                        foregroundColor: Theme.of(context)
+                                            .colorScheme
+                                            .error,
+                                      ),
+                                      _ => null,
+                                    },
+                                    onPressed: busy
+                                        ? null
+                                        : () => _runUserOperation(
+                                            user,
+                                            () => switch (action) {
+                                              'edit' => _editUser(
+                                                context,
+                                                user,
+                                              ),
+                                              'subscription' =>
+                                                _openSubscription(
+                                                  context,
+                                                  user,
+                                                ),
+                                              _ => _userAction(
+                                                context,
+                                                user,
+                                                action,
+                                              ),
+                                            },
+                                          ),
+                                    child: Text(
+                                      label,
+                                      textAlign: TextAlign.center,
                                     ),
                                   ),
-                                ),
-                                const Divider(height: 1),
-                                ListTile(
-                                  dense: true,
-                                  minTileHeight: 24,
-                                  visualDensity: VisualDensity.compact,
-                                  minVerticalPadding: 0,
-                                  leading: const Icon(Icons.sync),
-                                  title: const Text('重置身份'),
-                                  onTap: () => _runUserOperation(
-                                    user,
-                                    () => _userAction(
-                                      context,
-                                      user,
-                                      'rotate-secret',
-                                    ),
-                                  ),
-                                ),
-                                const Divider(height: 1),
-                                ListTile(
-                                  dense: true,
-                                  minTileHeight: 24,
-                                  visualDensity: VisualDensity.compact,
-                                  minVerticalPadding: 0,
-                                  leading: const Icon(
-                                    Icons.delete_outline,
-                                    color: Color(0xFFBC9BEF),
-                                  ),
-                                  title: const Text(
-                                    '删除用户',
-                                    style: TextStyle(color: Color(0xFFBC9BEF)),
-                                  ),
-                                  onTap: () => _runUserOperation(
-                                    user,
-                                    () => _userAction(context, user, 'delete'),
-                                  ),
-                                ),
                               ],
+                            );
+                          },
+                        ),
+                        OutlinedButton(
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => UserTrafficHistoryScreen(
+                                userId: id,
+                                userName: user['name'].toString(),
+                              ),
                             ),
                           ),
-                        ],
+                          child: const Text('用量详情'),
+                        ),
                       ],
                     ),
                   ),

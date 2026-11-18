@@ -8859,7 +8859,7 @@ class PanelHandler(JsonHandler):
     def _mobile_subscription_payload(self, user_id):
         user = self.app.database.get_proxy_user(user_id)
         sub = self.app.database.get_subscription(user_id=user_id)
-        result = {"exists": sub is not None, "generation": user["generation"],
+        result = {"exists": sub is not None, "name": user["name"], "generation": user["generation"],
                   "userType": user["user_type"], "expiresAt": user["expires_at"]}
         token, nodes = None, []
         if sub is not None:
@@ -8876,11 +8876,17 @@ class PanelHandler(JsonHandler):
             [sub, nodes, token, user["generation"]], sort_keys=True).encode()).hexdigest()
         return result
 
+    @staticmethod
+    def _check_mobile_user_identity(user, payload):
+        if "expectedName" in payload and payload["expectedName"] != user["name"]:
+            raise ConflictError
+
     def _handle_mobile_user_action(self, session, user_id, action, payload):
         try:
             generation = json_integer(payload.get("generation", ""))
             with self.app.user_action_lock:
                 user = self.app.database.get_proxy_user(user_id)
+                self._check_mobile_user_identity(user, payload)
                 if action.startswith("subscription-"):
                     current = self._mobile_subscription_payload(user_id)
                     if user["generation"] != generation or payload.get("revision") != current["revision"]:
@@ -9149,7 +9155,9 @@ class PanelHandler(JsonHandler):
         try:
             user_id = int(parameters[0])
             with self.app.user_action_lock:
-                traffic_only = set(payload) == {"generation", "usedTrafficGiB"}
+                if "expectedName" in payload:
+                    self._check_mobile_user_identity(self.app.database.get_proxy_user(user_id), payload)
+                traffic_only = set(payload) - {"expectedName"} == {"generation", "usedTrafficGiB"}
                 if traffic_only:
                     current = self.app.database.get_proxy_user(user_id)
                     payload = dict(payload, deviceLimit=current["device_limit"],
@@ -9214,6 +9222,8 @@ class PanelHandler(JsonHandler):
                 user_id = int(parameters[0])
                 generation = json_integer(payload.get("generation", ""))
                 with self.app.user_action_lock:
+                    if "expectedName" in payload:
+                        self._check_mobile_user_identity(self.app.database.get_proxy_user(user_id), payload)
                     user = self.app.database.delete_proxy_user(
                         user_id, expected_generation=generation
                     )
