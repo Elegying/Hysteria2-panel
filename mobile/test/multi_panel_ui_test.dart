@@ -59,10 +59,11 @@ class TwoPanels extends DesignFixtureController {
   Future<Map<String, dynamic>> getJson(String path) async {
     final i = state.activePanel;
     final data = await super.getJson(path);
-    if (path.endsWith('/overview'))
+    if (path.endsWith('/overview')) {
       data['trafficBudgets'] = [
         {'name': '测试节点${i + 1}'},
       ];
+    }
     if (data['items'] is List) {
       for (final item in data['items'] as List) {
         item['name'] = '面板${i + 1}-${item['name']}';
