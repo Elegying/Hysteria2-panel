@@ -185,7 +185,10 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
               const SizedBox(height: 60, child: Center(child: Text('暂无速率采样')))
             else
               SizedBox(
-                height: 70,
+                height: (MediaQuery.sizeOf(context).height - 710).clamp(
+                  62.0,
+                  132.0,
+                ),
                 width: double.infinity,
                 child: CustomPaint(
                   painter: RatePainter([totals], step * 1.5, axes: true),

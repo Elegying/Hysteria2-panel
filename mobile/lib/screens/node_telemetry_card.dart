@@ -138,7 +138,12 @@ class _NodeTelemetryState extends ConsumerState<NodeTelemetryCard> {
               Expanded(
                 flex: 6,
                 child: SizedBox(
-                  height: 26,
+                  height: widget.embedded
+                      ? ((MediaQuery.sizeOf(context).height - 650) / 3).clamp(
+                          26.0,
+                          64.0,
+                        )
+                      : 26,
                   child: points.isEmpty
                       ? const Center(
                           child: Text('暂无采样', style: TextStyle(fontSize: 11)),

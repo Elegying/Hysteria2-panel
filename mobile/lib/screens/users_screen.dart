@@ -1196,6 +1196,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
       backgroundColor: Colors.transparent,
       floatingActionButton: FloatingActionButton(
         heroTag: null,
+        elevation: 2,
         tooltip: '新建用户',
         onPressed: _loading ? null : _createUser,
         child: const Icon(Icons.add),
@@ -1204,7 +1205,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
         child: RefreshIndicator(
           onRefresh: _load,
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 88),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 88),
             physics: const AlwaysScrollableScrollPhysics(),
             children: [
               PanelHeading(
@@ -1280,46 +1281,101 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   ),
                 ],
               ),
+              const SizedBox(height: 8),
               Row(
                 children: [
                   Expanded(
-                    child: TextField(
-                      controller: _search,
-                      textInputAction: TextInputAction.search,
-                      onSubmitted: (_) => _submitSearch(),
-                      decoration: const InputDecoration(hintText: '用户名或订阅链接'),
+                    child: GlassCard(
+                      child: TextField(
+                        controller: _search,
+                        textInputAction: TextInputAction.search,
+                        onSubmitted: (_) => _submitSearch(),
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.search),
+                          hintText: '用户名或订阅链接',
+                        ),
+                      ),
                     ),
                   ),
-                  TextButton(onPressed: _submitSearch, child: const Text('搜索')),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: _submitSearch,
+                    child: const Text('搜索'),
+                  ),
                 ],
               ),
               Padding(
                 padding: const EdgeInsets.only(top: 10),
                 child: Column(
                   children: [
-                    GlassDropdownField<String>(
-                      key: ValueKey(_status),
-                      initialValue: _status,
-                      decoration: const InputDecoration(labelText: '状态'),
-                      items: const [
-                        DropdownMenuItem(value: 'all', child: Text('全部状态')),
-                        DropdownMenuItem(value: 'enabled', child: Text('已启用')),
-                        DropdownMenuItem(value: 'disabled', child: Text('已禁用')),
-                        DropdownMenuItem(value: 'online', child: Text('当前在线')),
-                      ],
-                      onChanged: (v) => setState(() => _status = v ?? 'all'),
-                    ),
-                    const SizedBox(height: 8),
-                    GlassDropdownField<String>(
-                      initialValue: _sort,
-                      decoration: const InputDecoration(labelText: '排序'),
-                      hint: const Text('默认倒序'),
-                      items: const [
-                        DropdownMenuItem(value: 'traffic', child: Text('流量降序')),
-                        DropdownMenuItem(value: 'online', child: Text('在线设备')),
-                        DropdownMenuItem(value: 'name', child: Text('用户名')),
-                      ],
-                      onChanged: (v) => setState(() => _sort = v),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final fields = <Widget>[
+                          GlassDropdownField<String>(
+                            key: ValueKey(_status),
+                            initialValue: _status,
+                            decoration: const InputDecoration(labelText: '状态'),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'all',
+                                child: Text('全部状态'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'enabled',
+                                child: Text('已启用'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'disabled',
+                                child: Text('已禁用'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'online',
+                                child: Text('当前在线'),
+                              ),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _status = v ?? 'all'),
+                          ),
+
+                          GlassDropdownField<String>(
+                            initialValue: _sort,
+                            decoration: const InputDecoration(labelText: '排序'),
+                            hint: const Text('默认倒序'),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'traffic',
+                                child: Text('流量降序'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'online',
+                                child: Text('在线设备'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'name',
+                                child: Text('用户名'),
+                              ),
+                            ],
+                            onChanged: (v) => setState(() => _sort = v),
+                          ),
+                        ];
+                        if (constraints.maxWidth >= 350 &&
+                            MediaQuery.textScalerOf(context).scale(14) <= 18) {
+                          return Row(
+                            children: [
+                              Expanded(child: fields.first),
+                              const SizedBox(width: 8),
+                              Expanded(child: fields.last),
+                            ],
+                          );
+                        }
+                        return Column(
+                          children: [
+                            fields.first,
+                            const SizedBox(height: 8),
+                            fields.last,
+                          ],
+                        );
+                      },
                     ),
                     TextButton(
                       onPressed: () => Navigator.of(context).push(
@@ -1535,6 +1591,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                             );
                           },
                         ),
+                        const SizedBox(height: 8),
                         OutlinedButton(
                           onPressed: () => Navigator.of(context).push(
                             MaterialPageRoute<void>(

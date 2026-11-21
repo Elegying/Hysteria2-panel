@@ -571,16 +571,19 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
             const PanelHeading('节点管理'),
-            Row(
-              children: [
-                Expanded(
-                  child: _entry('节点对接', '添加或连接远端节点', Icons.link, _enroll),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _entry('对接码管理', '查看、生成与管理', Icons.qr_code, _codes),
-                ),
-              ],
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: _entry('节点对接', '添加或连接远端节点', Icons.link, _enroll),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _entry('对接码管理', '查看、生成与管理', Icons.qr_code, _codes),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -668,6 +671,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   Widget _nodeCard(Map<String, dynamic> node) {
     final id = node['nodeId'].toString();
     final item = _budgetItem(node);
+    final address = (node['observedIp'] ?? item['serverIp'] ?? '').toString();
     return GlassCard(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -685,6 +689,13 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                           node['name'].toString(),
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
+                        if (address.isNotEmpty)
+                          Text(
+                            address,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
                         Text(
                           "${nodeStatusLabel(node['status'])} · ${node['onlineDevices'] ?? '—'} 台设备",
                           style: const TextStyle(fontSize: 12),

@@ -52,8 +52,8 @@ void main() {
       PackageInfo.setMockInitialValues(
         appName: 'Panel',
         packageName: 'test',
-        version: '0.5.7',
-        buildNumber: '43',
+        version: '0.5.8',
+        buildNumber: '44',
         buildSignature: '',
       );
       if (const bool.fromEnvironment('CAPTURE_UI')) {
@@ -110,7 +110,14 @@ void main() {
       }
 
       Future<void> keyboard(String name) async {
-        await tester.tap(find.byType(EditableText).first);
+        await tester.tap(
+          find
+              .descendant(
+                of: find.byType(Dialog),
+                matching: find.byType(EditableText),
+              )
+              .first,
+        );
         tester.view.viewInsets = FakeViewPadding(bottom: 960);
         await settle();
         await capture(name);
@@ -144,6 +151,7 @@ void main() {
       await settle();
       await keyboard('05-enroll-keyboard');
       await page('用户管理');
+      await capture('15-users');
       await tester.ensureVisible(find.text('示例用户 01').first);
       await settle();
       await tester.tap(find.text('示例用户 01').first);
@@ -164,6 +172,7 @@ void main() {
       await tester.tap(find.text('取消').last);
       await settle();
       await page('订阅管理');
+      await capture('16-subscriptions');
       await tester.ensureVisible(find.text('示例用户 01').first);
       await settle();
       await tester.tap(find.text('示例用户 01').first);
