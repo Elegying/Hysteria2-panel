@@ -9032,6 +9032,13 @@ class PanelHandler(JsonHandler):
         if not self._mobile_mutation_started():
             return
         try:
+            if route == "resolve-subscription":
+                token = payload.get("token")
+                if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,512}", token):
+                    raise ValueError("无效的订阅标识")
+                sub = self.app.database.get_subscription_by_token(token)
+                self._mobile_response(200, {"id": sub["user_id"], "name": sub["user_name"], "userType": sub["user_type"]} if sub else {})
+                return
             if route == "create-user":
                 self._handle_mobile_user_create(session, payload)
                 return

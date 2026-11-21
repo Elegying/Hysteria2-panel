@@ -51,7 +51,7 @@
 以 root 执行以下短命令，入口脚本会下载固定版本安装器并验证签名。
 
 ```bash
-(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.65/bootstrap.sh -o "$f" && echo "7f68c1e145e49af9c2b9837fa61c9ded25eb40944676a937e7737aca33137a79  $f" | sha256sum -c - && bash "$f")
+(umask 077; f=$(mktemp) || exit; trap 'rm -f "$f"' EXIT; curl -fsSL https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.66/bootstrap.sh -o "$f" && echo "e55c9a2f6c016cc1a5872df57738153a666a42a2d757ec8d73a6d1cc62a1ff3b  $f" | sha256sum -c - && bash "$f")
 ```
 
 <details>
@@ -65,7 +65,7 @@
   umask 077
   i=$(mktemp) || exit 1
   trap 'rm -f "$i"' EXIT
-  curl -q -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.65/bootstrap.sh -o "$i" || {
+  curl -q -fsSL --connect-timeout 10 --max-time 120 https://raw.githubusercontent.com/Elegying/Hysteria2-panel/v0.39.66/bootstrap.sh -o "$i" || {
     rc=$?
     case "$rc" in
       5|6) echo 'DNS 解析失败：检查 /etc/resolv.conf、系统 DNS 服务及代理配置；不会自动修改 DNS。' >&2 ;;
@@ -74,7 +74,7 @@
     esac
     exit "$rc"
   }
-  echo "7f68c1e145e49af9c2b9837fa61c9ded25eb40944676a937e7737aca33137a79  $i" | sha256sum -c - || exit 1
+  echo "e55c9a2f6c016cc1a5872df57738153a666a42a2d757ec8d73a6d1cc62a1ff3b  $i" | sha256sum -c - || exit 1
   bash "$i"
 )
 ```
@@ -117,11 +117,11 @@ Debian 11 归档修复仅匹配普通 `.list` 文件中的已知官方旧安全�
 
 ## 更严格的固定版本验签安装
 
-生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.65`；安装其他版本时，请同时修改 `version`：
+生产环境可以先验证固定 Release 的发布身份、文件完整性和 shell 语法，再授予 root 权限。下面示例固定到 `v0.39.66`；安装其他版本时，请同时修改 `version`：
 
 ```bash
 set -euo pipefail
-version=0.39.65
+version=0.39.66
 workdir="$(mktemp -d)"
 trap 'rm -rf -- "${workdir}"' EXIT
 case "$(uname -m)" in

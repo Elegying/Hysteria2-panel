@@ -21,7 +21,7 @@ class NodesScreen extends ConsumerStatefulWidget {
 class _NodesScreenState extends ConsumerState<NodesScreen>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   List<Map<String, dynamic>> _nodes = [];
-  final Set<String> _expanded = {};
+
   final Map<String, double> _trafficRates = {};
   final Map<String, int> _trafficTotals = {};
   int? _trafficObservedAt;
@@ -43,6 +43,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     Future.microtask(_load);
+    Future.microtask(_loadBudgets);
     _timer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (mounted &&
           !_refreshing &&
@@ -457,11 +458,17 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                     _dataPlaneHelp(node['dataPlaneState']?.toString()),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  if (!isLocal)
-                    AdminControls(
-                      nodeId: node['nodeId'].toString(),
-                      nodeProfile: node,
-                    ),
+                  AdminControls(
+                    compact: true,
+                    originId: _budgetItem(node)['originId']?.toString(),
+                    budgetData:
+                        _budgetItem(node)['budget'] as Map<String, dynamic>?,
+                    onDisconnect: node['canDisconnect'] == true
+                        ? () => _pairingAction(node, 'disconnect', sheetContext)
+                        : null,
+                    nodeId: node['nodeId'].toString(),
+                    nodeProfile: node,
+                  ),
                 ],
               ),
             ),
@@ -586,13 +593,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   '共 ${_nodes.length} 个节点',
                   style: const TextStyle(fontSize: 11),
                 ),
-                OutlinedButton(
-                  onPressed: _enroll,
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6240B8),
-                  ),
-                  child: const Text('＋ 添加节点'),
-                ),
               ],
             ),
             const SizedBox(height: 8),
@@ -606,7 +606,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             if (!_loading && _nodes.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(24),
-                child: Text('暂无节点，请点击添加节点'),
+                child: Text('暂无节点，请点击顶部的节点对接'),
               ),
           ],
         ),
@@ -649,121 +649,65 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       ),
     ),
   );
-  Widget _nodeCard(Map<String, dynamic> node) {
+  Map<String, dynamic> _budgetItem(Map<String, dynamic> node) {
     final id = node['nodeId'].toString();
-    final expanded = _expanded.contains(id);
     final matches = _budgets.where(
       (b) =>
-          b['originId'] == node['originId'] ||
+          (node['originId'] != null && b['originId'] == node['originId']) ||
           (id != 'local' && b['originId'] == 'node:$id') ||
           (id == 'local' && b['kind'] == 'local'),
     );
-    final item = matches.isNotEmpty
+    return matches.isNotEmpty
         ? matches.first
         : <String, dynamic>{
             ...node,
             'originId': node['originId'] ?? (id == 'local' ? '' : 'node:$id'),
           };
+  }
+
+  Widget _nodeCard(Map<String, dynamic> node) {
+    final id = node['nodeId'].toString();
+    final item = _budgetItem(node);
     return GlassCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkWell(
-            onTap: () => setState(() {
-              if (expanded) {
-                _expanded.remove(id);
-              } else {
-                _expanded.add(id);
-                _loadBudgets();
-              }
-            }),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(
-                children: [
-                  Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () => _showNode(node),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           node['name'].toString(),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        const SizedBox(height: 4),
                         Text(
-                          '${id == 'local' ? '面板节点' : '远端数据节点'} · ${nodeStatusLabel(node['status'])}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: node['status'] == 'online'
-                                ? const Color(0xFF00E1DF)
-                                : const Color(0xFFBC9BEF),
-                          ),
+                          "${nodeStatusLabel(node['status'])} · ${node['onlineDevices'] ?? '—'} 台设备",
+                          style: const TextStyle(fontSize: 12),
                         ),
                       ],
                     ),
                   ),
-                  Text(
-                    '${node['onlineDevices'] ?? '—'} 台设备',
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 20,
-                  ),
-                ],
-              ),
+                ),
+                IconButton(
+                  tooltip: '节点详情与对接管理',
+                  onPressed: () => _showNode(node),
+                  icon: const Icon(Icons.info_outline),
+                ),
+              ],
             ),
-          ),
-          AnimatedSize(
-            duration: MediaQuery.disableAnimationsOf(context)
-                ? Duration.zero
-                : const Duration(milliseconds: 200),
-            child: !expanded
-                ? const SizedBox(width: double.infinity)
-                : Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        NodeTelemetryCard(
-                          item: item,
-                          embedded: true,
-                          showBudget: false,
-                        ),
-                        const SizedBox(height: 10),
-                        AdminControls(
-                          nodeId: id,
-                          nodeProfile: node,
-                          compact: true,
-                          originId: item['originId']?.toString(),
-                          budgetData: item['budget'] is Map
-                              ? Map<String, dynamic>.from(item['budget'])
-                              : null,
-                          onDisconnect: node['canDisconnect'] == true
-                              ? () =>
-                                    _pairingAction(node, 'disconnect', context)
-                              : null,
-                          budget: NodeTelemetryCard(
-                            item: item,
-                            embedded: true,
-                            showTelemetry: false,
-                            showActions: false,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        OutlinedButton(
-                          onPressed: () => _showNode(node),
-                          child: const Text('节点详情与对接管理'),
-                        ),
-                      ],
-                    ),
-                  ),
-          ),
-        ],
+            NodeTelemetryCard(
+              key: ValueKey(id),
+              item: item,
+              embedded: true,
+              showActions: false,
+            ),
+          ],
+        ),
       ),
     );
   }

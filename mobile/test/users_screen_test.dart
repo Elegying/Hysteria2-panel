@@ -54,6 +54,58 @@ class UserFormController extends AppController {
 
 void main() {
   testWidgets(
+    'subscription lookup preserves token case and discards an obsolete response',
+    (tester) async {
+      final c = UserFormController()
+        ..pendingRequest = Completer<Map<String, dynamic>>();
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [appControllerProvider.overrideWith((_) => c)],
+          child: const MaterialApp(home: UsersScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('不活跃用户'));
+      await tester.pumpAndSettle();
+      expect(
+        find.descendant(
+          of: find.byType(Dialog),
+          matching: find.text('form-test-user'),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('关闭'));
+      await tester.pumpAndSettle();
+      final search = find.byType(TextField);
+      await tester.enterText(
+        search,
+        'https://example.invalid/sub/AbCd1234?format=clash',
+      );
+      await tester.tap(find.text('搜索'));
+      await tester.pump();
+      expect(c.requests.single, {'token': 'AbCd1234'});
+      await tester.enterText(search, 'unknown');
+      c.pendingRequest!.complete({
+        'id': 1,
+        'name': 'form-test-user',
+        'userType': 0,
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('form-test-user'), findsNothing);
+      c.pendingRequest = Completer<Map<String, dynamic>>();
+      await tester.enterText(search, 'https://example.invalid/sub/AbCd1234');
+      await tester.tap(find.text('搜索'));
+      c.pendingRequest!.complete({
+        'id': 1,
+        'name': 'form-test-user',
+        'userType': 0,
+      });
+      await tester.pumpAndSettle();
+      expect(find.text('form-test-user'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'old panel explains unsupported traffic editing without a write',
     (tester) async {
       final controller = UserFormController()..supportsTrafficEdit = false;
@@ -111,7 +163,9 @@ void main() {
             await tester.ensureVisible(edit);
             await tester.tap(edit);
           } else {
-            final open = find.text(kind == 'enroll' ? '节点对接' : '新建用户');
+            final open = kind == 'enroll'
+                ? find.text('节点对接')
+                : find.byTooltip('新建用户');
             if (kind == 'enroll') {
               await tester.scrollUntilVisible(
                 open,
@@ -232,7 +286,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('新建用户'));
+    await tester.tap(find.byTooltip('新建用户'));
     await tester.pumpAndSettle();
     await tester.ensureVisible(find.text('到期时间'));
     await tester.pumpAndSettle();
@@ -270,7 +324,7 @@ void main() {
           await tester.ensureVisible(edit);
           await tester.tap(edit);
         } else {
-          await tester.tap(find.text('新建用户'));
+          await tester.tap(find.byTooltip('新建用户'));
         }
         await tester.pumpAndSettle();
         Finder field(String label) => find.byWidgetPredicate(

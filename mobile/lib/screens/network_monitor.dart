@@ -130,7 +130,7 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
     }
     return GlassCard(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -165,7 +165,7 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 4),
             Wrap(
               spacing: 16,
               children: [
@@ -180,28 +180,17 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
               ],
             ),
             if (_error != null) RefreshWarning(message: _error!),
-            const SizedBox(height: 12),
+            const SizedBox(height: 4),
             if (series.every((s) => s.isEmpty))
-              const SizedBox(height: 80, child: Center(child: Text('暂无速率采样')))
+              const SizedBox(height: 60, child: Center(child: Text('暂无速率采样')))
             else
               SizedBox(
-                height: 90,
+                height: 70,
                 width: double.infinity,
                 child: CustomPaint(
                   painter: RatePainter([totals], step * 1.5, axes: true),
                 ),
               ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('每 5 秒更新', style: TextStyle(fontSize: 10)),
-                Text(
-                  '全部 ${network.length} 台',
-                  style: const TextStyle(fontSize: 10),
-                ),
-              ],
-            ),
           ],
         ),
       ),

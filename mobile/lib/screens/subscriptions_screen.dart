@@ -119,56 +119,6 @@ class _SubscriptionsState extends ConsumerState<SubscriptionsScreen> {
                 if (v.single != 0) _editor(v.single == 2);
               },
             ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: _entry(
-                    '管理默认节点',
-                    '配置并维护默认节点',
-                    Icons.layers_outlined,
-                    () => _editor(false),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _entry(
-                    '导入外部节点',
-                    '从订阅导入节点',
-                    Icons.cloud_upload_outlined,
-                    () => _editor(true),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            GlassCard(
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextButton.icon(
-                      onPressed: () => _editor(true),
-                      icon: const Icon(Icons.visibility_outlined),
-                      label: const Text('预览'),
-                    ),
-                  ),
-                  const SizedBox(height: 30, child: VerticalDivider(width: 1)),
-                  Expanded(
-                    child: TextButton.icon(
-                      onPressed: () => _editor(true),
-                      icon: const Icon(
-                        Icons.send_outlined,
-                        color: Color(0xFFBC9BEF),
-                      ),
-                      label: const Text(
-                        '发布',
-                        style: TextStyle(color: Color(0xFFBC9BEF)),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
             const SizedBox(height: 14),
             GlassCard(
               child: Padding(
@@ -228,40 +178,6 @@ class _SubscriptionsState extends ConsumerState<SubscriptionsScreen> {
     );
   }
 
-  Widget _entry(
-    String title,
-    String subtitle,
-    IconData icon,
-    VoidCallback action,
-  ) => GlassCard(
-    child: InkWell(
-      onTap: action,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: [
-            Icon(icon, color: Theme.of(context).colorScheme.primary, size: 24),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  Text(subtitle, style: const TextStyle(fontSize: 10)),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    ),
-  );
   Widget _card(Map<String, dynamic> item) {
     final id = int.tryParse(item['user_id'].toString());
     final expanded = _expanded.contains(id);

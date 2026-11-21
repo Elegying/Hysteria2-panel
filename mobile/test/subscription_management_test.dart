@@ -51,7 +51,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('form-test-user'), findsNothing);
       expect(find.text('premium-001'), findsWidgets);
-      await tester.tap(find.text('新建用户'));
+      await tester.tap(find.byTooltip('新建用户'));
       await tester.pumpAndSettle();
       Finder field(String label) => find.byWidgetPredicate(
         (w) => w is TextField && w.decoration?.labelText == label,

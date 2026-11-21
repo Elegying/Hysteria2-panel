@@ -10,11 +10,13 @@ import 'package:hysteria2_manager/screens/nodes_screen.dart';
 import 'package:hysteria2_manager/screens/users_screen.dart';
 
 class PendingRefreshController extends AppController {
+  bool nodes = false;
   final requests = <Completer<Map<String, dynamic>>>[];
 
   @override
   Future<Map<String, dynamic>> getJson(String path) {
-    if (path.contains('/line-monitor')) {
+    if (path.contains('/line-monitor') ||
+        (nodes && path.endsWith('/overview'))) {
       return Future.value({'network': <String, dynamic>{}});
     }
     final request = Completer<Map<String, dynamic>>();
@@ -28,7 +30,10 @@ Map<String, dynamic> snapshot(
   int observedAt = 0,
   int totalBytes = 0,
 }) => {
-  'panelName': label,
+  'panelName': '隐藏的面板名称',
+  'trafficBudgets': [
+    {'name': label},
+  ],
   'observedAt': observedAt,
   'subscriptionManagement': true,
   'items': [
@@ -53,7 +58,10 @@ Future<PendingRefreshController> mountPage(
   Widget screen,
 ) async {
   tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-  final controller = PendingRefreshController();
+  final controller = PendingRefreshController()
+    ..nodes =
+        screen is NodesScreen ||
+        (screen is TickerMode && screen.child is NodesScreen);
   await tester.pumpWidget(
     ProviderScope(
       overrides: [appControllerProvider.overrideWith((ref) => controller)],
@@ -300,11 +308,6 @@ void main() {
     );
     await tester.pumpAndSettle();
     await tester.tap(find.text('rate-node').first);
-    await tester.pumpAndSettle();
-    // The measured rate is exposed in node details after expansion.
-    await tester.ensureVisible(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('节点详情与对接管理'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.textContaining('20 B/s'),

@@ -6568,6 +6568,18 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual("alice", users["data"]["items"][0]["name"])
         self.assertTrue(users["data"]["items"][0]["allowUdp443"])
 
+        owner = users["data"]["items"][0]
+        token = self.db.ensure_subscription(owner["id"])["token"]
+        lookup = "/api/v1/mobile/users/resolve-subscription"
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            self.mobile_json_request("POST", lookup, {"token": token})
+        self.assertEqual(401, denied.exception.code)
+        for supplied, expected in [(token, {"id": owner["id"], "name": "alice", "userType": 0}),
+                                   (token.swapcase(), {})]:
+            status, response = self.mobile_json_request("POST", lookup, {"token": supplied}, access_token=access_token)
+            self.assertEqual(200, status)
+            self.assertEqual(expected, response["data"])
+
         status, created = self.mobile_json_request(
             "POST",
             "/api/v1/mobile/users",
