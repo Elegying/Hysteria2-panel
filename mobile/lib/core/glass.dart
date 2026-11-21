@@ -523,7 +523,7 @@ class PanelHeading extends StatelessWidget {
     this.subtitle = 'Hysteria2 Panel',
   });
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final Widget? trailing;
   @override
   Widget build(BuildContext context) => Padding(
@@ -534,14 +534,16 @@ class PanelHeading extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(title, style: Theme.of(context).textTheme.headlineMedium),
-            const SizedBox(height: 3),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontSize: 12,
+            if (subtitle case final label?) ...[
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
-            ),
+            ],
           ],
         );
         if (trailing != null &&

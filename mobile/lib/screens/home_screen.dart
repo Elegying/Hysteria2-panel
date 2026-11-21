@@ -104,7 +104,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
           children: [
-            const PanelHeading('总览'),
+            const PanelHeading('总览', subtitle: null),
             if (_loading && data == null)
               const Center(child: CircularProgressIndicator()),
             if (_error != null) RefreshWarning(message: _error!),

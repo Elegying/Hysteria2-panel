@@ -213,10 +213,11 @@ void main() {
         );
         await tester.pumpAndSettle();
         if (i == 1) {
-          await tester.tap(find.text('私家车-美国-专线').first);
-          await tester.pumpAndSettle();
+          expect(find.text('私家车2').hitTestable(), findsOneWidget);
         }
         if (i == 2) {
+          await tester.ensureVisible(find.text('示例用户 01').first);
+          await tester.pumpAndSettle();
           await tester.tap(find.text('示例用户 01').first);
           await tester.pumpAndSettle();
         }
