@@ -233,10 +233,12 @@ class _ControlsState extends ConsumerState<AdminControls> {
   ]) => OutlinedButton(
     style: OutlinedButton.styleFrom(
       foregroundColor: purple
-          ? const Color(0xFFBC9BEF)
-          : const Color(0xFF00E1DF),
+          ? Theme.of(context).colorScheme.secondary
+          : Theme.of(context).colorScheme.primary,
       side: BorderSide(
-        color: purple ? const Color(0xFFBC9BEF) : const Color(0xFF2D506A),
+        color: purple
+            ? Theme.of(context).colorScheme.secondary
+            : const Color(0xFF2D506A),
       ),
     ),
     onPressed: _busy ? null : () => _run(title, path, payload),
@@ -416,7 +418,9 @@ class _ControlsState extends ConsumerState<AdminControls> {
                             ),
                             Text(
                               active ? '● 运行中' : '未运行',
-                              style: const TextStyle(color: Color(0xFF00E1DF)),
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
                             ),
                           ],
                         ),
@@ -437,7 +441,9 @@ class _ControlsState extends ConsumerState<AdminControls> {
                   ),
                   Text(
                     '${(_status?['resources'] as Map?)?['tcpCongestionControl'] ?? '未知'}',
-                    style: const TextStyle(color: Color(0xFF00E1DF)),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
                   const Divider(height: 24, indent: 0, endIndent: 0),
                   const Text(
@@ -446,7 +452,9 @@ class _ControlsState extends ConsumerState<AdminControls> {
                   ),
                   Text(
                     certificateLabel((_status?['certificate'] as Map?) ?? {}),
-                    style: const TextStyle(color: Color(0xFF00E1DF)),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
                   const Divider(height: 24, indent: 0, endIndent: 0),
                   _button('重启主机', 'system/reboot', {}, true),
@@ -488,8 +496,8 @@ class _ControlsState extends ConsumerState<AdminControls> {
               Expanded(
                 child: Text(
                   'v${_status?['panelVersion'] ?? '—'}',
-                  style: const TextStyle(
-                    color: Color(0xFF00E1DF),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.primary,
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
                   ),

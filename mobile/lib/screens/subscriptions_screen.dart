@@ -216,8 +216,8 @@ class _SubscriptionsState extends ConsumerState<SubscriptionsScreen> {
                     style: TextStyle(
                       fontSize: 12,
                       color: enabled
-                          ? const Color(0xFF00E1DF)
-                          : const Color(0xFFBC9BEF),
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.secondary,
                     ),
                   ),
                   const SizedBox(width: 8),

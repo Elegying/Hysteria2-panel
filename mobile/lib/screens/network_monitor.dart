@@ -171,11 +171,15 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
               children: [
                 Text(
                   '↓ 入站 ${samples.any((s) => s['fresh'] == true) ? rate('rx').toStringAsFixed(2) : '—'} Mbps',
-                  style: const TextStyle(color: Color(0xFF00D9D0)),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
                 ),
                 Text(
                   '↑ 出站 ${samples.any((s) => s['fresh'] == true) ? rate('tx').toStringAsFixed(2) : '—'} Mbps',
-                  style: const TextStyle(color: Color(0xFFB29BFF)),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.secondary,
+                  ),
                 ),
               ],
             ),
@@ -191,7 +195,12 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
                 ),
                 width: double.infinity,
                 child: CustomPaint(
-                  painter: RatePainter([totals], step * 1.5, axes: true),
+                  painter: RatePainter(
+                    [totals],
+                    step * 1.5,
+                    Theme.of(context).colorScheme,
+                    axes: true,
+                  ),
                 ),
               ),
           ],
@@ -202,7 +211,8 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
 }
 
 class RatePainter extends CustomPainter {
-  RatePainter(this.series, this.maxGap, {this.axes = false});
+  RatePainter(this.series, this.maxGap, this.colors, {this.axes = false});
+  final ColorScheme colors;
   final bool axes;
   final double maxGap;
   final List<List<Map<String, dynamic>>> series;
@@ -228,8 +238,8 @@ class RatePainter extends CustomPainter {
       final painter = TextPainter(
         text: TextSpan(
           text: text,
-          style: const TextStyle(
-            color: Color(0xFFBCCDE1),
+          style: TextStyle(
+            color: colors.onSurfaceVariant,
             fontSize: 8,
             fontFamily: 'Roboto',
           ),
@@ -268,9 +278,7 @@ class RatePainter extends CustomPainter {
     }
     for (final field in ['rx', 'tx']) {
       final paint = Paint()
-        ..color = field == 'rx'
-            ? const Color(0xFF00D9D0)
-            : const Color(0xFFB29BFF)
+        ..color = field == 'rx' ? colors.primary : colors.secondary
         ..strokeWidth = 1.8
         ..style = PaintingStyle.stroke;
       for (final samples in series) {

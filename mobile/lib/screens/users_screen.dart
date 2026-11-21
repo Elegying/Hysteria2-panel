@@ -1414,7 +1414,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final identity = (id, user['name'] as String);
     final expanded = _expandedUsers.contains(identity);
     final enabled = user['enabled'] == true;
-    final color = enabled ? const Color(0xFF00E1DF) : const Color(0xFFBC9BEF);
+    final color = enabled
+        ? Theme.of(context).colorScheme.primary
+        : Theme.of(context).colorScheme.secondary;
     final percent = (user['trafficPercent'] as num? ?? 0).toDouble();
     return GlassCard(
       child: Column(
@@ -1513,8 +1515,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         const SizedBox(height: 6),
                         Text(
                           '${formatBytes(user['usedBytes'])} / ${formatBytes(user['trafficLimitBytes'])} · ${percent.toStringAsFixed(1)}%',
-                          style: const TextStyle(
-                            color: Color(0xFF00E1DF),
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
