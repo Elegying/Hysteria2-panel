@@ -51,6 +51,7 @@ _MOBILE_EXACT_ROUTES = {
     ("POST", "/api/v1/mobile/auth/login"): "login",
     ("POST", "/api/v1/mobile/auth/refresh"): "refresh",
     ("POST", "/api/v1/mobile/auth/logout"): "logout",
+    ("POST", "/api/v1/mobile/users/resolve-subscription"): "resolve-subscription",
     ("POST", "/api/v1/mobile/users"): "create-user",
     ("POST", "/api/v1/mobile/system/reboot"): "reboot",
     ("POST", "/api/v1/mobile/node-enrollments"): "create-enrollment",

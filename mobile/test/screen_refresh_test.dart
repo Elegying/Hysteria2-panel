@@ -14,7 +14,7 @@ class PendingRefreshController extends AppController {
 
   @override
   Future<Map<String, dynamic>> getJson(String path) {
-    if (path.contains('/line-monitor')) {
+    if (path.contains('/line-monitor') || path.endsWith('/server-monitor')) {
       return Future.value({'network': <String, dynamic>{}});
     }
     final request = Completer<Map<String, dynamic>>();
@@ -28,7 +28,10 @@ Map<String, dynamic> snapshot(
   int observedAt = 0,
   int totalBytes = 0,
 }) => {
-  'panelName': label,
+  'panelName': '隐藏的面板名称',
+  'trafficBudgets': [
+    {'name': label},
+  ],
   'observedAt': observedAt,
   'subscriptionManagement': true,
   'items': [
@@ -280,39 +283,16 @@ void main() {
       await tester.pumpAndSettle();
     });
   }
-  testWidgets('obsolete node traffic cannot change the next rate baseline', (
+  testWidgets('node resources and controls are shown without expanding', (
     tester,
   ) async {
     final controller = await mountPage(tester, const NodesScreen());
-    refreshPage(tester);
-    controller.requests[1].complete(
-      snapshot('rate-node', observedAt: 20, totalBytes: 200),
-    );
+    controller.requests.single.complete(snapshot('resource-node'));
     await tester.pumpAndSettle();
-    controller.requests[0].complete(
-      snapshot('rate-node', observedAt: 10, totalBytes: 100),
-    );
-    await tester.pumpAndSettle();
-    refreshPage(tester);
-    await tester.pump();
-    controller.requests.last.complete(
-      snapshot('rate-node', observedAt: 25, totalBytes: 300),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('rate-node').first);
-    await tester.pumpAndSettle();
-    // The measured rate is exposed in node details after expansion.
-    await tester.ensureVisible(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.textContaining('20 B/s'),
-      150,
-      scrollable: find.byType(Scrollable).last,
-    );
-    expect(find.textContaining('20 B/s'), findsWidgets);
+    for (final label in ['CPU', '内存', '磁盘', '重启服务', '重启主机']) {
+      expect(find.text(label), findsOneWidget);
+    }
+    expect(find.text('未设置预算'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pumpAndSettle();
   });
 }

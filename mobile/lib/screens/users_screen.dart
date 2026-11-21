@@ -37,8 +37,62 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
   List<Map<String, dynamic>> _users = [];
   String _status = 'all';
   int _userType = 0;
-  bool _showSearch = false;
-  bool _showFilters = false;
+  (int, String)? _subscriptionMatch;
+  int _searchGeneration = 0;
+
+  Future<void> _submitSearch() async {
+    FocusScope.of(context).unfocus();
+    final query = _search.text.trim();
+    final exact = _users
+        .where(
+          (user) =>
+              user['name'].toString().toLowerCase() == query.toLowerCase(),
+        )
+        .firstOrNull;
+    if (exact != null) {
+      setState(() {
+        _userType = (exact['userType'] as int?) ?? 0;
+        _status = 'all';
+      });
+      return;
+    }
+    final uri = Uri.tryParse(query);
+    if (uri == null ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty) {
+      return;
+    }
+    final token = RegExp(r'^/sub/([A-Za-z0-9_-]{8,512})$')
+        .firstMatch(uri.path)
+        ?.group(1);
+    if (token == null) return;
+    final account = ref.read(appControllerProvider).contextRevision;
+    final generation = ++_searchGeneration;
+    setState(() => _subscriptionMatch = null);
+    try {
+      final result = await ref.read(appControllerProvider.notifier).postJson(
+        '/api/v1/mobile/users/resolve-subscription',
+        {'token': token},
+      );
+      if (!mounted ||
+          generation != _searchGeneration ||
+          account != ref.read(appControllerProvider).contextRevision) {
+        return;
+      }
+      if (result['id'] is int &&
+          result['name'] is String &&
+          const {0, 1}.contains(result['userType'])) {
+        setState(() {
+          _subscriptionMatch = (result['id'] as int, result['name'] as String);
+          _userType = result['userType'] as int;
+          _status = 'all';
+        });
+      }
+    } on ApiException catch (error) {
+      if (mounted && generation == _searchGeneration) _message(error.message);
+    }
+  }
+
   final Set<(int, String)> _expandedUsers = {};
   List<Map<String, dynamic>> get _tierUsers =>
       _users.where((u) => (u['userType'] ?? 0) == _userType).toList();
@@ -97,6 +151,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final query = _search.text.trim().toLowerCase();
     final values = _tierUsers.where((user) {
       final matchesQuery =
+          _subscriptionMatch == (user['id'], user['name']) ||
           query.isEmpty ||
           user['name'].toString().toLowerCase().contains(query);
       final enabled = user['enabled'] == true;
@@ -154,7 +209,10 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     if (state == AppLifecycleState.resumed) _load(silent: true);
   }
 
-  void _redraw() => setState(() {});
+  void _redraw() => setState(() {
+    _subscriptionMatch = null;
+    _searchGeneration++;
+  });
 
   @override
   void dispose() {
@@ -1084,143 +1142,240 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     );
   }
 
+  Future<void> _showInactive(
+    List<Map<String, dynamic>> inactive,
+  ) => showDialog<void>(
+    context: context,
+    builder: (ctx) => GlassDialog(
+      title: const Text('不活跃用户'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: inactive.isEmpty
+            ? null
+            : (inactive.length * 76.0).clamp(
+                76.0,
+                MediaQuery.sizeOf(ctx).height * .5,
+              ),
+        child: inactive.isEmpty
+            ? const Text('暂无不活跃用户')
+            : ListView.builder(
+                shrinkWrap: true,
+                itemCount: inactive.length,
+                itemBuilder: (_, i) {
+                  final u = inactive[i];
+                  return ListTile(
+                    title: Text(u['name'].toString()),
+                    subtitle: Text(
+                      "${u['enabled'] == true ? '启用' : '停用'} · ${u['onlineDevices'] ?? 0} 台在线",
+                    ),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _showUser(u);
+                    },
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('关闭'),
+        ),
+      ],
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final filtered = _filtered;
-    return SafeArea(
-      child: RefreshIndicator(
-        onRefresh: _load,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
-          physics: const AlwaysScrollableScrollPhysics(),
-          children: [
-            PanelHeading(
-              '用户管理',
-              trailing: SizedBox(
-                width: MediaQuery.textScalerOf(context)
-                    .scale(164)
-                    .clamp(164, 280),
-                child: SegmentedButton<int>(
-                  showSelectedIcon: false,
-                  segments: const [
-                    ButtonSegment(value: 0, label: Text('普通用户')),
-                    ButtonSegment(value: 1, label: Text('专线用户')),
-                  ],
-                  selected: {_userType},
-                  onSelectionChanged: (v) =>
-                      setState(() => _userType = v.single),
+    final inactive = _users
+        .where((u) => (u['usedBytes'] as num? ?? 0) == 0)
+        .toList();
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      floatingActionButton: FloatingActionButton(
+        heroTag: null,
+        elevation: 2,
+        tooltip: '新建用户',
+        onPressed: _loading ? null : _createUser,
+        child: const Icon(Icons.add),
+      ),
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: _load,
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 88),
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              PanelHeading(
+                '用户管理',
+                trailing: SizedBox(
+                  width: MediaQuery.textScalerOf(context)
+                      .scale(164)
+                      .clamp(164, 280),
+                  child: SegmentedButton<int>(
+                    showSelectedIcon: false,
+                    segments: const [
+                      ButtonSegment(value: 0, label: Text('普通用户')),
+                      ButtonSegment(value: 1, label: Text('专线用户')),
+                    ],
+                    selected: {_userType},
+                    onSelectionChanged: (v) =>
+                        setState(() => _userType = v.single),
+                  ),
                 ),
               ),
-            ),
-            Row(
-              children: [
-                for (final stat in [
-                  ('用户', '${_users.length}'),
-                  (
-                    '不活跃用户',
-                    '${_users.where((u) => (u['usedBytes'] as num? ?? 0) == 0).length}',
-                  ),
-                ])
-                  Expanded(
-                    child: Padding(
-                      padding: EdgeInsets.only(right: stat.$1 == '用户' ? 8 : 0),
-                      child: GlassCard(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 5,
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                stat.$1,
-                                style: const TextStyle(fontSize: 12),
+              Row(
+                children: [
+                  for (final stat in [
+                    ('用户', '${_users.length}'),
+                    ('不活跃用户', '${inactive.length}'),
+                  ])
+                    Expanded(
+                      child: Padding(
+                        padding: EdgeInsets.only(
+                          right: stat.$1 == '用户' ? 8 : 0,
+                        ),
+                        child: GlassCard(
+                          child: InkWell(
+                            onTap: stat.$1 == '用户'
+                                ? null
+                                : () => _showInactive(inactive),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 5,
                               ),
-                              Text(
-                                stat.$2,
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  height: 1.1,
-                                  fontWeight: FontWeight.w700,
-                                ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    stat.$1,
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  Text(
+                                    stat.$2,
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      height: 1.1,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            ActionGrid(
-              children: [
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: const Color(0xFF041322),
-                  ),
-                  onPressed: _loading ? null : _createUser,
-                  icon: const Icon(Icons.add),
-                  label: const Text('新建用户'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => setState(() => _showSearch = !_showSearch),
-                  icon: const Icon(Icons.search),
-                  label: const Text('搜索用户'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: () => setState(() => _showFilters = !_showFilters),
-                  icon: const Icon(Icons.filter_alt_outlined),
-                  label: const Text('筛选'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _resettingGroup ? null : _resetGroup,
-                  icon: const Icon(Icons.layers_outlined),
-                  label: const Text('批量操作'),
-                ),
-              ],
-            ),
-            if (_showSearch)
-              Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: TextField(
-                  controller: _search,
-                  decoration: const InputDecoration(
-                    hintText: '搜索用户名',
-                    prefixIcon: Icon(Icons.search),
-                  ),
-                ),
+                ],
               ),
-            if (_showFilters)
+              const SizedBox(height: 10),
+              ActionGrid(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _resettingGroup ? null : _resetGroup,
+                    icon: const Icon(Icons.layers_outlined),
+                    label: const Text('批量操作'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: GlassCard(
+                      child: TextField(
+                        controller: _search,
+                        textInputAction: TextInputAction.search,
+                        onSubmitted: (_) => _submitSearch(),
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.search),
+                          hintText: '用户名或订阅链接',
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: _submitSearch,
+                    child: const Text('搜索'),
+                  ),
+                ],
+              ),
               Padding(
                 padding: const EdgeInsets.only(top: 10),
                 child: Column(
                   children: [
-                    GlassDropdownField<String>(
-                      initialValue: _status,
-                      decoration: const InputDecoration(labelText: '状态'),
-                      items: const [
-                        DropdownMenuItem(value: 'all', child: Text('全部状态')),
-                        DropdownMenuItem(value: 'enabled', child: Text('已启用')),
-                        DropdownMenuItem(value: 'disabled', child: Text('已禁用')),
-                        DropdownMenuItem(value: 'online', child: Text('当前在线')),
-                      ],
-                      onChanged: (v) => setState(() => _status = v ?? 'all'),
-                    ),
-                    const SizedBox(height: 8),
-                    GlassDropdownField<String>(
-                      initialValue: _sort,
-                      decoration: const InputDecoration(labelText: '排序'),
-                      hint: const Text('默认倒序'),
-                      items: const [
-                        DropdownMenuItem(value: 'traffic', child: Text('流量降序')),
-                        DropdownMenuItem(value: 'online', child: Text('在线设备')),
-                        DropdownMenuItem(value: 'name', child: Text('用户名')),
-                      ],
-                      onChanged: (v) => setState(() => _sort = v),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final fields = <Widget>[
+                          GlassDropdownField<String>(
+                            key: ValueKey(_status),
+                            initialValue: _status,
+                            decoration: const InputDecoration(labelText: '状态'),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'all',
+                                child: Text('全部状态'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'enabled',
+                                child: Text('已启用'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'disabled',
+                                child: Text('已禁用'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'online',
+                                child: Text('当前在线'),
+                              ),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _status = v ?? 'all'),
+                          ),
+
+                          GlassDropdownField<String>(
+                            initialValue: _sort,
+                            decoration: const InputDecoration(labelText: '排序'),
+                            hint: const Text('默认倒序'),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'traffic',
+                                child: Text('流量降序'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'online',
+                                child: Text('在线设备'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'name',
+                                child: Text('用户名'),
+                              ),
+                            ],
+                            onChanged: (v) => setState(() => _sort = v),
+                          ),
+                        ];
+                        if (constraints.maxWidth >= 350 &&
+                            MediaQuery.textScalerOf(context).scale(14) <= 18) {
+                          return Row(
+                            children: [
+                              Expanded(child: fields.first),
+                              const SizedBox(width: 8),
+                              Expanded(child: fields.last),
+                            ],
+                          );
+                        }
+                        return Column(
+                          children: [
+                            fields.first,
+                            const SizedBox(height: 8),
+                            fields.last,
+                          ],
+                        );
+                      },
                     ),
                     TextButton(
                       onPressed: () => Navigator.of(context).push(
@@ -1233,21 +1388,22 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                   ],
                 ),
               ),
-            const SizedBox(height: 12),
-            if (_loading && _users.isEmpty) const LinearProgressIndicator(),
-            if (_error != null) RefreshWarning(message: '数据刷新失败：$_error'),
-            if (!_loading && filtered.isEmpty)
-              const Padding(
-                padding: EdgeInsets.all(24),
-                child: Text('没有符合条件的用户'),
-              ),
-            for (final user in filtered)
-              Padding(
-                key: ValueKey((user['id'], user['name'])),
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _userCard(user),
-              ),
-          ],
+              const SizedBox(height: 12),
+              if (_loading && _users.isEmpty) const LinearProgressIndicator(),
+              if (_error != null) RefreshWarning(message: '数据刷新失败：$_error'),
+              if (!_loading && filtered.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Text('没有符合条件的用户'),
+                ),
+              for (final user in filtered)
+                Padding(
+                  key: ValueKey((user['id'], user['name'])),
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _userCard(user),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -1258,7 +1414,9 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
     final identity = (id, user['name'] as String);
     final expanded = _expandedUsers.contains(identity);
     final enabled = user['enabled'] == true;
-    final color = enabled ? const Color(0xFF00E1DF) : const Color(0xFFBC9BEF);
+    final color = enabled
+        ? Theme.of(context).colorScheme.primary
+        : Theme.of(context).colorScheme.secondary;
     final percent = (user['trafficPercent'] as num? ?? 0).toDouble();
     return GlassCard(
       child: Column(
@@ -1282,12 +1440,21 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          user['name'].toString(),
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 14,
-                          ),
+                        Wrap(
+                          spacing: 6,
+                          children: [
+                            Text(
+                              user['name'].toString(),
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 14,
+                              ),
+                            ),
+                            Text(
+                              "${user['onlineDevices'] ?? 0} 台在线",
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
                         ),
                         if (!expanded)
                           Text(
@@ -1348,8 +1515,8 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                         const SizedBox(height: 6),
                         Text(
                           '${formatBytes(user['usedBytes'])} / ${formatBytes(user['trafficLimitBytes'])} · ${percent.toStringAsFixed(1)}%',
-                          style: const TextStyle(
-                            color: Color(0xFF00E1DF),
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -1426,6 +1593,7 @@ class _UsersScreenState extends ConsumerState<UsersScreen>
                             );
                           },
                         ),
+                        const SizedBox(height: 8),
                         OutlinedButton(
                           onPressed: () => Navigator.of(context).push(
                             MaterialPageRoute<void>(

@@ -6,25 +6,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/app_controller.dart';
 import '../core/glass.dart';
 import 'backup_controls.dart';
-import 'budget_actions.dart';
 
 class AdminControls extends ConsumerStatefulWidget {
   const AdminControls({
     super.key,
     this.nodeId,
-    this.budget,
-    this.compact = false,
-    this.budgetData,
-    this.originId,
+    this.resources,
+    this.protocolOnly = false,
     this.onDisconnect,
     this.nodeProfile,
   });
   final String? nodeId;
   final Map<String, dynamic>? nodeProfile;
-  final Widget? budget;
-  final bool compact;
-  final Map<String, dynamic>? budgetData;
-  final String? originId;
+  final Map? resources;
+  final bool protocolOnly;
   final VoidCallback? onDisconnect;
   @override
   ConsumerState<AdminControls> createState() => _ControlsState();
@@ -42,6 +37,7 @@ class _ControlsState extends ConsumerState<AdminControls> {
   @override
   void initState() {
     super.initState();
+    if (widget.nodeId != null) return;
     Future.microtask(_refreshStatus);
     _timer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (mounted &&
@@ -64,19 +60,14 @@ class _ControlsState extends ConsumerState<AdminControls> {
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
-          .getJson(
-            widget.nodeId == null
-                ? '/api/v1/mobile/settings'
-                : '/api/v1/mobile/server-monitor',
-          );
-      if (widget.nodeId == null) {
-        final overview = await ref
-            .read(appControllerProvider.notifier)
-            .getJson('/api/v1/mobile/overview');
-        data['serviceStatus'] = overview['serviceStatus'];
-        data['resources'] = overview['resources'];
-        data['panelVersion'] = overview['panelVersion'];
-      }
+          .getJson('/api/v1/mobile/settings');
+      if (!mounted) return;
+      final overview = await ref
+          .read(appControllerProvider.notifier)
+          .getJson('/api/v1/mobile/overview');
+      data['serviceStatus'] = overview['serviceStatus'];
+      data['resources'] = overview['resources'];
+      data['panelVersion'] = overview['panelVersion'];
       if (mounted) {
         setState(() {
           _status = data;
@@ -207,7 +198,7 @@ class _ControlsState extends ConsumerState<AdminControls> {
             ? '操作已受理，请刷新确认执行结果'
             : result['message']?.toString() ?? '操作完成',
       );
-      await _refreshStatus();
+      if (widget.nodeId == null) await _refreshStatus();
       if (path == 'updates/check') {
         setState(
           () => _message = result['update_available'] == true
@@ -242,10 +233,12 @@ class _ControlsState extends ConsumerState<AdminControls> {
   ]) => OutlinedButton(
     style: OutlinedButton.styleFrom(
       foregroundColor: purple
-          ? const Color(0xFFBC9BEF)
-          : const Color(0xFF00E1DF),
+          ? Theme.of(context).colorScheme.secondary
+          : Theme.of(context).colorScheme.primary,
       side: BorderSide(
-        color: purple ? const Color(0xFFBC9BEF) : const Color(0xFF2D506A),
+        color: purple
+            ? Theme.of(context).colorScheme.secondary
+            : const Color(0xFF2D506A),
       ),
     ),
     onPressed: _busy ? null : () => _run(title, path, payload),
@@ -288,129 +281,62 @@ class _ControlsState extends ConsumerState<AdminControls> {
     });
   }
 
-  Widget _resource(String title, dynamic value, IconData icon) => GlassCard(
-    child: Padding(
-      padding: const EdgeInsets.all(8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 24),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title),
-                    Text(
-                      value is num ? '${value.toStringAsFixed(0)}%' : '—',
-                      style: const TextStyle(
-                        color: Color(0xFF00E1DF),
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: value is num ? (value / 100).clamp(0, 1).toDouble() : 0,
-            minHeight: 7,
-          ),
-        ],
+  Widget _resource(String label, dynamic value) => Expanded(
+    child: GlassCard(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              value is num ? '${value.toStringAsFixed(0)}%' : '—',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 3),
+            LinearProgressIndicator(
+              value: value is num ? (value / 100).clamp(0, 1).toDouble() : 0,
+              minHeight: 3,
+            ),
+          ],
+        ),
       ),
     ),
   );
+
   @override
   Widget build(BuildContext context) {
     final id = widget.nodeId;
     final local = id == null || id == 'local';
     final premium = widget.nodeProfile?['tier'] == 'premium';
-    final resources =
-        (id == 'local'
-                ? (_status?['local'])
-                : ((_status?['servers'] as Map?)?[id]))
-            as Map? ??
-        {};
+    final resources = widget.resources?['fresh'] == true
+        ? widget.resources
+        : null;
     final result = <Widget>[];
-    if (id != null) {
+    if (id != null && widget.protocolOnly) {
+      result.add(
+        ActionGrid(
+          children: [
+            _button('启用协议', 'nodes/$id/protocol/enable', {'confirm': id}),
+            _button('停用协议', 'nodes/$id/protocol/disable', {'confirm': id}),
+          ],
+        ),
+      );
+    } else if (id != null) {
       result.addAll([
         Row(
           children: [
-            Expanded(
-              child: _resource(
-                'CPU',
-                resources['fresh'] == true ? resources['cpu'] : null,
-                Icons.memory,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _resource(
-                '内存',
-                resources['fresh'] == true ? resources['memory'] : null,
-                Icons.developer_board,
-              ),
-            ),
+            _resource('CPU', resources?['cpu']),
+            const SizedBox(width: 12),
+            _resource('内存', resources?['memory']),
+            const SizedBox(width: 12),
+            _resource('磁盘', resources?['disk']),
           ],
         ),
-        const SizedBox(height: 8),
-        _resource(
-          '磁盘',
-          resources['fresh'] == true ? resources['disk'] : null,
-          Icons.storage_outlined,
-        ),
-        const SizedBox(height: 10),
-        ?widget.budget,
-        if (widget.compact && (widget.originId ?? '').isNotEmpty)
-          BudgetActions(
-            originId: widget.originId!,
-            budget: widget.budgetData,
-            extra: !premium
-                ? null
-                : OutlinedButton(
-                    onPressed: _busy ? null : _profile,
-                    child: const Text('专线配置'),
-                  ),
-          ),
         const SizedBox(height: 6),
-        if (widget.compact && MediaQuery.textScalerOf(context).scale(14) <= 20)
-          Row(
-            children: [
-              Expanded(
-                child: _button(
-                  '重启服务',
-                  local ? 'service/restart' : 'nodes/$id/operations/restart',
-                  local ? {} : {'confirm': id},
-                ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: _button(
-                  '重启主机',
-                  local ? 'system/reboot' : 'nodes/$id/operations/reboot',
-                  local ? {} : {'confirm': id},
-                  true,
-                ),
-              ),
-              if (!local) ...[
-                const SizedBox(width: 6),
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _busy ? null : widget.onDisconnect,
-                    child: const Text('断开对接'),
-                  ),
-                ),
-              ],
-            ],
-          )
-        else
-          ActionGrid(
-            children: [
+        LayoutBuilder(
+          builder: (context, box) {
+            final buttons = [
               _button(
                 '重启服务',
                 local ? 'service/restart' : 'nodes/$id/operations/restart',
@@ -422,17 +348,50 @@ class _ControlsState extends ConsumerState<AdminControls> {
                 local ? {} : {'confirm': id},
                 true,
               ),
+              if (!local)
+                OutlinedButton(
+                  onPressed: _busy ? null : widget.onDisconnect,
+                  child: const Text('断开对接'),
+                ),
               if (premium)
                 OutlinedButton(
                   onPressed: _busy ? null : _profile,
                   child: const Text('专线配置'),
                 ),
-              if (!local && !widget.compact)
-                _button('启用协议', 'nodes/$id/protocol/enable', {'confirm': id}),
-              if (!local && !widget.compact)
-                _button('停用协议', 'nodes/$id/protocol/disable', {'confirm': id}),
-            ],
-          ),
+            ];
+            final minWidth = MediaQuery.textScalerOf(context).scale(52) + 26;
+            final columns = ((box.maxWidth + 6) / (minWidth + 6)).floor().clamp(
+              1,
+              buttons.length,
+            );
+            return OutlinedButtonTheme(
+              data: OutlinedButtonThemeData(
+                style:
+                    (OutlinedButtonTheme.of(context).style ??
+                            const ButtonStyle())
+                        .copyWith(
+                          padding: const WidgetStatePropertyAll(
+                            EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+                          ),
+                          minimumSize: const WidgetStatePropertyAll(
+                            Size(0, 38),
+                          ),
+                        ),
+              ),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  for (final button in buttons)
+                    SizedBox(
+                      width: (box.maxWidth - (columns - 1) * 6) / columns,
+                      child: button,
+                    ),
+                ],
+              ),
+            );
+          },
+        ),
       ]);
     } else {
       final active = _status?['serviceStatus'] == 'active';
@@ -464,7 +423,9 @@ class _ControlsState extends ConsumerState<AdminControls> {
                             ),
                             Text(
                               active ? '● 运行中' : '未运行',
-                              style: const TextStyle(color: Color(0xFF00E1DF)),
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
                             ),
                           ],
                         ),
@@ -485,7 +446,9 @@ class _ControlsState extends ConsumerState<AdminControls> {
                   ),
                   Text(
                     '${(_status?['resources'] as Map?)?['tcpCongestionControl'] ?? '未知'}',
-                    style: const TextStyle(color: Color(0xFF00E1DF)),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
                   const Divider(height: 24, indent: 0, endIndent: 0),
                   const Text(
@@ -494,7 +457,9 @@ class _ControlsState extends ConsumerState<AdminControls> {
                   ),
                   Text(
                     certificateLabel((_status?['certificate'] as Map?) ?? {}),
-                    style: const TextStyle(color: Color(0xFF00E1DF)),
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
                   ),
                   const Divider(height: 24, indent: 0, endIndent: 0),
                   _button('重启主机', 'system/reboot', {}, true),
@@ -536,8 +501,8 @@ class _ControlsState extends ConsumerState<AdminControls> {
               Expanded(
                 child: Text(
                   'v${_status?['panelVersion'] ?? '—'}',
-                  style: const TextStyle(
-                    color: Color(0xFF00E1DF),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.primary,
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
                   ),

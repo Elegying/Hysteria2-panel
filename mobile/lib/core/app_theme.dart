@@ -5,8 +5,8 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
   final dark = brightness == Brightness.dark;
   final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: brightness)
       .copyWith(
-        primary: seed,
-        secondary: const Color(0xFFBC9BEF),
+        primary: dark ? seed : ColorScheme.fromSeed(seedColor: seed).primary,
+        secondary: dark ? const Color(0xFFBC9BEF) : const Color(0xFF644498),
         surface: dark ? const Color(0xFF071426) : const Color(0xFFF1F4F8),
         surfaceContainerLow: dark ? const Color(0xFF081D30) : Colors.white,
         surfaceContainerHighest: dark
@@ -124,7 +124,11 @@ ThemeData buildAppTheme(Color seed, Brightness brightness) {
               ? const Color(0xFF6240B8)
               : Colors.transparent,
         ),
-        foregroundColor: WidgetStatePropertyAll(scheme.onSurface),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.selected)
+              ? Colors.white
+              : scheme.onSurface,
+        ),
         side: WidgetStatePropertyAll(BorderSide(color: scheme.outlineVariant)),
         shape: WidgetStatePropertyAll(
           RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),

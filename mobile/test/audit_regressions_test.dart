@@ -172,10 +172,6 @@ void main() {
     await showScreen(tester, c, const NodesScreen());
     await tester.tap(find.text('审查节点').first);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
     await tester.tap(find.widgetWithText(FilledButton, '一键断连').first);
     await tester.pumpAndSettle();
     await tester.tap(
@@ -206,10 +202,6 @@ void main() {
     final c = AuditController();
     await showScreen(tester, c, const NodesScreen());
     await tester.tap(find.text('审查节点').first);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('节点详情与对接管理'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('在线设备'),

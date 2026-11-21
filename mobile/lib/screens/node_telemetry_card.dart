@@ -143,7 +143,13 @@ class _NodeTelemetryState extends ConsumerState<NodeTelemetryCard> {
                       ? const Center(
                           child: Text('暂无采样', style: TextStyle(fontSize: 11)),
                         )
-                      : CustomPaint(painter: RatePainter([points], 7.5)),
+                      : CustomPaint(
+                          painter: RatePainter(
+                            [points],
+                            7.5,
+                            Theme.of(context).colorScheme,
+                          ),
+                        ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -154,16 +160,16 @@ class _NodeTelemetryState extends ConsumerState<NodeTelemetryCard> {
                   children: [
                     Text(
                       '↓ ${rate('rx')}',
-                      style: const TextStyle(
-                        color: Color(0xFF00E1DF),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.primary,
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                     Text(
                       '↑ ${rate('tx')}',
-                      style: const TextStyle(
-                        color: Color(0xFFBC9BEF),
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.secondary,
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
                       ),
@@ -186,8 +192,8 @@ class _NodeTelemetryState extends ConsumerState<NodeTelemetryCard> {
             budget == null
                 ? '未设置预算 · 已用 ${formatPanelBytes((item['txBytes'] as num? ?? 0) + (item['rxBytes'] as num? ?? 0))}'
                 : '${formatPanelBytes(budget['usedBytes'])} / ${formatPanelBytes(budget['limitBytes'])} · ${percent.toStringAsFixed(1)}%',
-            style: const TextStyle(
-              color: Color(0xFF00E1DF),
+            style: TextStyle(
+              color: Theme.of(context).colorScheme.primary,
               fontSize: 13,
               fontWeight: FontWeight.w700,
             ),

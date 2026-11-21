@@ -71,7 +71,7 @@ void main() {
             .first,
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('新建用户'));
+      await tester.tap(find.byTooltip('新建用户'));
       await tester.pumpAndSettle();
       expect(find.byType(Dialog), findsOneWidget);
       controller.refreshAccess();

@@ -130,7 +130,7 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
     }
     return GlassCard(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -165,43 +165,44 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
                 ),
               ],
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 4),
             Wrap(
               spacing: 16,
               children: [
                 Text(
                   '↓ 入站 ${samples.any((s) => s['fresh'] == true) ? rate('rx').toStringAsFixed(2) : '—'} Mbps',
-                  style: const TextStyle(color: Color(0xFF00D9D0)),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
                 ),
                 Text(
                   '↑ 出站 ${samples.any((s) => s['fresh'] == true) ? rate('tx').toStringAsFixed(2) : '—'} Mbps',
-                  style: const TextStyle(color: Color(0xFFB29BFF)),
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.secondary,
+                  ),
                 ),
               ],
             ),
             if (_error != null) RefreshWarning(message: _error!),
-            const SizedBox(height: 12),
+            const SizedBox(height: 4),
             if (series.every((s) => s.isEmpty))
-              const SizedBox(height: 80, child: Center(child: Text('暂无速率采样')))
+              const SizedBox(height: 60, child: Center(child: Text('暂无速率采样')))
             else
               SizedBox(
-                height: 90,
+                height: (MediaQuery.sizeOf(context).height - 710).clamp(
+                  62.0,
+                  108.0,
+                ),
                 width: double.infinity,
                 child: CustomPaint(
-                  painter: RatePainter([totals], step * 1.5, axes: true),
+                  painter: RatePainter(
+                    [totals],
+                    step * 1.5,
+                    Theme.of(context).colorScheme,
+                    axes: true,
+                  ),
                 ),
               ),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('每 5 秒更新', style: TextStyle(fontSize: 10)),
-                Text(
-                  '全部 ${network.length} 台',
-                  style: const TextStyle(fontSize: 10),
-                ),
-              ],
-            ),
           ],
         ),
       ),
@@ -210,7 +211,8 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
 }
 
 class RatePainter extends CustomPainter {
-  RatePainter(this.series, this.maxGap, {this.axes = false});
+  RatePainter(this.series, this.maxGap, this.colors, {this.axes = false});
+  final ColorScheme colors;
   final bool axes;
   final double maxGap;
   final List<List<Map<String, dynamic>>> series;
@@ -236,8 +238,8 @@ class RatePainter extends CustomPainter {
       final painter = TextPainter(
         text: TextSpan(
           text: text,
-          style: const TextStyle(
-            color: Color(0xFFBCCDE1),
+          style: TextStyle(
+            color: colors.onSurfaceVariant,
             fontSize: 8,
             fontFamily: 'Roboto',
           ),
@@ -276,9 +278,7 @@ class RatePainter extends CustomPainter {
     }
     for (final field in ['rx', 'tx']) {
       final paint = Paint()
-        ..color = field == 'rx'
-            ? const Color(0xFF00D9D0)
-            : const Color(0xFFB29BFF)
+        ..color = field == 'rx' ? colors.primary : colors.secondary
         ..strokeWidth = 1.8
         ..style = PaintingStyle.stroke;
       for (final samples in series) {

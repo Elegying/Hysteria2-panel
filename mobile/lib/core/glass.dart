@@ -50,10 +50,24 @@ class LiquidBackdrop extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               Positioned.fill(
-                child: ColoredBox(
-                  color: dark
-                      ? const Color(0xFF071426)
-                      : const Color(0xFFF1F4F8),
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: dark
+                          ? const [
+                              Color(0xFF102A40),
+                              Color(0xFF0A192B),
+                              Color(0xFF13253B),
+                            ]
+                          : const [
+                              Color(0xFFE4F0F6),
+                              Color(0xFFF4F6FA),
+                              Color(0xFFE4EAF4),
+                            ],
+                    ),
+                  ),
                 ),
               ),
               child,
@@ -200,6 +214,32 @@ class GlassSurface extends StatelessWidget {
         ),
       );
     }
+    if (grouped && dark && !opaque && blurSigma > 0) {
+      return ClipRRect(
+        borderRadius: radius,
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: blurSigma, sigmaY: blurSigma),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  scheme.surfaceContainerHigh.withValues(alpha: .77),
+                  scheme.surfaceContainerLow.withValues(alpha: .58),
+                ],
+              ),
+              border: Border.all(
+                color: scheme.outlineVariant.withValues(alpha: .8),
+                width: .8,
+              ),
+            ),
+            child: Material(type: MaterialType.transparency, child: child),
+          ),
+        ),
+      );
+    }
     return Container(
       margin: margin,
       decoration: BoxDecoration(
@@ -235,12 +275,26 @@ class GlassCard extends StatelessWidget {
   final double blurSigma;
 
   @override
-  Widget build(BuildContext context) => GlassSurface(
-    margin: margin,
-    blurSigma: blurSigma,
-    grouped: true,
-    child: child,
-  );
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      margin: margin,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(9),
+        boxShadow: MediaQuery.highContrastOf(context)
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: dark ? .30 : .12),
+                  offset: const Offset(0, 3),
+                  blurRadius: 8,
+                  spreadRadius: -2,
+                ),
+              ],
+      ),
+      child: GlassSurface(blurSigma: blurSigma, grouped: true, child: child),
+    );
+  }
 }
 
 Color glassMenuColor(BuildContext context) {
@@ -523,7 +577,7 @@ class PanelHeading extends StatelessWidget {
     this.subtitle = 'Hysteria2 Panel',
   });
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final Widget? trailing;
   @override
   Widget build(BuildContext context) => Padding(
@@ -534,14 +588,16 @@ class PanelHeading extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(title, style: Theme.of(context).textTheme.headlineMedium),
-            const SizedBox(height: 3),
-            Text(
-              subtitle,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-                fontSize: 12,
+            if (subtitle case final label?) ...[
+              const SizedBox(height: 3),
+              Text(
+                label,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
               ),
-            ),
+            ],
           ],
         );
         if (trailing != null &&

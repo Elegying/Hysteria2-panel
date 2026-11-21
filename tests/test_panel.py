@@ -6568,6 +6568,18 @@ class PanelHttpTests(unittest.TestCase):
         self.assertEqual("alice", users["data"]["items"][0]["name"])
         self.assertTrue(users["data"]["items"][0]["allowUdp443"])
 
+        owner = users["data"]["items"][0]
+        token = self.db.ensure_subscription(owner["id"])["token"]
+        lookup = "/api/v1/mobile/users/resolve-subscription"
+        with self.assertRaises(urllib.error.HTTPError) as denied:
+            self.mobile_json_request("POST", lookup, {"token": token})
+        self.assertEqual(401, denied.exception.code)
+        for supplied, expected in [(token, {"id": owner["id"], "name": "alice", "userType": 0}),
+                                   (token.swapcase(), {})]:
+            status, response = self.mobile_json_request("POST", lookup, {"token": supplied}, access_token=access_token)
+            self.assertEqual(200, status)
+            self.assertEqual(expected, response["data"])
+
         status, created = self.mobile_json_request(
             "POST",
             "/api/v1/mobile/users",
@@ -8868,7 +8880,11 @@ class PanelHttpTests(unittest.TestCase):
         for query in ("/", "/?type=premium&q=missing"):
             with self.request(query, headers=headers) as response:
                 body = response.read().decode()
-            self.assertIn('title="当前周期累计上传和下载均为 0 的用户">不活跃用户</span><strong>1</strong>', body)
+            self.assertIn('data-dialog-open="inactive-users-dialog">不活跃用户</button><strong>1</strong>', body)
+            inactive = body.split('<dialog id="inactive-users-dialog"', 1)[1].split('</dialog>', 1)[0]
+            self.assertIn('<strong>idle</strong>', inactive)
+            self.assertNotIn('<strong>premium</strong>', inactive)
+            self.assertNotIn('<strong>normal</strong>', inactive)
             self.assertIn('<span>总上传流量</span><strong>11 B</strong>', body)
             self.assertIn('<span>总下载流量</span><strong>22 B</strong>', body)
             rank = body.split('<div class="rank-list">')[1].split('</section>')[0]

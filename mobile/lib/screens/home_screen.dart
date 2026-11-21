@@ -102,31 +102,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         onRefresh: _load,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+          padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
           children: [
-            PanelHeading(
-              '总览',
-              subtitle: data?['panelName']?.toString() ?? 'Hysteria2 Panel',
-            ),
+            const PanelHeading('总览', subtitle: null),
             if (_loading && data == null)
               const Center(child: CircularProgressIndicator()),
             if (_error != null) RefreshWarning(message: _error!),
             if (data != null) ...[
               _SummaryGrid(data: data),
-              const SizedBox(height: 12),
+              const SizedBox(height: 6),
               const NetworkMonitor(),
-              const SizedBox(height: 12),
-              Padding(
-                padding: const EdgeInsets.only(left: 6, bottom: 8),
-                child: Text(
-                  '节点状态',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ),
+              const SizedBox(height: 6),
               for (final item
                   in (data['trafficBudgets'] as List? ?? []).whereType<Map>())
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.only(bottom: 4),
                   child: NodeTelemetryCard(
                     item: Map<String, dynamic>.from(item),
                   ),
@@ -169,7 +159,7 @@ class _SummaryGrid extends StatelessWidget {
               : 2;
           return Wrap(
             spacing: 12,
-            runSpacing: 6,
+            runSpacing: 3,
             children: [
               for (final e in entries)
                 SizedBox(

@@ -59,7 +59,11 @@ class TwoPanels extends DesignFixtureController {
   Future<Map<String, dynamic>> getJson(String path) async {
     final i = state.activePanel;
     final data = await super.getJson(path);
-    if (path.endsWith('/overview')) data['panelName'] = '当前面板${i + 1}';
+    if (path.endsWith('/overview')) {
+      data['trafficBudgets'] = [
+        {'name': '测试节点${i + 1}'},
+      ];
+    }
     if (data['items'] is List) {
       for (final item in data['items'] as List) {
         item['name'] = '面板${i + 1}-${item['name']}';
@@ -229,7 +233,7 @@ void main() {
     await c.selectPanel(1);
     await tester.pumpAndSettle();
     expect(find.text('旧面板详情'), findsNothing);
-    expect(find.text('当前面板2'), findsOneWidget);
+    expect(find.text('测试节点2'), findsOneWidget);
   });
 
   testWidgets('panel login and home previews', (tester) async {

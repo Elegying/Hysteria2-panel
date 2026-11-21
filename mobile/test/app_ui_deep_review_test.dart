@@ -76,10 +76,6 @@ void main() {
     await display(tester, DeepReviewController(), const NodesScreen());
     await tester.tap(find.text('边缘节点').first);
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('复制节点 ID'));
     await tester.pumpAndSettle();
     expect(find.text('节点 ID 已复制').hitTestable(), findsOneWidget);
@@ -105,10 +101,6 @@ void main() {
     );
     await display(tester, DeepReviewController(), const NodesScreen());
     await tester.tap(find.text('边缘节点').first);
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('节点详情与对接管理'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('节点详情与对接管理'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('复制节点 ID'));
     await tester.pumpAndSettle();
@@ -238,7 +230,7 @@ void main() {
     );
     final c = DeepReviewController();
     await display(tester, c, const UsersScreen());
-    await tester.tap(find.text('新建用户'));
+    await tester.tap(find.byTooltip('新建用户'));
     await tester.pumpAndSettle();
     await tester.enterText(
       find.byWidgetPredicate(

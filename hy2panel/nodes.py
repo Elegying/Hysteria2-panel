@@ -19,7 +19,7 @@ import urllib.parse
 from pathlib import Path
 
 
-BOOTSTRAP_SHA256 = "7f68c1e145e49af9c2b9837fa61c9ded25eb40944676a937e7737aca33137a79"
+BOOTSTRAP_SHA256 = "e55c9a2f6c016cc1a5872df57738153a666a42a2d757ec8d73a6d1cc62a1ff3b"
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
 VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")

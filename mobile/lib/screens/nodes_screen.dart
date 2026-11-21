@@ -9,7 +9,6 @@ import '../core/formatters.dart';
 import '../core/glass.dart';
 import 'admin_controls.dart';
 import 'node_enrollment.dart';
-import 'node_telemetry_card.dart';
 
 class NodesScreen extends ConsumerStatefulWidget {
   const NodesScreen({super.key});
@@ -21,11 +20,9 @@ class NodesScreen extends ConsumerStatefulWidget {
 class _NodesScreenState extends ConsumerState<NodesScreen>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   List<Map<String, dynamic>> _nodes = [];
-  final Set<String> _expanded = {};
-  final Map<String, double> _trafficRates = {};
-  final Map<String, int> _trafficTotals = {};
-  int? _trafficObservedAt;
-  List<Map<String, dynamic>> _budgets = [];
+
+  Map<String, dynamic> _monitor = {};
+  String? _monitorError;
   bool _enrolling = false;
   bool _loading = true;
   bool _refreshing = false;
@@ -71,6 +68,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     final generation = ++_loadGeneration;
     _refreshing = true;
     if (!silent) setState(() => _loading = true);
+    final monitor = _loadMonitor(generation);
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
@@ -79,20 +77,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       final items = (data['items'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList();
-      final observedAt = (data['observedAt'] as num? ?? 0).toInt();
-      final elapsed = _trafficObservedAt == null
-          ? 0
-          : observedAt - _trafficObservedAt!;
-      for (final node in items) {
-        final id = node['nodeId'].toString();
-        final total = (node['totalBytes'] as num? ?? 0).toInt();
-        final previous = _trafficTotals[id];
-        _trafficRates[id] = previous == null || elapsed <= 0 || total < previous
-            ? 0
-            : (total - previous) / elapsed;
-        _trafficTotals[id] = total;
-      }
-      _trafficObservedAt = observedAt;
       if (mounted && generation == _loadGeneration) {
         setState(() {
           _nodes = items;
@@ -110,6 +94,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
         _detailsRevision.value++;
       }
     } finally {
+      await monitor;
       if (generation == _loadGeneration) _refreshing = false;
     }
   }
@@ -267,11 +252,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   ('节点类型', '面板本机节点'),
                   ('面板入口', node['observedIp']),
                   ('在线设备', node['onlineDevices'] ?? '—'),
-                  ('累计上传', formatBytes(node['txBytes'])),
-                  ('累计下载', formatBytes(node['rxBytes'])),
-                  ('累计流量', formatBytes(node['totalBytes'])),
-                  ('实时流量', '${formatBytes(_trafficRates['local'] ?? 0)}/s'),
-                  ('最后采样', formatTimestamp(node['trafficObservedAt'])),
                 ]
               : [
                   ('节点 ID', node['nodeId']),
@@ -297,16 +277,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   ('在线设备', node['onlineDevices'] ?? '—'),
                   ('最后心跳', formatTimestamp(node['lastHeartbeatAt'])),
                   ('在线快照', formatTimestamp(node['lastSnapshotAt'])),
-                  ('流量 ACK', formatTimestamp(node['lastTrafficAckAt'])),
                   ('待执行命令', node['pendingCommands']),
                   ('失败命令', node['failedCommands']),
-                  ('累计上传', formatBytes(node['txBytes'])),
-                  ('累计下载', formatBytes(node['rxBytes'])),
-                  ('累计流量', formatBytes(node['totalBytes'])),
-                  (
-                    '实时流量',
-                    '${formatBytes(_trafficRates[node['nodeId']] ?? 0)}/s',
-                  ),
                 ];
           return SafeArea(
             child: DraggableScrollableSheet(
@@ -460,7 +432,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   if (!isLocal)
                     AdminControls(
                       nodeId: node['nodeId'].toString(),
-                      nodeProfile: node,
+                      protocolOnly: true,
                     ),
                 ],
               ),
@@ -490,21 +462,24 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     }
   }
 
-  Future<void> _loadBudgets() async {
+  Future<void> _loadMonitor(int generation) async {
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
-          .getJson('/api/v1/mobile/overview');
-      if (mounted) {
-        setState(
-          () => _budgets = (data['trafficBudgets'] as List? ?? [])
-              .whereType<Map>()
-              .map((e) => Map<String, dynamic>.from(e))
-              .toList(),
-        );
+          .getJson('/api/v1/mobile/server-monitor');
+      if (mounted && generation == _loadGeneration) {
+        setState(() {
+          _monitor = data;
+          _monitorError = null;
+        });
       }
-    } catch (_) {
-      /* Node controls stay available when overview is unavailable. */
+    } on ApiException catch (e) {
+      if (mounted && generation == _loadGeneration) {
+        setState(() {
+          _monitor = {};
+          _monitorError = e.message;
+        });
+      }
     }
   }
 
@@ -564,16 +539,19 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
             const PanelHeading('节点管理'),
-            Row(
-              children: [
-                Expanded(
-                  child: _entry('节点对接', '添加或连接远端节点', Icons.link, _enroll),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _entry('对接码管理', '查看、生成与管理', Icons.qr_code, _codes),
-                ),
-              ],
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: _entry('节点对接', '添加或连接远端节点', Icons.link, _enroll),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _entry('对接码管理', '查看、生成与管理', Icons.qr_code, _codes),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -586,27 +564,23 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   '共 ${_nodes.length} 个节点',
                   style: const TextStyle(fontSize: 11),
                 ),
-                OutlinedButton(
-                  onPressed: _enroll,
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6240B8),
-                  ),
-                  child: const Text('＋ 添加节点'),
-                ),
               ],
             ),
             const SizedBox(height: 8),
             if (_loading && _nodes.isEmpty) const LinearProgressIndicator(),
             if (_error != null) RefreshWarning(message: '数据刷新失败：$_error'),
+            if (_monitorError != null)
+              RefreshWarning(message: '资源刷新失败：$_monitorError'),
             for (final node in _nodes)
               Padding(
+                key: ValueKey(node['nodeId']),
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _nodeCard(node),
               ),
             if (!_loading && _nodes.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(24),
-                child: Text('暂无节点，请点击添加节点'),
+                child: Text('暂无节点，请点击顶部的节点对接'),
               ),
           ],
         ),
@@ -651,119 +625,60 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
   );
   Widget _nodeCard(Map<String, dynamic> node) {
     final id = node['nodeId'].toString();
-    final expanded = _expanded.contains(id);
-    final matches = _budgets.where(
-      (b) =>
-          b['originId'] == node['originId'] ||
-          (id != 'local' && b['originId'] == 'node:$id') ||
-          (id == 'local' && b['kind'] == 'local'),
-    );
-    final item = matches.isNotEmpty
-        ? matches.first
-        : <String, dynamic>{
-            ...node,
-            'originId': node['originId'] ?? (id == 'local' ? '' : 'node:$id'),
-          };
+    final address = (node['observedIp'] ?? node['expectedIp'] ?? '').toString();
+    final resources =
+        (id == 'local' ? _monitor['local'] : (_monitor['servers'] as Map?)?[id])
+            as Map?;
     return GlassCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkWell(
-            onTap: () => setState(() {
-              if (expanded) {
-                _expanded.remove(id);
-              } else {
-                _expanded.add(id);
-                _loadBudgets();
-              }
-            }),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Row(
-                children: [
-                  Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: () => _showNode(node),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           node['name'].toString(),
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        const SizedBox(height: 4),
+                        if (address.isNotEmpty)
+                          Text(
+                            address,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
                         Text(
-                          '${id == 'local' ? '面板节点' : '远端数据节点'} · ${nodeStatusLabel(node['status'])}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: node['status'] == 'online'
-                                ? const Color(0xFF00E1DF)
-                                : const Color(0xFFBC9BEF),
-                          ),
+                          "${nodeStatusLabel(node['status'])} · ${node['onlineDevices'] ?? '—'} 台设备",
+                          style: const TextStyle(fontSize: 12),
                         ),
                       ],
                     ),
                   ),
-                  Text(
-                    '${node['onlineDevices'] ?? '—'} 台设备',
-                    style: const TextStyle(fontSize: 12),
-                  ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    expanded ? Icons.expand_less : Icons.expand_more,
-                    size: 20,
-                  ),
-                ],
-              ),
+                ),
+                IconButton(
+                  tooltip: '节点详情与对接管理',
+                  onPressed: () => _showNode(node),
+                  icon: const Icon(Icons.info_outline),
+                ),
+              ],
             ),
-          ),
-          AnimatedSize(
-            duration: MediaQuery.disableAnimationsOf(context)
-                ? Duration.zero
-                : const Duration(milliseconds: 200),
-            child: !expanded
-                ? const SizedBox(width: double.infinity)
-                : Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        NodeTelemetryCard(
-                          item: item,
-                          embedded: true,
-                          showBudget: false,
-                        ),
-                        const SizedBox(height: 10),
-                        AdminControls(
-                          nodeId: id,
-                          nodeProfile: node,
-                          compact: true,
-                          originId: item['originId']?.toString(),
-                          budgetData: item['budget'] is Map
-                              ? Map<String, dynamic>.from(item['budget'])
-                              : null,
-                          onDisconnect: node['canDisconnect'] == true
-                              ? () =>
-                                    _pairingAction(node, 'disconnect', context)
-                              : null,
-                          budget: NodeTelemetryCard(
-                            item: item,
-                            embedded: true,
-                            showTelemetry: false,
-                            showActions: false,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        OutlinedButton(
-                          onPressed: () => _showNode(node),
-                          child: const Text('节点详情与对接管理'),
-                        ),
-                      ],
-                    ),
-                  ),
-          ),
-        ],
+            AdminControls(
+              key: ValueKey(id),
+              nodeId: id,
+              nodeProfile: node,
+              resources: resources,
+              onDisconnect: node['canDisconnect'] == true
+                  ? () => _pairingAction(node, 'disconnect', context)
+                  : null,
+            ),
+          ],
+        ),
       ),
     );
   }

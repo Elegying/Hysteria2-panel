@@ -52,8 +52,8 @@ void main() {
       PackageInfo.setMockInitialValues(
         appName: 'Panel',
         packageName: 'test',
-        version: '0.5.7',
-        buildNumber: '43',
+        version: '0.5.8',
+        buildNumber: '44',
         buildSignature: '',
       );
       if (const bool.fromEnvironment('CAPTURE_UI')) {
@@ -110,7 +110,14 @@ void main() {
       }
 
       Future<void> keyboard(String name) async {
-        await tester.tap(find.byType(EditableText).first);
+        await tester.tap(
+          find
+              .descendant(
+                of: find.byType(Dialog),
+                matching: find.byType(EditableText),
+              )
+              .first,
+        );
         tester.view.viewInsets = FakeViewPadding(bottom: 960);
         await settle();
         await capture(name);
@@ -126,28 +133,39 @@ void main() {
       await settle();
       await keyboard('02-budget-keyboard');
       await page('节点管理');
-      await tester.tap(find.text('私家车-美国-专线').first);
-      await settle();
       await capture('03-node-expanded');
       await tester.tap(find.text('专线配置').first);
       await settle();
       await keyboard('04-profile-keyboard');
-      await tester.tap(find.text('＋ 添加节点').first);
+      await settle();
+      await tester.tap(find.text('节点对接').first);
       await settle();
       await keyboard('05-enroll-keyboard');
       await page('用户管理');
+      await capture('15-users');
+      await tester.ensureVisible(find.text('示例用户 01').first);
+      await settle();
       await tester.tap(find.text('示例用户 01').first);
       await settle();
       await capture('06-user-expanded');
-      await tester.tap(find.text('新建用户').first);
+      await tester.tap(find.byTooltip('新建用户').first);
       await settle();
       await keyboard('07-user-keyboard');
+      await tester.scrollUntilVisible(
+        find.text('批量操作'),
+        -280,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await settle();
       await tester.tap(find.text('批量操作').first);
       await settle();
       await capture('14-batch-confirmation');
       await tester.tap(find.text('取消').last);
       await settle();
       await page('订阅管理');
+      await capture('16-subscriptions');
+      await tester.ensureVisible(find.text('示例用户 01').first);
+      await settle();
       await tester.tap(find.text('示例用户 01').first);
       await settle();
       await tester.tap(find.text('更多⌄'));
@@ -155,7 +173,7 @@ void main() {
       await capture('08-subscription-menu');
       await tester.tapAt(const Offset(5, 35));
       await settle();
-      await tester.tap(find.text('导入外部节点').first);
+      await tester.tap(find.text('外部节点').first);
       await settle();
       await capture('09-external-editor');
       await tester.tap(find.text('添加节点').first);

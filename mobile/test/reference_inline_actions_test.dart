@@ -38,6 +38,7 @@ void main() {
       final disable = find.widgetWithText(OutlinedButton, '禁用');
       await tester.ensureVisible(disable);
       await tester.pumpAndSettle();
+      await tester.pumpAndSettle();
       await tester.tap(disable);
       await tester.pumpAndSettle();
       await tester.tap(find.widgetWithText(FilledButton, '确认'));
@@ -117,6 +118,7 @@ void main() {
     await tester.pumpAndSettle();
     final disable = find.widgetWithText(OutlinedButton, '禁用');
     await tester.ensureVisible(disable);
+    await tester.pumpAndSettle();
     await tester.tap(disable);
     await tester.pumpAndSettle();
     expect(find.textContaining('details-user 的当前连接'), findsOneWidget);

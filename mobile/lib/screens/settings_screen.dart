@@ -237,7 +237,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen>
             ),
           ),
           SliverPadding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
             sliver: SliverList.list(
               children: [
                 const AdminControls(),
