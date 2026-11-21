@@ -134,18 +134,9 @@ void main() {
       await keyboard('02-budget-keyboard');
       await page('节点管理');
       await capture('03-node-expanded');
-      await tester.tap(find.text('私家车-美国-专线').first);
-      await settle();
-      await tester.scrollUntilVisible(
-        find.text('专线配置'),
-        320,
-        scrollable: find.byType(Scrollable).last,
-      );
-      await settle();
       await tester.tap(find.text('专线配置').first);
       await settle();
       await keyboard('04-profile-keyboard');
-      await tester.binding.handlePopRoute();
       await settle();
       await tester.tap(find.text('节点对接').first);
       await settle();

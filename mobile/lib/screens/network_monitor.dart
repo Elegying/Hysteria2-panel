@@ -187,7 +187,7 @@ class _MonitorState extends ConsumerState<NetworkMonitor>
               SizedBox(
                 height: (MediaQuery.sizeOf(context).height - 710).clamp(
                   62.0,
-                  132.0,
+                  108.0,
                 ),
                 width: double.infinity,
                 child: CustomPaint(

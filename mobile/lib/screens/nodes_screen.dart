@@ -9,7 +9,6 @@ import '../core/formatters.dart';
 import '../core/glass.dart';
 import 'admin_controls.dart';
 import 'node_enrollment.dart';
-import 'node_telemetry_card.dart';
 
 class NodesScreen extends ConsumerStatefulWidget {
   const NodesScreen({super.key});
@@ -22,10 +21,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     with WidgetsBindingObserver, AutomaticKeepAliveClientMixin {
   List<Map<String, dynamic>> _nodes = [];
 
-  final Map<String, double> _trafficRates = {};
-  final Map<String, int> _trafficTotals = {};
-  int? _trafficObservedAt;
-  List<Map<String, dynamic>> _budgets = [];
+  Map<String, dynamic> _monitor = {};
+  String? _monitorError;
   bool _enrolling = false;
   bool _loading = true;
   bool _refreshing = false;
@@ -43,7 +40,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     Future.microtask(_load);
-    Future.microtask(_loadBudgets);
     _timer = Timer.periodic(const Duration(seconds: 5), (_) {
       if (mounted &&
           !_refreshing &&
@@ -72,6 +68,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     final generation = ++_loadGeneration;
     _refreshing = true;
     if (!silent) setState(() => _loading = true);
+    final monitor = _loadMonitor(generation);
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
@@ -80,20 +77,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       final items = (data['items'] as List? ?? const [])
           .map((value) => Map<String, dynamic>.from(value as Map))
           .toList();
-      final observedAt = (data['observedAt'] as num? ?? 0).toInt();
-      final elapsed = _trafficObservedAt == null
-          ? 0
-          : observedAt - _trafficObservedAt!;
-      for (final node in items) {
-        final id = node['nodeId'].toString();
-        final total = (node['totalBytes'] as num? ?? 0).toInt();
-        final previous = _trafficTotals[id];
-        _trafficRates[id] = previous == null || elapsed <= 0 || total < previous
-            ? 0
-            : (total - previous) / elapsed;
-        _trafficTotals[id] = total;
-      }
-      _trafficObservedAt = observedAt;
       if (mounted && generation == _loadGeneration) {
         setState(() {
           _nodes = items;
@@ -111,6 +94,7 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
         _detailsRevision.value++;
       }
     } finally {
+      await monitor;
       if (generation == _loadGeneration) _refreshing = false;
     }
   }
@@ -268,11 +252,6 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   ('节点类型', '面板本机节点'),
                   ('面板入口', node['observedIp']),
                   ('在线设备', node['onlineDevices'] ?? '—'),
-                  ('累计上传', formatBytes(node['txBytes'])),
-                  ('累计下载', formatBytes(node['rxBytes'])),
-                  ('累计流量', formatBytes(node['totalBytes'])),
-                  ('实时流量', '${formatBytes(_trafficRates['local'] ?? 0)}/s'),
-                  ('最后采样', formatTimestamp(node['trafficObservedAt'])),
                 ]
               : [
                   ('节点 ID', node['nodeId']),
@@ -298,16 +277,8 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                   ('在线设备', node['onlineDevices'] ?? '—'),
                   ('最后心跳', formatTimestamp(node['lastHeartbeatAt'])),
                   ('在线快照', formatTimestamp(node['lastSnapshotAt'])),
-                  ('流量 ACK', formatTimestamp(node['lastTrafficAckAt'])),
                   ('待执行命令', node['pendingCommands']),
                   ('失败命令', node['failedCommands']),
-                  ('累计上传', formatBytes(node['txBytes'])),
-                  ('累计下载', formatBytes(node['rxBytes'])),
-                  ('累计流量', formatBytes(node['totalBytes'])),
-                  (
-                    '实时流量',
-                    '${formatBytes(_trafficRates[node['nodeId']] ?? 0)}/s',
-                  ),
                 ];
           return SafeArea(
             child: DraggableScrollableSheet(
@@ -458,17 +429,11 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                     _dataPlaneHelp(node['dataPlaneState']?.toString()),
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
-                  AdminControls(
-                    compact: true,
-                    originId: _budgetItem(node)['originId']?.toString(),
-                    budgetData:
-                        _budgetItem(node)['budget'] as Map<String, dynamic>?,
-                    onDisconnect: node['canDisconnect'] == true
-                        ? () => _pairingAction(node, 'disconnect', sheetContext)
-                        : null,
-                    nodeId: node['nodeId'].toString(),
-                    nodeProfile: node,
-                  ),
+                  if (!isLocal)
+                    AdminControls(
+                      nodeId: node['nodeId'].toString(),
+                      protocolOnly: true,
+                    ),
                 ],
               ),
             ),
@@ -497,21 +462,24 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
     }
   }
 
-  Future<void> _loadBudgets() async {
+  Future<void> _loadMonitor(int generation) async {
     try {
       final data = await ref
           .read(appControllerProvider.notifier)
-          .getJson('/api/v1/mobile/overview');
-      if (mounted) {
-        setState(
-          () => _budgets = (data['trafficBudgets'] as List? ?? [])
-              .whereType<Map>()
-              .map((e) => Map<String, dynamic>.from(e))
-              .toList(),
-        );
+          .getJson('/api/v1/mobile/server-monitor');
+      if (mounted && generation == _loadGeneration) {
+        setState(() {
+          _monitor = data;
+          _monitorError = null;
+        });
       }
-    } catch (_) {
-      /* Node controls stay available when overview is unavailable. */
+    } on ApiException catch (e) {
+      if (mounted && generation == _loadGeneration) {
+        setState(() {
+          _monitor = {};
+          _monitorError = e.message;
+        });
+      }
     }
   }
 
@@ -601,8 +569,11 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
             const SizedBox(height: 8),
             if (_loading && _nodes.isEmpty) const LinearProgressIndicator(),
             if (_error != null) RefreshWarning(message: '数据刷新失败：$_error'),
+            if (_monitorError != null)
+              RefreshWarning(message: '资源刷新失败：$_monitorError'),
             for (final node in _nodes)
               Padding(
+                key: ValueKey(node['nodeId']),
                 padding: const EdgeInsets.only(bottom: 10),
                 child: _nodeCard(node),
               ),
@@ -652,26 +623,12 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
       ),
     ),
   );
-  Map<String, dynamic> _budgetItem(Map<String, dynamic> node) {
-    final id = node['nodeId'].toString();
-    final matches = _budgets.where(
-      (b) =>
-          (node['originId'] != null && b['originId'] == node['originId']) ||
-          (id != 'local' && b['originId'] == 'node:$id') ||
-          (id == 'local' && b['kind'] == 'local'),
-    );
-    return matches.isNotEmpty
-        ? matches.first
-        : <String, dynamic>{
-            ...node,
-            'originId': node['originId'] ?? (id == 'local' ? '' : 'node:$id'),
-          };
-  }
-
   Widget _nodeCard(Map<String, dynamic> node) {
     final id = node['nodeId'].toString();
-    final item = _budgetItem(node);
-    final address = (node['observedIp'] ?? item['serverIp'] ?? '').toString();
+    final address = (node['observedIp'] ?? node['expectedIp'] ?? '').toString();
+    final resources =
+        (id == 'local' ? _monitor['local'] : (_monitor['servers'] as Map?)?[id])
+            as Map?;
     return GlassCard(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -711,11 +668,14 @@ class _NodesScreenState extends ConsumerState<NodesScreen>
                 ),
               ],
             ),
-            NodeTelemetryCard(
+            AdminControls(
               key: ValueKey(id),
-              item: item,
-              embedded: true,
-              showActions: false,
+              nodeId: id,
+              nodeProfile: node,
+              resources: resources,
+              onDisconnect: node['canDisconnect'] == true
+                  ? () => _pairingAction(node, 'disconnect', context)
+                  : null,
             ),
           ],
         ),

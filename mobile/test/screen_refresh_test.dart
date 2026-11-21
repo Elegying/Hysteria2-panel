@@ -10,13 +10,11 @@ import 'package:hysteria2_manager/screens/nodes_screen.dart';
 import 'package:hysteria2_manager/screens/users_screen.dart';
 
 class PendingRefreshController extends AppController {
-  bool nodes = false;
   final requests = <Completer<Map<String, dynamic>>>[];
 
   @override
   Future<Map<String, dynamic>> getJson(String path) {
-    if (path.contains('/line-monitor') ||
-        (nodes && path.endsWith('/overview'))) {
+    if (path.contains('/line-monitor') || path.endsWith('/server-monitor')) {
       return Future.value({'network': <String, dynamic>{}});
     }
     final request = Completer<Map<String, dynamic>>();
@@ -58,10 +56,7 @@ Future<PendingRefreshController> mountPage(
   Widget screen,
 ) async {
   tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
-  final controller = PendingRefreshController()
-    ..nodes =
-        screen is NodesScreen ||
-        (screen is TickerMode && screen.child is NodesScreen);
+  final controller = PendingRefreshController();
   await tester.pumpWidget(
     ProviderScope(
       overrides: [appControllerProvider.overrideWith((ref) => controller)],
@@ -288,34 +283,16 @@ void main() {
       await tester.pumpAndSettle();
     });
   }
-  testWidgets('obsolete node traffic cannot change the next rate baseline', (
+  testWidgets('node resources and controls are shown without expanding', (
     tester,
   ) async {
     final controller = await mountPage(tester, const NodesScreen());
-    refreshPage(tester);
-    controller.requests[1].complete(
-      snapshot('rate-node', observedAt: 20, totalBytes: 200),
-    );
+    controller.requests.single.complete(snapshot('resource-node'));
     await tester.pumpAndSettle();
-    controller.requests[0].complete(
-      snapshot('rate-node', observedAt: 10, totalBytes: 100),
-    );
-    await tester.pumpAndSettle();
-    refreshPage(tester);
-    await tester.pump();
-    controller.requests.last.complete(
-      snapshot('rate-node', observedAt: 25, totalBytes: 300),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('rate-node').first);
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(
-      find.textContaining('20 B/s'),
-      150,
-      scrollable: find.byType(Scrollable).last,
-    );
-    expect(find.textContaining('20 B/s'), findsWidgets);
+    for (final label in ['CPU', '内存', '磁盘', '重启服务', '重启主机']) {
+      expect(find.text(label), findsOneWidget);
+    }
+    expect(find.text('未设置预算'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
-    await tester.pumpAndSettle();
   });
 }
