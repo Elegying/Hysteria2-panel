@@ -282,20 +282,25 @@ class _ControlsState extends ConsumerState<AdminControls> {
   }
 
   Widget _resource(String label, dynamic value) => Expanded(
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: Theme.of(context).textTheme.bodySmall),
-        Text(
-          value is num ? '${value.toStringAsFixed(0)}%' : '—',
-          style: const TextStyle(fontWeight: FontWeight.bold),
+    child: GlassCard(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              value is num ? '${value.toStringAsFixed(0)}%' : '—',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 3),
+            LinearProgressIndicator(
+              value: value is num ? (value / 100).clamp(0, 1).toDouble() : 0,
+              minHeight: 3,
+            ),
+          ],
         ),
-        const SizedBox(height: 3),
-        LinearProgressIndicator(
-          value: value is num ? (value / 100).clamp(0, 1).toDouble() : 0,
-          minHeight: 3,
-        ),
-      ],
+      ),
     ),
   );
 
