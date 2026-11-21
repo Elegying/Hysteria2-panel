@@ -357,16 +357,31 @@ class _ControlsState extends ConsumerState<AdminControls> {
               1,
               buttons.length,
             );
-            return Wrap(
-              spacing: 6,
-              runSpacing: 4,
-              children: [
-                for (final button in buttons)
-                  SizedBox(
-                    width: (box.maxWidth - (columns - 1) * 6) / columns,
-                    child: button,
-                  ),
-              ],
+            return OutlinedButtonTheme(
+              data: OutlinedButtonThemeData(
+                style:
+                    (OutlinedButtonTheme.of(context).style ??
+                            const ButtonStyle())
+                        .copyWith(
+                          padding: const WidgetStatePropertyAll(
+                            EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+                          ),
+                          minimumSize: const WidgetStatePropertyAll(
+                            Size(0, 38),
+                          ),
+                        ),
+              ),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: [
+                  for (final button in buttons)
+                    SizedBox(
+                      width: (box.maxWidth - (columns - 1) * 6) / columns,
+                      child: button,
+                    ),
+                ],
+              ),
             );
           },
         ),
